@@ -1,0 +1,47 @@
+# Secrets — never commit
+secrets.yaml
+*.pem
+*.key
+
+# Runtime data (lives on server, not in repo)
+/var/vectis/
+
+# Go build artifacts
+/bin/
+*.exe
+*.test
+*.out
+
+# React build artifacts
+web/node_modules/
+web/dist/
+web/build/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code local config
+.claude/
+
+# Auto-provisioner (local tool, not part of Vectis repo)
+full_auto_provisioner_setup/
+
+# Python cache (from provisioner)
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+logs/
+
+# Docker data
+docker-compose.override.yml
