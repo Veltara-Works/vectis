@@ -129,8 +129,8 @@ virtual_uid_maps = static:5000
 virtual_gid_maps = static:5000
 virtual_minimum_uid = 5000
 
-# Transport
-virtual_transport = lmtp:unix:private/dovecot-lmtp
+# Transport (ADR-008: TCP LMTP to Dovecot on port 24)
+virtual_transport = lmtp:inet:dovecot:24
 ```
 
 ### C.3.6 Postfix-to-Dovecot Delivery

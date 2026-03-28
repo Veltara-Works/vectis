@@ -58,6 +58,7 @@ Note: `vectis-frontend` is the only non-internal network because Traefik needs t
 | ClamAV | | ✓ | | |
 | Postgres | | | ✓ | |
 | Valkey | | | ✓ | |
+| acme.sh | ✓ | | | |
 | Orchestrator | | | | ✓ |
 | ValidonX Agent | | | ✓ | |
 
