@@ -1,0 +1,27 @@
+driver = pgsql
+connect = host=postgres dbname={{ .Database.Name }} user={{ .Database.DovecotUser }} password={{ .Database.DovecotPassword }}
+default_pass_scheme = ARGON2ID
+
+password_query = SELECT \
+    CONCAT(m.local_part, '@', d.name) AS user, \
+    m.password_hash AS password, \
+    CONCAT('/var/vectis/mail/', d.name, '/', m.local_part) AS userdb_home, \
+    CONCAT('maildir:/var/vectis/mail/', d.name, '/', m.local_part, '/Maildir') AS userdb_mail, \
+    5000 AS userdb_uid, \
+    5000 AS userdb_gid, \
+    CONCAT('*:bytes=', m.quota_mb * 1048576) AS userdb_quota_rule \
+    FROM mailboxes m \
+    JOIN domains d ON m.domain_id = d.id \
+    WHERE CONCAT(m.local_part, '@', d.name) = '%u' \
+    AND m.active = true AND d.active = true
+
+user_query = SELECT \
+    CONCAT('/var/vectis/mail/', d.name, '/', m.local_part) AS home, \
+    CONCAT('maildir:/var/vectis/mail/', d.name, '/', m.local_part, '/Maildir') AS mail, \
+    5000 AS uid, \
+    5000 AS gid, \
+    CONCAT('*:bytes=', m.quota_mb * 1048576) AS quota_rule \
+    FROM mailboxes m \
+    JOIN domains d ON m.domain_id = d.id \
+    WHERE CONCAT(m.local_part, '@', d.name) = '%u' \
+    AND m.active = true AND d.active = true

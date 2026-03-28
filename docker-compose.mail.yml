@@ -1,0 +1,150 @@
+# Vectis Mail Server — Integration Test Compose
+# Tests end-to-end mail flow: Postfix → LMTP → Dovecot → Maildir
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: vectis-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vectis
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: vectis_dev_super
+      VECTIS_API_PASSWORD: vectis_dev_api
+      VECTIS_POSTFIX_PASSWORD: vectis_dev_postfix
+      VECTIS_DOVECOT_PASSWORD: vectis_dev_dovecot
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init-users.sh:/docker-entrypoint-initdb.d/01-init-users.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vectis"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - vectis-data
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: vectis-valkey
+    restart: unless-stopped
+    command: valkey-server --requirepass vectis_dev_valkey
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-a", "vectis_dev_valkey", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - vectis-data
+
+  postfix:
+    image: vectis-postfix:dev
+    container_name: vectis-postfix
+    hostname: mail-dev.vectismail.com
+    restart: unless-stopped
+    ports:
+      - "25:25"
+      - "465:465"
+      - "587:587"
+    volumes:
+      # Mount generated Postfix configs
+      - ./var/generated/postfix/main.cf:/etc/postfix/main.cf:ro
+      - ./var/generated/postfix/master.cf:/etc/postfix/master.cf:ro
+      - ./var/generated/postfix/pgsql_virtual_domains.cf:/etc/postfix/pgsql_virtual_domains.cf:ro
+      - ./var/generated/postfix/pgsql_virtual_mailboxes.cf:/etc/postfix/pgsql_virtual_mailboxes.cf:ro
+      - ./var/generated/postfix/pgsql_virtual_aliases.cf:/etc/postfix/pgsql_virtual_aliases.cf:ro
+      - ./var/generated/postfix/pgsql_virtual_catchall.cf:/etc/postfix/pgsql_virtual_catchall.cf:ro
+      - mail-data:/var/vectis/mail
+      - ./var/certs:/etc/ssl/mail:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - vectis-mail
+      - vectis-data
+
+  dovecot:
+    image: vectis-dovecot:dev
+    container_name: vectis-dovecot
+    restart: unless-stopped
+    ports:
+      - "993:993"
+      - "143:143"
+      - "995:995"
+    volumes:
+      # Mount generated Dovecot configs
+      - ./var/generated/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro
+      - ./var/generated/dovecot/dovecot-sql.conf.ext:/etc/dovecot/dovecot-sql.conf.ext:ro
+      - mail-data:/var/vectis/mail
+      - ./var/certs:/etc/ssl/mail:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - vectis-mail
+      - vectis-data
+
+  rspamd:
+    image: vectis-rspamd:dev
+    container_name: vectis-rspamd
+    restart: unless-stopped
+    volumes:
+      - ./var/generated/rspamd/actions.conf:/etc/rspamd/local.d/actions.conf:ro
+      - ./var/generated/rspamd/classifier-bayes.conf:/etc/rspamd/local.d/classifier-bayes.conf:ro
+      - ./var/generated/rspamd/worker-proxy.inc:/etc/rspamd/local.d/worker-proxy.inc:ro
+    depends_on:
+      valkey:
+        condition: service_healthy
+    networks:
+      - vectis-mail
+      - vectis-data
+
+  traefik:
+    image: traefik:v3.3
+    container_name: vectis-traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./var/generated/traefik:/etc/traefik/dynamic:ro
+      - traefik-acme:/etc/traefik
+    command:
+      - "--api.dashboard=false"
+      - "--ping=true"
+      - "--entryPoints.web.address=:80"
+      - "--entryPoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entryPoints.web.http.redirections.entryPoint.scheme=https"
+      - "--entryPoints.websecure.address=:443"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+      - "--log.level=INFO"
+      - "--log.format=json"
+    networks:
+      - vectis-frontend
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  vectis-frontend:
+    driver: bridge
+  vectis-mail:
+    driver: bridge
+  vectis-data:
+    driver: bridge
+
+volumes:
+  pgdata:
+  valkeydata:
+  mail-data:
+  traefik-acme:

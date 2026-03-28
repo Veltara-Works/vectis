@@ -1,0 +1,5 @@
+hosts = postgres
+user = {{ .Database.PostfixUser }}
+password = {{ .Database.PostfixPassword }}
+dbname = {{ .Database.Name }}
+query = SELECT a.destination FROM aliases a JOIN domains d ON a.domain_id = d.id WHERE CONCAT(a.source_local_part, '@', d.name) = '%s' AND a.active = true AND d.active = true

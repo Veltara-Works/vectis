@@ -1,0 +1,67 @@
+# Vectis Mail Server Configuration
+# Copy this to /etc/vectis/config.yaml and edit for your server
+
+# The fully-qualified hostname clients use to reach this mail server.
+# Must have a valid DNS A/AAAA record and matching MX record.
+hostname: mail.example.com
+
+# TLS certificate provisioning.
+tls:
+  provider: letsencrypt    # letsencrypt or custom
+  email: admin@example.com # Required for Let's Encrypt ACME account
+  # Uncomment for provider: custom (bring your own certificate)
+  # cert_path: /etc/vectis/tls/fullchain.pem
+  # key_path:  /etc/vectis/tls/privkey.pem
+
+# Container resource-limit profile.
+# Controls memory and CPU constraints for all Vectis containers.
+#   dev        — minimal limits, suitable for local development
+#   small      — single-domain, low-traffic server (~50 mailboxes)
+#   production — multi-domain, moderate traffic (~500 mailboxes)
+#   enterprise — high-volume, multi-tenant deployment
+resources:
+  profile: dev             # dev, small, production, enterprise
+
+# ClamAV antivirus sidecar.
+# Set to "none" to omit the ClamAV container entirely, saving ~1 GB RAM.
+# Otherwise the profile follows the same tiers as resources above.
+clamav:
+  profile: none            # none, dev, small, production, enterprise
+
+# Rspamd spam-filtering thresholds.
+# spam_threshold  — score at which a message is flagged as spam
+# reject_threshold — score at which a message is rejected outright
+#                    (999 = effectively disabled; recommended until tuned)
+# greylist_enabled — whether to enable greylisting for unknown senders
+rspamd:
+  spam_threshold: 15.0
+  reject_threshold: 999    # 999 = effectively disabled
+  greylist_enabled: false
+
+# Postfix MTA settings.
+postfix:
+  message_size_limit: 52428800  # 50 MB in bytes
+  smtp_banner: "$myhostname ESMTP"
+
+# Dovecot IMAP / LDA settings.
+dovecot:
+  mail_location: "maildir:/var/vectis/mail/%d/%n/Maildir"
+  quota_default_mb: 1024   # 1 GB default per-mailbox quota
+
+# Periodic backup configuration.
+backup:
+  enabled: false
+  schedule: "0 2 * * *"    # Cron expression — 2 AM daily
+  retain_days: 30
+
+# Container logging driver and rotation.
+logging:
+  level: info              # debug, info, warn, error
+  driver: json-file        # Docker log driver
+  max_size_mb: 50
+  max_files: 5
+
+# Administrative HTTP interface (the Vectis web UI / API).
+admin:
+  listen_addr: ":8080"
+  session_ttl_hours: 24

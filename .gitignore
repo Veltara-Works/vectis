@@ -5,6 +5,7 @@ secrets.yaml
 
 # Runtime data (lives on server, not in repo)
 /var/vectis/
+/var/
 
 # Go build artifacts
 /bin/

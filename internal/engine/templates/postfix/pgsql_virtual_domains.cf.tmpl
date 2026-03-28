@@ -1,0 +1,5 @@
+hosts = postgres
+user = {{ .Database.PostfixUser }}
+password = {{ .Database.PostfixPassword }}
+dbname = {{ .Database.Name }}
+query = SELECT name FROM domains WHERE name = '%s' AND active = true

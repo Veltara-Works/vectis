@@ -1,0 +1,5 @@
+hosts = postgres
+user = {{ .Database.PostfixUser }}
+password = {{ .Database.PostfixPassword }}
+dbname = {{ .Database.Name }}
+query = SELECT CONCAT(d.name, '/', m.local_part, '/Maildir/') FROM mailboxes m JOIN domains d ON m.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.name) = '%s' AND m.active = true AND d.active = true
