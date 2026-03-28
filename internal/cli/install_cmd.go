@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -32,7 +33,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	configDir, _ := cmd.Flags().GetString("config-dir")
 
 	step := 0
-	totalSteps := 7
+	totalSteps := 9
 	printStep := func(msg string) {
 		step++
 		fmt.Fprintf(cmd.OutOrStdout(), "[%d/%d] %s...", step, totalSteps, msg)
@@ -86,7 +87,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 	done()
 
-	// Step 4: Create runtime directories
+	// Step 4: Create runtime directories and configure Docker IPv6
 	printStep("Creating runtime directories")
 	for _, dir := range []string{
 		"/var/vectis/mail",
@@ -96,6 +97,22 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		"/var/vectis/certs",
 	} {
 		os.MkdirAll(dir, 0755)
+	}
+
+	// Configure Docker daemon for IPv6 support (Spec G.7) if not already configured.
+	daemonJSON := "/etc/docker/daemon.json"
+	if _, err := os.Stat(daemonJSON); os.IsNotExist(err) {
+		ipv6Config := []byte(`{
+  "ipv6": true,
+  "fixed-cidr-v6": "fd00::/80",
+  "experimental": true,
+  "ip6tables": true
+}
+`)
+		os.MkdirAll("/etc/docker", 0755)
+		if writeErr := os.WriteFile(daemonJSON, ipv6Config, 0644); writeErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: could not write %s: %s\n", daemonJSON, writeErr)
+		}
 	}
 	done()
 
@@ -170,6 +187,30 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 	done()
 
+	// Step 8: Pull container images
+	printStep("Pulling container images")
+	pullCmd := exec.Command("docker", "compose", "-f", composeDst, "pull")
+	pullCmd.Stdout = os.Stdout
+	pullCmd.Stderr = os.Stderr
+	if err := pullCmd.Run(); err != nil {
+		fmt.Fprintln(cmd.OutOrStdout())
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: failed to pull images: %s\n", err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "You can pull manually: docker compose -f "+composeDst+" pull")
+	}
+	done()
+
+	// Step 9: Start services
+	printStep("Starting services")
+	upCmd := exec.Command("docker", "compose", "-f", composeDst, "up", "-d")
+	upCmd.Stdout = os.Stdout
+	upCmd.Stderr = os.Stderr
+	if err := upCmd.Run(); err != nil {
+		fmt.Fprintln(cmd.OutOrStdout())
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: failed to start services: %s\n", err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "You can start manually: docker compose -f "+composeDst+" up -d")
+	}
+	done()
+
 	// Print success banner
 	fmt.Fprintln(cmd.OutOrStdout())
 	fmt.Fprintln(cmd.OutOrStdout(), "═══════════════════════════════════════════")
@@ -185,13 +226,10 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "  (admin account already exists)")
 	}
 	fmt.Fprintln(cmd.OutOrStdout())
-	fmt.Fprintln(cmd.OutOrStdout(), "  Generated configs: "+genDir)
-	fmt.Fprintln(cmd.OutOrStdout())
 	fmt.Fprintln(cmd.OutOrStdout(), "  Next steps:")
-	fmt.Fprintln(cmd.OutOrStdout(), "  1. Start all services: docker compose -f docker-compose.production.yml up -d")
-	fmt.Fprintln(cmd.OutOrStdout(), "  2. Log in to the admin panel")
-	fmt.Fprintln(cmd.OutOrStdout(), "  3. Add your DNS records")
-	fmt.Fprintln(cmd.OutOrStdout(), "  4. Create your first domain and mailbox")
+	fmt.Fprintln(cmd.OutOrStdout(), "  1. Log in to the admin panel")
+	fmt.Fprintln(cmd.OutOrStdout(), "  2. Add your DNS records (shown in Deliverability section)")
+	fmt.Fprintln(cmd.OutOrStdout(), "  3. Create your first domain and mailbox")
 	fmt.Fprintln(cmd.OutOrStdout(), "═══════════════════════════════════════════")
 
 	return nil
