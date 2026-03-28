@@ -20,8 +20,9 @@ type apiError struct {
 }
 
 type apiMeta struct {
-	RequestID string    `json:"request_id"`
-	Timestamp time.Time `json:"timestamp"`
+	RequestID  string          `json:"request_id"`
+	Timestamp  time.Time       `json:"timestamp"`
+	Pagination *paginationMeta `json:"pagination,omitempty"`
 }
 
 func respond(w http.ResponseWriter, r *http.Request, status int, data any) {
@@ -67,7 +68,27 @@ func respondErrorWithDetails(w http.ResponseWriter, r *http.Request, status int,
 	json.NewEncoder(w).Encode(resp)
 }
 
+func respondPaginated(w http.ResponseWriter, r *http.Request, status int, data any, nextCursor string, hasMore bool) {
+	resp := apiResponse{
+		Data: data,
+		Meta: apiMeta{
+			RequestID: getRequestID(r.Context()),
+			Timestamp: time.Now().UTC(),
+			Pagination: &paginationMeta{
+				NextCursor: nextCursor,
+				HasMore:    hasMore,
+			},
+		},
+	}
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(resp)
+}
+
+// maxBodySize is the maximum size of a JSON request body (1 MB).
+const maxBodySize = 1 << 20
+
 func decodeJSON(r *http.Request, v any) error {
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBodySize)
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
 }

@@ -3,6 +3,8 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 
 	"github.com/go-chi/chi/v5"
@@ -35,13 +37,30 @@ func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mailboxes, err := s.mailboxes.ListByDomain(r.Context(), domainID)
+	page, err := parsePagination(r)
+	if err != nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_PAGINATION", err.Error())
+		return
+	}
+
+	mailboxes, err := s.mailboxes.ListByDomainPaginated(r.Context(), domainID, repository.PaginationParams{
+		Cursor: page.Cursor,
+		Limit:  page.Limit,
+	})
 	if err != nil {
 		s.logger.Error("list mailboxes failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list mailboxes")
 		return
 	}
-	respond(w, r, http.StatusOK, mailboxes)
+
+	hasMore := len(mailboxes) > page.Limit
+	var nextCursor string
+	if hasMore {
+		mailboxes = mailboxes[:page.Limit]
+		nextCursor = encodeCursor(mailboxes[page.Limit-1].CreatedAt)
+	}
+
+	respondPaginated(w, r, http.StatusOK, mailboxes, nextCursor, hasMore)
 }
 
 func (s *Server) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +80,10 @@ func (s *Server) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.LocalPart) > 64 {
 		respondError(w, r, http.StatusBadRequest, "INVALID_LOCAL_PART", "Local part must be 64 characters or fewer")
+		return
+	}
+	if err := auth.ValidatePasswordStrength(req.Password); err != nil {
+		respondError(w, r, http.StatusBadRequest, "WEAK_PASSWORD", err.Error())
 		return
 	}
 
@@ -118,6 +141,21 @@ func (s *Server) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create mailbox")
 		return
 	}
+
+	// Create Maildir structure on disk (Spec A.4 step 6).
+	maildirBase := filepath.Join("/var/vectis/mail", domain.Name, req.LocalPart, "Maildir")
+	for _, sub := range []string{"cur", "new", "tmp"} {
+		if mkdirErr := os.MkdirAll(filepath.Join(maildirBase, sub), 0700); mkdirErr != nil {
+			s.logger.Warn("failed to create Maildir", "path", maildirBase, "error", mkdirErr)
+		}
+	}
+	// Set ownership to vmail (uid/gid 5000).
+	_ = filepath.Walk(filepath.Join("/var/vectis/mail", domain.Name, req.LocalPart), func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr == nil {
+			os.Chown(path, 5000, 5000)
+		}
+		return nil
+	})
 
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)

@@ -12,7 +12,6 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-config:/etc/traefik
     logging:
       driver: {{ .Logging.Driver }}
@@ -37,8 +36,6 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
-    labels:
-      - "traefik.enable=true"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/v1/health"]
       interval: 10s
@@ -156,10 +153,29 @@ services:
     restart: unless-stopped
     networks:
       - vectis-frontend
+    environment:
+      DEPLOY_DOCKER_CONTAINER_LABEL: "vectis-mail-certs"
+      DEPLOY_DOCKER_CONTAINER_RELOAD_CMD: "true"
+{{ if .Cloudflare }}
+      CF_Token: {{ .Cloudflare.APIToken }}
+{{ end }}
     volumes:
       - acme-data:/acme.sh
       - mail-certs:/etc/ssl/mail
-    command: daemon
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+{{ if .Cloudflare }}
+        acme.sh --issue --dns dns_cf -d {{ .Hostname }} --keylength 2048 || true
+{{ else }}
+        acme.sh --issue --standalone -d {{ .Hostname }} --keylength 2048 --httpport 80 || true
+{{ end }}
+        acme.sh --install-cert -d {{ .Hostname }} \
+          --cert-file /etc/ssl/mail/cert.pem \
+          --key-file /etc/ssl/mail/privkey.pem \
+          --fullchain-file /etc/ssl/mail/fullchain.pem || true
+        exec acme.sh --cron --home /acme.sh
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -191,10 +207,13 @@ services:
     restart: unless-stopped
     networks:
       - vectis-data
+    command: valkey-server --requirepass {{ .Valkey.Password }}
+    environment:
+      VALKEY_PASSWORD: {{ .Valkey.Password }}
     volumes:
       - valkeydata:/data
     healthcheck:
-      test: ["CMD", "valkey-cli", "-a", "{{ .Valkey.Password }}", "ping"]
+      test: ["CMD-SHELL", "valkey-cli -a $$VALKEY_PASSWORD ping"]
       interval: 10s
       timeout: 5s
       retries: 5
