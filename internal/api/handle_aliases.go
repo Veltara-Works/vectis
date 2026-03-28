@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -27,13 +28,30 @@ func (s *Server) handleListAliases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	aliases, err := s.aliases.ListByDomain(r.Context(), domainID)
+	page, err := parsePagination(r)
+	if err != nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_PAGINATION", err.Error())
+		return
+	}
+
+	aliases, err := s.aliases.ListByDomainPaginated(r.Context(), domainID, repository.PaginationParams{
+		Cursor: page.Cursor,
+		Limit:  page.Limit,
+	})
 	if err != nil {
 		s.logger.Error("list aliases failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list aliases")
 		return
 	}
-	respond(w, r, http.StatusOK, aliases)
+
+	hasMore := len(aliases) > page.Limit
+	var nextCursor string
+	if hasMore {
+		aliases = aliases[:page.Limit]
+		nextCursor = encodeCursor(aliases[page.Limit-1].CreatedAt)
+	}
+
+	respondPaginated(w, r, http.StatusOK, aliases, nextCursor, hasMore)
 }
 
 func (s *Server) handleCreateAlias(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +90,23 @@ func (s *Server) handleCreateAlias(w http.ResponseWriter, r *http.Request) {
 		respondError(w, r, http.StatusConflict, "ALIAS_EXISTS",
 			fmt.Sprintf("Alias %s@%s already exists", source, domain.Name))
 		return
+	}
+
+	// Validate no alias chaining (Spec B.4): destination must not point to another alias.
+	for _, dest := range strings.Split(req.Destination, ",") {
+		dest = strings.TrimSpace(dest)
+		parts := strings.SplitN(dest, "@", 2)
+		if len(parts) == 2 {
+			destDomain, err := s.domains.GetByName(r.Context(), parts[1])
+			if err == nil && destDomain != nil {
+				existingAlias, _ := s.aliases.GetBySource(r.Context(), destDomain.ID, parts[0])
+				if existingAlias != nil {
+					respondError(w, r, http.StatusBadRequest, "ALIAS_CHAINING",
+						fmt.Sprintf("Destination %s is itself an alias; alias chaining is not allowed", dest))
+					return
+				}
+			}
+		}
 	}
 
 	alias, err := s.aliases.Create(r.Context(), repository.AliasCreate{

@@ -150,6 +150,53 @@ func (r *DomainRepo) List(ctx context.Context, activeOnly *bool) ([]Domain, erro
 	return domains, nil
 }
 
+// ListPaginated returns domains with cursor-based pagination, optionally filtered by active status.
+// Results are ordered by created_at DESC. Fetches page.Limit+1 rows so the caller can detect has_more.
+func (r *DomainRepo) ListPaginated(ctx context.Context, activeOnly *bool, page PaginationParams) ([]Domain, error) {
+	cols := `id, name, active, dkim_enabled, dkim_selector, dkim_key_path,
+	         spam_threshold, max_mailboxes, created_at, updated_at`
+	query := fmt.Sprintf(`SELECT %s FROM domains`, cols)
+
+	var conditions []string
+	var args []any
+	argIdx := 1
+
+	if activeOnly != nil {
+		conditions = append(conditions, fmt.Sprintf("active = $%d", argIdx))
+		args = append(args, *activeOnly)
+		argIdx++
+	}
+	if page.Cursor != nil {
+		conditions = append(conditions, fmt.Sprintf("created_at < $%d", argIdx))
+		args = append(args, *page.Cursor)
+		argIdx++
+	}
+
+	if len(conditions) > 0 {
+		query += " WHERE " + joinConditions(conditions)
+	}
+
+	query += fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d`, argIdx)
+	args = append(args, page.Limit+1)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list domains paginated: %w", err)
+	}
+	defer rows.Close()
+
+	var domains []Domain
+	for rows.Next() {
+		var d Domain
+		if err := rows.Scan(&d.ID, &d.Name, &d.Active, &d.DKIMEnabled, &d.DKIMSelector, &d.DKIMKeyPath,
+			&d.SpamThreshold, &d.MaxMailboxes, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan domain: %w", err)
+		}
+		domains = append(domains, d)
+	}
+	return domains, nil
+}
+
 // Update modifies a domain's mutable fields.
 func (r *DomainRepo) Update(ctx context.Context, id string, input DomainUpdate) (*Domain, error) {
 	// Build dynamic SET clause.
@@ -245,6 +292,17 @@ func joinClauses(clauses []string) string {
 	for i, c := range clauses {
 		if i > 0 {
 			result += ", "
+		}
+		result += c
+	}
+	return result
+}
+
+func joinConditions(conditions []string) string {
+	result := ""
+	for i, c := range conditions {
+		if i > 0 {
+			result += " AND "
 		}
 		result += c
 	}

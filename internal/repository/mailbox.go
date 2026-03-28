@@ -134,6 +134,40 @@ func (r *MailboxRepo) ListByDomain(ctx context.Context, domainID string) ([]Mail
 	return mailboxes, nil
 }
 
+// ListByDomainPaginated returns mailboxes for a domain with cursor-based pagination.
+// Results are ordered by created_at DESC. Fetches page.Limit+1 rows so the caller can detect has_more.
+func (r *MailboxRepo) ListByDomainPaginated(ctx context.Context, domainID string, page PaginationParams) ([]Mailbox, error) {
+	cols := `id, domain_id, local_part, password_hash, display_name, quota_mb, active, created_at, updated_at`
+	query := fmt.Sprintf(`SELECT %s FROM mailboxes WHERE domain_id = $1`, cols)
+	args := []any{domainID}
+	argIdx := 2
+
+	if page.Cursor != nil {
+		query += fmt.Sprintf(` AND created_at < $%d`, argIdx)
+		args = append(args, *page.Cursor)
+		argIdx++
+	}
+
+	query += fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d`, argIdx)
+	args = append(args, page.Limit+1)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list mailboxes paginated: %w", err)
+	}
+	defer rows.Close()
+
+	var mailboxes []Mailbox
+	for rows.Next() {
+		var m Mailbox
+		if err := rows.Scan(&m.ID, &m.DomainID, &m.LocalPart, &m.PasswordHash, &m.DisplayName, &m.QuotaMB, &m.Active, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan mailbox: %w", err)
+		}
+		mailboxes = append(mailboxes, m)
+	}
+	return mailboxes, nil
+}
+
 // Update modifies a mailbox's mutable fields.
 func (r *MailboxRepo) Update(ctx context.Context, id string, input MailboxUpdate) (*Mailbox, error) {
 	setClauses := []string{}
