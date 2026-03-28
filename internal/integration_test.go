@@ -161,7 +161,7 @@ func TestIntegration(t *testing.T) {
 	})
 
 	t.Run("session_lifecycle", func(t *testing.T) {
-		sm := auth.NewSessionManager(pool, vk, 24)
+		sm := auth.NewSessionManager(pool, vk, 24, "test-cookie-secret-at-least-32-chars!!")
 
 		token, session, err := sm.CreateSession(ctx, adminID, "127.0.0.1", "test-agent")
 		if err != nil {
@@ -171,10 +171,17 @@ func TestIntegration(t *testing.T) {
 			t.Fatal("empty token or session")
 		}
 
-		// Validate session.
-		gotAdminID, err := sm.ValidateSession(ctx, session.ID)
-		if err != nil || gotAdminID != adminID {
-			t.Fatalf("validate session: adminID=%s err=%v", gotAdminID, err)
+		// Sign and verify token (HMAC).
+		signed := sm.SignToken(token)
+		extracted, err := sm.VerifyAndExtractToken(signed)
+		if err != nil || extracted != token {
+			t.Fatalf("sign/verify token: extracted=%s err=%v", extracted, err)
+		}
+
+		// Validate session using the raw token.
+		gotSessionID, gotAdminID, err := sm.ValidateSession(ctx, token)
+		if err != nil || gotAdminID != adminID || gotSessionID != session.ID {
+			t.Fatalf("validate session: sessionID=%s adminID=%s err=%v", gotSessionID, gotAdminID, err)
 		}
 
 		// List sessions.
@@ -189,7 +196,7 @@ func TestIntegration(t *testing.T) {
 		}
 
 		// Should be invalid now.
-		_, err = sm.ValidateSession(ctx, session.ID)
+		_, _, err = sm.ValidateSession(ctx, token)
 		if err == nil {
 			t.Fatal("deleted session should be invalid")
 		}
@@ -213,7 +220,7 @@ func TestIntegration(t *testing.T) {
 
 	// --- Cleanup ---
 	t.Run("cleanup", func(t *testing.T) {
-		sm := auth.NewSessionManager(pool, vk, 24)
+		sm := auth.NewSessionManager(pool, vk, 24, "test-cookie-secret-at-least-32-chars!!")
 		sm.DeleteAllSessions(ctx, adminID)
 		adminRepo.Delete(ctx, adminID)
 		aliasRepo.Delete(ctx, domainID) // cleanup by domain - won't match but that's OK

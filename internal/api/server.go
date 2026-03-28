@@ -16,6 +16,7 @@ import (
 	"github.com/valkey-io/valkey-go"
 
 	"github.com/Veltara-Works/vectis/internal/auth"
+	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
@@ -32,6 +33,9 @@ type Server struct {
 	hostname     string
 	dkimBasePath string
 	webDir       string
+	genDir       string // directory for generated config files
+	cfg          *config.VectisConfig
+	secrets      *config.VectisSecrets
 
 	// Repositories
 	domains   *repository.DomainRepo
@@ -49,6 +53,9 @@ type Config struct {
 	Hostname     string
 	DKIMBasePath string
 	WebDir       string // path to static UI files (optional)
+	GenDir       string // path to generated config output directory
+	VectisCfg    *config.VectisConfig
+	VectisSecrets *config.VectisSecrets
 }
 
 // New creates a new API server with all routes registered.
@@ -57,10 +64,13 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		logger:       logger,
 		db:           db,
 		vk:           vk,
-		sessions:     auth.NewSessionManager(db, vk, cfg.SessionTTL),
+		sessions:     auth.NewSessionManager(db, vk, cfg.SessionTTL, cfg.CookieSecret),
 		hostname:     cfg.Hostname,
 		dkimBasePath: cfg.DKIMBasePath,
 		webDir:       cfg.WebDir,
+		genDir:       cfg.GenDir,
+		cfg:          cfg.VectisCfg,
+		secrets:      cfg.VectisSecrets,
 		domains:      repository.NewDomainRepo(db),
 		mailboxes: repository.NewMailboxRepo(db),
 		aliases:   repository.NewAliasRepo(db),
@@ -150,6 +160,17 @@ func (s *Server) buildRouter() chi.Router {
 			r.Get("/aliases/{aliasID}", s.handleGetAlias)
 			r.Patch("/aliases/{aliasID}", s.handleUpdateAlias)
 			r.Delete("/aliases/{aliasID}", s.handleDeleteAlias)
+
+			// Config management.
+			r.Get("/config", s.handleGetConfig)
+			r.Post("/config/validate", s.handleValidateConfig)
+			r.Get("/config/diff", s.handleConfigDiff)
+			r.Post("/config/apply", s.handleConfigApply)
+
+			// System.
+			r.Get("/health/{service}", s.handleServiceHealth)
+			r.Get("/logs/{service}", s.handleServiceLogs)
+			r.Get("/metrics", s.handleMetrics)
 		})
 	})
 

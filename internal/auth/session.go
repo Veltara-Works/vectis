@@ -2,11 +2,13 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,25 +28,54 @@ type Session struct {
 }
 
 // SessionManager handles dual-stored sessions (Valkey + Postgres).
-// Valkey is the authority for session validity.
+// Valkey is the authority for session validity (keyed by token_hash).
 // Postgres is the authority for session inventory.
 type SessionManager struct {
-	db    *pgxpool.Pool
-	vk    valkey.Client
-	ttl   time.Duration
+	db           *pgxpool.Pool
+	vk           valkey.Client
+	ttl          time.Duration
+	cookieSecret []byte
 }
 
 // NewSessionManager creates a session manager.
-func NewSessionManager(db *pgxpool.Pool, vk valkey.Client, ttlHours int) *SessionManager {
+func NewSessionManager(db *pgxpool.Pool, vk valkey.Client, ttlHours int, cookieSecret string) *SessionManager {
 	return &SessionManager{
-		db:  db,
-		vk:  vk,
-		ttl: time.Duration(ttlHours) * time.Hour,
+		db:           db,
+		vk:           vk,
+		ttl:          time.Duration(ttlHours) * time.Hour,
+		cookieSecret: []byte(cookieSecret),
 	}
 }
 
+// SignToken produces an HMAC-signed cookie value: "token.signature".
+func (sm *SessionManager) SignToken(token string) string {
+	mac := hmac.New(sha256.New, sm.cookieSecret)
+	mac.Write([]byte(token))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	return token + "." + sig
+}
+
+// VerifyAndExtractToken verifies the HMAC signature and returns the raw token.
+// Returns ("", error) if the signature is invalid.
+func (sm *SessionManager) VerifyAndExtractToken(signed string) (string, error) {
+	parts := strings.SplitN(signed, ".", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid signed token format")
+	}
+	token, sig := parts[0], parts[1]
+
+	mac := hmac.New(sha256.New, sm.cookieSecret)
+	mac.Write([]byte(token))
+	expectedSig := hex.EncodeToString(mac.Sum(nil))
+
+	if !hmac.Equal([]byte(sig), []byte(expectedSig)) {
+		return "", fmt.Errorf("invalid token signature")
+	}
+	return token, nil
+}
+
 // CreateSession generates a new session for an admin, stores it in both
-// Valkey and Postgres, and returns the raw token (to be set as cookie).
+// Valkey and Postgres, and returns the raw token (to be set as HMAC-signed cookie).
 func (sm *SessionManager) CreateSession(ctx context.Context, adminID, ipAddress, userAgent string) (token string, session *Session, err error) {
 	// Generate 256-bit random token.
 	tokenBytes := make([]byte, 32)
@@ -53,7 +84,8 @@ func (sm *SessionManager) CreateSession(ctx context.Context, adminID, ipAddress,
 	}
 	token = hex.EncodeToString(tokenBytes)
 
-	// SHA-256 hash for Postgres storage (never store raw token in DB).
+	// SHA-256 hash — used as the key in Valkey and stored in Postgres.
+	// The raw token is only sent to the client (in the signed cookie).
 	tokenHash := sha256Hash(token)
 
 	sessionID := types.NewUUIDv7()
@@ -69,8 +101,8 @@ func (sm *SessionManager) CreateSession(ctx context.Context, adminID, ipAddress,
 		ExpiresAt: expiresAt,
 	}
 
-	// Store in Valkey (authority for validity). Value = admin_id.
-	vkCmd := sm.vk.B().Set().Key(valkeySessionKey(sessionID)).Value(adminID).Ex(sm.ttl).Build()
+	// Store in Valkey (authority for validity). Key = token_hash, Value = sessionID:adminID.
+	vkCmd := sm.vk.B().Set().Key(valkeySessionKey(tokenHash)).Value(sessionID + ":" + adminID).Ex(sm.ttl).Build()
 	if err := sm.vk.Do(ctx, vkCmd).Error(); err != nil {
 		return "", nil, fmt.Errorf("store session in valkey: %w", err)
 	}
@@ -92,28 +124,39 @@ func (sm *SessionManager) CreateSession(ctx context.Context, adminID, ipAddress,
 	return token, session, nil
 }
 
-// ValidateSession checks if a session is valid by looking up the session ID in Valkey.
-// Returns the admin_id if valid.
-func (sm *SessionManager) ValidateSession(ctx context.Context, sessionID string) (adminID string, err error) {
-	cmd := sm.vk.B().Get().Key(valkeySessionKey(sessionID)).Build()
+// ValidateSession checks if a session is valid by hashing the raw token and
+// looking up the token_hash in Valkey. Returns (sessionID, adminID) if valid.
+func (sm *SessionManager) ValidateSession(ctx context.Context, rawToken string) (sessionID, adminID string, err error) {
+	tokenHash := sha256Hash(rawToken)
+	cmd := sm.vk.B().Get().Key(valkeySessionKey(tokenHash)).Build()
 	result, err := sm.vk.Do(ctx, cmd).ToString()
 	if err != nil {
 		if valkey.IsValkeyNil(err) {
-			return "", fmt.Errorf("session expired or invalid")
+			return "", "", fmt.Errorf("session expired or invalid")
 		}
-		return "", fmt.Errorf("validate session: %w", err)
+		return "", "", fmt.Errorf("validate session: %w", err)
 	}
-	return result, nil
+	// Value format: "sessionID:adminID"
+	parts := strings.SplitN(result, ":", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("corrupt session data in valkey")
+	}
+	return parts[0], parts[1], nil
 }
 
 // DeleteSession removes a session from both Valkey and Postgres.
+// Looks up the token_hash from Postgres to remove the Valkey key.
 func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID string) error {
-	// Remove from Valkey.
-	cmd := sm.vk.B().Del().Key(valkeySessionKey(sessionID)).Build()
-	sm.vk.Do(ctx, cmd)
+	// Look up the token_hash from Postgres so we can remove from Valkey.
+	var tokenHash string
+	err := sm.db.QueryRow(ctx, `SELECT token_hash FROM sessions WHERE id = $1`, sessionID).Scan(&tokenHash)
+	if err == nil && tokenHash != "" {
+		cmd := sm.vk.B().Del().Key(valkeySessionKey(tokenHash)).Build()
+		sm.vk.Do(ctx, cmd)
+	}
 
 	// Remove from Postgres.
-	_, err := sm.db.Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID)
+	_, err = sm.db.Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID)
 	if err != nil {
 		return fmt.Errorf("delete session from postgres: %w", err)
 	}
@@ -122,25 +165,25 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID string) e
 
 // DeleteAllSessions removes all sessions for an admin.
 func (sm *SessionManager) DeleteAllSessions(ctx context.Context, adminID string) error {
-	// Get all session IDs from Postgres.
-	rows, err := sm.db.Query(ctx, `SELECT id FROM sessions WHERE admin_id = $1`, adminID)
+	// Get all token hashes from Postgres.
+	rows, err := sm.db.Query(ctx, `SELECT token_hash FROM sessions WHERE admin_id = $1`, adminID)
 	if err != nil {
 		return fmt.Errorf("query sessions: %w", err)
 	}
 	defer rows.Close()
 
-	var sessionIDs []string
+	var tokenHashes []string
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return fmt.Errorf("scan session id: %w", err)
+		var hash string
+		if err := rows.Scan(&hash); err != nil {
+			return fmt.Errorf("scan token_hash: %w", err)
 		}
-		sessionIDs = append(sessionIDs, id)
+		tokenHashes = append(tokenHashes, hash)
 	}
 
 	// Delete from Valkey.
-	for _, id := range sessionIDs {
-		cmd := sm.vk.B().Del().Key(valkeySessionKey(id)).Build()
+	for _, hash := range tokenHashes {
+		cmd := sm.vk.B().Del().Key(valkeySessionKey(hash)).Build()
 		sm.vk.Do(ctx, cmd)
 	}
 
