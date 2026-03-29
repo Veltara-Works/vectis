@@ -165,10 +165,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	healthy := state != StateFailed
 
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]any{
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"healthy": healthy,
 		"state":   state,
-	})
+	}); err != nil {
+		s.logger.Error("failed to encode health response", "error", err)
+	}
 }
 
 // handlePlan triggers a synchronous Plan() computation and returns the result.
@@ -284,12 +286,14 @@ func (s *Server) respondJSON(w http.ResponseWriter, status int, payload any) {
 func (s *Server) respondError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{
 			"code":    code,
 			"message": message,
 		},
-	})
+	}); err != nil {
+		s.logger.Error("failed to encode error response", "error", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

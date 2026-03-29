@@ -73,6 +73,16 @@ orchestrator:
   db_migration_timeout: 60   # seconds total
   apply_timeout: 600         # seconds total for full apply cycle
 
+# Traefik rate limiting (per-client IP, via Traefik middleware).
+# Rates are requests per second with a burst allowance.
+rate_limits:
+  auth_average: 10         # login/logout endpoints
+  auth_burst: 20
+  api_average: 50          # general API reads (GET)
+  api_burst: 100
+  mutate_average: 20       # mutating endpoints (POST/PATCH/DELETE)
+  mutate_burst: 40
+
 # Alerting configuration (Phase 1).
 # Alerts are sent when services fail, disks fill, certs expire, etc.
 alerts:

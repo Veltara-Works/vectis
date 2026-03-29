@@ -20,14 +20,15 @@ var templatesFS embed.FS
 // TemplateData holds all data needed to render config templates.
 type TemplateData struct {
 	// From config.yaml
-	Hostname string
-	TLS      config.TLSConfig
-	ClamAV   config.ClamAVConfig
-	Rspamd   config.RspamdConfig
-	Postfix  config.PostfixConfig
-	Dovecot  config.DovecotConfig
-	Logging  config.LoggingConfig
-	Admin    config.AdminConfig
+	Hostname   string
+	TLS        config.TLSConfig
+	ClamAV     config.ClamAVConfig
+	Rspamd     config.RspamdConfig
+	Postfix    config.PostfixConfig
+	Dovecot    config.DovecotConfig
+	Logging    config.LoggingConfig
+	Admin      config.AdminConfig
+	RateLimits config.RateLimitConfig
 
 	// From secrets.yaml
 	Database   config.DatabaseSecrets
@@ -41,15 +42,21 @@ type TemplateData struct {
 
 // NewTemplateData builds TemplateData from config, secrets, and domain list.
 func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, domains []repository.Domain) *TemplateData {
+	rateLimits := cfg.RateLimits
+	if rateLimits.AuthAverage == 0 {
+		rateLimits = config.DefaultRateLimits()
+	}
+
 	return &TemplateData{
-		Hostname: cfg.Hostname,
-		TLS:      cfg.TLS,
-		ClamAV:   cfg.ClamAV,
-		Rspamd:   cfg.Rspamd,
-		Postfix:  cfg.Postfix,
-		Dovecot:  cfg.Dovecot,
-		Logging:  cfg.Logging,
-		Admin:    cfg.Admin,
+		Hostname:   cfg.Hostname,
+		TLS:        cfg.TLS,
+		ClamAV:     cfg.ClamAV,
+		Rspamd:     cfg.Rspamd,
+		Postfix:    cfg.Postfix,
+		Dovecot:    cfg.Dovecot,
+		Logging:    cfg.Logging,
+		Admin:      cfg.Admin,
+		RateLimits: rateLimits,
 		Database:   secrets.Database,
 		Valkey:     secrets.Valkey,
 		API:        secrets.API,

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -34,7 +35,9 @@ func respond(w http.ResponseWriter, r *http.Request, status int, data any) {
 		},
 	}
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Error("failed to encode response", "error", err, "request_id", getRequestID(r.Context()))
+	}
 }
 
 func respondError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
@@ -49,7 +52,9 @@ func respondError(w http.ResponseWriter, r *http.Request, status int, code, mess
 		},
 	}
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Error("failed to encode error response", "error", err, "request_id", getRequestID(r.Context()))
+	}
 }
 
 func respondErrorWithDetails(w http.ResponseWriter, r *http.Request, status int, code, message string, details any) {
@@ -65,7 +70,9 @@ func respondErrorWithDetails(w http.ResponseWriter, r *http.Request, status int,
 		},
 	}
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Error("failed to encode error response", "error", err, "request_id", getRequestID(r.Context()))
+	}
 }
 
 func respondPaginated(w http.ResponseWriter, r *http.Request, status int, data any, nextCursor string, hasMore bool) {
@@ -81,7 +88,9 @@ func respondPaginated(w http.ResponseWriter, r *http.Request, status int, data a
 		},
 	}
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Error("failed to encode paginated response", "error", err, "request_id", getRequestID(r.Context()))
+	}
 }
 
 // maxBodySize is the maximum size of a JSON request body (1 MB).

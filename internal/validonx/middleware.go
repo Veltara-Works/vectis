@@ -280,7 +280,7 @@ type featureErrorMeta struct {
 func writeFeatureError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(featureErrorResponse{
+	if err := json.NewEncoder(w).Encode(featureErrorResponse{
 		Error: featureErrorDetail{
 			Code:    code,
 			Message: message,
@@ -288,7 +288,9 @@ func writeFeatureError(w http.ResponseWriter, status int, code, message string) 
 		Meta: featureErrorMeta{
 			Timestamp: time.Now().UTC(),
 		},
-	})
+	}); err != nil {
+		slog.Error("failed to encode feature error response", "error", err)
+	}
 }
 
 func writeFeatureErrorToLogger(logger *slog.Logger, tenantID, feature string) {

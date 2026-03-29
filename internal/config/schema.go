@@ -18,6 +18,7 @@ type VectisConfig struct {
 	Admin        AdminConfig         `yaml:"admin"`
 	Orchestrator OrchestratorConfig  `yaml:"orchestrator"`
 	Alerts       AlertsConfig        `yaml:"alerts"`
+	RateLimits   RateLimitConfig     `yaml:"rate_limits"`
 }
 
 // TLSConfig controls certificate provisioning.
@@ -106,6 +107,29 @@ type AlertEmailConfig struct {
 type AlertWebhookConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	URL     string `yaml:"url"`
+}
+
+// RateLimitConfig controls Traefik rate limiting middleware for API endpoints.
+// Rates are expressed as average requests per second with a burst allowance.
+type RateLimitConfig struct {
+	AuthAverage   int `yaml:"auth_average"`   // login/logout endpoints, default 10 req/s
+	AuthBurst     int `yaml:"auth_burst"`     // burst above average, default 20
+	APIAverage    int `yaml:"api_average"`    // general API endpoints, default 50 req/s
+	APIBurst      int `yaml:"api_burst"`      // burst above average, default 100
+	MutateAverage int `yaml:"mutate_average"` // mutating endpoints (POST/PATCH/DELETE), default 20 req/s
+	MutateBurst   int `yaml:"mutate_burst"`   // burst above average, default 40
+}
+
+// DefaultRateLimits returns sensible defaults for rate limiting.
+func DefaultRateLimits() RateLimitConfig {
+	return RateLimitConfig{
+		AuthAverage:   10,
+		AuthBurst:     20,
+		APIAverage:    50,
+		APIBurst:      100,
+		MutateAverage: 20,
+		MutateBurst:   40,
+	}
 }
 
 // ---------------------------------------------------------------------------
