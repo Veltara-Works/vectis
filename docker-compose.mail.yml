@@ -104,6 +104,32 @@ services:
       - vectis-mail
       - vectis-data
 
+  api:
+    image: vectis-api:dev
+    container_name: vectis-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /etc/vectis:/etc/vectis:ro
+      - mail-data:/var/vectis/mail
+      - /var/vectis/dkim:/var/vectis/dkim
+      - ./web/dist:/app/web/dist:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    command: ["serve", "--web-dir", "/app/web/dist"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - vectis-frontend
+      - vectis-data
+
   traefik:
     image: traefik:v3.3
     container_name: vectis-traefik
@@ -112,20 +138,9 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./var/generated/traefik:/etc/traefik/dynamic:ro
-      - traefik-acme:/etc/traefik
-    command:
-      - "--api.dashboard=false"
-      - "--ping=true"
-      - "--entryPoints.web.address=:80"
-      - "--entryPoints.web.http.redirections.entryPoint.to=websecure"
-      - "--entryPoints.web.http.redirections.entryPoint.scheme=https"
-      - "--entryPoints.websecure.address=:443"
-      - "--providers.file.directory=/etc/traefik/dynamic"
-      - "--providers.file.watch=true"
-      - "--log.level=INFO"
-      - "--log.format=json"
+      - ./var/generated/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./var/generated/traefik/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
+      - traefik-acme:/etc/traefik/acme
     networks:
       - vectis-frontend
     healthcheck:

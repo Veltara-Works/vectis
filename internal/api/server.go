@@ -124,7 +124,7 @@ func (s *Server) buildRouter() chi.Router {
 		// Public endpoints.
 		r.Get("/health", s.handleHealth)
 		r.Get("/version", s.handleVersion)
-		r.Post("/auth/login", s.handleLogin)
+		r.With(chimw.Throttle(5)).Post("/auth/login", s.handleLogin)
 
 		// Authenticated endpoints.
 		r.Group(func(r chi.Router) {

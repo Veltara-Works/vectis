@@ -14,7 +14,7 @@ export default function DomainsPage() {
   const [success, setSuccess] = useState('')
   const [dkimInfo, setDkimInfo] = useState<{ dns_name: string; dns_value: string } | null>(null)
 
-  const load = () => api.listDomains().then(setDomains).catch(() => setError('Failed to load domains'))
+  const load = () => api.listDomains().then(d => setDomains(d || [])).catch(() => setError('Failed to load domains'))
   useEffect(() => { load() }, [])
 
   const handleAdd = async (e: FormEvent) => {

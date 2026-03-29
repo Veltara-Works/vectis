@@ -29,7 +29,7 @@ export const api = {
   sessions: () => request<Array<{ id: string; ip_address: string; user_agent: string; created_at: string }>>('GET', '/auth/sessions'),
 
   // Health
-  health: () => request<{ status: string; services: Record<string, string> }>('GET', '/health'),
+  health: () => request<{ status: string; services: Record<string, { status: string; response_ms: number }> }>('GET', '/health'),
 
   // Domains
   listDomains: () => request<Array<{

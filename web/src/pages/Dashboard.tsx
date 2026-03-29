@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { api } from '../api/client.ts'
 
 export default function DashboardPage() {
-  const [health, setHealth] = useState<{ status: string; services: Record<string, string> } | null>(null)
+  const [health, setHealth] = useState<{ status: string; services: Record<string, { status: string; response_ms: number }> } | null>(null)
   const [domains, setDomains] = useState<Array<{ id: string; name: string; active: boolean }>>([])
   const [error, setError] = useState('')
   const [configApplying, setConfigApplying] = useState(false)
@@ -10,7 +10,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setError('Failed to load health'))
-    api.listDomains().then(setDomains).catch(() => {})
+    api.listDomains().then(d => setDomains(d || [])).catch(() => {})
   }, [])
 
   const handleConfigApply = async () => {
@@ -73,12 +73,12 @@ export default function DashboardPage() {
               <tr><th>Service</th><th>Status</th></tr>
             </thead>
             <tbody>
-              {Object.entries(health.services).map(([name, status]) => (
+              {Object.entries(health.services).map(([name, svc]) => (
                 <tr key={name}>
                   <td>{name}</td>
                   <td>
-                    <span className={`badge ${status === 'healthy' ? 'badge-success' : 'badge-danger'}`}>
-                      {status}
+                    <span className={`badge ${svc.status === 'healthy' ? 'badge-success' : 'badge-danger'}`}>
+                      {svc.status}
                     </span>
                   </td>
                 </tr>

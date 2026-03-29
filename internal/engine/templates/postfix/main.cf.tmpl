@@ -63,6 +63,9 @@ milter_protocol = 6
 milter_default_action = accept
 milter_mail_macros = i {mail_addr} {client_addr} {client_name} {auth_authen}
 
+# Network protocol — prefer IPv4 for outbound delivery to avoid IPv6 reachability issues
+inet_protocols = ipv4
+
 # Misc
 maillog_file = /dev/stdout
 compatibility_level = 3.6

@@ -12,13 +12,12 @@ export default function App() {
   const location = useLocation()
 
   useEffect(() => {
-    api.health()
-      .then(() => api.sessions())
+    api.sessions()
       .then(() => setLoggedIn(true))
       .catch(() => setLoggedIn(false))
   }, [])
 
-  if (loggedIn === null) return null
+  if (loggedIn === null) return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#94a3b8' }}>Loading...</div>
 
   if (!loggedIn) {
     return <LoginPage onLogin={() => setLoggedIn(true)} />

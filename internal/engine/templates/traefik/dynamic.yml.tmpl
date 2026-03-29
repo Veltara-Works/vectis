@@ -7,8 +7,6 @@ http:
     vectis-api:
       rule: "Host(`{{ .Hostname }}`)"
       service: vectis-api
-      middlewares:
-        - rate-limit-login
       entryPoints:
         - websecure
 {{ if eq .TLS.Provider "letsencrypt" }}
@@ -23,10 +21,3 @@ http:
       loadBalancer:
         servers:
           - url: "http://vectis-api:8080"
-
-  middlewares:
-    rate-limit-login:
-      rateLimit:
-        average: 5
-        burst: 10
-        period: 1m

@@ -16,11 +16,11 @@ export default function AliasesPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
-  useEffect(() => { api.listDomains().then(setDomains) }, [])
+  useEffect(() => { api.listDomains().then(d => setDomains(d || [])) }, [])
 
   useEffect(() => {
     if (selectedDomain) {
-      api.listAliases(selectedDomain).then(setAliases).catch(() => setAliases([]))
+      api.listAliases(selectedDomain).then(a => setAliases(a || [])).catch(() => setAliases([]))
     }
   }, [selectedDomain])
 
@@ -82,18 +82,19 @@ export default function AliasesPage() {
         <div className="card">
           <form onSubmit={handleAdd}>
             <div className="form-group">
-              <label>Source Local Part</label>
+              <label>Alias Address</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <input value={form.source_local_part} onChange={e => setForm({ ...form, source_local_part: e.target.value })}
-                  placeholder="user (leave empty for catch-all)" autoFocus style={{ flex: 1 }} />
+                  placeholder="e.g. info" autoFocus style={{ flex: 1 }} />
                 <span className="text-muted">@{domainName}</span>
               </div>
-              <small className="text-muted">Leave empty to create a catch-all alias</small>
+              <small className="text-muted">The address that will forward mail. Leave empty for a catch-all alias.</small>
             </div>
             <div className="form-group">
-              <label>Destination</label>
+              <label>Forward To</label>
               <input value={form.destination} onChange={e => setForm({ ...form, destination: e.target.value })}
-                placeholder="user@example.com" required />
+                placeholder="e.g. john@example.com" required />
+              <small className="text-muted">The real mailbox that receives the mail</small>
             </div>
             <button className="btn" type="submit">Create Alias</button>
           </form>

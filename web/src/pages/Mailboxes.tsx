@@ -16,11 +16,11 @@ export default function MailboxesPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
-  useEffect(() => { api.listDomains().then(setDomains) }, [])
+  useEffect(() => { api.listDomains().then(d => setDomains(d || [])) }, [])
 
   useEffect(() => {
     if (selectedDomain) {
-      api.listMailboxes(selectedDomain).then(setMailboxes).catch(() => setMailboxes([]))
+      api.listMailboxes(selectedDomain).then(m => setMailboxes(m || [])).catch(() => setMailboxes([]))
     }
   }, [selectedDomain])
 
@@ -90,12 +90,13 @@ export default function MailboxesPage() {
         <div className="card">
           <form onSubmit={handleAdd}>
             <div className="form-group">
-              <label>Local Part</label>
+              <label>Username</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <input value={form.local_part} onChange={e => setForm({ ...form, local_part: e.target.value })}
-                  placeholder="user" required autoFocus style={{ flex: 1 }} />
+                  placeholder="e.g. john" required autoFocus style={{ flex: 1 }} />
                 <span className="text-muted">@{domainName}</span>
               </div>
+              <small className="text-muted">The part before the @ in the email address</small>
             </div>
             <div className="form-group">
               <label>Password</label>

@@ -143,14 +143,16 @@ func (s *Server) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create Maildir structure on disk (Spec A.4 step 6).
-	maildirBase := filepath.Join("/var/vectis/mail", domain.Name, req.LocalPart, "Maildir")
+	// Walk starts from the domain directory to ensure correct ownership throughout.
+	domainDir := filepath.Join("/var/vectis/mail", domain.Name)
+	maildirBase := filepath.Join(domainDir, req.LocalPart, "Maildir")
 	for _, sub := range []string{"cur", "new", "tmp"} {
 		if mkdirErr := os.MkdirAll(filepath.Join(maildirBase, sub), 0700); mkdirErr != nil {
 			s.logger.Warn("failed to create Maildir", "path", maildirBase, "error", mkdirErr)
 		}
 	}
-	// Set ownership to vmail (uid/gid 5000).
-	_ = filepath.Walk(filepath.Join("/var/vectis/mail", domain.Name, req.LocalPart), func(path string, info os.FileInfo, walkErr error) error {
+	// Set ownership to vmail (uid/gid 5000) from domain dir down.
+	_ = filepath.Walk(domainDir, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr == nil {
 			os.Chown(path, 5000, 5000)
 		}
