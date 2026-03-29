@@ -6,16 +6,18 @@ package config
 
 // VectisConfig is the top-level configuration loaded from config.yaml.
 type VectisConfig struct {
-	Hostname  string         `yaml:"hostname"`
-	TLS       TLSConfig      `yaml:"tls"`
-	Resources ResourceConfig `yaml:"resources"`
-	ClamAV    ClamAVConfig   `yaml:"clamav"`
-	Rspamd    RspamdConfig   `yaml:"rspamd"`
-	Postfix   PostfixConfig  `yaml:"postfix"`
-	Dovecot   DovecotConfig  `yaml:"dovecot"`
-	Backup    BackupConfig   `yaml:"backup"`
-	Logging   LoggingConfig  `yaml:"logging"`
-	Admin     AdminConfig    `yaml:"admin"`
+	Hostname     string              `yaml:"hostname"`
+	TLS          TLSConfig           `yaml:"tls"`
+	Resources    ResourceConfig      `yaml:"resources"`
+	ClamAV       ClamAVConfig        `yaml:"clamav"`
+	Rspamd       RspamdConfig        `yaml:"rspamd"`
+	Postfix      PostfixConfig       `yaml:"postfix"`
+	Dovecot      DovecotConfig       `yaml:"dovecot"`
+	Backup       BackupConfig        `yaml:"backup"`
+	Logging      LoggingConfig       `yaml:"logging"`
+	Admin        AdminConfig         `yaml:"admin"`
+	Orchestrator OrchestratorConfig  `yaml:"orchestrator"`
+	Alerts       AlertsConfig        `yaml:"alerts"`
 }
 
 // TLSConfig controls certificate provisioning.
@@ -76,8 +78,34 @@ type LoggingConfig struct {
 
 // AdminConfig governs the administrative HTTP interface.
 type AdminConfig struct {
-	ListenAddr     string `yaml:"listen_addr"`      // default ":8080"
-	SessionTTLHours int   `yaml:"session_ttl_hours"` // default 24
+	ListenAddr      string `yaml:"listen_addr"`      // default ":8080"
+	SessionTTLHours int    `yaml:"session_ttl_hours"` // default 24
+}
+
+// OrchestratorConfig controls the update orchestrator timeouts and behaviour.
+type OrchestratorConfig struct {
+	ImagePullTimeout   int `yaml:"image_pull_timeout"`   // seconds, default 300
+	HealthCheckTimeout int `yaml:"health_check_timeout"` // seconds per service, default 120
+	DBMigrationTimeout int `yaml:"db_migration_timeout"` // seconds, default 60
+	ApplyTimeout       int `yaml:"apply_timeout"`        // seconds total, default 600
+}
+
+// AlertsConfig controls alerting for service failures and critical events.
+type AlertsConfig struct {
+	Email   AlertEmailConfig   `yaml:"email"`
+	Webhook AlertWebhookConfig `yaml:"webhook"`
+}
+
+// AlertEmailConfig configures email-based alerts.
+type AlertEmailConfig struct {
+	Enabled    bool     `yaml:"enabled"`
+	Recipients []string `yaml:"recipients"`
+}
+
+// AlertWebhookConfig configures webhook-based alerts.
+type AlertWebhookConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	URL     string `yaml:"url"`
 }
 
 // ---------------------------------------------------------------------------

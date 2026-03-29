@@ -1,0 +1,15 @@
+package orchestrator
+
+import (
+	"fmt"
+	"os"
+)
+
+// readFileBytes reads a file and returns its contents.
+func readFileBytes(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read file %s: %w", path, err)
+	}
+	return data, nil
+}

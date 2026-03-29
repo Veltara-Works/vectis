@@ -17,6 +17,7 @@ import (
 
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/config"
+	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
@@ -36,6 +37,7 @@ type Server struct {
 	genDir       string // directory for generated config files
 	cfg          *config.VectisConfig
 	secrets      *config.VectisSecrets
+	orchClient   *orchestrator.Client
 
 	// Repositories
 	domains   *repository.DomainRepo
@@ -52,10 +54,12 @@ type Config struct {
 	CookieSecret string
 	Hostname     string
 	DKIMBasePath string
-	WebDir       string // path to static UI files (optional)
-	GenDir       string // path to generated config output directory
-	VectisCfg    *config.VectisConfig
-	VectisSecrets *config.VectisSecrets
+	WebDir            string // path to static UI files (optional)
+	GenDir            string // path to generated config output directory
+	VectisCfg         *config.VectisConfig
+	VectisSecrets     *config.VectisSecrets
+	OrchestratorURL   string // http://orchestrator:8081
+	OrchestratorToken string // bearer token for orchestrator internal API
 }
 
 // New creates a new API server with all routes registered.
@@ -72,10 +76,15 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		cfg:          cfg.VectisCfg,
 		secrets:      cfg.VectisSecrets,
 		domains:      repository.NewDomainRepo(db),
-		mailboxes: repository.NewMailboxRepo(db),
-		aliases:   repository.NewAliasRepo(db),
-		admins:    repository.NewAdminRepo(db),
-		audit:     repository.NewAuditRepo(db),
+		mailboxes:    repository.NewMailboxRepo(db),
+		aliases:      repository.NewAliasRepo(db),
+		admins:       repository.NewAdminRepo(db),
+		audit:        repository.NewAuditRepo(db),
+	}
+
+	// Initialize orchestrator client if URL and token are provided.
+	if cfg.OrchestratorURL != "" && cfg.OrchestratorToken != "" {
+		s.orchClient = orchestrator.NewClient(cfg.OrchestratorURL, cfg.OrchestratorToken)
 	}
 
 	s.router = s.buildRouter()
@@ -166,6 +175,13 @@ func (s *Server) buildRouter() chi.Router {
 			r.Post("/config/validate", s.handleValidateConfig)
 			r.Get("/config/diff", s.handleConfigDiff)
 			r.Post("/config/apply", s.handleConfigApply)
+
+			// Orchestrator proxy.
+			r.Post("/orchestrator/plan", s.handleOrchestratorPlan)
+			r.Post("/orchestrator/apply", s.handleOrchestratorApply)
+			r.Post("/orchestrator/rollback", s.handleOrchestratorRollback)
+			r.Get("/orchestrator/status", s.handleOrchestratorStatus)
+			r.Get("/orchestrator/history", s.handleOrchestratorHistory)
 
 			// System.
 			r.Get("/health/{service}", s.handleServiceHealth)

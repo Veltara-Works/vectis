@@ -9,6 +9,7 @@ secrets.yaml
 
 # Go build artifacts
 /vectis
+/orchestrator
 /bin/
 *.exe
 *.test

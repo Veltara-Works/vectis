@@ -53,6 +53,33 @@ services:
         max-size: "{{ .Logging.MaxSizeMB }}m"
         max-file: "{{ .Logging.MaxFiles }}"
 
+  orchestrator:
+    image: ghcr.io/veltara-works/vectis-orchestrator:latest
+    container_name: vectis-orchestrator
+    restart: unless-stopped
+    networks:
+      - vectis-orchestrator
+      - vectis-data
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/vectis:/etc/vectis:ro
+      - snapshots:/var/vectis/snapshots
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8081/internal/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: {{ .Logging.Driver }}
+      options:
+        max-size: "{{ .Logging.MaxSizeMB }}m"
+        max-file: "{{ .Logging.MaxFiles }}"
+
   postfix:
     image: ghcr.io/veltara-works/vectis-postfix:latest
     container_name: vectis-postfix
@@ -255,3 +282,4 @@ volumes:
   traefik-config:
   traefik-acme:
   acme-data:
+  snapshots:
