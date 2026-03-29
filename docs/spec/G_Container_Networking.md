@@ -59,7 +59,7 @@ Note: `vectis-frontend` is the only non-internal network because Traefik needs t
 | Postgres | | | ✓ | |
 | Valkey | | | ✓ | |
 | acme.sh | ✓ | | | |
-| Orchestrator | | | | ✓ |
+| Orchestrator | | | ✓ | ✓ |
 | ValidonX Agent | | | ✓ | |
 
 ---
@@ -79,7 +79,7 @@ This matrix shows which containers can reach which. "✓" means the two containe
 | **ClamAV** | | | | ✓ | | ✓ | — | | | | |
 | **Postgres** | | | ✓ | ✓ | ✓ | | | — | | | ✓ |
 | **Valkey** | | | ✓ | | | ✓ | | | — | | |
-| **Orch.** | | | ✓ | | | | | | | — | |
+| **Orch.** | | | ✓ | | | | | ✓ | ✓ | — | |
 | **ValidonX** | | | | | | | | ✓ | | | — |
 
 ---
@@ -90,9 +90,17 @@ This matrix shows which containers can reach which. "✓" means the two containe
 
 The Admin UI is a React SPA served as static files. It communicates exclusively with the Go API via HTTP. There is no reason for the UI container to have network access to the database or cache. If the UI container were compromised (e.g., via a supply chain attack on an npm dependency), the blast radius is limited to what the UI can do through the API — which is authenticated and rate-limited.
 
-### Why the Orchestrator has no data network access
+### Why the Orchestrator requires data network access
 
-The orchestrator controls containers via the Docker socket. It does not need to query the database or cache directly — it receives instructions from the Go API over the orchestrator network and manages containers at the Docker level. This means a compromised orchestrator cannot read mail data, query user credentials, or access session tokens. Its power is limited to container lifecycle operations (which is still significant, hence the bearer token authentication).
+The orchestrator requires `vectis-data` network access for Postgres advisory locks, crash recovery state queries, and `pg_dump`/`psql` snapshot operations. This is an acknowledged deviation from the original isolation design — the orchestrator's database access is limited to these operational functions and does not access mail entity data.
+
+Specifically, the orchestrator connects to Postgres for:
+- **Advisory lock** (`pg_advisory_lock(1)`): Ensures mutual exclusion during apply/rollback operations
+- **Crash recovery**: On restart, checks `orchestrator_history` for orphaned `running` status and marks as `failed`
+- **Snapshots**: Runs `pg_dump` before every apply and `psql` for rollback restore
+- **State persistence**: Records operation history in `orchestrator_history` table
+
+The orchestrator does not access mail entity tables (domains, mailboxes, aliases) or authentication tables (admins, sessions). Bearer token authentication on the internal API provides an additional security layer.
 
 ### Why Postfix reaches Postgres directly
 
@@ -242,6 +250,7 @@ services:
   orchestrator:
     networks:
       - vectis-orchestrator
+      - vectis-data          # Required for pg_dump, advisory locks, crash recovery
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
 

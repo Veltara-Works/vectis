@@ -250,7 +250,108 @@ CREATE INDEX idx_audit_resource ON audit_log(resource_type, resource_id);
 
 ---
 
-## B.9 Schema Conventions Summary
+## B.9 backup_jobs (Phase 1)
+
+Tracks async backup and restore operations. Created in migration `000002_phase1.up.sql`.
+
+```sql
+CREATE TABLE backup_jobs (
+    id              UUID PRIMARY KEY,
+    action          VARCHAR(20) NOT NULL,          -- 'create' or 'restore'
+    status          VARCHAR(20) NOT NULL,          -- 'pending', 'running', 'completed', 'failed'
+    backup_path     VARCHAR(500),                  -- path to backup archive
+    progress        INTEGER NOT NULL DEFAULT 0,    -- percentage 0-100
+    current_step    VARCHAR(100),                  -- e.g. "Dumping database", "Copying mail data"
+    error_message   TEXT,
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at    TIMESTAMPTZ,
+    triggered_by    UUID REFERENCES admins(id) ON DELETE SET NULL
+);
+
+CREATE INDEX idx_backup_jobs_started ON backup_jobs(started_at DESC);
+```
+
+### Notes
+
+- `action`: Either `create` (backup) or `restore`. Tracks the type of operation.
+- `progress`: Integer 0–100 updated as each backup step completes. Clients poll `GET /backup/status/:jobId` for progress.
+- `current_step`: Human-readable description of the current phase (e.g., "Dumping database", "Archiving mail data").
+- `triggered_by`: NULL if triggered by CLI or scheduled backup; admin UUID if triggered via API.
+
+---
+
+## B.10 alert_history (Phase 1)
+
+Tracks sent alerts for deduplication. The monitor checks this table before sending alerts to avoid repeated notifications.
+
+```sql
+CREATE TABLE alert_history (
+    id              UUID PRIMARY KEY,
+    severity        VARCHAR(20) NOT NULL,          -- 'info', 'warn', 'error', 'critical'
+    service         VARCHAR(30) NOT NULL,          -- service name or 'system'
+    message         TEXT NOT NULL,
+    dedup_key       VARCHAR(255) NOT NULL,         -- key for deduplication (e.g. "postfix:unhealthy")
+    sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at     TIMESTAMPTZ                    -- NULL = still active
+);
+
+CREATE INDEX idx_alert_history_dedup ON alert_history(dedup_key, sent_at DESC);
+CREATE INDEX idx_alert_history_active ON alert_history(resolved_at) WHERE resolved_at IS NULL;
+```
+
+### Notes
+
+- `dedup_key`: Combination of service + severity (e.g., `postfix:error`). Same dedup_key won't be sent within the 15-minute dedup window.
+- `resolved_at`: NULL while the alert condition is active. Set when the condition clears, triggering a recovery notification.
+- Partial index `idx_alert_history_active` filters only unresolved alerts for fast lookup.
+- CRITICAL severity alerts bypass deduplication and are always sent immediately.
+
+---
+
+## B.11 validonx_cache (Phase 1)
+
+Caches ValidonX license entitlements for the 30-day grace period when the ValidonX API is unreachable.
+
+```sql
+CREATE TABLE validonx_cache (
+    id              UUID PRIMARY KEY,
+    tenant_id       VARCHAR(255) NOT NULL,
+    subscription_id VARCHAR(255),
+    license_data    JSONB NOT NULL,                -- cached license resolve response
+    features        JSONB,                         -- cached feature flags
+    status          VARCHAR(30) NOT NULL,          -- 'active', 'trialing', 'paused', 'canceled'
+    last_check_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,          -- grace period expiry
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX idx_validonx_cache_tenant ON validonx_cache(tenant_id);
+```
+
+### Notes
+
+- `tenant_id`: Unique per installation. One cache row per Vectis instance.
+- `license_data`: Full JSON response from `POST /v1/licensing/resolve`, cached for offline use.
+- `features`: Cached feature flags (e.g., `{"custom_branding": true, "advanced_spam": true}`).
+- `expires_at`: 30 days from `last_check_at`. After expiry, the system falls back to free-tier features.
+- `status`: Mirrors the subscription state from ValidonX (active, trialing, paused, canceled).
+
+---
+
+## B.12 admins.recovery_email (Phase 1)
+
+Added in `000002_phase1.up.sql` for the admin password recovery flow:
+
+```sql
+ALTER TABLE admins ADD COLUMN IF NOT EXISTS recovery_email VARCHAR(255);
+```
+
+This optional column stores a backup email address for password reset. When set, the API can send a password reset token to this address.
+
+---
+
+## B.13 Schema Conventions Summary
 
 | Convention | Decision | Rationale |
 |------------|----------|-----------|
