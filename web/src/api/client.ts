@@ -55,6 +55,8 @@ export const api = {
     }>>('GET', `/mailboxes?domain_id=${domainId}`),
   createMailbox: (domain_id: string, local_part: string, password: string, display_name?: string, quota_mb?: number) =>
     request<{ id: string }>('POST', '/mailboxes', { domain_id, local_part, password, display_name, quota_mb }),
+  updateMailbox: (id: string, updates: { password?: string; display_name?: string; quota_mb?: number; active?: boolean }) =>
+    request<{ id: string }>('PATCH', `/mailboxes/${id}`, updates),
   deleteMailbox: (id: string) =>
     request<void>('DELETE', `/mailboxes/${id}`, undefined),
 
