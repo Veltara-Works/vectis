@@ -8,6 +8,7 @@ secrets.yaml
 /var/
 
 # Go build artifacts
+/vectis
 /bin/
 *.exe
 *.test
