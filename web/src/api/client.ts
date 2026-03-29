@@ -67,4 +67,7 @@ export const api = {
   createAlias: (domain_id: string, source_local_part: string, destination: string) =>
     request<{ id: string }>('POST', '/aliases', { domain_id, source_local_part, destination }),
   deleteAlias: (id: string) => request<void>('DELETE', `/aliases/${id}`),
+
+  // Config
+  applyConfig: () => request<{ message: string }>('POST', '/config/apply'),
 }

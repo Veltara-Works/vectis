@@ -90,16 +90,24 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// authMiddleware validates the session cookie or Authorization header.
+// authMiddleware validates the HMAC-signed session cookie or Authorization header.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessionID := extractSessionID(r)
-		if sessionID == "" {
+		signedToken := extractSignedToken(r)
+		if signedToken == "" {
 			respondError(w, r, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication required")
 			return
 		}
 
-		adminID, err := s.sessions.ValidateSession(r.Context(), sessionID)
+		// Verify HMAC signature and extract raw token.
+		rawToken, err := s.sessions.VerifyAndExtractToken(signedToken)
+		if err != nil {
+			respondError(w, r, http.StatusUnauthorized, "SESSION_INVALID", "Invalid session token")
+			return
+		}
+
+		// Validate session by hashing token and looking up in Valkey.
+		sessionID, adminID, err := s.sessions.ValidateSession(r.Context(), rawToken)
 		if err != nil {
 			respondError(w, r, http.StatusUnauthorized, "SESSION_INVALID", "Session expired or invalid")
 			return
@@ -111,14 +119,14 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// extractSessionID gets the session ID from the cookie or Authorization header.
-func extractSessionID(r *http.Request) string {
+// extractSignedToken gets the signed token from the cookie or Authorization header.
+func extractSignedToken(r *http.Request) string {
 	// Try cookie first.
 	if cookie, err := r.Cookie("vectis_session"); err == nil && cookie.Value != "" {
 		return cookie.Value
 	}
 
-	// Fall back to Bearer token.
+	// Fall back to Bearer token (also expected to be HMAC-signed).
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}

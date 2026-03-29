@@ -28,9 +28,6 @@ certificatesResolvers:
 {{ end }}
 
 providers:
-  docker:
-    endpoint: "unix:///var/run/docker.sock"
-    exposedByDefault: false
   file:
     directory: /etc/traefik/dynamic
     watch: true

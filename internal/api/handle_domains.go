@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -8,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Veltara-Works/vectis/internal/dkim"
+	"github.com/Veltara-Works/vectis/internal/engine"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
@@ -37,13 +39,30 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 		activeFilter = &f
 	}
 
-	domains, err := s.domains.List(r.Context(), activeFilter)
+	page, err := parsePagination(r)
+	if err != nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_PAGINATION", err.Error())
+		return
+	}
+
+	domains, err := s.domains.ListPaginated(r.Context(), activeFilter, repository.PaginationParams{
+		Cursor: page.Cursor,
+		Limit:  page.Limit,
+	})
 	if err != nil {
 		s.logger.Error("list domains failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list domains")
 		return
 	}
-	respond(w, r, http.StatusOK, domains)
+
+	hasMore := len(domains) > page.Limit
+	var nextCursor string
+	if hasMore {
+		domains = domains[:page.Limit]
+		nextCursor = encodeCursor(domains[page.Limit-1].CreatedAt)
+	}
+
+	respondPaginated(w, r, http.StatusOK, domains, nextCursor, hasMore)
 }
 
 func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +122,11 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 			// Refresh domain to include DKIM fields.
 			domain, _ = s.domains.GetByID(r.Context(), domain.ID)
 		}
+	}
+
+	// ADR-023: Regenerate Rspamd DKIM signing config and reload Rspamd.
+	if s.cfg != nil && s.secrets != nil && s.genDir != "" {
+		s.regenerateRspamdDKIMConfig()
 	}
 
 	adminID := getAdminID(r.Context())
@@ -222,9 +246,55 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ADR-023: Regenerate Rspamd DKIM config after domain removal.
+	if s.cfg != nil && s.secrets != nil && s.genDir != "" {
+		s.regenerateRspamdDKIMConfig()
+	}
+
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "domain.delete", "domain", &domainID, nil, &ip)
 
 	respond(w, r, http.StatusOK, map[string]string{"message": "Domain deleted"})
+}
+
+// regenerateRspamdDKIMConfig regenerates the Rspamd DKIM signing config from
+// the current domain list and triggers an Rspamd reload (ADR-023).
+func (s *Server) regenerateRspamdDKIMConfig() {
+	ctx := context.Background()
+	domains, err := s.domains.List(ctx, nil)
+	if err != nil {
+		s.logger.Warn("failed to list domains for DKIM config regeneration", "error", err)
+		return
+	}
+
+	data := engine.NewTemplateData(s.cfg, s.secrets, domains)
+	files, err := engine.Generate(data)
+	if err != nil {
+		s.logger.Warn("failed to generate DKIM config", "error", err)
+		return
+	}
+
+	// Write only the DKIM signing config file.
+	for _, f := range files {
+		if f.RelPath == "rspamd/dkim_signing.conf" {
+			if err := engine.WriteFiles(s.genDir, []engine.GeneratedFile{f}); err != nil {
+				s.logger.Warn("failed to write DKIM signing config", "error", err)
+				return
+			}
+			break
+		}
+	}
+
+	// Reload Rspamd.
+	results := engine.ExecuteActions([]engine.ServiceAction{
+		{Service: "rspamd", Action: "reload", Reason: "DKIM config updated"},
+	})
+	for _, r := range results {
+		if !r.Success {
+			s.logger.Warn("rspamd reload failed after DKIM config update", "error", r.Error)
+		} else {
+			s.logger.Info("rspamd reloaded after DKIM config update")
+		}
+	}
 }

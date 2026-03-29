@@ -5,11 +5,27 @@ export default function DashboardPage() {
   const [health, setHealth] = useState<{ status: string; services: Record<string, string> } | null>(null)
   const [domains, setDomains] = useState<Array<{ id: string; name: string; active: boolean }>>([])
   const [error, setError] = useState('')
+  const [configApplying, setConfigApplying] = useState(false)
+  const [configMessage, setConfigMessage] = useState('')
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setError('Failed to load health'))
     api.listDomains().then(setDomains).catch(() => {})
   }, [])
+
+  const handleConfigApply = async () => {
+    setConfigApplying(true)
+    setConfigMessage('')
+    setError('')
+    try {
+      const result = await api.applyConfig()
+      setConfigMessage(result.message || 'Configuration applied successfully')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to apply configuration')
+    } finally {
+      setConfigApplying(false)
+    }
+  }
 
   const totalMailboxes = domains.length // Simplified — real count would come from API
 
@@ -38,6 +54,15 @@ export default function DashboardPage() {
           <div className="stat-label">Active Domains</div>
           <div className="stat-value">{domains.filter(d => d.active).length}</div>
         </div>
+      </div>
+
+      <div className="card">
+        <h3 className="mb-1">Configuration</h3>
+        <p className="text-muted mb-1">Apply pending configuration changes to Postfix, Dovecot, and Rspamd.</p>
+        {configMessage && <div className="alert alert-success">{configMessage}</div>}
+        <button className="btn" onClick={handleConfigApply} disabled={configApplying}>
+          {configApplying ? 'Applying...' : 'Reload Config'}
+        </button>
       </div>
 
       {health && (

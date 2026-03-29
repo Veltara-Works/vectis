@@ -65,7 +65,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create session.
-	_, session, err := s.sessions.CreateSession(r.Context(), admin.ID, clientIP(r), r.UserAgent())
+	token, session, err := s.sessions.CreateSession(r.Context(), admin.ID, clientIP(r), r.UserAgent())
 	if err != nil {
 		s.logger.Error("create session failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create session")
@@ -75,10 +75,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Update last login.
 	s.admins.UpdateLastLogin(r.Context(), admin.ID)
 
-	// Set session cookie.
+	// Set HMAC-signed session cookie. The cookie value is "token.signature"
+	// per ADR-020 (signed cookies) and Spec B.6 (token as cookie value).
+	signedToken := s.sessions.SignToken(token)
 	http.SetCookie(w, &http.Cookie{
 		Name:     "vectis_session",
-		Value:    session.ID,
+		Value:    signedToken,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,

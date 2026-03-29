@@ -123,6 +123,40 @@ func (r *AliasRepo) ListByDomain(ctx context.Context, domainID string) ([]Alias,
 	return aliases, nil
 }
 
+// ListByDomainPaginated returns aliases for a domain with cursor-based pagination.
+// Results are ordered by created_at DESC. Fetches page.Limit+1 rows so the caller can detect has_more.
+func (r *AliasRepo) ListByDomainPaginated(ctx context.Context, domainID string, page PaginationParams) ([]Alias, error) {
+	cols := `id, domain_id, source_local_part, destination, active, created_at, updated_at`
+	query := fmt.Sprintf(`SELECT %s FROM aliases WHERE domain_id = $1`, cols)
+	args := []any{domainID}
+	argIdx := 2
+
+	if page.Cursor != nil {
+		query += fmt.Sprintf(` AND created_at < $%d`, argIdx)
+		args = append(args, *page.Cursor)
+		argIdx++
+	}
+
+	query += fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d`, argIdx)
+	args = append(args, page.Limit+1)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list aliases paginated: %w", err)
+	}
+	defer rows.Close()
+
+	var aliases []Alias
+	for rows.Next() {
+		var a Alias
+		if err := rows.Scan(&a.ID, &a.DomainID, &a.SourceLocalPart, &a.Destination, &a.Active, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan alias: %w", err)
+		}
+		aliases = append(aliases, a)
+	}
+	return aliases, nil
+}
+
 // Update modifies an alias's mutable fields.
 func (r *AliasRepo) Update(ctx context.Context, id string, input AliasUpdate) (*Alias, error) {
 	setClauses := []string{}

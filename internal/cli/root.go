@@ -86,12 +86,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Start API server.
 	webDir, _ := cmd.Flags().GetString("web-dir")
 	srv := api.New(pool, vk, api.Config{
-		ListenAddr:   cfg.Admin.ListenAddr,
-		SessionTTL:   cfg.Admin.SessionTTLHours,
-		CookieSecret: secrets.API.Secret,
-		Hostname:     cfg.Hostname,
-		DKIMBasePath: secrets.DKIM.KeyBasePath,
-		WebDir:       webDir,
+		ListenAddr:    cfg.Admin.ListenAddr,
+		SessionTTL:    cfg.Admin.SessionTTLHours,
+		CookieSecret:  secrets.API.Secret,
+		Hostname:      cfg.Hostname,
+		DKIMBasePath:  secrets.DKIM.KeyBasePath,
+		WebDir:        webDir,
+		GenDir:        "/var/vectis/generated",
+		VectisCfg:     cfg,
+		VectisSecrets: secrets,
 	}, logger)
 
 	// Graceful shutdown.
@@ -113,6 +116,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// isQuiet returns true if the --quiet flag is set.
+func isQuiet(cmd *cobra.Command) bool {
+	q, _ := cmd.Flags().GetBool("quiet")
+	return q
+}
+
+// isVerbose returns true if the --verbose flag is set.
+func isVerbose(cmd *cobra.Command) bool {
+	v, _ := cmd.Flags().GetBool("verbose")
+	return v
 }
 
 func init() {

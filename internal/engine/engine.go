@@ -30,9 +30,10 @@ type TemplateData struct {
 	Admin    config.AdminConfig
 
 	// From secrets.yaml
-	Database config.DatabaseSecrets
-	Valkey   config.ValkeySecrets
-	API      config.APISecrets
+	Database   config.DatabaseSecrets
+	Valkey     config.ValkeySecrets
+	API        config.APISecrets
+	Cloudflare *config.CloudflareSecrets
 
 	// From Postgres (queried at generation time)
 	Domains []repository.Domain
@@ -49,10 +50,11 @@ func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, do
 		Dovecot:  cfg.Dovecot,
 		Logging:  cfg.Logging,
 		Admin:    cfg.Admin,
-		Database: secrets.Database,
-		Valkey:   secrets.Valkey,
-		API:      secrets.API,
-		Domains:  domains,
+		Database:   secrets.Database,
+		Valkey:     secrets.Valkey,
+		API:        secrets.API,
+		Cloudflare: secrets.Cloudflare,
+		Domains:    domains,
 	}
 }
 
@@ -125,7 +127,7 @@ func WriteFiles(outputDir string, files []GeneratedFile) error {
 			return fmt.Errorf("create directory for %s: %w", f.RelPath, err)
 		}
 
-		if err := os.WriteFile(outPath, f.Content, 0644); err != nil {
+		if err := os.WriteFile(outPath, f.Content, 0600); err != nil {
 			return fmt.Errorf("write %s: %w", f.RelPath, err)
 		}
 	}

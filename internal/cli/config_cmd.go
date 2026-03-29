@@ -1,12 +1,17 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/Veltara-Works/vectis/internal/config"
-	"github.com/spf13/cobra"
+	"github.com/Veltara-Works/vectis/internal/engine"
+	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
 // configCmd is the parent command for configuration-related subcommands.
@@ -29,6 +34,39 @@ Exit codes:
   2  Validation errors (invalid field values)`,
 	RunE: runValidate,
 }
+
+// diffCmd compares generated configs against what's on disk.
+var diffCmd = &cobra.Command{
+	Use:   "diff",
+	Short: "Show pending configuration changes",
+	Long: `Load config.yaml, secrets.yaml, and query Postgres for domains,
+generate expected config files, and compare against what's currently
+on disk at the output directory.
+
+Exit codes:
+  0  No changes pending
+  1  Changes pending
+  2  Validation error`,
+	RunE: runDiff,
+}
+
+// applyCmd generates and writes config files, then reloads/restarts services.
+var applyCmd = &cobra.Command{
+	Use:   "apply",
+	Short: "Apply configuration changes",
+	Long: `Load config.yaml, secrets.yaml, and query Postgres for domains,
+generate config files, write them to the output directory, and
+reload/restart services as needed.
+
+Exit codes:
+  0  Success (all files written, all services reloaded)
+  1  Partial failure (some service actions failed)
+  2  Validation error`,
+	RunE: runApply,
+}
+
+// defaultOutputDir is the default directory for generated config files.
+const defaultOutputDir = "/var/vectis/generated"
 
 // validateResult is the JSON-serialisable output of the validate command.
 type validateResult struct {
@@ -324,7 +362,295 @@ func validateSecrets(secrets *config.VectisSecrets) []validateError {
 	return errs
 }
 
+// ---------------------------------------------------------------------------
+// config diff
+// ---------------------------------------------------------------------------
+
+// diffResult is the JSON-serialisable output of the diff command.
+type diffResult struct {
+	HasChanges bool                  `json:"has_changes"`
+	Files      []engine.FileDiff     `json:"files"`
+	Actions    []engine.ServiceAction `json:"actions"`
+}
+
+func runDiff(cmd *cobra.Command, args []string) error {
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	outputDir, _ := cmd.Flags().GetString("output-dir")
+
+	cfg, secrets, err := loadConfigAndSecrets(cmd)
+	if err != nil {
+		return err
+	}
+
+	// Validate config.
+	var valErrs []validateError
+	valErrs = append(valErrs, validateConfig(cfg)...)
+	valErrs = append(valErrs, validateSecrets(secrets)...)
+	if len(valErrs) > 0 {
+		if jsonOutput {
+			result := validateResult{Valid: false, Errors: valErrs}
+			out, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(out))
+		} else {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Configuration has %d validation error(s):\n", len(valErrs))
+			for _, e := range valErrs {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  - %s: %s\n", e.Field, e.Message)
+			}
+		}
+		os.Exit(2)
+		return nil
+	}
+
+	// Query domains from Postgres.
+	domains, err := fetchDomains(cmd)
+	if err != nil {
+		return err
+	}
+
+	// Generate expected configs.
+	data := engine.NewTemplateData(cfg, secrets, domains)
+	files, err := engine.Generate(data)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: template generation failed: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+
+	// Compare against disk.
+	diffs, err := engine.DiffFiles(outputDir, files)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+
+	// Determine service actions.
+	actions := engine.DetermineActions(diffs)
+
+	hasChanges := len(diffs) > 0
+
+	if jsonOutput {
+		result := diffResult{
+			HasChanges: hasChanges,
+			Files:      diffs,
+			Actions:    actions,
+		}
+		out, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Fprintln(cmd.OutOrStdout(), string(out))
+	} else {
+		if !hasChanges {
+			fmt.Fprintln(cmd.OutOrStdout(), "No configuration changes pending.")
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "%d file(s) changed:\n", len(diffs))
+			for _, d := range diffs {
+				fmt.Fprintf(cmd.OutOrStdout(), "  [%s] %s\n", d.Status, d.RelPath)
+			}
+			fmt.Fprintln(cmd.OutOrStdout())
+			fmt.Fprintln(cmd.OutOrStdout(), "Service actions required:")
+			for _, a := range actions {
+				if a.Action == "none" {
+					continue
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s: %s", a.Service, a.Action)
+				if a.Reason != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), " (due to: %s)", a.Reason)
+				}
+				fmt.Fprintln(cmd.OutOrStdout())
+			}
+		}
+	}
+
+	if hasChanges {
+		os.Exit(1)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// config apply
+// ---------------------------------------------------------------------------
+
+// applyResult is the JSON-serialisable output of the apply command.
+type applyResult struct {
+	FilesWritten int                    `json:"files_written"`
+	Diffs        []engine.FileDiff      `json:"diffs"`
+	Actions      []engine.ServiceAction `json:"actions"`
+	Results      []engine.ReloadResult  `json:"results,omitempty"`
+	Success      bool                   `json:"success"`
+}
+
+func runApply(cmd *cobra.Command, args []string) error {
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	outputDir, _ := cmd.Flags().GetString("output-dir")
+
+	// --dry-run is equivalent to diff.
+	if dryRun {
+		return runDiff(cmd, args)
+	}
+
+	cfg, secrets, err := loadConfigAndSecrets(cmd)
+	if err != nil {
+		return err
+	}
+
+	// Validate config.
+	var valErrs []validateError
+	valErrs = append(valErrs, validateConfig(cfg)...)
+	valErrs = append(valErrs, validateSecrets(secrets)...)
+	if len(valErrs) > 0 {
+		if jsonOutput {
+			result := validateResult{Valid: false, Errors: valErrs}
+			out, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(out))
+		} else {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Configuration has %d validation error(s):\n", len(valErrs))
+			for _, e := range valErrs {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  - %s: %s\n", e.Field, e.Message)
+			}
+		}
+		os.Exit(2)
+		return nil
+	}
+
+	// Query domains from Postgres.
+	domains, err := fetchDomains(cmd)
+	if err != nil {
+		return err
+	}
+
+	// Generate expected configs.
+	data := engine.NewTemplateData(cfg, secrets, domains)
+	files, err := engine.Generate(data)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: template generation failed: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+
+	// Diff first to know what changed.
+	diffs, err := engine.DiffFiles(outputDir, files)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+
+	// Write files.
+	if err := engine.WriteFiles(outputDir, files); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: write failed: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+
+	// Determine and execute service actions.
+	actions := engine.DetermineActions(diffs)
+	results := engine.ExecuteActions(actions)
+
+	// Check for partial failures.
+	allSuccess := true
+	for _, r := range results {
+		if !r.Success {
+			allSuccess = false
+			break
+		}
+	}
+
+	if jsonOutput {
+		result := applyResult{
+			FilesWritten: len(files),
+			Diffs:        diffs,
+			Actions:      actions,
+			Results:      results,
+			Success:      allSuccess,
+		}
+		out, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Fprintln(cmd.OutOrStdout(), string(out))
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d config file(s) to %s\n", len(files), outputDir)
+		if len(diffs) > 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "%d file(s) changed:\n", len(diffs))
+			for _, d := range diffs {
+				fmt.Fprintf(cmd.OutOrStdout(), "  [%s] %s\n", d.Status, d.RelPath)
+			}
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), "No files changed.")
+		}
+
+		if len(results) > 0 {
+			fmt.Fprintln(cmd.OutOrStdout())
+			fmt.Fprintln(cmd.OutOrStdout(), "Service actions:")
+			for _, r := range results {
+				status := "OK"
+				if !r.Success {
+					status = "FAILED"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s %s: %s\n", r.Service, r.Action, status)
+				if r.Error != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "    Error: %s\n", r.Error)
+				}
+			}
+		}
+
+		if allSuccess {
+			fmt.Fprintln(cmd.OutOrStdout(), "\nConfiguration applied successfully.")
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), "\nConfiguration applied with errors.")
+		}
+	}
+
+	if !allSuccess {
+		os.Exit(1)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// loadConfigAndSecrets loads both config.yaml and secrets.yaml from the --config-dir flag.
+func loadConfigAndSecrets(cmd *cobra.Command) (*config.VectisConfig, *config.VectisSecrets, error) {
+	configDir, err := cmd.Flags().GetString("config-dir")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	cfg, secrets, err := config.LoadAll(configDir)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+	}
+	return cfg, secrets, nil
+}
+
+// fetchDomains connects to the database and retrieves all domains.
+func fetchDomains(cmd *cobra.Command) ([]repository.Domain, error) {
+	pool, _, cleanup := connectDB(cmd)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	repo := repository.NewDomainRepo(pool)
+	domains, err := repo.List(ctx, nil)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: failed to list domains: %s\n", err)
+		os.Exit(1)
+	}
+	return domains, nil
+}
+
 func init() {
+	// Diff flags.
+	diffCmd.Flags().String("output-dir", defaultOutputDir, "Output directory for generated config files")
+
+	// Apply flags.
+	applyCmd.Flags().String("output-dir", defaultOutputDir, "Output directory for generated config files")
+	applyCmd.Flags().Bool("dry-run", false, "Show what would change without applying (equivalent to diff)")
+
 	configCmd.AddCommand(validateCmd)
+	configCmd.AddCommand(diffCmd)
+	configCmd.AddCommand(applyCmd)
 	RootCmd.AddCommand(configCmd)
 }

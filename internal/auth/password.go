@@ -66,3 +66,15 @@ func VerifyPassword(password, encoded string) (bool, error) {
 
 	return subtle.ConstantTimeCompare(existingHash, computedHash) == 1, nil
 }
+
+// ValidatePasswordStrength checks that a password meets minimum complexity requirements.
+// Returns nil if valid, or an error describing the issue.
+func ValidatePasswordStrength(password string) error {
+	if len(password) < 8 {
+		return fmt.Errorf("password must be at least 8 characters long")
+	}
+	if len(password) > 128 {
+		return fmt.Errorf("password must be at most 128 characters long")
+	}
+	return nil
+}

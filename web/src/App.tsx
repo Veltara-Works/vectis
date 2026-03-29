@@ -5,6 +5,7 @@ import LoginPage from './pages/Login.tsx'
 import DashboardPage from './pages/Dashboard.tsx'
 import DomainsPage from './pages/Domains.tsx'
 import MailboxesPage from './pages/Mailboxes.tsx'
+import AliasesPage from './pages/Aliases.tsx'
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null)
@@ -27,6 +28,7 @@ export default function App() {
     { path: '/admin', label: 'Dashboard' },
     { path: '/admin/domains', label: 'Domains' },
     { path: '/admin/mailboxes', label: 'Mailboxes' },
+    { path: '/admin/aliases', label: 'Aliases' },
   ]
 
   return (
@@ -49,6 +51,7 @@ export default function App() {
           <Route path="/admin" element={<DashboardPage />} />
           <Route path="/admin/domains" element={<DomainsPage />} />
           <Route path="/admin/mailboxes" element={<MailboxesPage />} />
+          <Route path="/admin/aliases" element={<AliasesPage />} />
           <Route path="*" element={<Navigate to="/admin" />} />
         </Routes>
       </main>
