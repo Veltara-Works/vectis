@@ -85,17 +85,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Start API server.
 	webDir, _ := cmd.Flags().GetString("web-dir")
+	orchURL := "http://orchestrator:8081"
+	if envURL := os.Getenv("VECTIS_ORCHESTRATOR_URL"); envURL != "" {
+		orchURL = envURL
+	}
+
 	srv := api.New(pool, vk, api.Config{
-		ListenAddr:    cfg.Admin.ListenAddr,
-		SessionTTL:    cfg.Admin.SessionTTLHours,
-		CookieSecret:  secrets.API.Secret,
-		Hostname:      cfg.Hostname,
-		DKIMBasePath:  secrets.DKIM.KeyBasePath,
-		WebDir:        webDir,
-		GenDir:        "/var/vectis/generated",
-		VectisCfg:     cfg,
-		VectisSecrets: secrets,
+		ListenAddr:        cfg.Admin.ListenAddr,
+		SessionTTL:        cfg.Admin.SessionTTLHours,
+		CookieSecret:      secrets.API.Secret,
+		Hostname:          cfg.Hostname,
+		DKIMBasePath:      secrets.DKIM.KeyBasePath,
+		WebDir:            webDir,
+		GenDir:            "/var/vectis/generated",
+		VectisCfg:         cfg,
+		VectisSecrets:     secrets,
+		OrchestratorURL:   orchURL,
+		OrchestratorToken: secrets.Orchestrator.Token,
 	}, logger)
+
+	// Start background health monitor.
+	srv.StartMonitor()
 
 	// Graceful shutdown.
 	errCh := make(chan error, 1)

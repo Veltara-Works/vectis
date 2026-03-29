@@ -16,7 +16,10 @@ import (
 	"github.com/valkey-io/valkey-go"
 
 	"github.com/Veltara-Works/vectis/internal/auth"
+	"github.com/Veltara-Works/vectis/internal/backup"
 	"github.com/Veltara-Works/vectis/internal/config"
+	"github.com/Veltara-Works/vectis/internal/monitor"
+	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
@@ -36,6 +39,7 @@ type Server struct {
 	genDir       string // directory for generated config files
 	cfg          *config.VectisConfig
 	secrets      *config.VectisSecrets
+	orchClient   *orchestrator.Client
 
 	// Repositories
 	domains   *repository.DomainRepo
@@ -43,6 +47,10 @@ type Server struct {
 	aliases   *repository.AliasRepo
 	admins    *repository.AdminRepo
 	audit     *repository.AuditRepo
+	alerts    *repository.AlertRepo
+
+	// Background services
+	monitor *monitor.Monitor
 }
 
 // Config holds API server configuration.
@@ -52,10 +60,12 @@ type Config struct {
 	CookieSecret string
 	Hostname     string
 	DKIMBasePath string
-	WebDir       string // path to static UI files (optional)
-	GenDir       string // path to generated config output directory
-	VectisCfg    *config.VectisConfig
-	VectisSecrets *config.VectisSecrets
+	WebDir            string // path to static UI files (optional)
+	GenDir            string // path to generated config output directory
+	VectisCfg         *config.VectisConfig
+	VectisSecrets     *config.VectisSecrets
+	OrchestratorURL   string // http://orchestrator:8081
+	OrchestratorToken string // bearer token for orchestrator internal API
 }
 
 // New creates a new API server with all routes registered.
@@ -72,10 +82,16 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		cfg:          cfg.VectisCfg,
 		secrets:      cfg.VectisSecrets,
 		domains:      repository.NewDomainRepo(db),
-		mailboxes: repository.NewMailboxRepo(db),
-		aliases:   repository.NewAliasRepo(db),
-		admins:    repository.NewAdminRepo(db),
-		audit:     repository.NewAuditRepo(db),
+		mailboxes:    repository.NewMailboxRepo(db),
+		aliases:      repository.NewAliasRepo(db),
+		admins:       repository.NewAdminRepo(db),
+		audit:        repository.NewAuditRepo(db),
+		alerts:       repository.NewAlertRepo(db),
+	}
+
+	// Initialize orchestrator client if URL and token are provided.
+	if cfg.OrchestratorURL != "" && cfg.OrchestratorToken != "" {
+		s.orchClient = orchestrator.NewClient(cfg.OrchestratorURL, cfg.OrchestratorToken)
 	}
 
 	s.router = s.buildRouter()
@@ -99,15 +115,72 @@ func (s *Server) Start() error {
 	return nil
 }
 
+// StartMonitor initialises and starts the background health monitor. It
+// should be called after the server is constructed but before Start().
+func (s *Server) StartMonitor() {
+	alerter := monitor.NewAlerter(
+		s.alerts,
+		s.cfg.Alerts.Email,
+		s.cfg.Alerts.Webhook,
+		s.hostname,
+		s.logger.With("component", "alerter"),
+	)
+
+	monCfg := monitor.DefaultConfig()
+	if s.dkimBasePath != "" {
+		// Certs directory sits alongside the DKIM key base path.
+		monCfg.CertDir = s.dkimBasePath + "/../certs"
+	}
+
+	s.monitor = monitor.New(s.db, s.vk, alerter, monCfg, s.logger.With("component", "monitor"))
+	s.monitor.Start()
+}
+
+// StopMonitor stops the background health monitor if it is running.
+func (s *Server) StopMonitor() {
+	if s.monitor != nil {
+		s.monitor.Stop()
+	}
+}
+
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("shutting down API server")
+	s.StopMonitor()
 	return s.httpServer.Shutdown(ctx)
 }
 
 // Handler returns the HTTP handler for testing.
 func (s *Server) Handler() http.Handler {
 	return s.router
+}
+
+// backupManager creates a backup.Manager from the server's config and secrets.
+// Returns nil if the required database or secrets are not available.
+func (s *Server) backupManager() *backup.Manager {
+	if s.db == nil || s.secrets == nil {
+		return nil
+	}
+
+	cfg := backup.DefaultConfig()
+	cfg.DBHost = s.secrets.Database.Host
+	cfg.DBPort = s.secrets.Database.Port
+	cfg.DBName = s.secrets.Database.Name
+	cfg.DBUser = s.secrets.Database.APIUser
+	cfg.DBPassword = s.secrets.Database.APIPassword
+	if s.secrets.DKIM.KeyBasePath != "" {
+		cfg.DKIMDir = s.secrets.DKIM.KeyBasePath
+	}
+
+	// Encryption key for backup archives. Use dedicated key if set, otherwise
+	// fall back to the API secret so encryption is on by default.
+	if s.secrets.API.BackupEncryptionKey != "" {
+		cfg.EncryptionKey = s.secrets.API.BackupEncryptionKey
+	} else if s.secrets.API.Secret != "" {
+		cfg.EncryptionKey = s.secrets.API.Secret
+	}
+
+	return backup.NewManager(s.db, s.logger.With("component", "backup"), cfg)
 }
 
 func (s *Server) buildRouter() chi.Router {
@@ -161,16 +234,41 @@ func (s *Server) buildRouter() chi.Router {
 			r.Patch("/aliases/{aliasID}", s.handleUpdateAlias)
 			r.Delete("/aliases/{aliasID}", s.handleDeleteAlias)
 
+			// Admins.
+			r.Get("/admins", s.handleListAdmins)
+			r.Post("/admins", s.handleCreateAdmin)
+			r.Delete("/admins/{adminID}", s.handleDeleteAdmin)
+
+			// Audit log.
+			r.Get("/audit", s.handleListAudit)
+
 			// Config management.
 			r.Get("/config", s.handleGetConfig)
 			r.Post("/config/validate", s.handleValidateConfig)
 			r.Get("/config/diff", s.handleConfigDiff)
 			r.Post("/config/apply", s.handleConfigApply)
 
+			// Orchestrator proxy.
+			r.Post("/orchestrator/plan", s.handleOrchestratorPlan)
+			r.Post("/orchestrator/apply", s.handleOrchestratorApply)
+			r.Post("/orchestrator/rollback", s.handleOrchestratorRollback)
+			r.Get("/orchestrator/status", s.handleOrchestratorStatus)
+			r.Get("/orchestrator/history", s.handleOrchestratorHistory)
+
 			// System.
 			r.Get("/health/{service}", s.handleServiceHealth)
 			r.Get("/logs/{service}", s.handleServiceLogs)
 			r.Get("/metrics", s.handleMetrics)
+
+			// Alerts.
+			r.Get("/alerts", s.handleListAlerts)
+			r.Post("/alerts/check", s.handleRunHealthCheck)
+
+			// Backup/Restore.
+			r.Post("/backup/create", s.handleBackupCreate)
+			r.Get("/backup/status/{jobId}", s.handleBackupStatus)
+			r.Get("/backup/list", s.handleBackupList)
+			r.Post("/backup/restore/{id}", s.handleBackupRestore)
 		})
 	})
 

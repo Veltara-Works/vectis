@@ -65,3 +65,22 @@ logging:
 admin:
   listen_addr: ":8080"
   session_ttl_hours: 24
+
+# Update orchestrator timeouts (Phase 1).
+orchestrator:
+  image_pull_timeout: 300    # seconds per image (ClamAV ~1 GB needs longer)
+  health_check_timeout: 120  # seconds per service
+  db_migration_timeout: 60   # seconds total
+  apply_timeout: 600         # seconds total for full apply cycle
+
+# Alerting configuration (Phase 1).
+# Alerts are sent when services fail, disks fill, certs expire, etc.
+alerts:
+  email:
+    enabled: true
+    recipients:
+      - admin@example.com
+    # Uses the local Postfix to send (no external SMTP needed)
+  webhook:
+    enabled: false
+    url: ""                  # e.g. https://hooks.slack.com/services/...

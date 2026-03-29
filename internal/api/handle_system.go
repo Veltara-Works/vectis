@@ -152,8 +152,9 @@ func (s *Server) handleServiceLogs(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command("docker", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		s.logger.Error("failed to retrieve service logs", "service", service, "error", err)
 		respondError(w, r, http.StatusInternalServerError, "LOGS_ERROR",
-			"Failed to retrieve logs for "+service+": "+err.Error())
+			"Failed to retrieve logs for "+service)
 		return
 	}
 

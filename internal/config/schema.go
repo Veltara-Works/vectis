@@ -6,16 +6,18 @@ package config
 
 // VectisConfig is the top-level configuration loaded from config.yaml.
 type VectisConfig struct {
-	Hostname  string         `yaml:"hostname"`
-	TLS       TLSConfig      `yaml:"tls"`
-	Resources ResourceConfig `yaml:"resources"`
-	ClamAV    ClamAVConfig   `yaml:"clamav"`
-	Rspamd    RspamdConfig   `yaml:"rspamd"`
-	Postfix   PostfixConfig  `yaml:"postfix"`
-	Dovecot   DovecotConfig  `yaml:"dovecot"`
-	Backup    BackupConfig   `yaml:"backup"`
-	Logging   LoggingConfig  `yaml:"logging"`
-	Admin     AdminConfig    `yaml:"admin"`
+	Hostname     string              `yaml:"hostname"`
+	TLS          TLSConfig           `yaml:"tls"`
+	Resources    ResourceConfig      `yaml:"resources"`
+	ClamAV       ClamAVConfig        `yaml:"clamav"`
+	Rspamd       RspamdConfig        `yaml:"rspamd"`
+	Postfix      PostfixConfig       `yaml:"postfix"`
+	Dovecot      DovecotConfig       `yaml:"dovecot"`
+	Backup       BackupConfig        `yaml:"backup"`
+	Logging      LoggingConfig       `yaml:"logging"`
+	Admin        AdminConfig         `yaml:"admin"`
+	Orchestrator OrchestratorConfig  `yaml:"orchestrator"`
+	Alerts       AlertsConfig        `yaml:"alerts"`
 }
 
 // TLSConfig controls certificate provisioning.
@@ -76,8 +78,34 @@ type LoggingConfig struct {
 
 // AdminConfig governs the administrative HTTP interface.
 type AdminConfig struct {
-	ListenAddr     string `yaml:"listen_addr"`      // default ":8080"
-	SessionTTLHours int   `yaml:"session_ttl_hours"` // default 24
+	ListenAddr      string `yaml:"listen_addr"`      // default ":8080"
+	SessionTTLHours int    `yaml:"session_ttl_hours"` // default 24
+}
+
+// OrchestratorConfig controls the update orchestrator timeouts and behaviour.
+type OrchestratorConfig struct {
+	ImagePullTimeout   int `yaml:"image_pull_timeout"`   // seconds, default 300
+	HealthCheckTimeout int `yaml:"health_check_timeout"` // seconds per service, default 120
+	DBMigrationTimeout int `yaml:"db_migration_timeout"` // seconds, default 60
+	ApplyTimeout       int `yaml:"apply_timeout"`        // seconds total, default 600
+}
+
+// AlertsConfig controls alerting for service failures and critical events.
+type AlertsConfig struct {
+	Email   AlertEmailConfig   `yaml:"email"`
+	Webhook AlertWebhookConfig `yaml:"webhook"`
+}
+
+// AlertEmailConfig configures email-based alerts.
+type AlertEmailConfig struct {
+	Enabled    bool     `yaml:"enabled"`
+	Recipients []string `yaml:"recipients"`
+}
+
+// AlertWebhookConfig configures webhook-based alerts.
+type AlertWebhookConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	URL     string `yaml:"url"`
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +120,7 @@ type VectisSecrets struct {
 	Orchestrator OrchestratorSecrets  `yaml:"orchestrator"`
 	DKIM         DKIMSecrets          `yaml:"dkim"`
 	Cloudflare   *CloudflareSecrets   `yaml:"cloudflare,omitempty"`
+	ValidonX     *ValidonXSecrets     `yaml:"validonx,omitempty"`
 }
 
 // DatabaseSecrets holds connection details and per-service credentials for
@@ -119,9 +148,10 @@ type ValkeySecrets struct {
 // APISecrets holds the cookie-signing secret and the initial admin account
 // credentials seeded by the installer.
 type APISecrets struct {
-	Secret        string `yaml:"secret"`         // cookie / JWT signing key
-	AdminEmail    string `yaml:"admin_email"`    // initial admin, used by installer only
-	AdminPassword string `yaml:"admin_password"` // initial admin, used by installer only
+	Secret              string `yaml:"secret"`                         // cookie / JWT signing key
+	AdminEmail          string `yaml:"admin_email"`                    // initial admin, used by installer only
+	AdminPassword       string `yaml:"admin_password"`                 // initial admin, used by installer only
+	BackupEncryptionKey string `yaml:"backup_encryption_key,omitempty"` // AES-256 encryption key for backups; defaults to API secret if empty
 }
 
 // OrchestratorSecrets holds the bearer token used for internal HTTP calls
@@ -139,4 +169,19 @@ type DKIMSecrets struct {
 // for DNS-01 challenges.
 type CloudflareSecrets struct {
 	APIToken string `yaml:"api_token"`
+}
+
+// ValidonXSecrets holds credentials for the ValidonX licensing service.
+// When nil, the system operates in free-tier mode with all basic features enabled.
+type ValidonXSecrets struct {
+	BaseURL        string `yaml:"base_url"`        // e.g. https://api.validonx.com
+	ServiceKey     string `yaml:"service_key"`      // service authentication key
+	TenantID       string `yaml:"tenant_id"`        // this server's tenant ID
+	SubscriptionID string `yaml:"subscription_id"`  // this server's subscription ID
+	ServerID       string `yaml:"server_id"`        // unique server identifier
+}
+
+// ValidonXConfigured returns true if ValidonX licensing secrets are present.
+func (s *VectisSecrets) ValidonXConfigured() bool {
+	return s != nil && s.ValidonX != nil && s.ValidonX.BaseURL != "" && s.ValidonX.ServiceKey != ""
 }
