@@ -120,6 +120,7 @@ type VectisSecrets struct {
 	Orchestrator OrchestratorSecrets  `yaml:"orchestrator"`
 	DKIM         DKIMSecrets          `yaml:"dkim"`
 	Cloudflare   *CloudflareSecrets   `yaml:"cloudflare,omitempty"`
+	ValidonX     *ValidonXSecrets     `yaml:"validonx,omitempty"`
 }
 
 // DatabaseSecrets holds connection details and per-service credentials for
@@ -167,4 +168,19 @@ type DKIMSecrets struct {
 // for DNS-01 challenges.
 type CloudflareSecrets struct {
 	APIToken string `yaml:"api_token"`
+}
+
+// ValidonXSecrets holds credentials for the ValidonX licensing service.
+// When nil, the system operates in free-tier mode with all basic features enabled.
+type ValidonXSecrets struct {
+	BaseURL        string `yaml:"base_url"`        // e.g. https://api.validonx.com
+	ServiceKey     string `yaml:"service_key"`      // service authentication key
+	TenantID       string `yaml:"tenant_id"`        // this server's tenant ID
+	SubscriptionID string `yaml:"subscription_id"`  // this server's subscription ID
+	ServerID       string `yaml:"server_id"`        // unique server identifier
+}
+
+// ValidonXConfigured returns true if ValidonX licensing secrets are present.
+func (s *VectisSecrets) ValidonXConfigured() bool {
+	return s != nil && s.ValidonX != nil && s.ValidonX.BaseURL != "" && s.ValidonX.ServiceKey != ""
 }
