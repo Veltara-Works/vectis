@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -49,6 +50,9 @@ func runPreflight(cmd *cobra.Command, args []string) error {
 	for _, port := range []int{25, 80, 443, 465, 587, 993, 995} {
 		checks = append(checks, checkPort(port))
 	}
+
+	// Outbound SMTP check
+	checks = append(checks, checkOutboundSMTP())
 
 	// Docker check
 	checks = append(checks, checkDocker())
@@ -146,6 +150,21 @@ func checkPort(port int) checkResult {
 	}
 	ln.Close()
 	return checkResult{Name: fmt.Sprintf("Port %d", port), Status: "pass", Value: "available"}
+}
+
+func checkOutboundSMTP() checkResult {
+	// Test outbound port 25 by connecting to a well-known SMTP server.
+	conn, err := net.DialTimeout("tcp", "gmail-smtp-in.l.google.com:25", 10*time.Second)
+	if err != nil {
+		return checkResult{
+			Name:    "SMTP out",
+			Status:  "warn",
+			Value:   "port 25 blocked",
+			Message: "Contact your hosting provider to unblock outbound SMTP (port 25)",
+		}
+	}
+	conn.Close()
+	return checkResult{Name: "SMTP out", Status: "pass", Value: "port 25 reachable"}
 }
 
 func checkDocker() checkResult {

@@ -22,7 +22,7 @@ certificatesResolvers:
   letsencrypt:
     acme:
       email: {{ .TLS.Email }}
-      storage: /etc/traefik/acme.json
+      storage: /etc/traefik/acme/acme.json
       httpChallenge:
         entryPoint: web
 {{ end }}

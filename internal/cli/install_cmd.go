@@ -33,7 +33,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	configDir, _ := cmd.Flags().GetString("config-dir")
 
 	step := 0
-	totalSteps := 9
+	totalSteps := 10
 	printStep := func(msg string) {
 		step++
 		fmt.Fprintf(cmd.OutOrStdout(), "[%d/%d] %s...", step, totalSteps, msg)
@@ -116,7 +116,12 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 	done()
 
-	// Step 5: Connect to database and run migrations
+	// Step 5: Install and configure Fail2ban (host-level brute-force protection)
+	printStep("Configuring Fail2ban")
+	configureFail2ban(cmd)
+	done()
+
+	// Step 6: Connect to database and run migrations
 	printStep("Running database migrations")
 	logger := logging.NewLogger("warn")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -233,6 +238,61 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "═══════════════════════════════════════════")
 
 	return nil
+}
+
+// configureFail2ban installs and configures Fail2ban with jails for SSH and
+// Postfix SASL brute-force protection. This is a host-level security measure
+// per Architecture v1.4 §4.
+func configureFail2ban(cmd *cobra.Command) {
+	// Check if fail2ban is installed.
+	if _, err := exec.LookPath("fail2ban-client"); err != nil {
+		// Try to install it.
+		installCmd := exec.Command("apt-get", "install", "-y", "-qq", "fail2ban")
+		installCmd.Stdout = os.Stdout
+		installCmd.Stderr = os.Stderr
+		if err := installCmd.Run(); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: could not install fail2ban: %s\n", err)
+			return
+		}
+	}
+
+	// Write Vectis-specific jail configuration.
+	jailConfig := `# Vectis Mail Server — Fail2ban jail configuration
+# Protects SSH and SMTP from brute-force attacks
+
+[sshd]
+enabled  = true
+port     = ssh
+filter   = sshd
+logpath  = /var/log/auth.log
+maxretry = 5
+bantime  = 3600
+findtime = 600
+
+[postfix-sasl]
+enabled  = true
+port     = smtp,465,submission
+filter   = postfix[mode=auth]
+logpath  = /var/lib/docker/containers/*vectis-postfix*/*-json.log
+maxretry = 5
+bantime  = 3600
+findtime = 600
+`
+	jailPath := "/etc/fail2ban/jail.d/vectis.conf"
+	if err := os.MkdirAll("/etc/fail2ban/jail.d", 0755); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: could not create fail2ban directory: %s\n", err)
+		return
+	}
+	if err := os.WriteFile(jailPath, []byte(jailConfig), 0644); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: could not write fail2ban config: %s\n", err)
+		return
+	}
+
+	// Restart fail2ban to apply.
+	restartCmd := exec.Command("systemctl", "restart", "fail2ban")
+	if err := restartCmd.Run(); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: could not restart fail2ban: %s\n", err)
+	}
 }
 
 func generateRandomPassword(length int) string {

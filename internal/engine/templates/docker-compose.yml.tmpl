@@ -12,7 +12,13 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - traefik-config:/etc/traefik
+      - traefik-config:/etc/traefik:ro
+      - traefik-acme:/etc/traefik/acme
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -37,7 +43,7 @@ services:
       valkey:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/v1/health"]
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/api/v1/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -247,4 +253,5 @@ volumes:
   dovecot-config:
   rspamd-config:
   traefik-config:
+  traefik-acme:
   acme-data:
