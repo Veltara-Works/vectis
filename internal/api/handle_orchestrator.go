@@ -23,7 +23,7 @@ func (s *Server) handleOrchestratorPlan(w http.ResponseWriter, r *http.Request) 
 	plan, err := s.orchClient.Plan(ctx)
 	if err != nil {
 		s.logger.Error("orchestrator plan failed", "error", err)
-		respondError(w, r, http.StatusBadGateway, "ORCHESTRATOR_ERROR", err.Error())
+		respondError(w, r, http.StatusBadGateway, "ORCHESTRATOR_ERROR", "Failed to generate update plan")
 		return
 	}
 
@@ -47,7 +47,7 @@ func (s *Server) handleOrchestratorApply(w http.ResponseWriter, r *http.Request)
 	result, err := s.orchClient.Apply(ctx, force)
 	if err != nil {
 		s.logger.Error("orchestrator apply failed", "error", err)
-		respondError(w, r, http.StatusBadGateway, "ORCHESTRATOR_ERROR", err.Error())
+		respondError(w, r, http.StatusBadGateway, "ORCHESTRATOR_ERROR", "Failed to apply update")
 		return
 	}
 
@@ -69,7 +69,7 @@ func (s *Server) handleOrchestratorRollback(w http.ResponseWriter, r *http.Reque
 	result, err := s.orchClient.Rollback(ctx)
 	if err != nil {
 		s.logger.Error("orchestrator rollback failed", "error", err)
-		respondError(w, r, http.StatusBadGateway, "ORCHESTRATOR_ERROR", err.Error())
+		respondError(w, r, http.StatusBadGateway, "ORCHESTRATOR_ERROR", "Failed to rollback update")
 		return
 	}
 
@@ -91,7 +91,7 @@ func (s *Server) handleOrchestratorStatus(w http.ResponseWriter, r *http.Request
 	status, err := s.orchClient.Status(ctx)
 	if err != nil {
 		s.logger.Error("orchestrator status failed", "error", err)
-		respondError(w, r, http.StatusBadGateway, "ORCHESTRATOR_ERROR", err.Error())
+		respondError(w, r, http.StatusBadGateway, "ORCHESTRATOR_ERROR", "Failed to retrieve orchestrator status")
 		return
 	}
 

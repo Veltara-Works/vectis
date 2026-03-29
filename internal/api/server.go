@@ -172,6 +172,14 @@ func (s *Server) backupManager() *backup.Manager {
 		cfg.DKIMDir = s.secrets.DKIM.KeyBasePath
 	}
 
+	// Encryption key for backup archives. Use dedicated key if set, otherwise
+	// fall back to the API secret so encryption is on by default.
+	if s.secrets.API.BackupEncryptionKey != "" {
+		cfg.EncryptionKey = s.secrets.API.BackupEncryptionKey
+	} else if s.secrets.API.Secret != "" {
+		cfg.EncryptionKey = s.secrets.API.Secret
+	}
+
 	return backup.NewManager(s.db, s.logger.With("component", "backup"), cfg)
 }
 

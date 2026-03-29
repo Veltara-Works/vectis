@@ -148,9 +148,10 @@ type ValkeySecrets struct {
 // APISecrets holds the cookie-signing secret and the initial admin account
 // credentials seeded by the installer.
 type APISecrets struct {
-	Secret        string `yaml:"secret"`         // cookie / JWT signing key
-	AdminEmail    string `yaml:"admin_email"`    // initial admin, used by installer only
-	AdminPassword string `yaml:"admin_password"` // initial admin, used by installer only
+	Secret              string `yaml:"secret"`                         // cookie / JWT signing key
+	AdminEmail          string `yaml:"admin_email"`                    // initial admin, used by installer only
+	AdminPassword       string `yaml:"admin_password"`                 // initial admin, used by installer only
+	BackupEncryptionKey string `yaml:"backup_encryption_key,omitempty"` // AES-256 encryption key for backups; defaults to API secret if empty
 }
 
 // OrchestratorSecrets holds the bearer token used for internal HTTP calls

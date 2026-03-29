@@ -33,7 +33,7 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 	jobID, err := mgr.CreateAsync(ctx, triggeredBy)
 	if err != nil {
 		s.logger.Error("backup create failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "BACKUP_ERROR", err.Error())
+		respondError(w, r, http.StatusInternalServerError, "BACKUP_ERROR", "Failed to create backup")
 		return
 	}
 
@@ -86,7 +86,7 @@ func (s *Server) handleBackupList(w http.ResponseWriter, r *http.Request) {
 	backups, err := mgr.List()
 	if err != nil {
 		s.logger.Error("backup list failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "BACKUP_ERROR", err.Error())
+		respondError(w, r, http.StatusInternalServerError, "BACKUP_ERROR", "Failed to list backups")
 		return
 	}
 
@@ -127,7 +127,7 @@ func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	backups, err := mgr.List()
 	if err != nil {
 		s.logger.Error("backup list failed during restore", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "BACKUP_ERROR", err.Error())
+		respondError(w, r, http.StatusInternalServerError, "BACKUP_ERROR", "Failed to list backups")
 		return
 	}
 
@@ -156,7 +156,7 @@ func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	jobID, err := mgr.RestoreAsync(ctx, backupPath, triggeredBy)
 	if err != nil {
 		s.logger.Error("restore failed to start", "error", err, "backup_path", backupPath)
-		respondError(w, r, http.StatusInternalServerError, "RESTORE_ERROR", err.Error())
+		respondError(w, r, http.StatusInternalServerError, "RESTORE_ERROR", "Failed to start restore")
 		return
 	}
 

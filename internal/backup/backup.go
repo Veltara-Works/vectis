@@ -2,6 +2,10 @@ package backup
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +20,13 @@ import (
 
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
+
+// secretsExcludeFiles lists filenames that must never be included in backup
+// archives. These files contain credentials and must be backed up separately
+// by the operator using secure, out-of-band mechanisms.
+var secretsExcludeFiles = map[string]bool{
+	"secrets.yaml": true,
+}
 
 // Config holds the backup manager configuration.
 type Config struct {
@@ -34,6 +45,12 @@ type Config struct {
 
 	// Docker compose path for stopping/starting services.
 	ComposePath string
+
+	// EncryptionKey is used to encrypt backup archives with AES-256-GCM.
+	// When set, backups are written as .tar.gz.enc files. When empty, backups
+	// are written as plaintext .tar.gz (not recommended for production).
+	// The key is derived from the API secret in secrets.yaml via SHA-256.
+	EncryptionKey string
 }
 
 // DefaultConfig returns a Config with production defaults.
@@ -132,7 +149,12 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 	}
 
 	timestamp := time.Now().UTC().Format("20060102-150405")
-	archiveName := fmt.Sprintf("vectis-%s.tar.gz", timestamp)
+	encrypted := m.cfg.EncryptionKey != ""
+	ext := ".tar.gz"
+	if encrypted {
+		ext = ".tar.gz.enc"
+	}
+	archiveName := fmt.Sprintf("vectis-%s%s", timestamp, ext)
 	archivePath := filepath.Join(m.cfg.BackupDir, archiveName)
 
 	// Create a temp working directory for assembling the backup contents.
@@ -167,11 +189,14 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 	_ = m.repo.UpdateProgress(ctx, jobID, 60, "Mail data archived")
 
 	// Step 3: Copy config files (60% -> 80%)
-	_ = m.repo.UpdateProgress(ctx, jobID, 65, "Copying configuration")
-	m.logger.Info("backup: copying config files", "job_id", jobID)
+	// SECURITY: secrets.yaml is excluded from backups. It contains DB passwords,
+	// API secrets, and orchestrator tokens. Operators must back up secrets
+	// separately using secure, out-of-band mechanisms.
+	_ = m.repo.UpdateProgress(ctx, jobID, 65, "Copying configuration (excluding secrets)")
+	m.logger.Info("backup: copying config files (excluding secrets)", "job_id", jobID)
 
 	configArchive := filepath.Join(tmpDir, "config.tar")
-	if err := m.archiveDirectory(ctx, m.cfg.ConfigDir, configArchive); err != nil {
+	if err := m.archiveDirectoryExcluding(ctx, m.cfg.ConfigDir, configArchive, secretsExcludeFiles); err != nil {
 		if !os.IsNotExist(err) {
 			return "", 0, fmt.Errorf("archive config: %w", err)
 		}
@@ -196,10 +221,28 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 	_ = m.repo.UpdateProgress(ctx, jobID, 92, "Creating backup archive")
 	m.logger.Info("backup: creating final archive", "job_id", jobID, "path", archivePath)
 
-	if err := m.createFinalArchive(ctx, tmpDir, archivePath); err != nil {
-		// Clean up partial archive.
-		os.Remove(archivePath)
-		return "", 0, fmt.Errorf("create archive: %w", err)
+	if encrypted {
+		// Create plaintext archive in temp dir, then encrypt to final path.
+		plaintextPath := filepath.Join(tmpDir, "backup.tar.gz")
+		if err := m.createFinalArchive(ctx, tmpDir, plaintextPath); err != nil {
+			os.Remove(archivePath)
+			return "", 0, fmt.Errorf("create archive: %w", err)
+		}
+
+		_ = m.repo.UpdateProgress(ctx, jobID, 96, "Encrypting backup archive")
+		m.logger.Info("backup: encrypting archive", "job_id", jobID)
+
+		if err := encryptFile(plaintextPath, archivePath, m.cfg.EncryptionKey); err != nil {
+			os.Remove(archivePath)
+			return "", 0, fmt.Errorf("encrypt archive: %w", err)
+		}
+		os.Remove(plaintextPath)
+	} else {
+		m.logger.Warn("backup: encryption not configured — backup is plaintext. Set encryption key in secrets.yaml for production use.")
+		if err := m.createFinalArchive(ctx, tmpDir, archivePath); err != nil {
+			os.Remove(archivePath)
+			return "", 0, fmt.Errorf("create archive: %w", err)
+		}
 	}
 
 	// Verify the archive.
@@ -287,7 +330,23 @@ func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) erro
 	_ = m.repo.UpdateProgress(ctx, jobID, 5, "Extracting backup archive")
 	m.logger.Info("restore: extracting archive", "job_id", jobID, "path", backupPath)
 
-	cmd := exec.CommandContext(ctx, "tar", "-xzf", backupPath, "-C", tmpDir)
+	extractPath := backupPath
+	if strings.HasSuffix(backupPath, ".enc") {
+		// Decrypt first.
+		if m.cfg.EncryptionKey == "" {
+			return fmt.Errorf("backup is encrypted but no encryption key is configured")
+		}
+		_ = m.repo.UpdateProgress(ctx, jobID, 3, "Decrypting backup archive")
+		m.logger.Info("restore: decrypting archive", "job_id", jobID)
+
+		decryptedPath := filepath.Join(tmpDir, "backup.tar.gz")
+		if err := decryptFile(backupPath, decryptedPath, m.cfg.EncryptionKey); err != nil {
+			return fmt.Errorf("decrypt archive: %w", err)
+		}
+		extractPath = decryptedPath
+	}
+
+	cmd := exec.CommandContext(ctx, "tar", "-xzf", extractPath, "-C", tmpDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("extract archive: %w: %s", err, string(output))
 	}
@@ -395,7 +454,7 @@ func (m *Manager) List() ([]BackupInfo, error) {
 		if entry.IsDir() {
 			continue
 		}
-		if !strings.HasSuffix(entry.Name(), ".tar.gz") {
+		if !strings.HasSuffix(entry.Name(), ".tar.gz") && !strings.HasSuffix(entry.Name(), ".tar.gz.enc") {
 			continue
 		}
 
@@ -514,6 +573,28 @@ func (m *Manager) archiveDirectory(ctx context.Context, srcDir, dstPath string) 
 	return nil
 }
 
+// archiveDirectoryExcluding creates a tar of a directory, excluding files
+// whose base name is in the exclude set. Used to keep secrets out of backups.
+func (m *Manager) archiveDirectoryExcluding(ctx context.Context, srcDir, dstPath string, exclude map[string]bool) error {
+	if _, err := os.Stat(srcDir); err != nil {
+		return err
+	}
+
+	args := []string{"-cf", dstPath, "-C", filepath.Dir(srcDir)}
+	for name := range exclude {
+		args = append(args, "--exclude", name)
+	}
+	args = append(args, filepath.Base(srcDir))
+
+	cmd := exec.CommandContext(ctx, "tar", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tar failed for %s: %w: %s", srcDir, err, string(output))
+	}
+
+	return nil
+}
+
 // restoreDirectory extracts a tar archive, then replaces the target directory
 // with the extracted contents.
 func (m *Manager) restoreDirectory(ctx context.Context, archivePath, targetDir string) error {
@@ -557,10 +638,19 @@ func (m *Manager) createFinalArchive(ctx context.Context, srcDir, dstPath string
 	return nil
 }
 
-// validateArchive checks that the archive is a valid tar.gz file.
+// validateArchive checks that the archive is a valid tar.gz (or .tar.gz.enc) file.
 func (m *Manager) validateArchive(ctx context.Context, archivePath string) error {
 	if _, err := os.Stat(archivePath); err != nil {
 		return fmt.Errorf("archive file not found: %w", err)
+	}
+
+	// Encrypted archives can't be validated without decryption; just check the file exists.
+	if strings.HasSuffix(archivePath, ".enc") {
+		if m.cfg.EncryptionKey == "" {
+			return fmt.Errorf("backup is encrypted but no encryption key is configured")
+		}
+		m.logger.Info("encrypted backup detected — content validation deferred to restore")
+		return nil
 	}
 
 	cmd := exec.CommandContext(ctx, "tar", "-tzf", archivePath)
@@ -617,6 +707,79 @@ func (m *Manager) healthCheck(ctx context.Context) error {
 	}
 
 	m.logger.Info("health check output", "output", string(output))
+	return nil
+}
+
+// deriveKey returns a 32-byte AES-256 key from a passphrase via SHA-256.
+func deriveKey(passphrase string) []byte {
+	h := sha256.Sum256([]byte(passphrase))
+	return h[:]
+}
+
+// encryptFile encrypts srcPath with AES-256-GCM and writes to dstPath.
+func encryptFile(srcPath, dstPath, passphrase string) error {
+	plaintext, err := os.ReadFile(srcPath)
+	if err != nil {
+		return fmt.Errorf("read plaintext: %w", err)
+	}
+
+	block, err := aes.NewCipher(deriveKey(passphrase))
+	if err != nil {
+		return fmt.Errorf("create cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return fmt.Errorf("create GCM: %w", err)
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return fmt.Errorf("generate nonce: %w", err)
+	}
+
+	// nonce is prepended to the ciphertext.
+	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+
+	if err := os.WriteFile(dstPath, ciphertext, 0600); err != nil {
+		return fmt.Errorf("write encrypted file: %w", err)
+	}
+
+	return nil
+}
+
+// decryptFile decrypts an AES-256-GCM encrypted file and writes to dstPath.
+func decryptFile(srcPath, dstPath, passphrase string) error {
+	ciphertext, err := os.ReadFile(srcPath)
+	if err != nil {
+		return fmt.Errorf("read encrypted file: %w", err)
+	}
+
+	block, err := aes.NewCipher(deriveKey(passphrase))
+	if err != nil {
+		return fmt.Errorf("create cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return fmt.Errorf("create GCM: %w", err)
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return fmt.Errorf("encrypted file is too short")
+	}
+
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return fmt.Errorf("decrypt failed (wrong key?): %w", err)
+	}
+
+	if err := os.WriteFile(dstPath, plaintext, 0600); err != nil {
+		return fmt.Errorf("write decrypted file: %w", err)
+	}
+
 	return nil
 }
 

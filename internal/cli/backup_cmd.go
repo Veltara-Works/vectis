@@ -66,6 +66,11 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 	if secrets.DKIM.KeyBasePath != "" {
 		cfg.DKIMDir = secrets.DKIM.KeyBasePath
 	}
+	if secrets.API.BackupEncryptionKey != "" {
+		cfg.EncryptionKey = secrets.API.BackupEncryptionKey
+	} else if secrets.API.Secret != "" {
+		cfg.EncryptionKey = secrets.API.Secret
+	}
 
 	mgr := backup.NewManager(pool, logger, cfg)
 
@@ -146,6 +151,11 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	cfg.DBPassword = secrets.Database.APIPassword
 	if secrets.DKIM.KeyBasePath != "" {
 		cfg.DKIMDir = secrets.DKIM.KeyBasePath
+	}
+	if secrets.API.BackupEncryptionKey != "" {
+		cfg.EncryptionKey = secrets.API.BackupEncryptionKey
+	} else if secrets.API.Secret != "" {
+		cfg.EncryptionKey = secrets.API.Secret
 	}
 
 	mgr := backup.NewManager(pool, logger, cfg)
