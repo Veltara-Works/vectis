@@ -90,6 +90,51 @@ func (r *AuditRepo) ListRecent(ctx context.Context, limit int) ([]AuditEntry, er
 	return scanAuditRows(rows)
 }
 
+// ListPaginated returns audit entries with cursor pagination and optional filters.
+func (r *AuditRepo) ListPaginated(ctx context.Context, action, resourceType, adminID string, params PaginationParams) ([]AuditEntry, error) {
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+
+	query := `SELECT id, admin_id, action, resource_type, resource_id, details, ip_address, created_at
+		 FROM audit_log WHERE 1=1`
+	args := []any{}
+	argIdx := 1
+
+	if action != "" {
+		query += fmt.Sprintf(" AND action = $%d", argIdx)
+		args = append(args, action)
+		argIdx++
+	}
+	if resourceType != "" {
+		query += fmt.Sprintf(" AND resource_type = $%d", argIdx)
+		args = append(args, resourceType)
+		argIdx++
+	}
+	if adminID != "" {
+		query += fmt.Sprintf(" AND admin_id = $%d", argIdx)
+		args = append(args, adminID)
+		argIdx++
+	}
+	if params.Cursor != nil {
+		query += fmt.Sprintf(" AND created_at < $%d", argIdx)
+		args = append(args, *params.Cursor)
+		argIdx++
+	}
+
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", argIdx)
+	args = append(args, limit+1)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list audit paginated: %w", err)
+	}
+	defer rows.Close()
+
+	return scanAuditRows(rows)
+}
+
 func scanAuditRows(rows interface {
 	Next() bool
 	Scan(dest ...any) error

@@ -72,4 +72,77 @@ export const api = {
 
   // Config
   applyConfig: () => request<{ message: string }>('POST', '/config/apply'),
+
+  // Admins
+  listAdmins: () =>
+    request<Array<{
+      id: string; email: string; role: string; totp_enabled: boolean;
+      created_at: string; last_login_at?: string
+    }>>('GET', '/admins'),
+  createAdmin: (email: string, password: string, role?: string) =>
+    request<{ id: string; email: string; role: string }>('POST', '/admins', { email, password, role }),
+  deleteAdmin: (id: string) => {
+    return fetch(`${BASE}/admins/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'X-Confirm-Delete': 'true' },
+      credentials: 'include',
+    }).then(async res => {
+      const json = await res.json()
+      if (json.error) throw new Error(json.error.message)
+      return json.data
+    })
+  },
+
+  // Audit log
+  listAudit: (params?: { action?: string; resource_type?: string; admin_id?: string; cursor?: string; limit?: number }) => {
+    const q = new URLSearchParams()
+    if (params?.action) q.set('action', params.action)
+    if (params?.resource_type) q.set('resource_type', params.resource_type)
+    if (params?.admin_id) q.set('admin_id', params.admin_id)
+    if (params?.cursor) q.set('cursor', params.cursor)
+    if (params?.limit) q.set('limit', String(params.limit))
+    const qs = q.toString()
+    return fetch(`${BASE}/audit${qs ? '?' + qs : ''}`, {
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+    }).then(async res => {
+      const json = await res.json()
+      if (json.error) throw new Error(json.error.message)
+      return { data: json.data || [], meta: json.meta }
+    })
+  },
+
+  // Orchestrator
+  orchestratorStatus: () =>
+    request<{ state: string; current_operation?: string; last_operation?: string }>('GET', '/orchestrator/status'),
+  orchestratorPlan: () =>
+    request<{ plan: string; changes: Array<{ service: string; action: string; detail?: string }> }>('POST', '/orchestrator/plan'),
+  orchestratorApply: (force?: boolean) =>
+    request<{ message: string; steps?: Array<{ service: string; status: string }> }>('POST', `/orchestrator/apply${force ? '?force=true' : ''}`),
+  orchestratorRollback: () =>
+    request<{ message: string }>('POST', '/orchestrator/rollback'),
+  orchestratorHistory: () =>
+    request<Array<{
+      id: string; action: string; status: string; plan_summary?: string;
+      error?: string; started_at: string; completed_at?: string; admin_id?: string
+    }>>('GET', '/orchestrator/history'),
+
+  // Backups
+  backupCreate: () =>
+    request<{ job_id: string; message: string }>('POST', '/backup/create'),
+  backupList: () =>
+    request<Array<{ path: string; name: string; size: number; created_at: string }>>('GET', '/backup/list'),
+  backupStatus: (jobId: string) =>
+    request<{ id: string; status: string; error?: string; started_at: string; completed_at?: string }>('GET', `/backup/status/${jobId}`),
+  backupRestore: (id: string) => {
+    return fetch(`${BASE}/backup/restore/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Confirm-Restore': 'true' },
+      credentials: 'include',
+    }).then(async res => {
+      const json = await res.json()
+      if (json.error) throw new Error(json.error.message)
+      return json.data
+    })
+  },
 }
