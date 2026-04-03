@@ -22,6 +22,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/monitor"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	"github.com/Veltara-Works/vectis/internal/repository"
+	vectistls "github.com/Veltara-Works/vectis/internal/tls"
 )
 
 // Server is the Vectis API server.
@@ -70,8 +71,9 @@ type Config struct {
 	GenDir            string // path to generated config output directory
 	VectisCfg         *config.VectisConfig
 	VectisSecrets     *config.VectisSecrets
-	OrchestratorURL   string // http://orchestrator:8081
-	OrchestratorToken string // bearer token for orchestrator internal API
+	OrchestratorURL      string // http://orchestrator:8081 or https://orchestrator:8081
+	OrchestratorToken    string // bearer token for orchestrator internal API (fallback)
+	OrchestratorCertDir  string // mTLS certificate directory; when set, upgrades to mTLS
 }
 
 // New creates a new API server with all routes registered.
@@ -97,9 +99,22 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		totpManager:  auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
 	}
 
-	// Initialize orchestrator client if URL and token are provided.
-	if cfg.OrchestratorURL != "" && cfg.OrchestratorToken != "" {
-		s.orchClient = orchestrator.NewClient(cfg.OrchestratorURL, cfg.OrchestratorToken)
+	// Initialize orchestrator client — prefer mTLS, fall back to bearer token.
+	if cfg.OrchestratorURL != "" {
+		if cfg.OrchestratorCertDir != "" {
+			tlsCfg, err := vectistls.NewClientTLSConfig(cfg.OrchestratorCertDir)
+			if err != nil {
+				logger.Error("failed to load orchestrator mTLS certs, falling back to bearer token", "error", err)
+				if cfg.OrchestratorToken != "" {
+					s.orchClient = orchestrator.NewClient(cfg.OrchestratorURL, cfg.OrchestratorToken)
+				}
+			} else {
+				s.orchClient = orchestrator.NewMTLSClient(cfg.OrchestratorURL, tlsCfg)
+				logger.Info("orchestrator client using mTLS")
+			}
+		} else if cfg.OrchestratorToken != "" {
+			s.orchClient = orchestrator.NewClient(cfg.OrchestratorURL, cfg.OrchestratorToken)
+		}
 	}
 
 	s.router = s.buildRouter()

@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
+	vectistls "github.com/Veltara-Works/vectis/internal/tls"
 )
 
 var updateCmd = &cobra.Command{
@@ -58,17 +59,29 @@ func newOrchestratorClient(cmd *cobra.Command) (*orchestrator.Client, error) {
 		return nil, fmt.Errorf("loading secrets: %w", err)
 	}
 
-	token := secrets.Orchestrator.Token
-	if token == "" {
-		return nil, fmt.Errorf("orchestrator token not found in secrets.yaml")
-	}
-
 	// When running on the host, talk to localhost; inside Docker, use the service name.
 	baseURL := "http://localhost:8081"
 	if os.Getenv("VECTIS_ORCHESTRATOR_URL") != "" {
 		baseURL = os.Getenv("VECTIS_ORCHESTRATOR_URL")
 	}
 
+	// Prefer mTLS if cert directory is configured.
+	if secrets.Orchestrator.MTLSCertDir != "" {
+		if baseURL == "http://localhost:8081" {
+			baseURL = "https://localhost:8081"
+		}
+		tlsCfg, err := vectistls.NewClientTLSConfig(secrets.Orchestrator.MTLSCertDir)
+		if err != nil {
+			return nil, fmt.Errorf("load mTLS certs: %w", err)
+		}
+		return orchestrator.NewMTLSClient(baseURL, tlsCfg), nil
+	}
+
+	// Fallback: bearer token.
+	token := secrets.Orchestrator.Token
+	if token == "" {
+		return nil, fmt.Errorf("orchestrator token not found in secrets.yaml")
+	}
 	return orchestrator.NewClient(baseURL, token), nil
 }
 

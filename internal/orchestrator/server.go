@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -19,7 +20,8 @@ import (
 type Server struct {
 	orch       *Orchestrator
 	httpServer *http.Server
-	token      string // bearer token for authentication
+	token      string      // bearer token for authentication (fallback when mTLS not configured)
+	tlsConfig  *tls.Config // when set, server uses mTLS and bearer token auth is bypassed
 	logger     *slog.Logger
 }
 
@@ -27,20 +29,23 @@ type Server struct {
 type ServerConfig struct {
 	ListenAddr string
 	Token      string
+	TLSConfig  *tls.Config // optional: enables mTLS when set
 }
 
 // NewServer creates a new orchestrator HTTP server with all routes registered.
 func NewServer(orch *Orchestrator, cfg ServerConfig, logger *slog.Logger) *Server {
 	s := &Server{
-		orch:   orch,
-		token:  cfg.Token,
-		logger: logger,
+		orch:      orch,
+		token:     cfg.Token,
+		tlsConfig: cfg.TLSConfig,
+		logger:    logger,
 	}
 
 	router := s.buildRouter()
 	s.httpServer = &http.Server{
 		Addr:         cfg.ListenAddr,
 		Handler:      router,
+		TLSConfig:    cfg.TLSConfig,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -49,8 +54,16 @@ func NewServer(orch *Orchestrator, cfg ServerConfig, logger *slog.Logger) *Serve
 	return s
 }
 
-// Start begins listening for HTTP requests.
+// Start begins listening for HTTP requests. Uses TLS when configured.
 func (s *Server) Start() error {
+	if s.tlsConfig != nil {
+		s.logger.Info("starting orchestrator HTTPS server (mTLS)", "addr", s.httpServer.Addr)
+		// Certs are already in TLSConfig; pass empty strings to use them.
+		if err := s.httpServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("orchestrator listen (mTLS): %w", err)
+		}
+		return nil
+	}
 	s.logger.Info("starting orchestrator HTTP server", "addr", s.httpServer.Addr)
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("orchestrator listen: %w", err)
@@ -95,9 +108,18 @@ func (s *Server) buildRouter() chi.Router {
 // Middleware
 // ---------------------------------------------------------------------------
 
-// authMiddleware validates the bearer token from the Authorization header.
+// authMiddleware validates the request. With mTLS the client cert has already
+// been verified at the TLS layer; without mTLS, the bearer token is checked.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// When mTLS is active, the TLS handshake already verified the client
+		// certificate against the CA — no bearer token needed.
+		if s.tlsConfig != nil && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Fallback: bearer token auth.
 		auth := r.Header.Get("Authorization")
 		if auth == "" {
 			s.respondError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "Authorization header required")

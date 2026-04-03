@@ -14,6 +14,7 @@ import (
 
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
+	vectistls "github.com/Veltara-Works/vectis/internal/tls"
 )
 
 const (
@@ -127,6 +128,18 @@ func run(logger *slog.Logger) error {
 		ListenAddr: listenAddr,
 		Token:      secrets.Orchestrator.Token,
 	}
+
+	// Enable mTLS if certificate directory is configured.
+	if secrets.Orchestrator.MTLSCertDir != "" {
+		tlsCfg, err := vectistls.NewServerTLSConfig(secrets.Orchestrator.MTLSCertDir)
+		if err != nil {
+			logger.Warn("failed to load mTLS certs, falling back to bearer token", "error", err)
+		} else {
+			srvCfg.TLSConfig = tlsCfg
+			logger.Info("orchestrator server using mTLS", "cert_dir", secrets.Orchestrator.MTLSCertDir)
+		}
+	}
+
 	srv := orchestrator.NewServer(orch, srvCfg, logger.With("component", "http"))
 
 	// Start server in a goroutine.

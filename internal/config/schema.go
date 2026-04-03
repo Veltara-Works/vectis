@@ -184,10 +184,11 @@ type APISecrets struct {
 	BackupEncryptionKey string `yaml:"backup_encryption_key,omitempty"` // AES-256 encryption key for backups; defaults to API secret if empty
 }
 
-// OrchestratorSecrets holds the bearer token used for internal HTTP calls
+// OrchestratorSecrets holds authentication credentials for internal HTTP calls
 // between the API server and the orchestrator.
 type OrchestratorSecrets struct {
-	Token string `yaml:"token"`
+	Token       string `yaml:"token"`                  // bearer token (Phase 1 fallback)
+	MTLSCertDir string `yaml:"mtls_cert_dir,omitempty"` // directory containing internal CA + certs; enables mTLS when set
 }
 
 // DKIMSecrets stores the base path where per-domain DKIM private keys live.

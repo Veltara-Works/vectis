@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,11 +13,12 @@ import (
 // Client communicates with the orchestrator's internal HTTP API.
 type Client struct {
 	baseURL string
-	token   string
+	token   string // bearer token (used when mTLS is not configured)
+	useMTLS bool
 	http    *http.Client
 }
 
-// NewClient creates a new orchestrator API client.
+// NewClient creates a new orchestrator API client using bearer token auth.
 // baseURL is typically http://orchestrator:8081 (from Docker) or http://localhost:8081 (from host).
 // token is the bearer token from secrets.yaml (orchestrator.token).
 func NewClient(baseURL, token string) *Client {
@@ -25,6 +27,21 @@ func NewClient(baseURL, token string) *Client {
 		token:   token,
 		http: &http.Client{
 			Timeout: 30 * time.Second,
+		},
+	}
+}
+
+// NewMTLSClient creates a new orchestrator API client using mutual TLS.
+// The baseURL should use https:// when mTLS is enabled.
+func NewMTLSClient(baseURL string, tlsConfig *tls.Config) *Client {
+	return &Client{
+		baseURL: baseURL,
+		useMTLS: true,
+		http: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: tlsConfig,
+			},
 		},
 	}
 }
@@ -142,7 +159,7 @@ func (c *Client) Health(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("health: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	c.setAuth(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -164,13 +181,22 @@ type apiErrorResponse struct {
 	Error string `json:"error"`
 }
 
+// setAuth applies the appropriate authentication to the request.
+// With mTLS, the client cert is presented at the TLS layer — no header needed.
+// Without mTLS, the bearer token is set in the Authorization header.
+func (c *Client) setAuth(req *http.Request) {
+	if !c.useMTLS && c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+}
+
 // doJSON performs an HTTP request and decodes the JSON response into dest.
 func (c *Client) doJSON(ctx context.Context, method, path string, dest any) error {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	c.setAuth(req)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)

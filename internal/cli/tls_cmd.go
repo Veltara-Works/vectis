@@ -20,6 +20,12 @@ var tlsGenerateSelfSignedCmd = &cobra.Command{
 	RunE:  runTLSGenerateSelfSigned,
 }
 
+var tlsGenerateInternalCmd = &cobra.Command{
+	Use:   "generate-internal",
+	Short: "Generate internal mTLS certificates for API ↔ orchestrator communication",
+	RunE:  runTLSGenerateInternal,
+}
+
 var tlsStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show TLS certificate status for all services",
@@ -28,6 +34,7 @@ var tlsStatusCmd = &cobra.Command{
 
 var tlsCertDir string
 var tlsHostname string
+var tlsInternalCertDir string
 
 func runTLSGenerateSelfSigned(cmd *cobra.Command, args []string) error {
 	if tlsHostname == "" {
@@ -49,11 +56,40 @@ func runTLSGenerateSelfSigned(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runTLSGenerateInternal(cmd *cobra.Command, args []string) error {
+	if vectistls.InternalCertsExist(tlsInternalCertDir) {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: internal mTLS certificates already exist in "+tlsInternalCertDir)
+		fmt.Fprintln(cmd.ErrOrStderr(), "Re-generating will invalidate existing certificates.")
+		fmt.Fprintln(cmd.ErrOrStderr(), "Both API and orchestrator containers must be restarted after regeneration.")
+		fmt.Fprintln(cmd.ErrOrStderr())
+	}
+
+	if err := vectistls.GenerateInternalCerts(tlsInternalCertDir); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Internal mTLS certificates generated in %s:\n", tlsInternalCertDir)
+	fmt.Fprintf(cmd.OutOrStdout(), "  CA certificate: %s/ca.pem\n", tlsInternalCertDir)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Server cert:    %s/server.pem     (orchestrator)\n", tlsInternalCertDir)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Server key:     %s/server-key.pem (orchestrator)\n", tlsInternalCertDir)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Client cert:    %s/client.pem     (API server)\n", tlsInternalCertDir)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Client key:     %s/client-key.pem (API server)\n", tlsInternalCertDir)
+	fmt.Fprintln(cmd.OutOrStdout())
+	fmt.Fprintln(cmd.OutOrStdout(), "To enable mTLS, add to secrets.yaml:")
+	fmt.Fprintf(cmd.OutOrStdout(), "  orchestrator:\n    mtls_cert_dir: %s\n", tlsInternalCertDir)
+	fmt.Fprintln(cmd.OutOrStdout(), "\nThen restart the API and orchestrator containers.")
+	return nil
+}
+
 func runTLSStatus(cmd *cobra.Command, args []string) error {
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 
 	certPaths := map[string]string{
-		"mail": tlsCertDir + "/fullchain.pem",
+		"mail":       tlsCertDir + "/fullchain.pem",
+		"internal-ca": vectistls.InternalCertDir + "/ca.pem",
+		"orch-server": vectistls.InternalCertDir + "/server.pem",
+		"api-client":  vectistls.InternalCertDir + "/client.pem",
 	}
 
 	type certStatus struct {
@@ -98,9 +134,11 @@ func runTLSStatus(cmd *cobra.Command, args []string) error {
 func init() {
 	tlsGenerateSelfSignedCmd.Flags().StringVar(&tlsCertDir, "cert-dir", "/etc/ssl/mail", "Directory to write certificates")
 	tlsGenerateSelfSignedCmd.Flags().StringVar(&tlsHostname, "hostname", "", "Hostname for the certificate")
+	tlsGenerateInternalCmd.Flags().StringVar(&tlsInternalCertDir, "cert-dir", vectistls.InternalCertDir, "Directory to write internal mTLS certificates")
 	tlsStatusCmd.Flags().StringVar(&tlsCertDir, "cert-dir", "/etc/ssl/mail", "Directory containing certificates")
 
 	tlsCmd.AddCommand(tlsGenerateSelfSignedCmd)
+	tlsCmd.AddCommand(tlsGenerateInternalCmd)
 	tlsCmd.AddCommand(tlsStatusCmd)
 	RootCmd.AddCommand(tlsCmd)
 }
