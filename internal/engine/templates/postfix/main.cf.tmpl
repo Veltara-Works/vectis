@@ -7,7 +7,7 @@ myhostname = {{ .Hostname }}
 mydomain = {{ .Hostname }}
 myorigin = $mydomain
 mydestination =
-mynetworks = 127.0.0.0/8 [::1]/128
+mynetworks = 127.0.0.0/8 [::1]/128 172.16.0.0/12
 
 # Virtual domain hosting (SQL-driven per ADR-010)
 virtual_mailbox_domains = pgsql:/etc/postfix/pgsql_virtual_domains.cf

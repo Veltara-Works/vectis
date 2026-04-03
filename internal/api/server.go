@@ -19,6 +19,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/backup"
 	"github.com/Veltara-Works/vectis/internal/config"
+	"github.com/Veltara-Works/vectis/internal/mail"
 	"github.com/Veltara-Works/vectis/internal/monitor"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -58,6 +59,9 @@ type Server struct {
 
 	// OIDC
 	oidcManager *auth.OIDCManager
+
+	// Mail sending
+	mailSender *mail.Sender
 
 	// Background services
 	monitor      *monitor.Monitor
@@ -122,6 +126,9 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 			s.orchClient = orchestrator.NewClient(cfg.OrchestratorURL, cfg.OrchestratorToken)
 		}
 	}
+
+	// Initialize mail sender for outbound API.
+	s.mailSender = mail.NewSender("vectis-postfix:25", cfg.Hostname, logger.With("component", "mail-sender"))
 
 	// Initialize OIDC manager if providers are configured.
 	if cfg.VectisSecrets != nil && len(cfg.VectisSecrets.OIDC.Providers) > 0 && cfg.CallbackBaseURL != "" {
@@ -318,6 +325,9 @@ func (s *Server) buildRouter() chi.Router {
 			r.Get("/admins", s.handleListAdmins)
 			r.With(requireSuperAdmin()).Post("/admins", s.handleCreateAdmin)
 			r.With(requireSuperAdmin()).Delete("/admins/{adminID}", s.handleDeleteAdmin)
+
+			// Sending API — all roles (domain scoping enforced in handler).
+			r.Post("/send", s.handleSend)
 
 			// API keys — all roles can manage their own keys.
 			r.Get("/api-keys", s.handleListAPIKeys)
