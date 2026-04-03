@@ -18,6 +18,7 @@ const (
 	ctxAdminID   contextKey = "admin_id"
 	ctxSessionID contextKey = "session_id"
 	ctxAdminRole contextKey = "admin_role"
+	ctxAPIKeyID  contextKey = "api_key_id"
 )
 
 func getRequestID(ctx context.Context) string {
@@ -44,6 +45,13 @@ func getSessionID(ctx context.Context) string {
 func getAdminRole(ctx context.Context) string {
 	if role, ok := ctx.Value(ctxAdminRole).(string); ok {
 		return role
+	}
+	return ""
+}
+
+func getAPIKeyID(ctx context.Context) string {
+	if id, ok := ctx.Value(ctxAPIKeyID).(string); ok {
+		return id
 	}
 	return ""
 }
@@ -99,7 +107,8 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// authMiddleware validates the HMAC-signed session cookie or Authorization header.
+// authMiddleware validates authentication via session cookie, HMAC-signed
+// Bearer token, or API key (vectis_* prefix).
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		signedToken := extractSignedToken(r)
@@ -108,21 +117,25 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Verify HMAC signature and extract raw token.
+		// API key auth: tokens starting with "vectis_" are API keys.
+		if auth.IsAPIKey(signedToken) {
+			s.authenticateAPIKey(w, r, next, signedToken)
+			return
+		}
+
+		// Session auth: HMAC-signed session token.
 		rawToken, err := s.sessions.VerifyAndExtractToken(signedToken)
 		if err != nil {
 			respondError(w, r, http.StatusUnauthorized, "SESSION_INVALID", "Invalid session token")
 			return
 		}
 
-		// Validate session by hashing token and looking up in Valkey.
 		sessionID, adminID, err := s.sessions.ValidateSession(r.Context(), rawToken)
 		if err != nil {
 			respondError(w, r, http.StatusUnauthorized, "SESSION_INVALID", "Session expired or invalid")
 			return
 		}
 
-		// Load admin record to get role for RBAC.
 		admin, err := s.admins.GetByID(r.Context(), adminID)
 		if err != nil || admin == nil {
 			respondError(w, r, http.StatusUnauthorized, "SESSION_INVALID", "Admin account not found")
@@ -134,6 +147,36 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, ctxAdminRole, admin.Role)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// authenticateAPIKey validates an API key and sets the admin context.
+func (s *Server) authenticateAPIKey(w http.ResponseWriter, r *http.Request, next http.Handler, rawKey string) {
+	keyHash := auth.HashAPIKey(rawKey)
+	apiKey, err := s.apiKeys.GetByHash(r.Context(), keyHash)
+	if err != nil {
+		s.logger.Error("api key lookup failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")
+		return
+	}
+	if apiKey == nil {
+		respondError(w, r, http.StatusUnauthorized, "API_KEY_INVALID", "Invalid or expired API key")
+		return
+	}
+
+	// Load admin for RBAC.
+	admin, err := s.admins.GetByID(r.Context(), apiKey.AdminID)
+	if err != nil || admin == nil {
+		respondError(w, r, http.StatusUnauthorized, "API_KEY_INVALID", "API key owner account not found")
+		return
+	}
+
+	// Touch last_used_at (fire-and-forget).
+	go s.apiKeys.TouchLastUsed(context.Background(), apiKey.ID)
+
+	ctx := context.WithValue(r.Context(), ctxAdminID, apiKey.AdminID)
+	ctx = context.WithValue(ctx, ctxAdminRole, admin.Role)
+	ctx = context.WithValue(ctx, ctxAPIKeyID, apiKey.ID)
+	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // extractSignedToken gets the signed token from the cookie or Authorization header.

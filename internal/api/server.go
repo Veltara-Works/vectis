@@ -49,6 +49,7 @@ type Server struct {
 	aliases      *repository.AliasRepo
 	admins       *repository.AdminRepo
 	adminDomains *repository.AdminDomainRepo
+	apiKeys      *repository.APIKeyRepo
 	audit        *repository.AuditRepo
 	alerts       *repository.AlertRepo
 
@@ -98,6 +99,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		aliases:      repository.NewAliasRepo(db),
 		admins:       repository.NewAdminRepo(db),
 		adminDomains: repository.NewAdminDomainRepo(db),
+		apiKeys:      repository.NewAPIKeyRepo(db),
 		audit:        repository.NewAuditRepo(db),
 		alerts:       repository.NewAlertRepo(db),
 		totpManager:  auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
@@ -316,6 +318,11 @@ func (s *Server) buildRouter() chi.Router {
 			r.Get("/admins", s.handleListAdmins)
 			r.With(requireSuperAdmin()).Post("/admins", s.handleCreateAdmin)
 			r.With(requireSuperAdmin()).Delete("/admins/{adminID}", s.handleDeleteAdmin)
+
+			// API keys — all roles can manage their own keys.
+			r.Get("/api-keys", s.handleListAPIKeys)
+			r.Post("/api-keys", s.handleCreateAPIKey)
+			r.Delete("/api-keys/{keyID}", s.handleRevokeAPIKey)
 
 			// Audit log — all roles (domain_admin filtered in handler).
 			r.Get("/audit", s.handleListAudit)
