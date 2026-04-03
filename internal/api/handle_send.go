@@ -110,6 +110,44 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Abuse detection: check sender mailbox suspension and rate limits.
+	senderLocalPart := extractLocalPart(req.From.Email)
+	if senderLocalPart != "" {
+		mailbox, _ := s.mailboxes.GetByEmail(r.Context(), domain.ID, senderLocalPart)
+		if mailbox != nil {
+			// Check if mailbox is suspended from sending.
+			suspended, reason, _ := s.abuseEvents.IsMailboxSuspended(r.Context(), mailbox.ID)
+			if suspended {
+				respondError(w, r, http.StatusForbidden, "MAILBOX_SUSPENDED",
+					"Sending suspended for this mailbox: "+reason)
+				return
+			}
+
+			// Rate check + spike detection.
+			if s.abuseDetector != nil {
+				check, err := s.abuseDetector.CheckAndRecord(r.Context(), mailbox.ID, domain.ID)
+				if err != nil {
+					s.logger.Error("abuse check failed", "error", err)
+					// Fail open — don't block sending on abuse check errors.
+				} else if !check.Allowed {
+					// Auto-suspend the mailbox.
+					s.abuseEvents.SuspendMailbox(r.Context(), mailbox.ID, check.Reason)
+					action := "suspend"
+					s.abuseEvents.LogEvent(r.Context(), &domain.ID, &mailbox.ID, "auto_suspend", "critical",
+						map[string]any{"reason": check.Reason, "hourly_count": check.MailboxCount}, &action)
+
+					respondError(w, r, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", check.Reason)
+					return
+				} else if check.SpikeDetected {
+					// Log spike alert but allow the send.
+					action := "alert"
+					s.abuseEvents.LogEvent(r.Context(), &domain.ID, &mailbox.ID, "rate_spike", "warn",
+						map[string]any{"mailbox_hourly": check.MailboxCount, "domain_hourly": check.DomainCount}, &action)
+				}
+			}
+		}
+	}
+
 	// Validate custom headers — only X-* allowed.
 	for k := range req.Headers {
 		if !strings.HasPrefix(k, "X-") {
@@ -190,6 +228,15 @@ func extractDomain(email string) string {
 		return ""
 	}
 	return strings.ToLower(parts[1])
+}
+
+// extractLocalPart returns the local part of an email address.
+func extractLocalPart(email string) string {
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) != 2 || parts[0] == "" {
+		return ""
+	}
+	return strings.ToLower(parts[0])
 }
 
 // canSendAsDomain checks if the authenticated user (via session or API key)

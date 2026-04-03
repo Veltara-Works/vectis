@@ -52,6 +52,7 @@ type Server struct {
 	adminDomains *repository.AdminDomainRepo
 	apiKeys      *repository.APIKeyRepo
 	webhooks     *repository.WebhookRepo
+	abuseEvents  *repository.AbuseRepo
 	audit        *repository.AuditRepo
 	alerts       *repository.AlertRepo
 
@@ -61,9 +62,10 @@ type Server struct {
 	// OIDC
 	oidcManager *auth.OIDCManager
 
-	// Mail sending + webhooks
+	// Mail sending, webhooks, abuse detection
 	mailSender        *mail.Sender
 	webhookDispatcher *mail.WebhookDispatcher
+	abuseDetector     *mail.AbuseDetector
 
 	// Background services
 	monitor      *monitor.Monitor
@@ -107,6 +109,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		adminDomains: repository.NewAdminDomainRepo(db),
 		apiKeys:      repository.NewAPIKeyRepo(db),
 		webhooks:     repository.NewWebhookRepo(db),
+		abuseEvents:  repository.NewAbuseRepo(db),
 		audit:        repository.NewAuditRepo(db),
 		alerts:       repository.NewAlertRepo(db),
 		totpManager:  auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
@@ -130,9 +133,10 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		}
 	}
 
-	// Initialize mail sender and webhook dispatcher.
+	// Initialize mail sender, webhook dispatcher, and abuse detector.
 	s.mailSender = mail.NewSender("vectis-postfix:25", cfg.Hostname, logger.With("component", "mail-sender"))
 	s.webhookDispatcher = mail.NewWebhookDispatcher(s.webhooks, logger.With("component", "webhook-dispatcher"))
+	s.abuseDetector = mail.NewAbuseDetector(vk, mail.DefaultAbuseConfig(), logger.With("component", "abuse-detector"))
 
 	// Initialize OIDC manager if providers are configured.
 	if cfg.VectisSecrets != nil && len(cfg.VectisSecrets.OIDC.Providers) > 0 && cfg.CallbackBaseURL != "" {
@@ -360,6 +364,12 @@ func (s *Server) buildRouter() chi.Router {
 
 			// Audit log — all roles (domain_admin filtered in handler).
 			r.Get("/audit", s.handleListAudit)
+
+			// Abuse detection — admin and super_admin.
+			r.With(requireAdminOrAbove()).Get("/abuse/events", s.handleListAbuseEvents)
+			r.With(requireAdminOrAbove()).Post("/abuse/events/{eventID}/resolve", s.handleResolveAbuseEvent)
+			r.With(requireAdminOrAbove()).Post("/abuse/mailboxes/{mailboxID}/suspend", s.handleSuspendMailbox)
+			r.With(requireAdminOrAbove()).Post("/abuse/mailboxes/{mailboxID}/unsuspend", s.handleUnsuspendMailbox)
 
 			// Config management — super_admin only.
 			r.With(requireSuperAdmin()).Get("/config", s.handleGetConfig)
