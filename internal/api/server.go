@@ -51,6 +51,7 @@ type Server struct {
 	admins       *repository.AdminRepo
 	adminDomains *repository.AdminDomainRepo
 	apiKeys      *repository.APIKeyRepo
+	webhooks     *repository.WebhookRepo
 	audit        *repository.AuditRepo
 	alerts       *repository.AlertRepo
 
@@ -60,8 +61,9 @@ type Server struct {
 	// OIDC
 	oidcManager *auth.OIDCManager
 
-	// Mail sending
-	mailSender *mail.Sender
+	// Mail sending + webhooks
+	mailSender        *mail.Sender
+	webhookDispatcher *mail.WebhookDispatcher
 
 	// Background services
 	monitor      *monitor.Monitor
@@ -104,6 +106,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		admins:       repository.NewAdminRepo(db),
 		adminDomains: repository.NewAdminDomainRepo(db),
 		apiKeys:      repository.NewAPIKeyRepo(db),
+		webhooks:     repository.NewWebhookRepo(db),
 		audit:        repository.NewAuditRepo(db),
 		alerts:       repository.NewAlertRepo(db),
 		totpManager:  auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
@@ -127,8 +130,9 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		}
 	}
 
-	// Initialize mail sender for outbound API.
+	// Initialize mail sender and webhook dispatcher.
 	s.mailSender = mail.NewSender("vectis-postfix:25", cfg.Hostname, logger.With("component", "mail-sender"))
+	s.webhookDispatcher = mail.NewWebhookDispatcher(s.webhooks, logger.With("component", "webhook-dispatcher"))
 
 	// Initialize OIDC manager if providers are configured.
 	if cfg.VectisSecrets != nil && len(cfg.VectisSecrets.OIDC.Providers) > 0 && cfg.CallbackBaseURL != "" {
@@ -213,11 +217,26 @@ func (s *Server) StopAuditPruner() {
 	}
 }
 
+// StartWebhookDispatcher starts the webhook retry worker.
+func (s *Server) StartWebhookDispatcher() {
+	if s.webhookDispatcher != nil {
+		s.webhookDispatcher.Start()
+	}
+}
+
+// StopWebhookDispatcher stops the webhook retry worker.
+func (s *Server) StopWebhookDispatcher() {
+	if s.webhookDispatcher != nil {
+		s.webhookDispatcher.Stop()
+	}
+}
+
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("shutting down API server")
 	s.StopMonitor()
 	s.StopAuditPruner()
+	s.StopWebhookDispatcher()
 	return s.httpServer.Shutdown(ctx)
 }
 
@@ -333,6 +352,11 @@ func (s *Server) buildRouter() chi.Router {
 			r.Get("/api-keys", s.handleListAPIKeys)
 			r.Post("/api-keys", s.handleCreateAPIKey)
 			r.Delete("/api-keys/{keyID}", s.handleRevokeAPIKey)
+
+			// Webhooks — admin and super_admin.
+			r.With(requireAdminOrAbove()).Get("/webhooks", s.handleListWebhooks)
+			r.With(requireAdminOrAbove()).Post("/webhooks", s.handleCreateWebhook)
+			r.With(requireAdminOrAbove()).Delete("/webhooks/{webhookID}", s.handleDeleteWebhook)
 
 			// Audit log — all roles (domain_admin filtered in handler).
 			r.Get("/audit", s.handleListAudit)

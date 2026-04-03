@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/mail"
@@ -158,6 +159,26 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 			"subject":    req.Subject,
 			"api_key":    getAPIKeyID(r.Context()) != "",
 		}, &ip)
+
+	// Fire mail.sent webhook event.
+	if s.webhookDispatcher != nil {
+		toEmails := make([]string, len(req.To))
+		for i, a := range req.To {
+			toEmails[i] = a.Email
+		}
+		s.webhookDispatcher.Dispatch(r.Context(), domain.ID, mail.WebhookEvent{
+			ID:        result.MessageID,
+			Event:     "mail.sent",
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Data: map[string]any{
+				"message_id": result.MessageID,
+				"from":       req.From.Email,
+				"to":         toEmails,
+				"subject":    req.Subject,
+				"domain":     senderDomain,
+			},
+		})
+	}
 
 	respond(w, r, http.StatusOK, sendResponse{MessageID: result.MessageID})
 }
