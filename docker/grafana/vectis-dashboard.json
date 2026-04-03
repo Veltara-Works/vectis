@@ -1,0 +1,91 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Emails Sent (total)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [{ "expr": "vectis_emails_sent_total", "legendFormat": "Sent" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }] } } }
+    },
+    {
+      "title": "Emails Received (total)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [{ "expr": "vectis_emails_received_total", "legendFormat": "Received" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue", "value": null }] } } }
+    },
+    {
+      "title": "Spam Detected (total)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [{ "expr": "vectis_emails_spam_total", "legendFormat": "Spam" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "orange", "value": null }, { "color": "red", "value": 100 }] } } }
+    },
+    {
+      "title": "Sends Suspended (abuse)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [{ "expr": "vectis_emails_send_suspended_total", "legendFormat": "Suspended" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } }
+    },
+    {
+      "title": "Domains / Mailboxes / Aliases",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+      "targets": [
+        { "expr": "vectis_domains_active", "legendFormat": "Domains" },
+        { "expr": "vectis_mailboxes_total", "legendFormat": "Mailboxes" },
+        { "expr": "vectis_aliases_total", "legendFormat": "Aliases" }
+      ]
+    },
+    {
+      "title": "Email Traffic Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "rate(vectis_emails_sent_total[5m]) * 60", "legendFormat": "Sent/min" },
+        { "expr": "rate(vectis_emails_received_total[5m]) * 60", "legendFormat": "Received/min" },
+        { "expr": "rate(vectis_emails_spam_total[5m]) * 60", "legendFormat": "Spam/min" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "msg/min" } }
+    },
+    {
+      "title": "Database Connection Pool",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "expr": "vectis_db_pool_in_use", "legendFormat": "In Use" },
+        { "expr": "vectis_db_pool_size", "legendFormat": "Max Size" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Webhook Deliveries",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "rate(vectis_webhook_deliveries_total{status=\"success\"}[5m]) * 60", "legendFormat": "Success/min" },
+        { "expr": "rate(vectis_webhook_deliveries_total{status=\"failed\"}[5m]) * 60", "legendFormat": "Failed/min" }
+      ]
+    },
+    {
+      "title": "Abuse Events (unresolved)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [{ "expr": "vectis_abuse_events_unresolved", "legendFormat": "Unresolved" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] } } }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["vectis", "mail"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Vectis Mail Server",
+  "uid": "vectis-overview"
+}

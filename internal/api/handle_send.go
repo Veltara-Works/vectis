@@ -7,6 +7,7 @@ import (
 
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/mail"
+	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
 )
 
 type sendRequest struct {
@@ -136,6 +137,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 					s.abuseEvents.LogEvent(r.Context(), &domain.ID, &mailbox.ID, "auto_suspend", "critical",
 						map[string]any{"reason": check.Reason, "hourly_count": check.MailboxCount}, &action)
 
+					vectismetrics.EmailsSendSuspended.Inc()
 					respondError(w, r, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", check.Reason)
 					return
 				} else if check.SpikeDetected {
@@ -185,6 +187,8 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 			"Failed to send message: "+err.Error())
 		return
 	}
+
+	vectismetrics.EmailsSent.Inc()
 
 	// Audit log.
 	adminID := getAdminID(r.Context())

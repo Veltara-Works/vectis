@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Veltara-Works/vectis/internal/mail"
+	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
 )
 
 // inboundNotification is the payload POSTed by the Postfix notification script
@@ -53,6 +54,8 @@ func (s *Server) handleInboundNotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	vectismetrics.EmailsReceived.Inc()
+
 	// Fire mail.received webhook event.
 	if s.webhookDispatcher != nil {
 		s.webhookDispatcher.Dispatch(r.Context(), domain.ID, mail.WebhookEvent{
@@ -72,6 +75,7 @@ func (s *Server) handleInboundNotify(w http.ResponseWriter, r *http.Request) {
 
 		// Fire mail.spam event if Rspamd flagged it.
 		if notif.SpamScore > 0 && notif.SpamAction != "" && notif.SpamAction != "no action" {
+			vectismetrics.EmailsSpam.Inc()
 			s.webhookDispatcher.Dispatch(r.Context(), domain.ID, mail.WebhookEvent{
 				ID:        notif.MessageID,
 				Event:     "mail.spam",

@@ -13,6 +13,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valkey-io/valkey-go"
 
 	"github.com/Veltara-Works/vectis/internal/audit"
@@ -20,6 +22,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/backup"
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/mail"
+	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
 	"github.com/Veltara-Works/vectis/internal/monitor"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -134,6 +137,9 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 			s.orchClient = orchestrator.NewClient(cfg.OrchestratorURL, cfg.OrchestratorToken)
 		}
 	}
+
+	// Register Prometheus metrics collector.
+	prometheus.MustRegister(vectismetrics.NewCollector(db, logger.With("component", "metrics")))
 
 	// Initialize mail sender, webhook dispatcher, and abuse detector.
 	s.mailSender = mail.NewSender("vectis-postfix:25", cfg.Hostname, logger.With("component", "mail-sender"))
@@ -293,6 +299,7 @@ func (s *Server) buildRouter() chi.Router {
 		// Public endpoints.
 		r.Get("/health", s.handleHealth)
 		r.Get("/version", s.handleVersion)
+		r.Handle("/metrics/prometheus", promhttp.Handler())
 		r.With(chimw.Throttle(5)).Post("/auth/login", s.handleLogin)
 
 		// Internal service-to-service endpoints (token-authenticated, not session).
