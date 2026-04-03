@@ -20,6 +20,7 @@ type VectisConfig struct {
 	Alerts       AlertsConfig        `yaml:"alerts"`
 	Audit        AuditConfig         `yaml:"audit"`
 	Webmail      WebmailConfig       `yaml:"webmail"`
+	Observability ObservabilityConfig `yaml:"observability"`
 	RateLimits   RateLimitConfig     `yaml:"rate_limits"`
 }
 
@@ -114,6 +115,12 @@ type AlertWebhookConfig struct {
 // AuditConfig controls audit log retention and pruning.
 type AuditConfig struct {
 	RetentionDays int `yaml:"retention_days"` // entries older than this are pruned; default 90, 0 = no pruning
+}
+
+// ObservabilityConfig controls optional Loki + Promtail log aggregation.
+type ObservabilityConfig struct {
+	LokiEnabled     bool `yaml:"loki_enabled"`      // include Loki + Promtail containers; default false
+	LokiRetainDays  int  `yaml:"loki_retain_days"`  // log retention in days; default 30
 }
 
 // WebmailConfig controls the optional Roundcube webmail container.

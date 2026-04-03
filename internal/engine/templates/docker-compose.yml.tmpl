@@ -214,6 +214,48 @@ services:
         max-size: "{{ .Logging.MaxSizeMB }}m"
         max-file: "{{ .Logging.MaxFiles }}"
 {{ end }}
+{{ if .Observability.LokiEnabled }}
+  loki:
+    image: grafana/loki:3.4
+    container_name: vectis-loki
+    restart: unless-stopped
+    networks:
+      - vectis-data
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - loki-config:/etc/loki:ro
+      - loki-data:/loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:3100/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: {{ .Logging.Driver }}
+      options:
+        max-size: "{{ .Logging.MaxSizeMB }}m"
+        max-file: "{{ .Logging.MaxFiles }}"
+
+  promtail:
+    image: grafana/promtail:3.4
+    container_name: vectis-promtail
+    restart: unless-stopped
+    networks:
+      - vectis-data
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - promtail-config:/etc/promtail:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+    logging:
+      driver: {{ .Logging.Driver }}
+      options:
+        max-size: "{{ .Logging.MaxSizeMB }}m"
+        max-file: "{{ .Logging.MaxFiles }}"
+{{ end }}
 {{ if ne .ClamAV.Profile "none" }}
   clamav:
     image: ghcr.io/veltara-works/vectis-clamav:latest
@@ -341,4 +383,9 @@ volumes:
   webmail-data:
   webmail-skin:
   webmail-nginx-config:
+{{ end }}
+{{ if .Observability.LokiEnabled }}
+  loki-config:
+  loki-data:
+  promtail-config:
 {{ end }}

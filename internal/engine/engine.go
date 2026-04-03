@@ -28,8 +28,9 @@ type TemplateData struct {
 	Dovecot    config.DovecotConfig
 	Logging    config.LoggingConfig
 	Admin      config.AdminConfig
-	Webmail    config.WebmailConfig
-	RateLimits config.RateLimitConfig
+	Webmail       config.WebmailConfig
+	Observability config.ObservabilityConfig
+	RateLimits    config.RateLimitConfig
 
 	// From secrets.yaml
 	Database   config.DatabaseSecrets
@@ -57,8 +58,9 @@ func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, do
 		Dovecot:    cfg.Dovecot,
 		Logging:    cfg.Logging,
 		Admin:      cfg.Admin,
-		Webmail:    cfg.Webmail,
-		RateLimits: rateLimits,
+		Webmail:       cfg.Webmail,
+		Observability: cfg.Observability,
+		RateLimits:    rateLimits,
 		Database:   secrets.Database,
 		Valkey:     secrets.Valkey,
 		API:        secrets.API,
