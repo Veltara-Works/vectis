@@ -46,7 +46,7 @@ services:
   postfix:
     image: vectis-postfix:dev
     container_name: vectis-postfix
-    hostname: mail-dev.vectismail.com
+    hostname: mail.vectismail.com
     restart: unless-stopped
     ports:
       - "25:25"
