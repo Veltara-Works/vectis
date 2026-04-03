@@ -15,6 +15,7 @@ export default function MailboxesPage() {
   const [form, setForm] = useState({ local_part: '', password: '', display_name: '', quota_mb: '1024' })
   const [resetTarget, setResetTarget] = useState<{ id: string; email: string } | null>(null)
   const [resetPassword, setResetPassword] = useState('')
+  const [impersonation, setImpersonation] = useState<{ username: string; password: string; imap_host: string; imap_port: number; expires_at: string } | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
@@ -78,6 +79,17 @@ export default function MailboxesPage() {
       setResetPassword('')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to reset password')
+    }
+  }
+
+  const handleImpersonate = async (id: string, email: string) => {
+    setError(''); setSuccess('')
+    try {
+      const creds = await api.impersonate(id)
+      setImpersonation({ ...creds, username: creds.username })
+      setSuccess(`Temporary IMAP credentials generated for ${email}`)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to generate impersonation credentials')
     }
   }
 
@@ -150,6 +162,23 @@ export default function MailboxesPage() {
         </div>
       )}
 
+      {impersonation && (
+        <div className="card" style={{ borderColor: '#3b82f6' }}>
+          <h3 style={{ marginTop: 0 }}>Temporary IMAP Credentials</h3>
+          <p className="muted">Use these credentials to access this mailbox via any IMAP client. They expire automatically.</p>
+          <table>
+            <tbody>
+              <tr><td><strong>IMAP Host</strong></td><td className="mono">{impersonation.imap_host}</td></tr>
+              <tr><td><strong>IMAP Port</strong></td><td className="mono">{impersonation.imap_port}</td></tr>
+              <tr><td><strong>Username</strong></td><td className="mono">{impersonation.username}</td></tr>
+              <tr><td><strong>Password</strong></td><td className="mono">{impersonation.password}</td></tr>
+              <tr><td><strong>Expires</strong></td><td>{new Date(impersonation.expires_at).toLocaleString()}</td></tr>
+            </tbody>
+          </table>
+          <button className="btn btn-sm" style={{ marginTop: '0.5rem' }} onClick={() => setImpersonation(null)}>Dismiss</button>
+        </div>
+      )}
+
       <div className="card">
         <table>
           <thead>
@@ -164,6 +193,7 @@ export default function MailboxesPage() {
                 <td><span className={`badge ${m.active ? 'badge-success' : 'badge-danger'}`}>{m.active ? 'yes' : 'no'}</span></td>
                 <td className="text-muted">{new Date(m.created_at).toLocaleDateString()}</td>
                 <td style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn btn-sm" onClick={() => handleImpersonate(m.id, `${m.local_part}@${domainName}`)}>View as User</button>
                   <button className="btn btn-sm" onClick={() => { setResetTarget({ id: m.id, email: `${m.local_part}@${domainName}` }); setResetPassword('') }}>Reset Password</button>
                   <button className="btn btn-sm btn-danger" onClick={() => handleDelete(m.id, m.local_part)}>Delete</button>
                 </td>

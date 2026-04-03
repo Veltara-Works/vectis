@@ -1,0 +1,218 @@
+package mail
+
+import (
+	"bufio"
+	"encoding/base64"
+	"fmt"
+	"log/slog"
+	"net"
+	"strings"
+	"time"
+)
+
+// SieveClient manages Sieve filter rules via the ManageSieve protocol (RFC 5804).
+// Connects to Dovecot's ManageSieve service on the internal network.
+type SieveClient struct {
+	host   string // e.g. "vectis-dovecot"
+	port   string // e.g. "4190"
+	logger *slog.Logger
+}
+
+// SieveScript represents a named Sieve filter script.
+type SieveScript struct {
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+}
+
+// NewSieveClient creates a new ManageSieve client.
+func NewSieveClient(host, port string, logger *slog.Logger) *SieveClient {
+	return &SieveClient{host: host, port: port, logger: logger}
+}
+
+// ListScripts returns all Sieve scripts for the given user.
+func (c *SieveClient) ListScripts(user, password string) ([]SieveScript, error) {
+	conn, reader, err := c.connect(user, password)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	if _, err := fmt.Fprintf(conn, "LISTSCRIPTS\r\n"); err != nil {
+		return nil, fmt.Errorf("send LISTSCRIPTS: %w", err)
+	}
+
+	var scripts []SieveScript
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("read LISTSCRIPTS: %w", err)
+		}
+		line = strings.TrimSpace(line)
+
+		if strings.HasPrefix(line, "OK") {
+			break
+		}
+		if strings.HasPrefix(line, "NO") {
+			return nil, fmt.Errorf("LISTSCRIPTS failed: %s", line)
+		}
+
+		// Format: "scriptname" [ACTIVE]
+		if strings.HasPrefix(line, "\"") {
+			name := extractQuoted(line)
+			active := strings.Contains(line, "ACTIVE")
+			scripts = append(scripts, SieveScript{Name: name, Active: active})
+		}
+	}
+	return scripts, nil
+}
+
+// GetScript returns the content of a named Sieve script.
+func (c *SieveClient) GetScript(user, password, name string) (string, error) {
+	conn, reader, err := c.connect(user, password)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	if _, err := fmt.Fprintf(conn, "GETSCRIPT \"%s\"\r\n", name); err != nil {
+		return "", fmt.Errorf("send GETSCRIPT: %w", err)
+	}
+
+	var content strings.Builder
+	// First line is the literal size: {N+}
+	firstLine, _ := reader.ReadString('\n')
+	firstLine = strings.TrimSpace(firstLine)
+	if strings.HasPrefix(firstLine, "NO") {
+		return "", fmt.Errorf("GETSCRIPT failed: %s", firstLine)
+	}
+
+	// Read script content until OK line.
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			break
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "OK" || strings.HasPrefix(trimmed, "OK ") {
+			break
+		}
+		content.WriteString(line)
+	}
+	return strings.TrimSpace(content.String()), nil
+}
+
+// PutScript uploads or replaces a Sieve script.
+func (c *SieveClient) PutScript(user, password, name, content string) error {
+	conn, reader, err := c.connect(user, password)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	// PUTSCRIPT "name" {size+}\r\ncontent\r\n
+	if _, err := fmt.Fprintf(conn, "PUTSCRIPT \"%s\" {%d+}\r\n%s\r\n", name, len(content), content); err != nil {
+		return fmt.Errorf("send PUTSCRIPT: %w", err)
+	}
+
+	resp, _ := reader.ReadString('\n')
+	resp = strings.TrimSpace(resp)
+	if !strings.HasPrefix(resp, "OK") {
+		return fmt.Errorf("PUTSCRIPT failed: %s", resp)
+	}
+	return nil
+}
+
+// SetActive activates a named script (deactivates any previously active script).
+func (c *SieveClient) SetActive(user, password, name string) error {
+	conn, reader, err := c.connect(user, password)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := fmt.Fprintf(conn, "SETACTIVE \"%s\"\r\n", name); err != nil {
+		return fmt.Errorf("send SETACTIVE: %w", err)
+	}
+
+	resp, _ := reader.ReadString('\n')
+	resp = strings.TrimSpace(resp)
+	if !strings.HasPrefix(resp, "OK") {
+		return fmt.Errorf("SETACTIVE failed: %s", resp)
+	}
+	return nil
+}
+
+// DeleteScript removes a named script.
+func (c *SieveClient) DeleteScript(user, password, name string) error {
+	conn, reader, err := c.connect(user, password)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := fmt.Fprintf(conn, "DELETESCRIPT \"%s\"\r\n", name); err != nil {
+		return fmt.Errorf("send DELETESCRIPT: %w", err)
+	}
+
+	resp, _ := reader.ReadString('\n')
+	resp = strings.TrimSpace(resp)
+	if !strings.HasPrefix(resp, "OK") {
+		return fmt.Errorf("DELETESCRIPT failed: %s", resp)
+	}
+	return nil
+}
+
+func (c *SieveClient) connect(user, password string) (net.Conn, *bufio.Reader, error) {
+	addr := net.JoinHostPort(c.host, c.port)
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dial managesieve %s: %w", addr, err)
+	}
+
+	reader := bufio.NewReader(conn)
+
+	// Read server greeting (multi-line, ends with OK).
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			conn.Close()
+			return nil, nil, fmt.Errorf("read greeting: %w", err)
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "OK") {
+			break
+		}
+	}
+
+	// AUTHENTICATE PLAIN.
+	authStr := fmt.Sprintf("\x00%s\x00%s", user, password)
+	encoded := encodeBase64([]byte(authStr))
+	if _, err := fmt.Fprintf(conn, "AUTHENTICATE \"PLAIN\" \"%s\"\r\n", encoded); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("send AUTHENTICATE: %w", err)
+	}
+
+	resp, _ := reader.ReadString('\n')
+	resp = strings.TrimSpace(resp)
+	if !strings.HasPrefix(resp, "OK") {
+		conn.Close()
+		return nil, nil, fmt.Errorf("authentication failed: %s", resp)
+	}
+
+	return conn, reader, nil
+}
+
+func extractQuoted(s string) string {
+	start := strings.Index(s, "\"")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(s[start+1:], "\"")
+	if end < 0 {
+		return ""
+	}
+	return s[start+1 : start+1+end]
+}
+
+func encodeBase64(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
+}

@@ -118,10 +118,11 @@ type AuditConfig struct {
 	RetentionDays int `yaml:"retention_days"` // entries older than this are pruned; default 90, 0 = no pruning
 }
 
-// ObservabilityConfig controls optional Loki + Promtail log aggregation.
+// ObservabilityConfig controls optional Loki + Promtail log aggregation and Grafana.
 type ObservabilityConfig struct {
 	LokiEnabled     bool `yaml:"loki_enabled"`      // include Loki + Promtail containers; default false
 	LokiRetainDays  int  `yaml:"loki_retain_days"`  // log retention in days; default 30
+	GrafanaEnabled  bool `yaml:"grafana_enabled"`   // include Grafana container; default false
 }
 
 // WebmailConfig controls the optional Roundcube webmail container.

@@ -57,6 +57,18 @@ var (
 		Name:      "rbl_listings_current",
 		Help:      "Number of RBL/DNSBL listings for server IPs",
 	})
+
+	EmailOpens = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "email_opens_total",
+		Help:      "Total email open events tracked via pixel",
+	})
+
+	EmailClicks = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "email_clicks_total",
+		Help:      "Total email click events tracked via redirect",
+	})
 )
 
 func init() {
@@ -70,5 +82,7 @@ func init() {
 		BatchMessagesSent,
 		FBLComplaints,
 		RBLListings,
+		EmailOpens,
+		EmailClicks,
 	)
 }

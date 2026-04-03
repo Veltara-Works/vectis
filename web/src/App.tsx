@@ -12,6 +12,8 @@ import AuditLogPage from './pages/AuditLog.tsx'
 import UpdatesPage from './pages/Updates.tsx'
 import BackupsPage from './pages/Backups.tsx'
 import SessionsPage from './pages/Sessions.tsx'
+import FilterRulesPage from './pages/FilterRules.tsx'
+import LogSearchPage from './pages/LogSearch.tsx'
 
 interface AdminProfile {
   id: string
@@ -49,8 +51,10 @@ export default function App() {
     { path: '/admin/mailboxes', label: 'Mailboxes', show: true },
     { path: '/admin/aliases', label: 'Aliases', show: true },
     { path: '/admin/deliverability', label: 'Deliverability', show: true },
+    { path: '/admin/filters', label: 'Filter Rules', show: true },
     { path: '/admin/admins', label: 'Admins', show: isAdminOrAbove },
     { path: '/admin/audit', label: 'Audit Log', show: isAdminOrAbove },
+    { path: '/admin/logs', label: 'Log Search', show: isSuperAdmin },
     { path: '/admin/updates', label: 'Updates', show: isSuperAdmin },
     { path: '/admin/backups', label: 'Backups', show: isSuperAdmin },
     { path: '/admin/sessions', label: 'Sessions', show: true },
@@ -78,8 +82,10 @@ export default function App() {
           <Route path="/admin/mailboxes" element={<MailboxesPage />} />
           <Route path="/admin/aliases" element={<AliasesPage />} />
           <Route path="/admin/deliverability" element={<DeliverabilityPage />} />
+          <Route path="/admin/filters" element={<FilterRulesPage />} />
           {isAdminOrAbove && <Route path="/admin/admins" element={<AdminsPage />} />}
           {isAdminOrAbove && <Route path="/admin/audit" element={<AuditLogPage />} />}
+          {isSuperAdmin && <Route path="/admin/logs" element={<LogSearchPage />} />}
           {isSuperAdmin && <Route path="/admin/updates" element={<UpdatesPage />} />}
           {isSuperAdmin && <Route path="/admin/backups" element={<BackupsPage />} />}
           <Route path="/admin/sessions" element={<SessionsPage />} />

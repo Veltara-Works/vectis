@@ -78,6 +78,9 @@ type Server struct {
 	webhookDispatcher *mail.WebhookDispatcher
 	abuseDetector     *mail.AbuseDetector
 
+	// Sieve filter management
+	sieveClient *mail.SieveClient
+
 	// Deliverability services
 	rblMonitor    *mail.RBLMonitor
 	warmupManager *mail.WarmupManager
@@ -182,6 +185,9 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		s.rollingCoord = cluster.NewRollingCoordinator(db, s.nodeMgr, logger.With("component", "rolling-coordinator"))
 		s.clusterHealth = cluster.NewHealthChecker(s.nodeMgr, logger.With("component", "cluster-health"))
 	}
+
+	// Initialize Sieve client for ManageSieve protocol.
+	s.sieveClient = mail.NewSieveClient("vectis-dovecot", "4190", logger.With("component", "sieve-client"))
 
 	// Initialize RBL monitor if server IPs are configured.
 	if len(cfg.ServerIPs) > 0 {
@@ -417,6 +423,10 @@ func (s *Server) buildRouter() chi.Router {
 		// Internal service-to-service endpoints (token-authenticated, not session).
 		r.Post("/internal/inbound", s.handleInboundNotify)
 
+		// Public tracking endpoints (no auth — must work in email clients).
+		r.Get("/track/open/{token}", s.handleTrackOpen)
+		r.Get("/track/click/{token}", s.handleTrackClick)
+
 		// OIDC SSO (public — browser redirects).
 		r.Get("/auth/oidc/providers", s.handleOIDCProviders)
 		r.Get("/auth/oidc/login/{provider}", s.handleOIDCLogin)
@@ -493,6 +503,19 @@ func (s *Server) buildRouter() chi.Router {
 
 			// Audit log — all roles (domain_admin filtered in handler).
 			r.Get("/audit", s.handleListAudit)
+			r.With(requireSuperAdmin()).Get("/audit/export", s.handleExportAudit)
+
+			// Sieve filter management — all roles (domain scoping in handler).
+			r.Get("/mailboxes/{mailboxID}/sieve", s.handleListSieveScripts)
+			r.Get("/mailboxes/{mailboxID}/sieve/{scriptName}", s.handleGetSieveScript)
+			r.Put("/mailboxes/{mailboxID}/sieve", s.handlePutSieveScript)
+			r.Delete("/mailboxes/{mailboxID}/sieve/{scriptName}", s.handleDeleteSieveScript)
+
+			// Log search — super_admin only.
+			r.With(requireSuperAdmin()).Get("/logs/search", s.handleLogSearch)
+
+			// Engagement tracking stats — admin and super_admin.
+			r.With(requireAdminOrAbove()).Get("/tracking/stats", s.handleTrackingStats)
 
 			// Abuse detection — admin and super_admin.
 			r.With(requireAdminOrAbove()).Get("/abuse/dashboard", s.handleAbuseDashboard)

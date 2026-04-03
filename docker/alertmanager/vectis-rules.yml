@@ -1,0 +1,142 @@
+## Vectis Mail Server — Alertmanager Rule Templates
+## Ship with Vectis and import into Prometheus Alertmanager.
+## Customize thresholds to match your deployment.
+
+groups:
+  - name: vectis-mail
+    rules:
+      # ── Service Health ───────────────────────────────────────────
+      - alert: VectisServiceDown
+        expr: up{job="vectis"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vectis service is down"
+          description: "The Vectis API server has been unreachable for 2 minutes."
+
+      # ── Mail Queue ───────────────────────────────────────────────
+      - alert: VectisMailQueueHigh
+        expr: vectis_mail_queue_size > 500
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mail queue is growing"
+          description: "Postfix mail queue has {{ $value }} messages (threshold: 500) for 10 minutes."
+
+      - alert: VectisMailQueueCritical
+        expr: vectis_mail_queue_size > 2000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Mail queue critically high"
+          description: "Postfix mail queue has {{ $value }} messages (threshold: 2000)."
+
+      # ── Spam ─────────────────────────────────────────────────────
+      - alert: VectisSpamRateHigh
+        expr: rate(vectis_emails_spam_total[1h]) / rate(vectis_emails_received_total[1h]) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High spam rate detected"
+          description: "More than 50% of inbound mail is classified as spam."
+
+      # ── Abuse Detection ──────────────────────────────────────────
+      - alert: VectisAbuseSuspension
+        expr: increase(vectis_emails_send_suspended_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mailbox auto-suspended for abuse"
+          description: "{{ $value }} mailbox(es) were auto-suspended for exceeding sending limits."
+
+      - alert: VectisAbuseEventsUnresolved
+        expr: vectis_abuse_events_unresolved > 10
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unresolved abuse events accumulating"
+          description: "{{ $value }} unresolved abuse events. Review in the admin panel."
+
+      # ── Database ─────────────────────────────────────────────────
+      - alert: VectisDBPoolExhausted
+        expr: vectis_db_pool_in_use / vectis_db_pool_size > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database connection pool near capacity"
+          description: "{{ $value | humanizePercentage }} of DB pool in use."
+
+      # ── Disk ─────────────────────────────────────────────────────
+      - alert: VectisDiskSpaceWarning
+        expr: vectis_disk_usage_percent{mount="/var/vectis/mail"} > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space running low"
+          description: "Mail storage at {{ $value }}% capacity."
+
+      - alert: VectisDiskSpaceCritical
+        expr: vectis_disk_usage_percent{mount="/var/vectis/mail"} > 95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk space critically low"
+          description: "Mail storage at {{ $value }}% capacity. Immediate action required."
+
+      # ── TLS Certificate ──────────────────────────────────────────
+      - alert: VectisCertExpiringSoon
+        expr: vectis_cert_expiry_days < 14
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS certificate expiring soon"
+          description: "Certificate expires in {{ $value }} days."
+
+      - alert: VectisCertExpired
+        expr: vectis_cert_expiry_days < 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TLS certificate has expired"
+          description: "Certificate expired {{ $value | humanize }} days ago."
+
+      # ── Webhooks ─────────────────────────────────────────────────
+      - alert: VectisWebhookFailureRate
+        expr: rate(vectis_webhook_deliveries_total{status="failed"}[1h]) / rate(vectis_webhook_deliveries_total[1h]) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High webhook failure rate"
+          description: "More than 50% of webhook deliveries are failing."
+
+      # ── RBL Monitoring ───────────────────────────────────────────
+      - alert: VectisIPBlacklisted
+        expr: vectis_rbl_listings_current > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Server IP listed on DNS blacklist"
+          description: "{{ $value }} RBL listing(s) detected. Check /deliverability/rbl for details."
+
+      # ── Engagement ───────────────────────────────────────────────
+      - alert: VectisNoEmailsSent
+        expr: increase(vectis_emails_sent_total[24h]) == 0
+        for: 24h
+        labels:
+          severity: info
+        annotations:
+          summary: "No emails sent in 24 hours"
+          description: "Zero outbound emails in the last 24 hours. This may be normal for low-traffic servers."

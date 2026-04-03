@@ -160,4 +160,49 @@ export const api = {
       return json.data
     })
   },
+
+  // Sieve filter management
+  listSieveScripts: (mailboxId: string) =>
+    request<Array<{ name: string; active: boolean }>>('GET', `/mailboxes/${mailboxId}/sieve`),
+  getSieveScript: (mailboxId: string, name: string) =>
+    request<{ name: string; content: string }>('GET', `/mailboxes/${mailboxId}/sieve/${name}`),
+  putSieveScript: (mailboxId: string, name: string, content: string, active?: boolean) =>
+    request<{ status: string; name: string }>('PUT', `/mailboxes/${mailboxId}/sieve`, { name, content, active }),
+  deleteSieveScript: (mailboxId: string, name: string) =>
+    request<void>('DELETE', `/mailboxes/${mailboxId}/sieve/${name}`),
+
+  // Audit export
+  auditExportUrl: (format: string, from?: string, to?: string) => {
+    const q = new URLSearchParams({ format })
+    if (from) q.set('from', from)
+    if (to) q.set('to', to)
+    return `${BASE}/audit/export?${q.toString()}`
+  },
+
+  // Log search
+  searchLogs: (params: { service?: string; pattern?: string; query?: string; limit?: number }) => {
+    const q = new URLSearchParams()
+    if (params.service) q.set('service', params.service)
+    if (params.pattern) q.set('pattern', params.pattern)
+    if (params.query) q.set('query', params.query)
+    if (params.limit) q.set('limit', String(params.limit))
+    return request<unknown>('GET', `/logs/search?${q.toString()}`)
+  },
+
+  // Analytics
+  analytics: (params?: { domain_id?: string; period?: string; granularity?: string }) => {
+    const q = new URLSearchParams()
+    if (params?.domain_id) q.set('domain_id', params.domain_id)
+    if (params?.period) q.set('period', params.period)
+    if (params?.granularity) q.set('granularity', params.granularity)
+    return request<unknown>('GET', `/analytics?${q.toString()}`)
+  },
+
+  // Impersonation
+  impersonate: (mailboxId: string) =>
+    request<{ imap_host: string; imap_port: number; username: string; password: string; expires_at: string; expires_in_seconds: number }>(
+      'POST', `/mailboxes/${mailboxId}/impersonate`
+    ),
+  revokeImpersonation: (mailboxId: string) =>
+    request<{ status: string }>('DELETE', `/mailboxes/${mailboxId}/impersonate`),
 }

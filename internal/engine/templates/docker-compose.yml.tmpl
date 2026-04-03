@@ -256,6 +256,36 @@ services:
         max-size: "{{ .Logging.MaxSizeMB }}m"
         max-file: "{{ .Logging.MaxFiles }}"
 {{ end }}
+{{ if .Observability.GrafanaEnabled }}
+  grafana:
+    image: grafana/grafana:11.5
+    container_name: vectis-grafana
+    restart: unless-stopped
+    networks:
+      - vectis-frontend
+      - vectis-data
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: vectis
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "https://{{ .Hostname }}/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: {{ .Logging.Driver }}
+      options:
+        max-size: "{{ .Logging.MaxSizeMB }}m"
+        max-file: "{{ .Logging.MaxFiles }}"
+{{ end }}
 {{ if ne .ClamAV.Profile "none" }}
   clamav:
     image: ghcr.io/veltara-works/vectis-clamav:latest
@@ -408,6 +438,9 @@ volumes:
   snapshots:
 {{ if .Cluster.PgBouncer.Enabled }}
   pgbouncer-config:
+{{ end }}
+{{ if .Observability.GrafanaEnabled }}
+  grafana-data:
 {{ end }}
 {{ if .Webmail.Enabled }}
   webmail-config:
