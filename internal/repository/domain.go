@@ -13,16 +13,18 @@ import (
 
 // Domain represents a mail domain.
 type Domain struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Active        bool      `json:"active"`
-	DKIMEnabled   bool      `json:"dkim_enabled"`
-	DKIMSelector  string    `json:"dkim_selector"`
-	DKIMKeyPath   *string   `json:"dkim_key_path,omitempty"`
-	SpamThreshold float64   `json:"spam_threshold"`
-	MaxMailboxes  *int      `json:"max_mailboxes,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID                 string    `json:"id"`
+	Name               string    `json:"name"`
+	Active             bool      `json:"active"`
+	DKIMEnabled        bool      `json:"dkim_enabled"`
+	DKIMSelector       string    `json:"dkim_selector"`
+	DKIMKeyPath        *string   `json:"dkim_key_path,omitempty"`
+	SpamThreshold      float64   `json:"spam_threshold"`
+	MaxMailboxes       *int      `json:"max_mailboxes,omitempty"`
+	VerificationStatus string    `json:"verification_status"`
+	VerificationToken  *string   `json:"verification_token,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // DomainCreate holds fields for creating a domain.
@@ -34,12 +36,13 @@ type DomainCreate struct {
 
 // DomainUpdate holds fields for updating a domain.
 type DomainUpdate struct {
-	Active        *bool
-	DKIMEnabled   *bool
-	DKIMSelector  *string
-	DKIMKeyPath   *string
-	SpamThreshold *float64
-	MaxMailboxes  *int
+	Active             *bool
+	DKIMEnabled        *bool
+	DKIMSelector       *string
+	DKIMKeyPath        *string
+	SpamThreshold      *float64
+	MaxMailboxes       *int
+	VerificationStatus *string
 }
 
 // DomainRepo handles domain CRUD operations.
@@ -54,13 +57,16 @@ func NewDomainRepo(db *pgxpool.Pool) *DomainRepo {
 
 // Create inserts a new domain.
 func (r *DomainRepo) Create(ctx context.Context, input DomainCreate) (*Domain, error) {
+	token := types.NewVerificationToken()
 	d := &Domain{
-		ID:            types.NewUUIDv7(),
-		Name:          input.Name,
-		Active:        true,
-		DKIMEnabled:   true,
-		DKIMSelector:  "default",
-		SpamThreshold: 15.0,
+		ID:                 types.NewUUIDv7(),
+		Name:               input.Name,
+		Active:             true,
+		DKIMEnabled:        true,
+		DKIMSelector:       "default",
+		SpamThreshold:      15.0,
+		VerificationStatus: "pending",
+		VerificationToken:  &token,
 	}
 	if input.SpamThreshold != nil {
 		d.SpamThreshold = *input.SpamThreshold
@@ -74,9 +80,9 @@ func (r *DomainRepo) Create(ctx context.Context, input DomainCreate) (*Domain, e
 	d.UpdatedAt = now
 
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO domains (id, name, active, dkim_enabled, dkim_selector, spam_threshold, max_mailboxes, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		d.ID, d.Name, d.Active, d.DKIMEnabled, d.DKIMSelector, d.SpamThreshold, d.MaxMailboxes, d.CreatedAt, d.UpdatedAt,
+		`INSERT INTO domains (id, name, active, dkim_enabled, dkim_selector, spam_threshold, max_mailboxes, verification_status, verification_token, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		d.ID, d.Name, d.Active, d.DKIMEnabled, d.DKIMSelector, d.SpamThreshold, d.MaxMailboxes, d.VerificationStatus, d.VerificationToken, d.CreatedAt, d.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert domain: %w", err)
@@ -84,15 +90,23 @@ func (r *DomainRepo) Create(ctx context.Context, input DomainCreate) (*Domain, e
 	return d, nil
 }
 
+// domainCols is the standard column list for domain SELECT queries.
+const domainCols = `id, name, active, dkim_enabled, dkim_selector, dkim_key_path,
+	spam_threshold, max_mailboxes, verification_status, verification_token, created_at, updated_at`
+
+// scanDomain scans a row into a Domain struct matching domainCols order.
+func scanDomain(scan func(dest ...any) error) (*Domain, error) {
+	d := &Domain{}
+	err := scan(&d.ID, &d.Name, &d.Active, &d.DKIMEnabled, &d.DKIMSelector, &d.DKIMKeyPath,
+		&d.SpamThreshold, &d.MaxMailboxes, &d.VerificationStatus, &d.VerificationToken, &d.CreatedAt, &d.UpdatedAt)
+	return d, err
+}
+
 // GetByID fetches a domain by its UUID.
 func (r *DomainRepo) GetByID(ctx context.Context, id string) (*Domain, error) {
-	d := &Domain{}
-	err := r.db.QueryRow(ctx,
-		`SELECT id, name, active, dkim_enabled, dkim_selector, dkim_key_path,
-		        spam_threshold, max_mailboxes, created_at, updated_at
-		 FROM domains WHERE id = $1`, id,
-	).Scan(&d.ID, &d.Name, &d.Active, &d.DKIMEnabled, &d.DKIMSelector, &d.DKIMKeyPath,
-		&d.SpamThreshold, &d.MaxMailboxes, &d.CreatedAt, &d.UpdatedAt)
+	d, err := scanDomain(r.db.QueryRow(ctx,
+		`SELECT `+domainCols+` FROM domains WHERE id = $1`, id,
+	).Scan)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -104,13 +118,9 @@ func (r *DomainRepo) GetByID(ctx context.Context, id string) (*Domain, error) {
 
 // GetByName fetches a domain by its name.
 func (r *DomainRepo) GetByName(ctx context.Context, name string) (*Domain, error) {
-	d := &Domain{}
-	err := r.db.QueryRow(ctx,
-		`SELECT id, name, active, dkim_enabled, dkim_selector, dkim_key_path,
-		        spam_threshold, max_mailboxes, created_at, updated_at
-		 FROM domains WHERE name = $1`, name,
-	).Scan(&d.ID, &d.Name, &d.Active, &d.DKIMEnabled, &d.DKIMSelector, &d.DKIMKeyPath,
-		&d.SpamThreshold, &d.MaxMailboxes, &d.CreatedAt, &d.UpdatedAt)
+	d, err := scanDomain(r.db.QueryRow(ctx,
+		`SELECT `+domainCols+` FROM domains WHERE name = $1`, name,
+	).Scan)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -122,9 +132,7 @@ func (r *DomainRepo) GetByName(ctx context.Context, name string) (*Domain, error
 
 // List returns all domains, optionally filtered by active status.
 func (r *DomainRepo) List(ctx context.Context, activeOnly *bool) ([]Domain, error) {
-	query := `SELECT id, name, active, dkim_enabled, dkim_selector, dkim_key_path,
-	                 spam_threshold, max_mailboxes, created_at, updated_at
-	          FROM domains`
+	query := `SELECT ` + domainCols + ` FROM domains`
 	var args []any
 	if activeOnly != nil {
 		query += ` WHERE active = $1`
@@ -140,12 +148,11 @@ func (r *DomainRepo) List(ctx context.Context, activeOnly *bool) ([]Domain, erro
 
 	var domains []Domain
 	for rows.Next() {
-		var d Domain
-		if err := rows.Scan(&d.ID, &d.Name, &d.Active, &d.DKIMEnabled, &d.DKIMSelector, &d.DKIMKeyPath,
-			&d.SpamThreshold, &d.MaxMailboxes, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		d, err := scanDomain(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scan domain: %w", err)
 		}
-		domains = append(domains, d)
+		domains = append(domains, *d)
 	}
 	return domains, nil
 }
@@ -153,9 +160,7 @@ func (r *DomainRepo) List(ctx context.Context, activeOnly *bool) ([]Domain, erro
 // ListPaginated returns domains with cursor-based pagination, optionally filtered by active status.
 // Results are ordered by created_at DESC. Fetches page.Limit+1 rows so the caller can detect has_more.
 func (r *DomainRepo) ListPaginated(ctx context.Context, activeOnly *bool, page PaginationParams) ([]Domain, error) {
-	cols := `id, name, active, dkim_enabled, dkim_selector, dkim_key_path,
-	         spam_threshold, max_mailboxes, created_at, updated_at`
-	query := fmt.Sprintf(`SELECT %s FROM domains`, cols)
+	query := fmt.Sprintf(`SELECT %s FROM domains`, domainCols)
 
 	var conditions []string
 	var args []any
@@ -187,12 +192,11 @@ func (r *DomainRepo) ListPaginated(ctx context.Context, activeOnly *bool, page P
 
 	var domains []Domain
 	for rows.Next() {
-		var d Domain
-		if err := rows.Scan(&d.ID, &d.Name, &d.Active, &d.DKIMEnabled, &d.DKIMSelector, &d.DKIMKeyPath,
-			&d.SpamThreshold, &d.MaxMailboxes, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		d, err := scanDomain(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scan domain: %w", err)
 		}
-		domains = append(domains, d)
+		domains = append(domains, *d)
 	}
 	return domains, nil
 }
@@ -232,6 +236,11 @@ func (r *DomainRepo) Update(ctx context.Context, id string, input DomainUpdate) 
 	if input.MaxMailboxes != nil {
 		setClauses = append(setClauses, fmt.Sprintf("max_mailboxes = $%d", argIdx))
 		args = append(args, *input.MaxMailboxes)
+		argIdx++
+	}
+	if input.VerificationStatus != nil {
+		setClauses = append(setClauses, fmt.Sprintf("verification_status = $%d", argIdx))
+		args = append(args, *input.VerificationStatus)
 		argIdx++
 	}
 

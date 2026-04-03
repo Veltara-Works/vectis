@@ -49,6 +49,9 @@ type Server struct {
 	audit     *repository.AuditRepo
 	alerts    *repository.AlertRepo
 
+	// TOTP
+	totpManager *auth.TOTPManager
+
 	// Background services
 	monitor *monitor.Monitor
 }
@@ -87,6 +90,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		admins:       repository.NewAdminRepo(db),
 		audit:        repository.NewAuditRepo(db),
 		alerts:       repository.NewAlertRepo(db),
+		totpManager:  auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
 	}
 
 	// Initialize orchestrator client if URL and token are provided.
@@ -209,6 +213,11 @@ func (s *Server) buildRouter() chi.Router {
 			r.Get("/auth/sessions", s.handleListSessions)
 			r.Delete("/auth/sessions/{sessionID}", s.handleDeleteSession)
 
+			// TOTP MFA (ADR-020, Phase 1.5).
+			r.Post("/auth/totp/setup", s.handleTOTPSetup)
+			r.Post("/auth/totp/verify", s.handleTOTPVerify)
+			r.Delete("/auth/totp", s.handleTOTPDisable)
+
 			// Domains.
 			r.Get("/domains", s.handleListDomains)
 			r.Post("/domains", s.handleCreateDomain)
@@ -219,6 +228,7 @@ func (s *Server) buildRouter() chi.Router {
 			r.Get("/domains/{domainID}/dkim", s.handleGetDKIM)
 			r.Post("/domains/{domainID}/dkim/rotate", s.handleRotateDKIM)
 			r.Get("/domains/{domainID}/deliverability", s.handleDeliverability)
+			r.Post("/domains/{domainID}/verify", s.handleVerifyDomain)
 
 			// Mailboxes.
 			r.Get("/mailboxes", s.handleListMailboxes)

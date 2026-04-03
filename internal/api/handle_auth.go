@@ -1,23 +1,35 @@
 package api
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Veltara-Works/vectis/internal/auth"
+	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
 type loginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+	TOTPSession string `json:"totp_session,omitempty"`
+	TOTPCode    string `json:"totp_code,omitempty"`
 }
 
 type loginResponse struct {
 	Admin     adminProfile `json:"admin"`
 	SessionID string       `json:"session_id"`
 	ExpiresAt time.Time    `json:"expires_at"`
+}
+
+type totpRequiredResponse struct {
+	RequiresTOTP bool   `json:"requires_totp"`
+	TOTPSession  string `json:"totp_session"`
 }
 
 type adminProfile struct {
@@ -28,10 +40,24 @@ type adminProfile struct {
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
 }
 
+type totpSetupResponse struct {
+	ProvisioningURI string `json:"provisioning_uri"`
+}
+
+type totpVerifyRequest struct {
+	Code string `json:"code"`
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, r, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON request body")
+		return
+	}
+
+	// Step 2: TOTP verification (second call with totp_session + totp_code).
+	if req.TOTPSession != "" && req.TOTPCode != "" {
+		s.completeTOTPLogin(w, r, req.TOTPSession, req.TOTPCode)
 		return
 	}
 
@@ -59,11 +85,68 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		adminID := admin.ID
 		ip := clientIP(r)
 		s.audit.Log(r.Context(), &adminID, "auth.login", "admin", &adminID,
-			map[string]any{"success": false, "ip": ip}, &ip)
+			map[string]any{"success": false, "ip": ip, "totp_used": false}, &ip)
 		respondError(w, r, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password")
 		return
 	}
 
+	// If TOTP is enabled, return a temporary session token and require step 2.
+	if admin.TOTPEnabled && admin.TOTPSecret != nil {
+		totpSession, err := s.createTOTPSession(r.Context(), admin.ID)
+		if err != nil {
+			s.logger.Error("create TOTP session failed", "error", err)
+			respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create TOTP session")
+			return
+		}
+		respond(w, r, http.StatusOK, totpRequiredResponse{
+			RequiresTOTP: true,
+			TOTPSession:  totpSession,
+		})
+		return
+	}
+
+	// No TOTP — complete login directly.
+	s.completeLogin(w, r, admin, false)
+}
+
+// completeTOTPLogin handles the second step of the login flow when TOTP is required.
+func (s *Server) completeTOTPLogin(w http.ResponseWriter, r *http.Request, totpSession, totpCode string) {
+	// Retrieve admin ID from TOTP session in Valkey.
+	adminID, err := s.getTOTPSession(r.Context(), totpSession)
+	if err != nil {
+		respondError(w, r, http.StatusUnauthorized, "TOTP_SESSION_INVALID", "TOTP session expired or invalid")
+		return
+	}
+
+	// Delete the TOTP session immediately (single-use).
+	s.deleteTOTPSession(r.Context(), totpSession)
+
+	admin, err := s.admins.GetByID(r.Context(), adminID)
+	if err != nil || admin == nil {
+		respondError(w, r, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid credentials")
+		return
+	}
+
+	if admin.TOTPSecret == nil {
+		respondError(w, r, http.StatusBadRequest, "TOTP_NOT_CONFIGURED", "TOTP is not configured for this account")
+		return
+	}
+
+	// Validate the TOTP code.
+	valid, err := s.totpManager.ValidateCodeWithSkew(*admin.TOTPSecret, totpCode)
+	if err != nil || !valid {
+		ip := clientIP(r)
+		s.audit.Log(r.Context(), &admin.ID, "auth.login", "admin", &admin.ID,
+			map[string]any{"success": false, "ip": ip, "totp_used": true, "totp_failed": true}, &ip)
+		respondError(w, r, http.StatusUnauthorized, "TOTP_INVALID", "Invalid TOTP code")
+		return
+	}
+
+	s.completeLogin(w, r, admin, true)
+}
+
+// completeLogin creates a session, sets the cookie, and logs the audit event.
+func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, admin *repository.Admin, totpUsed bool) {
 	// Create session.
 	token, session, err := s.sessions.CreateSession(r.Context(), admin.ID, clientIP(r), r.UserAgent())
 	if err != nil {
@@ -91,7 +174,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Audit log.
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &admin.ID, "auth.login", "admin", &admin.ID,
-		map[string]any{"success": true, "ip": ip}, &ip)
+		map[string]any{"success": true, "ip": ip, "totp_used": totpUsed}, &ip)
 
 	respond(w, r, http.StatusOK, loginResponse{
 		Admin: adminProfile{
@@ -104,6 +187,142 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SessionID: session.ID,
 		ExpiresAt: session.ExpiresAt,
 	})
+}
+
+// handleTOTPSetup generates a TOTP secret for the authenticated admin.
+// The secret is stored encrypted but totp_enabled remains false until verified.
+func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
+	adminID := getAdminID(r.Context())
+
+	admin, err := s.admins.GetByID(r.Context(), adminID)
+	if err != nil || admin == nil {
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to retrieve admin")
+		return
+	}
+
+	if admin.TOTPEnabled {
+		respondError(w, r, http.StatusConflict, "TOTP_ALREADY_ENABLED", "TOTP is already enabled; disable it first")
+		return
+	}
+
+	encryptedSecret, provisioningURI, err := s.totpManager.GenerateSecret(admin.Email)
+	if err != nil {
+		s.logger.Error("TOTP generate failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to generate TOTP secret")
+		return
+	}
+
+	// Store the encrypted secret with totp_enabled=false (enrolment started, not completed).
+	enabled := false
+	_, err = s.admins.Update(r.Context(), adminID, repository.AdminUpdate{
+		TOTPSecret:  &encryptedSecret,
+		TOTPEnabled: &enabled,
+	})
+	if err != nil {
+		s.logger.Error("TOTP store secret failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to store TOTP secret")
+		return
+	}
+
+	s.audit.Log(r.Context(), &adminID, "auth.totp.setup", "admin", &adminID, nil, nil)
+
+	respond(w, r, http.StatusOK, totpSetupResponse{
+		ProvisioningURI: provisioningURI,
+	})
+}
+
+// handleTOTPVerify verifies a TOTP code and enables MFA for the admin.
+func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
+	adminID := getAdminID(r.Context())
+
+	var req totpVerifyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON request body")
+		return
+	}
+	if req.Code == "" {
+		respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS", "TOTP code is required")
+		return
+	}
+
+	admin, err := s.admins.GetByID(r.Context(), adminID)
+	if err != nil || admin == nil {
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to retrieve admin")
+		return
+	}
+
+	if admin.TOTPSecret == nil {
+		respondError(w, r, http.StatusBadRequest, "TOTP_NOT_CONFIGURED", "Call POST /auth/totp/setup first")
+		return
+	}
+
+	if admin.TOTPEnabled {
+		respondError(w, r, http.StatusConflict, "TOTP_ALREADY_ENABLED", "TOTP is already enabled")
+		return
+	}
+
+	// Validate the code against the stored encrypted secret.
+	valid, err := s.totpManager.ValidateCodeWithSkew(*admin.TOTPSecret, req.Code)
+	if err != nil {
+		s.logger.Error("TOTP validate failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to validate TOTP code")
+		return
+	}
+	if !valid {
+		respondError(w, r, http.StatusUnauthorized, "TOTP_INVALID", "Invalid TOTP code")
+		return
+	}
+
+	// Enable TOTP.
+	enabled := true
+	_, err = s.admins.Update(r.Context(), adminID, repository.AdminUpdate{
+		TOTPEnabled: &enabled,
+	})
+	if err != nil {
+		s.logger.Error("TOTP enable failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to enable TOTP")
+		return
+	}
+
+	s.audit.Log(r.Context(), &adminID, "auth.totp.enable", "admin", &adminID, nil, nil)
+
+	respond(w, r, http.StatusOK, map[string]string{"message": "TOTP enabled successfully"})
+}
+
+// handleTOTPDisable disables TOTP for the authenticated admin.
+func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
+	adminID := getAdminID(r.Context())
+
+	admin, err := s.admins.GetByID(r.Context(), adminID)
+	if err != nil || admin == nil {
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to retrieve admin")
+		return
+	}
+
+	if !admin.TOTPEnabled {
+		respondError(w, r, http.StatusBadRequest, "TOTP_NOT_ENABLED", "TOTP is not currently enabled")
+		return
+	}
+
+	// Clear secret and disable.
+	emptySecret := ""
+	enabled := false
+	_, err = s.admins.Update(r.Context(), adminID, repository.AdminUpdate{
+		TOTPSecret:  &emptySecret,
+		TOTPEnabled: &enabled,
+	})
+	if err != nil {
+		s.logger.Error("TOTP disable failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to disable TOTP")
+		return
+	}
+
+	// Clear the empty string to NULL in DB for clean state.
+	s.db.Exec(r.Context(), `UPDATE admins SET totp_secret = NULL WHERE id = $1`, adminID)
+
+	s.audit.Log(r.Context(), &adminID, "auth.totp.disable", "admin", &adminID, nil, nil)
+
+	respond(w, r, http.StatusOK, map[string]string{"message": "TOTP disabled successfully"})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -166,4 +385,37 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, r, http.StatusOK, map[string]string{"message": "Session invalidated"})
+}
+
+// createTOTPSession stores a temporary token in Valkey that maps to an admin ID.
+// This is used for the two-step login flow: password verified, TOTP pending.
+// TTL is 5 minutes — if the user doesn't provide a TOTP code in time, they must re-authenticate.
+func (s *Server) createTOTPSession(ctx context.Context, adminID string) (string, error) {
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", fmt.Errorf("generate TOTP session token: %w", err)
+	}
+	token := hex.EncodeToString(tokenBytes)
+
+	cmd := s.vk.B().Set().Key("totp_session:" + token).Value(adminID).Ex(5 * time.Minute).Build()
+	if err := s.vk.Do(ctx, cmd).Error(); err != nil {
+		return "", fmt.Errorf("store TOTP session: %w", err)
+	}
+	return token, nil
+}
+
+// getTOTPSession retrieves the admin ID for a TOTP session token from Valkey.
+func (s *Server) getTOTPSession(ctx context.Context, token string) (string, error) {
+	cmd := s.vk.B().Get().Key("totp_session:" + token).Build()
+	result, err := s.vk.Do(ctx, cmd).ToString()
+	if err != nil {
+		return "", fmt.Errorf("TOTP session not found: %w", err)
+	}
+	return result, nil
+}
+
+// deleteTOTPSession removes a TOTP session token from Valkey.
+func (s *Server) deleteTOTPSession(ctx context.Context, token string) {
+	cmd := s.vk.B().Del().Key("totp_session:" + token).Build()
+	s.vk.Do(ctx, cmd)
 }

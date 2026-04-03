@@ -23,10 +23,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const api = {
   // Auth
-  login: (email: string, password: string) =>
-    request<{ admin: { id: string; email: string; role: string }; session_id: string }>('POST', '/auth/login', { email, password }),
+  login: (email: string, password: string, totp_session?: string, totp_code?: string) =>
+    request<{ admin?: { id: string; email: string; role: string; totp_enabled: boolean }; session_id?: string; requires_totp?: boolean; totp_session?: string }>(
+      'POST', '/auth/login',
+      totp_session ? { totp_session, totp_code } : { email, password }
+    ),
   logout: () => request<void>('POST', '/auth/logout'),
   sessions: () => request<Array<{ id: string; ip_address: string; user_agent: string; created_at: string }>>('GET', '/auth/sessions'),
+
+  // TOTP MFA
+  totpSetup: () => request<{ provisioning_uri: string }>('POST', '/auth/totp/setup'),
+  totpVerify: (code: string) => request<{ message: string }>('POST', '/auth/totp/verify', { code }),
+  totpDisable: () => request<{ message: string }>('DELETE', '/auth/totp'),
 
   // Health
   health: () => request<{ status: string; services: Record<string, { status: string; response_ms: number }> }>('GET', '/health'),
@@ -35,7 +43,7 @@ export const api = {
   listDomains: () => request<Array<{
     id: string; name: string; active: boolean; dkim_enabled: boolean;
     dkim_selector: string; dkim_key_path?: string; spam_threshold: number;
-    max_mailboxes?: number; created_at: string
+    max_mailboxes?: number; verification_status?: string; verification_token?: string; created_at: string
   }>>('GET', '/domains'),
   createDomain: (name: string) =>
     request<{ domain: { id: string; name: string }; dkim?: { dns_name: string; dns_value: string } }>('POST', '/domains', { name }),
@@ -46,6 +54,8 @@ export const api = {
     request<{ dns_name: string; dns_value: string; selector: string }>('POST', `/domains/${id}/dkim/generate`),
   deliverability: (id: string) =>
     request<{ domain: string; checks: Array<{ name: string; status: string; value?: string; hint?: string }> }>('GET', `/domains/${id}/deliverability`),
+  verifyDomain: (id: string) =>
+    request<{ domain: string; verification_status: string; verification_token: string; txt_record_name: string; txt_record_value: string; found: boolean }>('POST', `/domains/${id}/verify`),
 
   // Mailboxes
   listMailboxes: (domainId: string) =>
