@@ -104,8 +104,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		OrchestratorToken: secrets.Orchestrator.Token,
 	}, logger)
 
-	// Start background health monitor.
+	// Start background services.
 	srv.StartMonitor()
+	srv.StartAuditPruner()
 
 	// Graceful shutdown.
 	errCh := make(chan error, 1)

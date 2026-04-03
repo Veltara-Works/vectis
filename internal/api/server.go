@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
 
+	"github.com/Veltara-Works/vectis/internal/audit"
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/backup"
 	"github.com/Veltara-Works/vectis/internal/config"
@@ -54,7 +55,8 @@ type Server struct {
 	totpManager *auth.TOTPManager
 
 	// Background services
-	monitor *monitor.Monitor
+	monitor      *monitor.Monitor
+	auditPruner  *audit.Pruner
 }
 
 // Config holds API server configuration.
@@ -149,10 +151,33 @@ func (s *Server) StopMonitor() {
 	}
 }
 
+// StartAuditPruner initialises and starts the background audit log pruner.
+func (s *Server) StartAuditPruner() {
+	cfg := audit.DefaultPrunerConfig()
+	if s.cfg != nil && s.cfg.Audit.RetentionDays > 0 {
+		cfg.RetentionDays = s.cfg.Audit.RetentionDays
+	}
+
+	s.auditPruner = audit.NewPruner(
+		s.audit,
+		cfg,
+		s.logger.With("component", "audit-pruner"),
+	)
+	s.auditPruner.Start()
+}
+
+// StopAuditPruner stops the background audit log pruner if it is running.
+func (s *Server) StopAuditPruner() {
+	if s.auditPruner != nil {
+		s.auditPruner.Stop()
+	}
+}
+
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("shutting down API server")
 	s.StopMonitor()
+	s.StopAuditPruner()
 	return s.httpServer.Shutdown(ctx)
 }
 

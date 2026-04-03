@@ -135,6 +135,17 @@ func (r *AuditRepo) ListPaginated(ctx context.Context, action, resourceType, adm
 	return scanAuditRows(rows)
 }
 
+// DeleteOlderThan removes audit entries created before the given time
+// and returns the number of rows deleted.
+func (r *AuditRepo) DeleteOlderThan(ctx context.Context, before time.Time) (int64, error) {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM audit_log WHERE created_at < $1`, before)
+	if err != nil {
+		return 0, fmt.Errorf("delete old audit entries: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 func scanAuditRows(rows interface {
 	Next() bool
 	Scan(dest ...any) error

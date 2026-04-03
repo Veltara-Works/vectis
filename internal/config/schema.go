@@ -18,6 +18,7 @@ type VectisConfig struct {
 	Admin        AdminConfig         `yaml:"admin"`
 	Orchestrator OrchestratorConfig  `yaml:"orchestrator"`
 	Alerts       AlertsConfig        `yaml:"alerts"`
+	Audit        AuditConfig         `yaml:"audit"`
 	RateLimits   RateLimitConfig     `yaml:"rate_limits"`
 }
 
@@ -107,6 +108,11 @@ type AlertEmailConfig struct {
 type AlertWebhookConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	URL     string `yaml:"url"`
+}
+
+// AuditConfig controls audit log retention and pruning.
+type AuditConfig struct {
+	RetentionDays int `yaml:"retention_days"` // entries older than this are pruned; default 90, 0 = no pruning
 }
 
 // RateLimitConfig controls Traefik rate limiting middleware for API endpoints.
