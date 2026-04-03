@@ -53,6 +53,30 @@ func MigrationStatus(dsn string) (version uint, dirty bool, err error) {
 	return version, dirty, err
 }
 
+// LatestMigrationVersion returns the highest migration version number available
+// in the embedded migration files by scanning filenames.
+func LatestMigrationVersion() uint {
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return 0
+	}
+	var max uint
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		// Migration filenames: 000001_name.up.sql
+		name := e.Name()
+		if len(name) >= 6 {
+			var v uint
+			if _, err := fmt.Sscanf(name[:6], "%06d", &v); err == nil && v > max {
+				max = v
+			}
+		}
+	}
+	return max
+}
+
 func newMigrate(dsn string) (*migrate.Migrate, error) {
 	// The embedded FS has files under "migrations/" subdirectory.
 	source, err := iofs.New(migrationsFS, "migrations")

@@ -207,22 +207,22 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start apply in a goroutine — return immediately with a pending job ID.
-	// The actual job ID is generated inside Apply() with the advisory lock held.
-	pendingID := uuid.Must(uuid.NewV7()).String()
+	// Start apply in a goroutine — return the actual job ID immediately.
+	// Pre-generate the job ID here so the response matches what Apply() uses.
+	jobID := uuid.Must(uuid.NewV7()).String()
 
 	go func() {
 		ctx := context.Background()
-		jobID, err := s.orch.Apply(ctx)
+		returnedID, err := s.orch.ApplyWithJobID(ctx, jobID)
 		if err != nil {
-			s.logger.Error("apply failed", "job_id", jobID, "error", err)
+			s.logger.Error("apply failed", "job_id", returnedID, "error", err)
 		}
 	}()
 
 	s.respondJSON(w, http.StatusAccepted, map[string]any{
-		"state": StateValidating, // the state after kicking off apply
+		"state": StateValidating,
 		"data": map[string]any{
-			"job_id": pendingID,
+			"job_id": jobID,
 		},
 	})
 }
@@ -236,21 +236,21 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pendingID := uuid.Must(uuid.NewV7()).String()
+	jobID := uuid.Must(uuid.NewV7()).String()
 
-	// Start rollback in a goroutine — return immediately with job ID.
+	// Start rollback in a goroutine — return the actual job ID immediately.
 	go func() {
 		ctx := context.Background()
-		jobID, err := s.orch.Rollback(ctx)
+		returnedID, err := s.orch.RollbackWithJobID(ctx, jobID)
 		if err != nil {
-			s.logger.Error("rollback failed", "job_id", jobID, "error", err)
+			s.logger.Error("rollback failed", "job_id", returnedID, "error", err)
 		}
 	}()
 
 	s.respondJSON(w, http.StatusAccepted, map[string]any{
 		"state": StateRollingBack,
 		"data": map[string]any{
-			"job_id": pendingID,
+			"job_id": jobID,
 		},
 	})
 }

@@ -276,6 +276,39 @@ func (s *Server) handleDeliverability(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// TXT verification auto-check: if domain is not yet verified, check if the
+	// verification token is present in TXT records and auto-verify.
+	if domain.VerificationStatus != "verified" && domain.VerificationToken != nil && *domain.VerificationToken != "" {
+		verifyFound := false
+		for _, txt := range txtRecords {
+			if strings.TrimSpace(txt) == *domain.VerificationToken {
+				verifyFound = true
+				break
+			}
+		}
+		if verifyFound {
+			verified := "verified"
+			s.domains.Update(r.Context(), domainID, repository.DomainUpdate{VerificationStatus: &verified})
+			checks = append(checks, deliverabilityCheck{
+				Name:   "Verification",
+				Status: "pass",
+				Value:  "Domain ownership verified via TXT record",
+			})
+		} else {
+			checks = append(checks, deliverabilityCheck{
+				Name:   "Verification",
+				Status: "warn",
+				Hint:   fmt.Sprintf("Domain not verified. Add TXT record: %s", *domain.VerificationToken),
+			})
+		}
+	} else if domain.VerificationStatus == "verified" {
+		checks = append(checks, deliverabilityCheck{
+			Name:   "Verification",
+			Status: "pass",
+			Value:  "Domain ownership verified",
+		})
+	}
+
 	// PTR record check (reverse DNS)
 	addrs, _ := net.LookupHost(s.hostname)
 	if len(addrs) > 0 {

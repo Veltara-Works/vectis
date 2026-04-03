@@ -50,8 +50,7 @@ Note: `vectis-frontend` is the only non-internal network because Traefik needs t
 | Container | vectis-frontend | vectis-mail | vectis-data | vectis-orchestrator |
 |-----------|:-:|:-:|:-:|:-:|
 | Traefik | ✓ | | | |
-| Admin UI | ✓ | | | |
-| Go API | ✓ | | ✓ | ✓ |
+| Go API (+ Admin UI) | ✓ | | ✓ | ✓ |
 | Postfix | | ✓ | ✓ | |
 | Dovecot | | ✓ | ✓ | |
 | Rspamd | | ✓ | ✓ | |
@@ -61,6 +60,8 @@ Note: `vectis-frontend` is the only non-internal network because Traefik needs t
 | acme.sh | ✓ | | | |
 | Orchestrator | | | ✓ | ✓ |
 | ValidonX Agent | | | ✓ | |
+
+> **Implementation note (Phase 1):** The Admin UI is not a separate container. The React SPA is compiled to static files and served directly by the Go API container. This is an intentional simplification — the Admin UI communicates exclusively via the API, so a separate container adds operational complexity without security benefit. The API container therefore appears on `vectis-frontend` in place of a dedicated UI container. If a future phase requires separation (e.g., for independent scaling), the SPA can be extracted with no API changes.
 
 ---
 

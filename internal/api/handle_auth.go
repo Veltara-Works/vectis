@@ -290,8 +290,19 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTOTPDisable disables TOTP for the authenticated admin.
+// Requires the current TOTP code for verification (Spec A line 53).
 func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	adminID := getAdminID(r.Context())
+
+	var req totpVerifyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON request body")
+		return
+	}
+	if req.Code == "" {
+		respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS", "Current TOTP code is required to disable MFA")
+		return
+	}
 
 	admin, err := s.admins.GetByID(r.Context(), adminID)
 	if err != nil || admin == nil {
@@ -299,8 +310,15 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !admin.TOTPEnabled {
+	if !admin.TOTPEnabled || admin.TOTPSecret == nil {
 		respondError(w, r, http.StatusBadRequest, "TOTP_NOT_ENABLED", "TOTP is not currently enabled")
+		return
+	}
+
+	// Verify current TOTP code before disabling.
+	valid, err := s.totpManager.ValidateCodeWithSkew(*admin.TOTPSecret, req.Code)
+	if err != nil || !valid {
+		respondError(w, r, http.StatusUnauthorized, "TOTP_INVALID", "Invalid TOTP code")
 		return
 	}
 

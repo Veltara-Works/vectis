@@ -29,12 +29,14 @@ export const api = {
       totp_session ? { totp_session, totp_code } : { email, password }
     ),
   logout: () => request<void>('POST', '/auth/logout'),
+  logoutAll: () => request<void>('POST', '/auth/logout-all'),
   sessions: () => request<Array<{ id: string; ip_address: string; user_agent: string; created_at: string }>>('GET', '/auth/sessions'),
+  deleteSession: (id: string) => request<void>('DELETE', `/auth/sessions/${id}`),
 
   // TOTP MFA
   totpSetup: () => request<{ provisioning_uri: string }>('POST', '/auth/totp/setup'),
   totpVerify: (code: string) => request<{ message: string }>('POST', '/auth/totp/verify', { code }),
-  totpDisable: () => request<{ message: string }>('DELETE', '/auth/totp'),
+  totpDisable: (code: string) => request<{ message: string }>('DELETE', '/auth/totp', { code }),
 
   // Health
   health: () => request<{ status: string; services: Record<string, { status: string; response_ms: number }> }>('GET', '/health'),

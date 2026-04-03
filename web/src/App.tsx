@@ -11,6 +11,7 @@ import AdminsPage from './pages/Admins.tsx'
 import AuditLogPage from './pages/AuditLog.tsx'
 import UpdatesPage from './pages/Updates.tsx'
 import BackupsPage from './pages/Backups.tsx'
+import SessionsPage from './pages/Sessions.tsx'
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null)
@@ -38,6 +39,7 @@ export default function App() {
     { path: '/admin/audit', label: 'Audit Log' },
     { path: '/admin/updates', label: 'Updates' },
     { path: '/admin/backups', label: 'Backups' },
+    { path: '/admin/sessions', label: 'Sessions' },
   ]
 
   return (
@@ -66,6 +68,7 @@ export default function App() {
           <Route path="/admin/audit" element={<AuditLogPage />} />
           <Route path="/admin/updates" element={<UpdatesPage />} />
           <Route path="/admin/backups" element={<BackupsPage />} />
+          <Route path="/admin/sessions" element={<SessionsPage />} />
           <Route path="*" element={<Navigate to="/admin" />} />
         </Routes>
       </main>

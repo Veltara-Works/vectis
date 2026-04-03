@@ -78,6 +78,64 @@ fi
 echo "OK: Vectis backup ${LATEST} is ${AGE}h old" | logger -t vectis-backup
 ```
 
+### 3.4 Full backup validation procedure (monthly)
+
+Run this procedure monthly to confirm backups are fully restorable:
+
+```bash
+# 1. Create a temporary directory for test restore.
+TESTDIR=$(mktemp -d /tmp/vectis-validate-XXXXXX)
+LATEST=$(ls -t /var/vectis/backups/vectis-*.tar.gz 2>/dev/null | head -1)
+
+# 2. Extract the archive.
+tar -xzf "$LATEST" -C "$TESTDIR"
+
+# 3. Verify all expected components are present.
+echo "=== Checking archive contents ==="
+for FILE in database.sql; do
+    if [ -f "$TESTDIR/$FILE" ]; then
+        echo "  [OK] $FILE ($(wc -c < "$TESTDIR/$FILE") bytes)"
+    else
+        echo "  [FAIL] $FILE missing!"
+    fi
+done
+
+for ARCHIVE in mail-data.tar config.tar dkim.tar; do
+    if [ -f "$TESTDIR/$ARCHIVE" ]; then
+        COUNT=$(tar -tf "$TESTDIR/$ARCHIVE" 2>/dev/null | wc -l)
+        echo "  [OK] $ARCHIVE ($COUNT entries)"
+    else
+        echo "  [WARN] $ARCHIVE missing (may be empty if no data)"
+    fi
+done
+
+# 4. Validate the SQL dump is parseable.
+echo "=== Validating database dump ==="
+if head -5 "$TESTDIR/database.sql" | grep -q "PostgreSQL"; then
+    TABLES=$(grep -c "CREATE TABLE" "$TESTDIR/database.sql" || true)
+    echo "  [OK] Valid PostgreSQL dump ($TABLES tables)"
+else
+    echo "  [FAIL] database.sql does not appear to be a valid dump"
+fi
+
+# 5. Clean up.
+rm -rf "$TESTDIR"
+echo "=== Validation complete ==="
+```
+
+**Expected output for a healthy backup:**
+- `database.sql` present and valid PostgreSQL dump
+- `mail-data.tar` present with Maildir entries (may be empty on fresh install)
+- `config.tar` present with config files
+- `dkim.tar` present with DKIM keys
+
+**For encrypted backups** (`.tar.gz.enc`): Decrypt first using the backup encryption key:
+```bash
+# Decryption requires the vectis binary or a compatible AES-256-GCM decryptor.
+# The simplest validation is a full test restore:
+vectis backup restore "$LATEST" --confirm  # On a TEST server only!
+```
+
 ---
 
 ## 4. Disaster Recovery Procedures

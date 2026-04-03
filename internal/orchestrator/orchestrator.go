@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
 
+	"github.com/Veltara-Works/vectis/internal/database"
 	"github.com/Veltara-Works/vectis/internal/types"
 )
 
@@ -160,7 +161,7 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 		ConfigHash:       cfgHash,
 		BaselineVersions: versions,
 		Changes:          nil, // Populated by diff logic below.
-		MigrationsUp:     0,   // TODO: detect pending migrations.
+		MigrationsUp:     o.detectPendingMigrations(),
 	}
 
 	// Record the operation.
@@ -200,6 +201,12 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 // per Spec D.6. It acquires the advisory lock and transitions through:
 // idle -> validating -> applying -> idle (or rolling_back/failed on error).
 func (o *Orchestrator) Apply(ctx context.Context) (string, error) {
+	return o.ApplyWithJobID(ctx, types.NewUUIDv7())
+}
+
+// ApplyWithJobID is like Apply but uses a pre-generated job ID so the caller
+// can return it to clients before the advisory lock is acquired.
+func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string, error) {
 	if err := o.acquireAdvisoryLock(ctx); err != nil {
 		return "", fmt.Errorf("orchestrator busy: %w", err)
 	}
@@ -221,8 +228,6 @@ func (o *Orchestrator) Apply(ctx context.Context) (string, error) {
 	// Apply timeout for the entire operation.
 	applyCtx, cancel := context.WithTimeout(ctx, o.cfg.ApplyTimeout)
 	defer cancel()
-
-	jobID := types.NewUUIDv7()
 
 	// Record the operation as running.
 	opID, err := o.sm.RecordOperation(applyCtx, "apply", "running", plan.ConfigHash, nil, plan.BaselineVersions)
@@ -381,6 +386,11 @@ func (o *Orchestrator) Apply(ctx context.Context) (string, error) {
 // Rollback reverts to the previous state using the 5-phase rollback sequence
 // per Spec D.7. Can be triggered manually or automatically by Apply.
 func (o *Orchestrator) Rollback(ctx context.Context) (string, error) {
+	return o.RollbackWithJobID(ctx, types.NewUUIDv7())
+}
+
+// RollbackWithJobID is like Rollback but uses a pre-generated job ID.
+func (o *Orchestrator) RollbackWithJobID(ctx context.Context, jobID string) (string, error) {
 	if err := o.acquireAdvisoryLock(ctx); err != nil {
 		return "", fmt.Errorf("orchestrator busy: %w", err)
 	}
@@ -389,8 +399,6 @@ func (o *Orchestrator) Rollback(ctx context.Context) (string, error) {
 	if !o.sm.State().CanRollback() {
 		return "", &ErrInvalidTransition{From: o.sm.State(), Op: "rollback"}
 	}
-
-	jobID := types.NewUUIDv7()
 
 	// Find the most recent snapshot.
 	lastOp, err := o.sm.LastOperation(ctx)
@@ -513,12 +521,35 @@ func (o *Orchestrator) failApply(ctx context.Context, opID, jobID, errMsg string
 	o.mu.Unlock()
 }
 
-// runMigrations runs pending forward-only database migrations.
-// Placeholder: in a full implementation this would use golang-migrate.
+// runMigrations runs pending forward-only database migrations using golang-migrate.
 func (o *Orchestrator) runMigrations(ctx context.Context) error {
 	o.logger.Info("running database migrations")
-	// TODO: integrate with golang-migrate/migrate/v4 to run pending migrations.
-	// For now, this is a no-op. Migrations are handled by the API server on startup.
-	_ = ctx
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		o.cfg.DBUser, o.cfg.DBPassword, o.cfg.DBHost, o.cfg.DBPort, o.cfg.DBName)
+
+	if err := database.RunMigrations(dsn, o.logger); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
 	return nil
+}
+
+// detectPendingMigrations returns the number of pending migrations by comparing
+// the current migration version against the embedded migration files. Returns 0
+// if detection fails (non-fatal — plan still works without this information).
+func (o *Orchestrator) detectPendingMigrations() int {
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		o.cfg.DBUser, o.cfg.DBPassword, o.cfg.DBHost, o.cfg.DBPort, o.cfg.DBName)
+
+	currentVersion, _, err := database.MigrationStatus(dsn)
+	if err != nil {
+		o.logger.Warn("failed to detect migration status", "error", err)
+		return 0
+	}
+
+	// Count embedded migration files to determine the latest available version.
+	latestVersion := database.LatestMigrationVersion()
+	if latestVersion <= currentVersion {
+		return 0
+	}
+	return int(latestVersion - currentVersion)
 }
