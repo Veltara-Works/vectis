@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -187,6 +188,40 @@ func (r *DomainRepo) ListPaginated(ctx context.Context, activeOnly *bool, page P
 	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list domains paginated: %w", err)
+	}
+	defer rows.Close()
+
+	var domains []Domain
+	for rows.Next() {
+		d, err := scanDomain(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scan domain: %w", err)
+		}
+		domains = append(domains, *d)
+	}
+	return domains, nil
+}
+
+// ListByIDs returns domains matching the given IDs, ordered by created_at DESC.
+func (r *DomainRepo) ListByIDs(ctx context.Context, ids []string) ([]Domain, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	// Build $1, $2, ... placeholders.
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`SELECT %s FROM domains WHERE id IN (%s) ORDER BY created_at DESC`,
+		domainCols, strings.Join(placeholders, ", "))
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list domains by ids: %w", err)
 	}
 	defer rows.Close()
 

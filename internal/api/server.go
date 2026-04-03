@@ -42,12 +42,13 @@ type Server struct {
 	orchClient   *orchestrator.Client
 
 	// Repositories
-	domains   *repository.DomainRepo
-	mailboxes *repository.MailboxRepo
-	aliases   *repository.AliasRepo
-	admins    *repository.AdminRepo
-	audit     *repository.AuditRepo
-	alerts    *repository.AlertRepo
+	domains      *repository.DomainRepo
+	mailboxes    *repository.MailboxRepo
+	aliases      *repository.AliasRepo
+	admins       *repository.AdminRepo
+	adminDomains *repository.AdminDomainRepo
+	audit        *repository.AuditRepo
+	alerts       *repository.AlertRepo
 
 	// TOTP
 	totpManager *auth.TOTPManager
@@ -88,6 +89,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		mailboxes:    repository.NewMailboxRepo(db),
 		aliases:      repository.NewAliasRepo(db),
 		admins:       repository.NewAdminRepo(db),
+		adminDomains: repository.NewAdminDomainRepo(db),
 		audit:        repository.NewAuditRepo(db),
 		alerts:       repository.NewAlertRepo(db),
 		totpManager:  auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
@@ -207,78 +209,80 @@ func (s *Server) buildRouter() chi.Router {
 		r.Group(func(r chi.Router) {
 			r.Use(s.authMiddleware)
 
-			// Auth management.
+			// Auth management — all authenticated roles.
+			r.Get("/auth/me", s.handleMe)
 			r.Post("/auth/logout", s.handleLogout)
 			r.Post("/auth/logout-all", s.handleLogoutAll)
 			r.Get("/auth/sessions", s.handleListSessions)
 			r.Delete("/auth/sessions/{sessionID}", s.handleDeleteSession)
 
-			// TOTP MFA (ADR-020, Phase 1.5).
+			// TOTP MFA — all authenticated roles.
 			r.Post("/auth/totp/setup", s.handleTOTPSetup)
 			r.Post("/auth/totp/verify", s.handleTOTPVerify)
 			r.Delete("/auth/totp", s.handleTOTPDisable)
 
-			// Domains.
+			// Domains — all roles (domain_admin scoped in handlers).
 			r.Get("/domains", s.handleListDomains)
-			r.Post("/domains", s.handleCreateDomain)
 			r.Get("/domains/{domainID}", s.handleGetDomain)
-			r.Patch("/domains/{domainID}", s.handleUpdateDomain)
-			r.Delete("/domains/{domainID}", s.handleDeleteDomain)
-			r.Post("/domains/{domainID}/dkim/generate", s.handleGenerateDKIM)
 			r.Get("/domains/{domainID}/dkim", s.handleGetDKIM)
-			r.Post("/domains/{domainID}/dkim/rotate", s.handleRotateDKIM)
 			r.Get("/domains/{domainID}/deliverability", s.handleDeliverability)
-			r.Post("/domains/{domainID}/verify", s.handleVerifyDomain)
+			// Domain mutations — admin and super_admin only.
+			r.With(requireAdminOrAbove()).Post("/domains", s.handleCreateDomain)
+			r.With(requireAdminOrAbove()).Patch("/domains/{domainID}", s.handleUpdateDomain)
+			r.With(requireAdminOrAbove()).Delete("/domains/{domainID}", s.handleDeleteDomain)
+			r.With(requireAdminOrAbove()).Post("/domains/{domainID}/dkim/generate", s.handleGenerateDKIM)
+			r.With(requireAdminOrAbove()).Post("/domains/{domainID}/dkim/rotate", s.handleRotateDKIM)
+			r.With(requireAdminOrAbove()).Post("/domains/{domainID}/verify", s.handleVerifyDomain)
 
-			// Mailboxes.
+			// Mailboxes — all roles (domain_admin scoped in handlers).
 			r.Get("/mailboxes", s.handleListMailboxes)
 			r.Post("/mailboxes", s.handleCreateMailbox)
 			r.Get("/mailboxes/{mailboxID}", s.handleGetMailbox)
 			r.Patch("/mailboxes/{mailboxID}", s.handleUpdateMailbox)
 			r.Delete("/mailboxes/{mailboxID}", s.handleDeleteMailbox)
 
-			// Aliases.
+			// Aliases — all roles (domain_admin scoped in handlers).
 			r.Get("/aliases", s.handleListAliases)
 			r.Post("/aliases", s.handleCreateAlias)
 			r.Get("/aliases/{aliasID}", s.handleGetAlias)
 			r.Patch("/aliases/{aliasID}", s.handleUpdateAlias)
 			r.Delete("/aliases/{aliasID}", s.handleDeleteAlias)
 
-			// Admins.
+			// Admins — super_admin only for mutations.
 			r.Get("/admins", s.handleListAdmins)
-			r.Post("/admins", s.handleCreateAdmin)
-			r.Delete("/admins/{adminID}", s.handleDeleteAdmin)
+			r.With(requireSuperAdmin()).Post("/admins", s.handleCreateAdmin)
+			r.With(requireSuperAdmin()).Delete("/admins/{adminID}", s.handleDeleteAdmin)
 
-			// Audit log.
+			// Audit log — all roles (domain_admin filtered in handler).
 			r.Get("/audit", s.handleListAudit)
 
-			// Config management.
-			r.Get("/config", s.handleGetConfig)
-			r.Post("/config/validate", s.handleValidateConfig)
-			r.Get("/config/diff", s.handleConfigDiff)
-			r.Post("/config/apply", s.handleConfigApply)
+			// Config management — super_admin only.
+			r.With(requireSuperAdmin()).Get("/config", s.handleGetConfig)
+			r.With(requireSuperAdmin()).Post("/config/validate", s.handleValidateConfig)
+			r.With(requireSuperAdmin()).Get("/config/diff", s.handleConfigDiff)
+			r.With(requireSuperAdmin()).Post("/config/apply", s.handleConfigApply)
 
-			// Orchestrator proxy.
-			r.Post("/orchestrator/plan", s.handleOrchestratorPlan)
-			r.Post("/orchestrator/apply", s.handleOrchestratorApply)
-			r.Post("/orchestrator/rollback", s.handleOrchestratorRollback)
-			r.Get("/orchestrator/status", s.handleOrchestratorStatus)
-			r.Get("/orchestrator/history", s.handleOrchestratorHistory)
+			// Orchestrator proxy — super_admin only.
+			r.With(requireSuperAdmin()).Post("/orchestrator/plan", s.handleOrchestratorPlan)
+			r.With(requireSuperAdmin()).Post("/orchestrator/apply", s.handleOrchestratorApply)
+			r.With(requireSuperAdmin()).Post("/orchestrator/rollback", s.handleOrchestratorRollback)
+			r.With(requireSuperAdmin()).Get("/orchestrator/status", s.handleOrchestratorStatus)
+			r.With(requireSuperAdmin()).Get("/orchestrator/history", s.handleOrchestratorHistory)
 
-			// System.
-			r.Get("/health/{service}", s.handleServiceHealth)
-			r.Get("/logs/{service}", s.handleServiceLogs)
-			r.Get("/metrics", s.handleMetrics)
+			// System — super_admin only.
+			r.With(requireSuperAdmin()).Get("/health/{service}", s.handleServiceHealth)
+			r.With(requireSuperAdmin()).Get("/logs/{service}", s.handleServiceLogs)
+			r.With(requireSuperAdmin()).Get("/metrics", s.handleMetrics)
 
-			// Alerts.
-			r.Get("/alerts", s.handleListAlerts)
-			r.Post("/alerts/check", s.handleRunHealthCheck)
+			// Alerts — super_admin only.
+			r.With(requireSuperAdmin()).Get("/alerts", s.handleListAlerts)
+			r.With(requireSuperAdmin()).Post("/alerts/check", s.handleRunHealthCheck)
 
-			// Backup/Restore.
-			r.Post("/backup/create", s.handleBackupCreate)
-			r.Get("/backup/status/{jobId}", s.handleBackupStatus)
-			r.Get("/backup/list", s.handleBackupList)
-			r.Post("/backup/restore/{id}", s.handleBackupRestore)
+			// Backup/Restore — super_admin only.
+			r.With(requireSuperAdmin()).Post("/backup/create", s.handleBackupCreate)
+			r.With(requireSuperAdmin()).Get("/backup/status/{jobId}", s.handleBackupStatus)
+			r.With(requireSuperAdmin()).Get("/backup/list", s.handleBackupList)
+			r.With(requireSuperAdmin()).Post("/backup/restore/{id}", s.handleBackupRestore)
 		})
 	})
 

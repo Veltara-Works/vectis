@@ -343,6 +343,22 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	respond(w, r, http.StatusOK, map[string]string{"message": "TOTP disabled successfully"})
 }
 
+// handleMe returns the current admin's profile including role.
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	admin, err := s.admins.GetByID(r.Context(), getAdminID(r.Context()))
+	if err != nil || admin == nil {
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get admin profile")
+		return
+	}
+	respond(w, r, http.StatusOK, adminProfile{
+		ID:          admin.ID,
+		Email:       admin.Email,
+		Role:        admin.Role,
+		TOTPEnabled: admin.TOTPEnabled,
+		LastLoginAt: admin.LastLoginAt,
+	})
+}
+
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	sessionID := getSessionID(r.Context())
 	if err := s.sessions.DeleteSession(r.Context(), sessionID); err != nil {

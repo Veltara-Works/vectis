@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/dkim"
 	"github.com/Veltara-Works/vectis/internal/engine"
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -30,6 +31,19 @@ type updateDomainRequest struct {
 }
 
 func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
+	// domain_admin: return only assigned domains (no pagination, small set).
+	if getAdminRole(r.Context()) == auth.RoleDomainAdmin {
+		allowedIDs := s.getAllowedDomainIDs(r.Context())
+		domains, err := s.domains.ListByIDs(r.Context(), allowedIDs)
+		if err != nil {
+			s.logger.Error("list domains for domain_admin failed", "error", err)
+			respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list domains")
+			return
+		}
+		respondPaginated(w, r, http.StatusOK, domains, "", false)
+		return
+	}
+
 	var activeFilter *bool
 	if v := r.URL.Query().Get("active"); v == "true" {
 		t := true
@@ -158,6 +172,10 @@ type dnsHints struct {
 
 func (s *Server) handleGetDomain(w http.ResponseWriter, r *http.Request) {
 	domainID := chi.URLParam(r, "domainID")
+	if !s.canAccessDomain(r.Context(), domainID) {
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this domain")
+		return
+	}
 	domain, err := s.domains.GetByID(r.Context(), domainID)
 	if err != nil {
 		s.logger.Error("get domain failed", "error", err)

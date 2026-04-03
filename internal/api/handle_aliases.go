@@ -27,6 +27,10 @@ func (s *Server) handleListAliases(w http.ResponseWriter, r *http.Request) {
 		respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS", "domain_id query parameter is required")
 		return
 	}
+	if !s.canAccessDomain(r.Context(), domainID) {
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this domain")
+		return
+	}
 
 	page, err := parsePagination(r)
 	if err != nil {
@@ -63,6 +67,10 @@ func (s *Server) handleCreateAlias(w http.ResponseWriter, r *http.Request) {
 
 	if req.DomainID == "" || req.Destination == "" {
 		respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS", "domain_id and destination are required")
+		return
+	}
+	if !s.canAccessDomain(r.Context(), req.DomainID) {
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this domain")
 		return
 	}
 

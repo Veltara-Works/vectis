@@ -13,9 +13,10 @@ import (
 var validEmailRe = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 
 type createAdminRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Role     string `json:"role"`
+	Email     string   `json:"email"`
+	Password  string   `json:"password"`
+	Role      string   `json:"role"`
+	DomainIDs []string `json:"domain_ids,omitempty"` // required when role is domain_admin
 }
 
 // adminView is the public representation of an admin (never includes password_hash).
@@ -46,6 +47,19 @@ func toAdminView(a repository.Admin) adminView {
 // --- GET /api/v1/admins ---
 
 func (s *Server) handleListAdmins(w http.ResponseWriter, r *http.Request) {
+	role := getAdminRole(r.Context())
+
+	// domain_admin can only see their own record.
+	if role == auth.RoleDomainAdmin {
+		admin, err := s.admins.GetByID(r.Context(), getAdminID(r.Context()))
+		if err != nil || admin == nil {
+			respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get admin")
+			return
+		}
+		respond(w, r, http.StatusOK, []adminView{toAdminView(*admin)})
+		return
+	}
+
 	admins, err := s.admins.List(r.Context())
 	if err != nil {
 		s.logger.Error("list admins failed", "error", err)
@@ -85,10 +99,16 @@ func (s *Server) handleCreateAdmin(w http.ResponseWriter, r *http.Request) {
 
 	role := req.Role
 	if role == "" {
-		role = "admin"
+		role = auth.RoleAdmin
 	}
-	if role != "admin" && role != "superadmin" {
-		respondError(w, r, http.StatusBadRequest, "INVALID_ROLE", "Role must be 'admin' or 'superadmin'")
+	if !auth.IsValidRole(role) {
+		respondError(w, r, http.StatusBadRequest, "INVALID_ROLE",
+			"Role must be 'super_admin', 'admin', or 'domain_admin'")
+		return
+	}
+	if role == auth.RoleDomainAdmin && len(req.DomainIDs) == 0 {
+		respondError(w, r, http.StatusBadRequest, "MISSING_DOMAINS",
+			"domain_ids is required when role is domain_admin")
 		return
 	}
 
@@ -115,6 +135,15 @@ func (s *Server) handleCreateAdmin(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("create admin failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create admin")
 		return
+	}
+
+	// Assign domains for domain_admin role.
+	if role == auth.RoleDomainAdmin && len(req.DomainIDs) > 0 {
+		if err := s.adminDomains.ReplaceAll(r.Context(), admin.ID, req.DomainIDs); err != nil {
+			s.logger.Error("assign admin domains failed", "error", err)
+			respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to assign domains")
+			return
+		}
 	}
 
 	adminID := getAdminID(r.Context())

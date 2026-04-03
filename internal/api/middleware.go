@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/types"
 )
 
@@ -16,6 +17,7 @@ const (
 	ctxRequestID contextKey = "request_id"
 	ctxAdminID   contextKey = "admin_id"
 	ctxSessionID contextKey = "session_id"
+	ctxAdminRole contextKey = "admin_role"
 )
 
 func getRequestID(ctx context.Context) string {
@@ -35,6 +37,13 @@ func getAdminID(ctx context.Context) string {
 func getSessionID(ctx context.Context) string {
 	if id, ok := ctx.Value(ctxSessionID).(string); ok {
 		return id
+	}
+	return ""
+}
+
+func getAdminRole(ctx context.Context) string {
+	if role, ok := ctx.Value(ctxAdminRole).(string); ok {
+		return role
 	}
 	return ""
 }
@@ -113,8 +122,16 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Load admin record to get role for RBAC.
+		admin, err := s.admins.GetByID(r.Context(), adminID)
+		if err != nil || admin == nil {
+			respondError(w, r, http.StatusUnauthorized, "SESSION_INVALID", "Admin account not found")
+			return
+		}
+
 		ctx := context.WithValue(r.Context(), ctxAdminID, adminID)
 		ctx = context.WithValue(ctx, ctxSessionID, sessionID)
+		ctx = context.WithValue(ctx, ctxAdminRole, admin.Role)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -132,6 +149,66 @@ func extractSignedToken(r *http.Request) string {
 	}
 
 	return ""
+}
+
+// requireRole returns middleware that restricts access to the given roles.
+func requireRole(roles ...string) func(http.Handler) http.Handler {
+	allowed := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		allowed[r] = true
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			role := getAdminRole(r.Context())
+			if !allowed[role] {
+				respondError(w, r, http.StatusForbidden, "FORBIDDEN",
+					"You do not have permission to access this resource")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// requireSuperAdmin is a convenience wrapper for requireRole(auth.RoleSuperAdmin).
+func requireSuperAdmin() func(http.Handler) http.Handler {
+	return requireRole(auth.RoleSuperAdmin)
+}
+
+// requireAdminOrAbove restricts access to admin and super_admin roles.
+func requireAdminOrAbove() func(http.Handler) http.Handler {
+	return requireRole(auth.RoleSuperAdmin, auth.RoleAdmin)
+}
+
+// canAccessDomain checks if the current admin has access to the given domain.
+// Returns true for super_admin and admin roles; for domain_admin, checks the junction table.
+func (s *Server) canAccessDomain(ctx context.Context, domainID string) bool {
+	role := getAdminRole(ctx)
+	if auth.CanAccessAllDomains(role) {
+		return true
+	}
+	adminID := getAdminID(ctx)
+	ok, err := s.adminDomains.HasAccess(ctx, adminID, domainID)
+	if err != nil {
+		s.logger.Error("check domain access failed", "error", err, "admin_id", adminID, "domain_id", domainID)
+		return false
+	}
+	return ok
+}
+
+// getAllowedDomainIDs returns the domain IDs the current admin can access.
+// Returns nil for roles with unrestricted access (meaning "all domains").
+func (s *Server) getAllowedDomainIDs(ctx context.Context) []string {
+	role := getAdminRole(ctx)
+	if auth.CanAccessAllDomains(role) {
+		return nil // nil means unrestricted
+	}
+	ids, err := s.adminDomains.ListDomainIDs(ctx, getAdminID(ctx))
+	if err != nil {
+		s.logger.Error("list allowed domains failed", "error", err)
+		return []string{} // empty = no access
+	}
+	return ids
 }
 
 // clientIP extracts just the IP address from r.RemoteAddr, stripping the port.

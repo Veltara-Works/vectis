@@ -81,6 +81,10 @@ func (s *Server) handleGenerateDKIM(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetDKIM(w http.ResponseWriter, r *http.Request) {
 	domainID := chi.URLParam(r, "domainID")
+	if !s.canAccessDomain(r.Context(), domainID) {
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this domain")
+		return
+	}
 
 	domain, err := s.domains.GetByID(r.Context(), domainID)
 	if err != nil {
@@ -167,6 +171,10 @@ func (s *Server) handleRotateDKIM(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeliverability(w http.ResponseWriter, r *http.Request) {
 	domainID := chi.URLParam(r, "domainID")
+	if !s.canAccessDomain(r.Context(), domainID) {
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this domain")
+		return
+	}
 
 	domain, err := s.domains.GetByID(r.Context(), domainID)
 	if err != nil {
