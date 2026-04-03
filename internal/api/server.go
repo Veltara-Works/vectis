@@ -24,6 +24,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/mail"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
 	"github.com/Veltara-Works/vectis/internal/monitor"
+	"github.com/Veltara-Works/vectis/internal/validonx"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	"github.com/Veltara-Works/vectis/internal/repository"
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
@@ -72,8 +73,9 @@ type Server struct {
 	abuseDetector     *mail.AbuseDetector
 
 	// Background services
-	monitor      *monitor.Monitor
-	auditPruner  *audit.Pruner
+	monitor       *monitor.Monitor
+	auditPruner   *audit.Pruner
+	usageReporter *validonx.UsageReporter
 }
 
 // Config holds API server configuration.
@@ -145,6 +147,12 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	s.mailSender = mail.NewSender("vectis-postfix:25", cfg.Hostname, logger.With("component", "mail-sender"))
 	s.webhookDispatcher = mail.NewWebhookDispatcher(s.webhooks, logger.With("component", "webhook-dispatcher"))
 	s.abuseDetector = mail.NewAbuseDetector(vk, mail.DefaultAbuseConfig(), logger.With("component", "abuse-detector"))
+
+	// Initialize ValidonX usage reporter if configured.
+	if cfg.VectisSecrets != nil && cfg.VectisSecrets.ValidonXConfigured() {
+		vxClient := validonx.NewClient(cfg.VectisSecrets.ValidonX, logger.With("component", "validonx"))
+		s.usageReporter = validonx.NewUsageReporter(vxClient, db, logger.With("component", "usage-reporter"))
+	}
 
 	// Initialize OIDC manager if providers are configured.
 	if cfg.VectisSecrets != nil && len(cfg.VectisSecrets.OIDC.Providers) > 0 && cfg.CallbackBaseURL != "" {
@@ -243,12 +251,27 @@ func (s *Server) StopWebhookDispatcher() {
 	}
 }
 
+// StartUsageReporter starts the ValidonX usage metrics reporter.
+func (s *Server) StartUsageReporter() {
+	if s.usageReporter != nil {
+		s.usageReporter.Start()
+	}
+}
+
+// StopUsageReporter stops the ValidonX usage metrics reporter.
+func (s *Server) StopUsageReporter() {
+	if s.usageReporter != nil {
+		s.usageReporter.Stop()
+	}
+}
+
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("shutting down API server")
 	s.StopMonitor()
 	s.StopAuditPruner()
 	s.StopWebhookDispatcher()
+	s.StopUsageReporter()
 	return s.httpServer.Shutdown(ctx)
 }
 

@@ -114,6 +114,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	srv.StartMonitor()
 	srv.StartAuditPruner()
 	srv.StartWebhookDispatcher()
+	srv.StartUsageReporter()
 
 	// Graceful shutdown.
 	errCh := make(chan error, 1)
