@@ -1,0 +1,58 @@
+/* Vectis Webmail — Elastic skin customization
+ * Overrides Roundcube's Elastic theme for Vectis branding.
+ *
+ * Elastic uses CSS custom properties throughout, so we can restyle
+ * the entire UI by overriding a handful of variables on :root.
+ *
+ * Reference: https://github.com/roundcube/elastic
+ * Elastic colour system (defaults):
+ *   --main-color:       #37beff  (primary blue)
+ *   --color-main:       #37beff
+ *   --color-main-dark:  #178acc
+ *   --color-link:       #37beff
+ *   --color-font:       #333
+ *   --color-black-shade-text: #333
+ *   --layout-header-background: #f4f4f4
+ */
+
+:root {
+  /* Vectis brand palette — slate-blue primary, clean dark sidebar */
+  --color-main:              #3b82f6;  /* tailwind blue-500 */
+  --color-main-dark:         #2563eb;  /* tailwind blue-600 */
+  --main-color:              #3b82f6;
+  --color-link:              #3b82f6;
+
+  /* Sidebar / toolbar */
+  --layout-header-background: #0f172a;  /* slate-900 */
+  --color-toolbar-button:     #94a3b8;  /* slate-400 */
+
+  /* List selection highlight */
+  --color-list-selected:      #dbeafe;  /* blue-100 */
+  --color-list-selected-background: #dbeafe;
+
+  /* Button styling */
+  --btn-primary-color:         #fff;
+  --btn-primary-background:    #3b82f6;
+}
+
+/* Branding in login screen */
+#login-form h1,
+.login-title {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  letter-spacing: 0.025em;
+}
+
+/* Hide default Roundcube branding link */
+#layout-sidebar .footer a[href*="roundcube.net"] {
+  display: none;
+}
+
+/* Vectis footer attribution */
+#layout-sidebar .footer::after {
+  content: "Powered by Vectis Mail";
+  display: block;
+  font-size: 0.75rem;
+  color: #64748b;
+  text-align: center;
+  padding: 0.5rem 0;
+}

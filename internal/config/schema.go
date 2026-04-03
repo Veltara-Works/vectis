@@ -19,6 +19,7 @@ type VectisConfig struct {
 	Orchestrator OrchestratorConfig  `yaml:"orchestrator"`
 	Alerts       AlertsConfig        `yaml:"alerts"`
 	Audit        AuditConfig         `yaml:"audit"`
+	Webmail      WebmailConfig       `yaml:"webmail"`
 	RateLimits   RateLimitConfig     `yaml:"rate_limits"`
 }
 
@@ -113,6 +114,12 @@ type AlertWebhookConfig struct {
 // AuditConfig controls audit log retention and pruning.
 type AuditConfig struct {
 	RetentionDays int `yaml:"retention_days"` // entries older than this are pruned; default 90, 0 = no pruning
+}
+
+// WebmailConfig controls the optional Roundcube webmail container.
+type WebmailConfig struct {
+	Enabled    bool   `yaml:"enabled"`               // include webmail container; default false
+	UploadMaxMB int   `yaml:"upload_max_mb,omitempty"` // max attachment size in MB; default 25
 }
 
 // RateLimitConfig controls Traefik rate limiting middleware for API endpoints.

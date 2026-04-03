@@ -161,6 +161,59 @@ services:
       options:
         max-size: "{{ .Logging.MaxSizeMB }}m"
         max-file: "{{ .Logging.MaxFiles }}"
+{{ if .Webmail.Enabled }}
+  webmail:
+    image: roundcube/roundcubemail:1.6-fpm-alpine
+    container_name: vectis-webmail
+    restart: unless-stopped
+    networks:
+      - vectis-frontend
+      - vectis-mail
+    volumes:
+      - webmail-config:/var/roundcube/config:ro
+      - webmail-data:/var/roundcube/db
+      - webmail-skin:/var/roundcube/skins/vectis:ro
+    environment:
+      ROUNDCUBEMAIL_DEFAULT_HOST: "ssl://vectis-dovecot"
+      ROUNDCUBEMAIL_DEFAULT_PORT: "993"
+      ROUNDCUBEMAIL_SMTP_SERVER: "tls://vectis-postfix"
+      ROUNDCUBEMAIL_SMTP_PORT: "587"
+      ROUNDCUBEMAIL_DB_TYPE: "sqlite"
+      ROUNDCUBEMAIL_UPLOAD_MAX_FILESIZE: "{{ if .Webmail.UploadMaxMB }}{{ .Webmail.UploadMaxMB }}{{ else }}25{{ end }}M"
+      ROUNDCUBEMAIL_SKIN: "elastic"
+      ROUNDCUBEMAIL_PLUGINS: "archive,managesieve,zipdownload"
+    depends_on:
+      dovecot:
+        condition: service_healthy
+      postfix:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "php-fpm-healthcheck || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: {{ .Logging.Driver }}
+      options:
+        max-size: "{{ .Logging.MaxSizeMB }}m"
+        max-file: "{{ .Logging.MaxFiles }}"
+
+  webmail-nginx:
+    image: nginx:alpine
+    container_name: vectis-webmail-nginx
+    restart: unless-stopped
+    networks:
+      - vectis-frontend
+    volumes:
+      - webmail-nginx-config:/etc/nginx/conf.d:ro
+    depends_on:
+      - webmail
+    logging:
+      driver: {{ .Logging.Driver }}
+      options:
+        max-size: "{{ .Logging.MaxSizeMB }}m"
+        max-file: "{{ .Logging.MaxFiles }}"
+{{ end }}
 {{ if ne .ClamAV.Profile "none" }}
   clamav:
     image: ghcr.io/veltara-works/vectis-clamav:latest
@@ -283,3 +336,9 @@ volumes:
   traefik-acme:
   acme-data:
   snapshots:
+{{ if .Webmail.Enabled }}
+  webmail-config:
+  webmail-data:
+  webmail-skin:
+  webmail-nginx-config:
+{{ end }}

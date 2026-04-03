@@ -36,6 +36,24 @@ http:
 {{ end }}
       priority: 20
 
+{{ if .Webmail.Enabled }}
+    # Webmail (Roundcube) — standard rate limiting
+    vectis-webmail:
+      rule: "Host(`{{ .Hostname }}`) && PathPrefix(`/webmail`)"
+      service: vectis-webmail
+      middlewares:
+        - rate-limit-api
+        - webmail-strip-prefix
+      entryPoints:
+        - websecure
+{{ if eq .TLS.Provider "letsencrypt" }}
+      tls:
+        certResolver: letsencrypt
+{{ else }}
+      tls: {}
+{{ end }}
+      priority: 15
+{{ end }}
     # General API + UI — standard rate limiting
     vectis-api:
       rule: "Host(`{{ .Hostname }}`)"
@@ -66,8 +84,21 @@ http:
         average: {{ .RateLimits.MutateAverage }}
         burst: {{ .RateLimits.MutateBurst }}
 
+{{ if .Webmail.Enabled }}
+    webmail-strip-prefix:
+      stripPrefix:
+        prefixes:
+          - "/webmail"
+{{ end }}
+
   services:
     vectis-api:
       loadBalancer:
         servers:
           - url: "http://vectis-api:8080"
+{{ if .Webmail.Enabled }}
+    vectis-webmail:
+      loadBalancer:
+        servers:
+          - url: "http://vectis-webmail-nginx:8080"
+{{ end }}
