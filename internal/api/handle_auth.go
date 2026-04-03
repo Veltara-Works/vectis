@@ -33,11 +33,12 @@ type totpRequiredResponse struct {
 }
 
 type adminProfile struct {
-	ID          string     `json:"id"`
-	Email       string     `json:"email"`
-	Role        string     `json:"role"`
-	TOTPEnabled bool       `json:"totp_enabled"`
-	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	ID           string     `json:"id"`
+	Email        string     `json:"email"`
+	Role         string     `json:"role"`
+	TOTPEnabled  bool       `json:"totp_enabled"`
+	OIDCProvider *string    `json:"oidc_provider,omitempty"`
+	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
 }
 
 type totpSetupResponse struct {
@@ -178,11 +179,12 @@ func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, admin *re
 
 	respond(w, r, http.StatusOK, loginResponse{
 		Admin: adminProfile{
-			ID:          admin.ID,
-			Email:       admin.Email,
-			Role:        admin.Role,
-			TOTPEnabled: admin.TOTPEnabled,
-			LastLoginAt: admin.LastLoginAt,
+			ID:           admin.ID,
+			Email:        admin.Email,
+			Role:         admin.Role,
+			TOTPEnabled:  admin.TOTPEnabled,
+			OIDCProvider: admin.OIDCProvider,
+			LastLoginAt:  admin.LastLoginAt,
 		},
 		SessionID: session.ID,
 		ExpiresAt: session.ExpiresAt,
@@ -351,11 +353,12 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, r, http.StatusOK, adminProfile{
-		ID:          admin.ID,
-		Email:       admin.Email,
-		Role:        admin.Role,
-		TOTPEnabled: admin.TOTPEnabled,
-		LastLoginAt: admin.LastLoginAt,
+		ID:           admin.ID,
+		Email:        admin.Email,
+		Role:         admin.Role,
+		TOTPEnabled:  admin.TOTPEnabled,
+		OIDCProvider: admin.OIDCProvider,
+		LastLoginAt:  admin.LastLoginAt,
 	})
 }
 

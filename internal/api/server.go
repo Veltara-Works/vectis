@@ -55,6 +55,9 @@ type Server struct {
 	// TOTP
 	totpManager *auth.TOTPManager
 
+	// OIDC
+	oidcManager *auth.OIDCManager
+
 	// Background services
 	monitor      *monitor.Monitor
 	auditPruner  *audit.Pruner
@@ -74,6 +77,7 @@ type Config struct {
 	OrchestratorURL      string // http://orchestrator:8081 or https://orchestrator:8081
 	OrchestratorToken    string // bearer token for orchestrator internal API (fallback)
 	OrchestratorCertDir  string // mTLS certificate directory; when set, upgrades to mTLS
+	CallbackBaseURL      string // base URL for OIDC callbacks (e.g. https://mail.example.com)
 }
 
 // New creates a new API server with all routes registered.
@@ -114,6 +118,18 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 			}
 		} else if cfg.OrchestratorToken != "" {
 			s.orchClient = orchestrator.NewClient(cfg.OrchestratorURL, cfg.OrchestratorToken)
+		}
+	}
+
+	// Initialize OIDC manager if providers are configured.
+	if cfg.VectisSecrets != nil && len(cfg.VectisSecrets.OIDC.Providers) > 0 && cfg.CallbackBaseURL != "" {
+		ctx := context.Background()
+		oidcMgr, err := auth.NewOIDCManager(ctx, vk, cfg.VectisSecrets.OIDC, cfg.CallbackBaseURL)
+		if err != nil {
+			logger.Error("failed to initialize OIDC providers", "error", err)
+		} else if oidcMgr.HasProviders() {
+			s.oidcManager = oidcMgr
+			logger.Info("OIDC SSO enabled", "providers", oidcMgr.ListProviders())
 		}
 	}
 
@@ -245,6 +261,11 @@ func (s *Server) buildRouter() chi.Router {
 		r.Get("/version", s.handleVersion)
 		r.With(chimw.Throttle(5)).Post("/auth/login", s.handleLogin)
 
+		// OIDC SSO (public — browser redirects).
+		r.Get("/auth/oidc/providers", s.handleOIDCProviders)
+		r.Get("/auth/oidc/login/{provider}", s.handleOIDCLogin)
+		r.Get("/auth/oidc/callback/{provider}", s.handleOIDCCallback)
+
 		// Authenticated endpoints.
 		r.Group(func(r chi.Router) {
 			r.Use(s.authMiddleware)
@@ -260,6 +281,9 @@ func (s *Server) buildRouter() chi.Router {
 			r.Post("/auth/totp/setup", s.handleTOTPSetup)
 			r.Post("/auth/totp/verify", s.handleTOTPVerify)
 			r.Delete("/auth/totp", s.handleTOTPDisable)
+
+			// OIDC management — all authenticated roles.
+			r.Delete("/auth/oidc/disconnect", s.handleOIDCDisconnect)
 
 			// Domains — all roles (domain_admin scoped in handlers).
 			r.Get("/domains", s.handleListDomains)

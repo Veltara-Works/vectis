@@ -107,6 +107,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		OrchestratorURL:     orchURL,
 		OrchestratorToken:   secrets.Orchestrator.Token,
 		OrchestratorCertDir: orchCertDir,
+		CallbackBaseURL:     "https://" + cfg.Hostname,
 	}, logger)
 
 	// Start background services.

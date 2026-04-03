@@ -1,5 +1,11 @@
-import { useState, FormEvent } from 'react'
+import { useState, useEffect, FormEvent } from 'react'
 import { api } from '../api/client.ts'
+
+const providerLabels: Record<string, string> = {
+  google: 'Google',
+  azure: 'Microsoft',
+  keycloak: 'Keycloak',
+}
 
 export default function LoginPage({ onLogin }: { onLogin: () => void }) {
   const [email, setEmail] = useState('')
@@ -8,6 +14,11 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
   const [totpSession, setTotpSession] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [oidcProviders, setOidcProviders] = useState<string[]>([])
+
+  useEffect(() => {
+    api.oidcProviders().then(p => setOidcProviders(p)).catch(() => {})
+  }, [])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -80,6 +91,19 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
               </button>
             )}
           </form>
+          {oidcProviders.length > 0 && !totpSession && (
+            <>
+              <div style={{ textAlign: 'center', margin: '1.25rem 0 1rem', color: '#64748b', fontSize: '0.85rem' }}>
+                or sign in with
+              </div>
+              {oidcProviders.map(p => (
+                <a key={p} href={`/api/v1/auth/oidc/login/${p}`}
+                  className="btn" style={{ width: '100%', marginBottom: '0.5rem', textAlign: 'center', display: 'block', textDecoration: 'none' }}>
+                  {providerLabels[p] || p}
+                </a>
+              ))}
+            </>
+          )}
         </div>
       </div>
     </div>

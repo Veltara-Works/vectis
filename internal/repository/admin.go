@@ -13,14 +13,16 @@ import (
 
 // Admin represents an admin user.
 type Admin struct {
-	ID          string     `json:"id"`
-	Email       string     `json:"email"`
-	PasswordHash string   `json:"-"`
-	TOTPSecret  *string    `json:"-"`
-	TOTPEnabled bool       `json:"totp_enabled"`
-	Role        string     `json:"role"`
-	CreatedAt   time.Time  `json:"created_at"`
-	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	ID           string     `json:"id"`
+	Email        string     `json:"email"`
+	PasswordHash string     `json:"-"`
+	TOTPSecret   *string    `json:"-"`
+	TOTPEnabled  bool       `json:"totp_enabled"`
+	Role         string     `json:"role"`
+	OIDCProvider *string    `json:"oidc_provider,omitempty"`
+	OIDCSubject  *string    `json:"-"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
 }
 
 // AdminCreate holds fields for creating an admin.
@@ -37,6 +39,8 @@ type AdminUpdate struct {
 	TOTPSecret   *string
 	TOTPEnabled  *bool
 	Role         *string
+	OIDCProvider *string
+	OIDCSubject  *string
 }
 
 // AdminRepo handles admin CRUD operations.
@@ -80,9 +84,9 @@ func (r *AdminRepo) Create(ctx context.Context, input AdminCreate) (*Admin, erro
 func (r *AdminRepo) GetByID(ctx context.Context, id string) (*Admin, error) {
 	a := &Admin{}
 	err := r.db.QueryRow(ctx,
-		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, created_at, last_login_at
+		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, created_at, last_login_at
 		 FROM admins WHERE id = $1`, id,
-	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.CreatedAt, &a.LastLoginAt)
+	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.CreatedAt, &a.LastLoginAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -96,9 +100,9 @@ func (r *AdminRepo) GetByID(ctx context.Context, id string) (*Admin, error) {
 func (r *AdminRepo) GetByEmail(ctx context.Context, email string) (*Admin, error) {
 	a := &Admin{}
 	err := r.db.QueryRow(ctx,
-		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, created_at, last_login_at
+		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, created_at, last_login_at
 		 FROM admins WHERE email = $1`, email,
-	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.CreatedAt, &a.LastLoginAt)
+	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.CreatedAt, &a.LastLoginAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -111,7 +115,7 @@ func (r *AdminRepo) GetByEmail(ctx context.Context, email string) (*Admin, error
 // List returns all admins.
 func (r *AdminRepo) List(ctx context.Context) ([]Admin, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, created_at, last_login_at
+		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, created_at, last_login_at
 		 FROM admins ORDER BY email`)
 	if err != nil {
 		return nil, fmt.Errorf("list admins: %w", err)
@@ -121,7 +125,7 @@ func (r *AdminRepo) List(ctx context.Context) ([]Admin, error) {
 	var admins []Admin
 	for rows.Next() {
 		var a Admin
-		if err := rows.Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.CreatedAt, &a.LastLoginAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.CreatedAt, &a.LastLoginAt); err != nil {
 			return nil, fmt.Errorf("scan admin: %w", err)
 		}
 		admins = append(admins, a)
@@ -158,6 +162,16 @@ func (r *AdminRepo) Update(ctx context.Context, id string, input AdminUpdate) (*
 	if input.Role != nil {
 		setClauses = append(setClauses, fmt.Sprintf("role = $%d", argIdx))
 		args = append(args, *input.Role)
+		argIdx++
+	}
+	if input.OIDCProvider != nil {
+		setClauses = append(setClauses, fmt.Sprintf("oidc_provider = $%d", argIdx))
+		args = append(args, *input.OIDCProvider)
+		argIdx++
+	}
+	if input.OIDCSubject != nil {
+		setClauses = append(setClauses, fmt.Sprintf("oidc_subject = $%d", argIdx))
+		args = append(args, *input.OIDCSubject)
 		argIdx++
 	}
 
@@ -197,4 +211,41 @@ func (r *AdminRepo) Delete(ctx context.Context, id string) (bool, error) {
 		return false, fmt.Errorf("delete admin: %w", err)
 	}
 	return result.RowsAffected() > 0, nil
+}
+
+// GetByOIDC fetches an admin by OIDC provider and subject.
+func (r *AdminRepo) GetByOIDC(ctx context.Context, provider, subject string) (*Admin, error) {
+	a := &Admin{}
+	err := r.db.QueryRow(ctx,
+		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, created_at, last_login_at
+		 FROM admins WHERE oidc_provider = $1 AND oidc_subject = $2`, provider, subject,
+	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.CreatedAt, &a.LastLoginAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get admin by oidc: %w", err)
+	}
+	return a, nil
+}
+
+// LinkOIDC sets the OIDC provider and subject on an existing admin.
+func (r *AdminRepo) LinkOIDC(ctx context.Context, adminID, provider, subject string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE admins SET oidc_provider = $1, oidc_subject = $2 WHERE id = $3`,
+		provider, subject, adminID)
+	if err != nil {
+		return fmt.Errorf("link oidc: %w", err)
+	}
+	return nil
+}
+
+// UnlinkOIDC clears the OIDC provider and subject from an admin.
+func (r *AdminRepo) UnlinkOIDC(ctx context.Context, adminID string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE admins SET oidc_provider = NULL, oidc_subject = NULL WHERE id = $1`, adminID)
+	if err != nil {
+		return fmt.Errorf("unlink oidc: %w", err)
+	}
+	return nil
 }

@@ -149,6 +149,7 @@ type VectisSecrets struct {
 	API          APISecrets           `yaml:"api"`
 	Orchestrator OrchestratorSecrets  `yaml:"orchestrator"`
 	DKIM         DKIMSecrets          `yaml:"dkim"`
+	OIDC         OIDCSecrets          `yaml:"oidc,omitempty"`
 	Cloudflare   *CloudflareSecrets   `yaml:"cloudflare,omitempty"`
 	ValidonX     *ValidonXSecrets     `yaml:"validonx,omitempty"`
 }
@@ -200,6 +201,20 @@ type DKIMSecrets struct {
 // for DNS-01 challenges.
 type CloudflareSecrets struct {
 	APIToken string `yaml:"api_token"`
+}
+
+// OIDCSecrets holds OIDC provider configurations for admin SSO.
+type OIDCSecrets struct {
+	Providers map[string]OIDCProviderConfig `yaml:"providers"`
+}
+
+// OIDCProviderConfig holds the credentials and settings for a single OIDC provider.
+type OIDCProviderConfig struct {
+	ClientID     string   `yaml:"client_id"`
+	ClientSecret string   `yaml:"client_secret"`
+	DiscoveryURL string   `yaml:"discovery_url"` // e.g. https://accounts.google.com
+	Scopes       []string `yaml:"scopes"`        // default: ["openid", "email", "profile"]
+	Enabled      bool     `yaml:"enabled"`
 }
 
 // ValidonXSecrets holds credentials for the ValidonX licensing service.
