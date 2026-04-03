@@ -12,13 +12,14 @@ import (
 )
 
 var validWebhookEvents = map[string]bool{
-	"mail.sent":      true,
-	"mail.delivered":  true,
-	"mail.bounced":    true,
-	"mail.failed":     true,
-	"mail.received":   true,
-	"mail.spam":       true,
-	"*":               true,
+	"mail.sent":           true,
+	"mail.delivered":      true,
+	"mail.bounced":        true,
+	"mail.failed":         true,
+	"mail.received":       true,
+	"mail.received.full":  true,
+	"mail.spam":           true,
+	"*":                   true,
 }
 
 type createWebhookRequest struct {
