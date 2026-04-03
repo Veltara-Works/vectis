@@ -33,10 +33,11 @@ type Server struct {
 	logger     *slog.Logger
 
 	// Dependencies
-	db           *pgxpool.Pool
-	vk           valkey.Client
-	sessions     *auth.SessionManager
-	hostname     string
+	db            *pgxpool.Pool
+	vk            valkey.Client
+	sessions      *auth.SessionManager
+	hostname      string
+	internalToken string // shared secret for service-to-service calls (Postfix → API)
 	dkimBasePath string
 	webDir       string
 	genDir       string // directory for generated config files
@@ -95,8 +96,9 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		logger:       logger,
 		db:           db,
 		vk:           vk,
-		sessions:     auth.NewSessionManager(db, vk, cfg.SessionTTL, cfg.CookieSecret),
-		hostname:     cfg.Hostname,
+		sessions:      auth.NewSessionManager(db, vk, cfg.SessionTTL, cfg.CookieSecret),
+		hostname:      cfg.Hostname,
+		internalToken: cfg.CookieSecret, // reuse API secret as internal service token
 		dkimBasePath: cfg.DKIMBasePath,
 		webDir:       cfg.WebDir,
 		genDir:       cfg.GenDir,
@@ -293,6 +295,9 @@ func (s *Server) buildRouter() chi.Router {
 		r.Get("/version", s.handleVersion)
 		r.With(chimw.Throttle(5)).Post("/auth/login", s.handleLogin)
 
+		// Internal service-to-service endpoints (token-authenticated, not session).
+		r.Post("/internal/inbound", s.handleInboundNotify)
+
 		// OIDC SSO (public — browser redirects).
 		r.Get("/auth/oidc/providers", s.handleOIDCProviders)
 		r.Get("/auth/oidc/login/{provider}", s.handleOIDCLogin)
@@ -366,6 +371,7 @@ func (s *Server) buildRouter() chi.Router {
 			r.Get("/audit", s.handleListAudit)
 
 			// Abuse detection — admin and super_admin.
+			r.With(requireAdminOrAbove()).Get("/abuse/dashboard", s.handleAbuseDashboard)
 			r.With(requireAdminOrAbove()).Get("/abuse/events", s.handleListAbuseEvents)
 			r.With(requireAdminOrAbove()).Post("/abuse/events/{eventID}/resolve", s.handleResolveAbuseEvent)
 			r.With(requireAdminOrAbove()).Post("/abuse/mailboxes/{mailboxID}/suspend", s.handleSuspendMailbox)
