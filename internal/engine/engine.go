@@ -38,6 +38,9 @@ type TemplateData struct {
 	API        config.APISecrets
 	Cloudflare *config.CloudflareSecrets
 
+	// Clustering
+	Cluster config.ClusterConfig
+
 	// From Postgres (queried at generation time)
 	Domains []repository.Domain
 }
@@ -65,6 +68,7 @@ func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, do
 		Valkey:     secrets.Valkey,
 		API:        secrets.API,
 		Cloudflare: secrets.Cloudflare,
+		Cluster:    cfg.Cluster,
 		Domains:    domains,
 	}
 }

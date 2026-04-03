@@ -328,14 +328,42 @@ services:
       options:
         max-size: "{{ .Logging.MaxSizeMB }}m"
         max-file: "{{ .Logging.MaxFiles }}"
-
+{{ if .Cluster.PgBouncer.Enabled }}
+  pgbouncer:
+    image: edoburu/pgbouncer:1.23.1-p2
+    container_name: vectis-pgbouncer
+    restart: unless-stopped
+    networks:
+      - vectis-data
+    volumes:
+      - pgbouncer-config:/etc/pgbouncer:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p {{ if .Cluster.PgBouncer.ListenPort }}{{ .Cluster.PgBouncer.ListenPort }}{{ else }}6432{{ end }}"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: {{ .Logging.Driver }}
+      options:
+        max-size: "{{ .Logging.MaxSizeMB }}m"
+        max-file: "{{ .Logging.MaxFiles }}"
+{{ end }}
   valkey:
     image: valkey/valkey:8-alpine
     container_name: vectis-valkey
     restart: unless-stopped
     networks:
       - vectis-data
-    command: valkey-server --requirepass {{ .Valkey.Password }}
+    command: >
+      valkey-server
+      --requirepass {{ .Valkey.Password }}
+      --save 60 1000
+      --save 300 100{{ if .Cluster.Enabled }}
+      --min-replicas-to-write 0
+      --min-replicas-max-lag 10{{ end }}
     environment:
       VALKEY_PASSWORD: {{ .Valkey.Password }}
     volumes:
@@ -353,16 +381,16 @@ services:
 
 networks:
   vectis-frontend:
-    driver: bridge
+    driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
     internal: false
   vectis-mail:
-    driver: bridge
+    driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
     internal: true
   vectis-data:
-    driver: bridge
+    driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
     internal: true
   vectis-orchestrator:
-    driver: bridge
+    driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
     internal: true
 
 volumes:
@@ -378,6 +406,9 @@ volumes:
   traefik-acme:
   acme-data:
   snapshots:
+{{ if .Cluster.PgBouncer.Enabled }}
+  pgbouncer-config:
+{{ end }}
 {{ if .Webmail.Enabled }}
   webmail-config:
   webmail-data:

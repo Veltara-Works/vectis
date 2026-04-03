@@ -8,6 +8,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/mail"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
+	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
 type sendRequest struct {
@@ -189,6 +190,35 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vectismetrics.EmailsSent.Inc()
+
+	// Store message metadata.
+	if s.messages != nil {
+		toEmails := make([]string, 0, len(req.To)+len(req.CC)+len(req.BCC))
+		for _, a := range req.To {
+			toEmails = append(toEmails, a.Email)
+		}
+		for _, a := range req.CC {
+			toEmails = append(toEmails, a.Email)
+		}
+		for _, a := range req.BCC {
+			toEmails = append(toEmails, a.Email)
+		}
+		s.messages.Create(r.Context(), &repository.Message{
+			DomainID:   domain.ID,
+			MessageID:  result.MessageID,
+			Direction:  "outbound",
+			Sender:     req.From.Email,
+			Recipients: toEmails,
+			Subject:    req.Subject,
+			Status:     "sent",
+			CreatedAt:  time.Now().UTC(),
+		})
+	}
+
+	// Increment domain stats.
+	if s.mailStats != nil {
+		s.mailStats.Increment(r.Context(), domain.ID, "sent", 0)
+	}
 
 	// Audit log.
 	adminID := getAdminID(r.Context())

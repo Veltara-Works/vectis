@@ -22,6 +22,7 @@ type VectisConfig struct {
 	Webmail      WebmailConfig       `yaml:"webmail"`
 	Observability ObservabilityConfig `yaml:"observability"`
 	RateLimits   RateLimitConfig     `yaml:"rate_limits"`
+	Cluster      ClusterConfig       `yaml:"cluster"`
 }
 
 // TLSConfig controls certificate provisioning.
@@ -138,6 +139,44 @@ type RateLimitConfig struct {
 	APIBurst      int `yaml:"api_burst"`      // burst above average, default 100
 	MutateAverage int `yaml:"mutate_average"` // mutating endpoints (POST/PATCH/DELETE), default 20 req/s
 	MutateBurst   int `yaml:"mutate_burst"`   // burst above average, default 40
+}
+
+// ClusterConfig controls multi-node clustering (Phase 3).
+// When Enabled is false (default), the system runs in single-node mode.
+type ClusterConfig struct {
+	Enabled        bool     `yaml:"enabled"`                   // enable cluster mode; default false
+	NodeName       string   `yaml:"node_name,omitempty"`       // unique node name; defaults to hostname
+	AdvertiseAddr  string   `yaml:"advertise_addr,omitempty"`  // address other nodes use to reach this one (host:port)
+	SeedNodes      []string `yaml:"seed_nodes,omitempty"`      // initial nodes to contact for cluster join
+	Services       []string `yaml:"services,omitempty"`        // services this node runs: ["postfix","dovecot","api","rspamd"]
+	HeartbeatSec   int      `yaml:"heartbeat_sec,omitempty"`   // heartbeat interval in seconds; default 10
+	LeaderLeaseSec int      `yaml:"leader_lease_sec,omitempty"` // leader lease duration in seconds; default 30
+	PgBouncer      PgBouncerConfig `yaml:"pgbouncer"`
+}
+
+// PgBouncerConfig controls the PgBouncer connection pooler (Phase 3.3).
+type PgBouncerConfig struct {
+	Enabled        bool   `yaml:"enabled"`                    // include PgBouncer container; default false
+	PoolMode       string `yaml:"pool_mode,omitempty"`        // "transaction" (default) or "session"
+	DefaultPoolSize int   `yaml:"default_pool_size,omitempty"` // default 20
+	MaxClientConn  int    `yaml:"max_client_conn,omitempty"`   // default 200
+	ListenPort     int    `yaml:"listen_port,omitempty"`       // default 6432
+}
+
+// DefaultClusterConfig returns sensible defaults for clustering.
+func DefaultClusterConfig() ClusterConfig {
+	return ClusterConfig{
+		Enabled:        false,
+		HeartbeatSec:   10,
+		LeaderLeaseSec: 30,
+		PgBouncer: PgBouncerConfig{
+			Enabled:        false,
+			PoolMode:       "transaction",
+			DefaultPoolSize: 20,
+			MaxClientConn:  200,
+			ListenPort:     6432,
+		},
+	}
 }
 
 // DefaultRateLimits returns sensible defaults for rate limiting.

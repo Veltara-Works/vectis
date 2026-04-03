@@ -39,6 +39,24 @@ var (
 		Name:      "api_requests_total",
 		Help:      "Total API requests",
 	}, []string{"method", "status_class"}) // method=GET/POST, status_class=2xx/4xx/5xx
+
+	BatchMessagesSent = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "batch_messages_sent_total",
+		Help:      "Total messages sent via the batch sending API",
+	})
+
+	FBLComplaints = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "fbl_complaints_total",
+		Help:      "Total FBL (feedback loop) complaints received",
+	})
+
+	RBLListings = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "rbl_listings_current",
+		Help:      "Number of RBL/DNSBL listings for server IPs",
+	})
 )
 
 func init() {
@@ -49,5 +67,8 @@ func init() {
 		EmailsSendSuspended,
 		WebhookDeliveries,
 		APIRequests,
+		BatchMessagesSent,
+		FBLComplaints,
+		RBLListings,
 	)
 }

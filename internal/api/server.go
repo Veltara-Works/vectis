@@ -20,6 +20,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/audit"
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/backup"
+	"github.com/Veltara-Works/vectis/internal/cluster"
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/mail"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
@@ -60,6 +61,11 @@ type Server struct {
 	abuseEvents  *repository.AbuseRepo
 	audit        *repository.AuditRepo
 	alerts       *repository.AlertRepo
+	messages     *repository.MessageRepo
+	mailStats    *repository.MailStatsRepo
+	ipWarmup     *repository.IPWarmupRepo
+	rblChecks    *repository.RBLCheckRepo
+	fblReports   *repository.FBLReportRepo
 
 	// TOTP
 	totpManager *auth.TOTPManager
@@ -71,6 +77,15 @@ type Server struct {
 	mailSender        *mail.Sender
 	webhookDispatcher *mail.WebhookDispatcher
 	abuseDetector     *mail.AbuseDetector
+
+	// Deliverability services
+	rblMonitor    *mail.RBLMonitor
+	warmupManager *mail.WarmupManager
+
+	// Clustering
+	nodeMgr       *cluster.NodeManager
+	rollingCoord  *cluster.RollingCoordinator
+	clusterHealth *cluster.HealthChecker
 
 	// Background services
 	monitor       *monitor.Monitor
@@ -93,6 +108,7 @@ type Config struct {
 	OrchestratorToken    string // bearer token for orchestrator internal API (fallback)
 	OrchestratorCertDir  string // mTLS certificate directory; when set, upgrades to mTLS
 	CallbackBaseURL      string // base URL for OIDC callbacks (e.g. https://mail.example.com)
+	ServerIPs            []string // server IP addresses for RBL monitoring
 }
 
 // New creates a new API server with all routes registered.
@@ -119,6 +135,11 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		abuseEvents:  repository.NewAbuseRepo(db),
 		audit:        repository.NewAuditRepo(db),
 		alerts:       repository.NewAlertRepo(db),
+		messages:     repository.NewMessageRepo(db),
+		mailStats:    repository.NewMailStatsRepo(db),
+		ipWarmup:     repository.NewIPWarmupRepo(db),
+		rblChecks:    repository.NewRBLCheckRepo(db),
+		fblReports:   repository.NewFBLReportRepo(db),
 		totpManager:  auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
 	}
 
@@ -153,6 +174,22 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		vxClient := validonx.NewClient(cfg.VectisSecrets.ValidonX, logger.With("component", "validonx"))
 		s.usageReporter = validonx.NewUsageReporter(vxClient, db, logger.With("component", "usage-reporter"))
 	}
+
+	// Initialize clustering if enabled.
+	if cfg.VectisCfg != nil && cfg.VectisCfg.Cluster.Enabled {
+		clusterCfg := cfg.VectisCfg.Cluster
+		s.nodeMgr = cluster.NewNodeManager(db, clusterCfg, logger.With("component", "node-manager"))
+		s.rollingCoord = cluster.NewRollingCoordinator(db, s.nodeMgr, logger.With("component", "rolling-coordinator"))
+		s.clusterHealth = cluster.NewHealthChecker(s.nodeMgr, logger.With("component", "cluster-health"))
+	}
+
+	// Initialize RBL monitor if server IPs are configured.
+	if len(cfg.ServerIPs) > 0 {
+		s.rblMonitor = mail.NewRBLMonitor(s.rblChecks, cfg.ServerIPs, logger.With("component", "rbl-monitor"))
+	}
+
+	// Initialize IP warmup manager.
+	s.warmupManager = mail.NewWarmupManager(s.ipWarmup, logger.With("component", "warmup-manager"))
 
 	// Initialize OIDC manager if providers are configured.
 	if cfg.VectisSecrets != nil && len(cfg.VectisSecrets.OIDC.Providers) > 0 && cfg.CallbackBaseURL != "" {
@@ -265,6 +302,55 @@ func (s *Server) StopUsageReporter() {
 	}
 }
 
+// StartCluster registers this node and starts the heartbeat/leader election loop.
+func (s *Server) StartCluster() {
+	if s.nodeMgr != nil {
+		ctx := context.Background()
+		nodeID, err := s.nodeMgr.Register(ctx)
+		if err != nil {
+			s.logger.Error("cluster node registration failed", "error", err)
+			return
+		}
+		s.logger.Info("cluster node registered", "node_id", nodeID)
+		s.nodeMgr.Start()
+	}
+}
+
+// StopCluster gracefully stops the cluster node manager.
+func (s *Server) StopCluster() {
+	if s.nodeMgr != nil {
+		s.nodeMgr.Stop()
+	}
+}
+
+// StartRBLMonitor starts the background RBL monitoring loop.
+func (s *Server) StartRBLMonitor() {
+	if s.rblMonitor != nil {
+		s.rblMonitor.Start()
+	}
+}
+
+// StopRBLMonitor stops the RBL monitor.
+func (s *Server) StopRBLMonitor() {
+	if s.rblMonitor != nil {
+		s.rblMonitor.Stop()
+	}
+}
+
+// StartWarmupManager starts the background IP warmup schedule manager.
+func (s *Server) StartWarmupManager() {
+	if s.warmupManager != nil {
+		s.warmupManager.Start()
+	}
+}
+
+// StopWarmupManager stops the warmup manager.
+func (s *Server) StopWarmupManager() {
+	if s.warmupManager != nil {
+		s.warmupManager.Stop()
+	}
+}
+
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("shutting down API server")
@@ -272,6 +358,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.StopAuditPruner()
 	s.StopWebhookDispatcher()
 	s.StopUsageReporter()
+	s.StopRBLMonitor()
+	s.StopWarmupManager()
+	s.StopCluster()
 	return s.httpServer.Shutdown(ctx)
 }
 
@@ -386,6 +475,11 @@ func (s *Server) buildRouter() chi.Router {
 
 			// Sending API — all roles (domain scoping enforced in handler).
 			r.Post("/send", s.handleSend)
+			r.Post("/send/batch", s.handleBatchSend)
+
+			// Messages (Storage API) — all roles (domain scoping in handler).
+			r.Get("/messages", s.handleListMessages)
+			r.Get("/messages/{messageID}", s.handleGetMessage)
 
 			// API keys — all roles can manage their own keys.
 			r.Get("/api-keys", s.handleListAPIKeys)
@@ -406,6 +500,22 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireAdminOrAbove()).Post("/abuse/events/{eventID}/resolve", s.handleResolveAbuseEvent)
 			r.With(requireAdminOrAbove()).Post("/abuse/mailboxes/{mailboxID}/suspend", s.handleSuspendMailbox)
 			r.With(requireAdminOrAbove()).Post("/abuse/mailboxes/{mailboxID}/unsuspend", s.handleUnsuspendMailbox)
+
+			// Admin impersonation — admin and super_admin.
+			r.With(requireAdminOrAbove()).Post("/mailboxes/{mailboxID}/impersonate", s.handleImpersonate)
+			r.With(requireAdminOrAbove()).Delete("/mailboxes/{mailboxID}/impersonate", s.handleRevokeImpersonation)
+
+			// Per-domain analytics — all roles (domain scoping in handler).
+			r.Get("/analytics", s.handleDomainAnalytics)
+
+			// Advanced deliverability — super_admin only.
+			r.With(requireSuperAdmin()).Get("/deliverability/warmup", s.handleListWarmup)
+			r.With(requireSuperAdmin()).Post("/deliverability/warmup", s.handleCreateWarmup)
+			r.With(requireSuperAdmin()).Delete("/deliverability/warmup/{warmupID}", s.handleDeleteWarmup)
+			r.With(requireSuperAdmin()).Get("/deliverability/rbl", s.handleRBLStatus)
+			r.With(requireSuperAdmin()).Post("/deliverability/rbl/check", s.handleRBLCheckNow)
+			r.With(requireSuperAdmin()).Get("/deliverability/fbl", s.handleListFBLReports)
+			r.With(requireSuperAdmin()).Post("/deliverability/fbl", s.handleCreateFBLReport)
 
 			// Config management — super_admin only.
 			r.With(requireSuperAdmin()).Get("/config", s.handleGetConfig)
@@ -434,6 +544,15 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Get("/backup/status/{jobId}", s.handleBackupStatus)
 			r.With(requireSuperAdmin()).Get("/backup/list", s.handleBackupList)
 			r.With(requireSuperAdmin()).Post("/backup/restore/{id}", s.handleBackupRestore)
+
+			// Cluster management — super_admin only.
+			r.With(requireSuperAdmin()).Get("/cluster/status", s.handleClusterStatus)
+			r.With(requireSuperAdmin()).Get("/cluster/nodes", s.handleListClusterNodes)
+			r.With(requireSuperAdmin()).Delete("/cluster/nodes/{nodeID}", s.handleRemoveClusterNode)
+			r.With(requireSuperAdmin()).Post("/cluster/rolling-update", s.handleClusterRollingUpdate)
+			r.With(requireSuperAdmin()).Post("/cluster/rolling-rollback", s.handleClusterRollingRollback)
+			r.With(requireSuperAdmin()).Get("/cluster/operations", s.handleListClusterOperations)
+			r.With(requireSuperAdmin()).Get("/cluster/operations/{operationID}", s.handleGetClusterOperation)
 		})
 	})
 

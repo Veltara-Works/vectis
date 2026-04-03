@@ -7,6 +7,7 @@ import (
 
 	"github.com/Veltara-Works/vectis/internal/mail"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
+	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
 // inboundNotification is the payload POSTed by the Postfix notification script
@@ -55,6 +56,48 @@ func (s *Server) handleInboundNotify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vectismetrics.EmailsReceived.Inc()
+
+	// Store inbound message metadata.
+	if s.messages != nil {
+		status := "delivered"
+		if notif.SpamAction != "" && notif.SpamAction != "no action" {
+			status = "spam"
+		}
+		var spamScore *float64
+		if notif.SpamScore > 0 {
+			spamScore = &notif.SpamScore
+		}
+		var spamAction *string
+		if notif.SpamAction != "" {
+			spamAction = &notif.SpamAction
+		}
+		var queueID *string
+		if notif.QueueID != "" {
+			queueID = &notif.QueueID
+		}
+		s.messages.Create(r.Context(), &repository.Message{
+			DomainID:   domain.ID,
+			MessageID:  notif.MessageID,
+			Direction:  "inbound",
+			Sender:     notif.From,
+			Recipients: []string{notif.To},
+			Subject:    notif.Subject,
+			SizeBytes:  notif.Size,
+			Status:     status,
+			SpamScore:  spamScore,
+			SpamAction: spamAction,
+			QueueID:    queueID,
+			CreatedAt:  time.Now().UTC(),
+		})
+	}
+
+	// Increment domain stats.
+	if s.mailStats != nil {
+		s.mailStats.Increment(r.Context(), domain.ID, "received", notif.Size)
+		if notif.SpamAction != "" && notif.SpamAction != "no action" {
+			s.mailStats.Increment(r.Context(), domain.ID, "spam", 0)
+		}
+	}
 
 	// Fire mail.received webhook event.
 	if s.webhookDispatcher != nil {
