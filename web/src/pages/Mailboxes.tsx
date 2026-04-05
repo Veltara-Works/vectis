@@ -19,6 +19,7 @@ export default function MailboxesPage() {
   const [resetTarget, setResetTarget] = useState<{ id: string; email: string } | null>(null)
   const [resetPassword, setResetPassword] = useState('')
   const [resetPasswordError, setResetPasswordError] = useState('')
+  const [copied, setCopied] = useState('')
   const [impersonation, setImpersonation] = useState<{ username: string; password: string; imap_host: string; imap_port: number; expires_at: string } | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -61,6 +62,12 @@ export default function MailboxesPage() {
     if (!/[a-zA-Z]/.test(pw)) return 'Password must contain at least one letter'
     if (!/[0-9]/.test(pw)) return 'Password must contain at least one number'
     return ''
+  }
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(label); setTimeout(() => setCopied(''), 2000)
+    })
   }
 
   const handleAdd = async (e: FormEvent) => {
@@ -179,6 +186,8 @@ export default function MailboxesPage() {
                 <button type="button" className="btn btn-sm" onClick={() => {
                   const pw = generatePassword(); setForm({ ...form, password: pw }); setShowPassword(true); setPasswordError('')
                 }} style={{ whiteSpace: 'nowrap' }}>Generate</button>
+                {form.password && <button type="button" className="btn btn-sm" onClick={() => copyToClipboard(form.password, 'create')}
+                  style={{ whiteSpace: 'nowrap' }}>{copied === 'create' ? 'Copied!' : 'Copy'}</button>}
               </div>
               {passwordError && <small style={{ color: '#ef4444', marginTop: '0.25rem', display: 'block' }}>{passwordError}</small>}
               {form.password && !passwordError && (
@@ -216,6 +225,8 @@ export default function MailboxesPage() {
                 <button type="button" className="btn btn-sm" onClick={() => {
                   const pw = generatePassword(); setResetPassword(pw); setShowResetPw(true); setResetPasswordError('')
                 }} style={{ whiteSpace: 'nowrap' }}>Generate</button>
+                {resetPassword && <button type="button" className="btn btn-sm" onClick={() => copyToClipboard(resetPassword, 'reset')}
+                  style={{ whiteSpace: 'nowrap' }}>{copied === 'reset' ? 'Copied!' : 'Copy'}</button>}
               </div>
               {resetPasswordError && <small style={{ color: '#ef4444', marginTop: '0.25rem', display: 'block' }}>{resetPasswordError}</small>}
               {resetPassword && !resetPasswordError && (
