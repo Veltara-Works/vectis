@@ -92,9 +92,13 @@ export default function MailboxesPage() {
         headers: { 'X-Confirm-Delete': 'true' },
         credentials: 'include',
       })
-      const json = await res.json()
-      if (json.error) throw new Error(json.error.message)
-      api.listMailboxes(selectedDomain).then(setMailboxes)
+      const text = await res.text()
+      if (text) {
+        const json = JSON.parse(text)
+        if (json.error) throw new Error(json.error.message)
+      }
+      setSuccess(`Mailbox ${localPart}@${domainName} deleted`)
+      api.listMailboxes(selectedDomain).then(m => setMailboxes(m || [])).catch(() => setMailboxes([]))
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to delete mailbox')
     }
