@@ -60,7 +60,7 @@ export default function LogSearchPage() {
         </form>
       </div>
 
-      {results && (
+      {results !== null && (
         <div className="card" style={{ marginBottom: '1.5rem' }}>
           <h3>Results</h3>
           <pre style={{ maxHeight: '500px', overflow: 'auto', fontSize: '0.8rem', whiteSpace: 'pre-wrap', background: '#0d1117', padding: '1rem', borderRadius: '4px' }}>
