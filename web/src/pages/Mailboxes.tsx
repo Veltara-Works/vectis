@@ -98,7 +98,10 @@ export default function MailboxesPage() {
         if (json.error) throw new Error(json.error.message)
       }
       setSuccess(`Mailbox ${localPart}@${domainName} deleted`)
+      setImpersonation(null)
+      setResetTarget(null)
       api.listMailboxes(selectedDomain).then(m => setMailboxes(m || [])).catch(() => setMailboxes([]))
+      setTimeout(() => setSuccess(''), 5000)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to delete mailbox')
     }
