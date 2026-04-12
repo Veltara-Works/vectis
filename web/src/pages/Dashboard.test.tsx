@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import DashboardPage from './Dashboard'
 
 vi.mock('../api/client', () => ({
   api: {
     health: vi.fn(),
     listDomains: vi.fn(),
+    listMailboxes: vi.fn(),
     applyConfig: vi.fn(),
   },
 }))
@@ -14,8 +16,12 @@ vi.mock('../api/client', () => ({
 import { api } from '../api/client'
 const mockApi = vi.mocked(api)
 
+const renderWithRouter = (ui: React.ReactElement) =>
+  render(<MemoryRouter>{ui}</MemoryRouter>)
+
 beforeEach(() => {
   vi.clearAllMocks()
+  mockApi.listMailboxes.mockResolvedValue([])
 })
 
 describe('DashboardPage', () => {
@@ -23,7 +29,7 @@ describe('DashboardPage', () => {
     mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
     mockApi.listDomains.mockResolvedValue([])
 
-    render(<DashboardPage />)
+    renderWithRouter(<DashboardPage />)
     expect(screen.getByText('Dashboard')).toBeInTheDocument()
   })
 
@@ -37,10 +43,10 @@ describe('DashboardPage', () => {
     })
     mockApi.listDomains.mockResolvedValue([])
 
-    render(<DashboardPage />)
+    renderWithRouter(<DashboardPage />)
 
     await waitFor(() => {
-      expect(screen.getAllByText('healthy')).toHaveLength(3) // system + postfix + dovecot
+      expect(screen.getAllByText('healthy')).toHaveLength(3)
       expect(screen.getByText('postfix')).toBeInTheDocument()
       expect(screen.getByText('dovecot')).toBeInTheDocument()
     })
@@ -53,11 +59,14 @@ describe('DashboardPage', () => {
       { id: '2', name: 'b.com', active: false },
     ] as never)
 
-    render(<DashboardPage />)
+    renderWithRouter(<DashboardPage />)
 
     await waitFor(() => {
-      expect(screen.getByText('2')).toBeInTheDocument() // total domains
-      expect(screen.getByText('1')).toBeInTheDocument() // active domains
+      // Check that the stats section contains the domain counts
+      const statValues = document.querySelectorAll('.stat-value')
+      const texts = Array.from(statValues).map(el => el.textContent)
+      expect(texts).toContain('2')  // total domains
+      expect(texts).toContain('1')  // active domains
     })
   })
 
@@ -65,7 +74,7 @@ describe('DashboardPage', () => {
     mockApi.health.mockRejectedValue(new Error('timeout'))
     mockApi.listDomains.mockResolvedValue([])
 
-    render(<DashboardPage />)
+    renderWithRouter(<DashboardPage />)
 
     await waitFor(() => {
       expect(screen.getByText('Failed to load health')).toBeInTheDocument()
@@ -77,13 +86,54 @@ describe('DashboardPage', () => {
     mockApi.listDomains.mockResolvedValue([])
     mockApi.applyConfig.mockResolvedValue({ message: 'Configuration applied successfully' })
 
-    render(<DashboardPage />)
+    renderWithRouter(<DashboardPage />)
     const user = userEvent.setup()
 
     await user.click(screen.getByText('Reload Config'))
 
     await waitFor(() => {
       expect(screen.getByText('Configuration applied successfully')).toBeInTheDocument()
+    })
+  })
+
+  it('shows setup checklist when no domains exist', async () => {
+    mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
+    mockApi.listDomains.mockResolvedValue([])
+
+    renderWithRouter(<DashboardPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Getting Started')).toBeInTheDocument()
+      expect(screen.getByText('Start Setup')).toBeInTheDocument()
+    })
+  })
+
+  it('shows resume setup when domain exists but unverified', async () => {
+    mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
+    mockApi.listDomains.mockResolvedValue([
+      { id: '1', name: 'test.com', active: true, verification_status: 'pending' },
+    ] as never)
+
+    renderWithRouter(<DashboardPage />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Resume Setup')).toBeInTheDocument()
+    })
+  })
+
+  it('hides setup checklist when domain verified and mailbox exists', async () => {
+    mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
+    mockApi.listDomains.mockResolvedValue([
+      { id: '1', name: 'test.com', active: true, verification_status: 'verified' },
+    ] as never)
+    mockApi.listMailboxes.mockResolvedValue([
+      { id: 'mb1', domain_id: '1', local_part: 'admin', quota_mb: 1024, active: true, created_at: '2026-01-01' },
+    ] as never)
+
+    renderWithRouter(<DashboardPage />)
+
+    await waitFor(() => {
+      expect(screen.queryByText('Getting Started')).not.toBeInTheDocument()
     })
   })
 })
