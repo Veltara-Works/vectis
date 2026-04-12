@@ -1,11 +1,14 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -167,6 +170,12 @@ func (s *Server) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
+	// Deliver a welcome email directly to the new Maildir.
+	email := fmt.Sprintf("%s@%s", req.LocalPart, domain.Name)
+	if err := s.deliverWelcomeEmail(maildirBase, email, domain.Name); err != nil {
+		s.logger.Warn("failed to deliver welcome email", "mailbox", email, "error", err)
+	}
+
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "mailbox.create", "mailbox", &mailbox.ID,
@@ -260,4 +269,72 @@ func (s *Server) handleDeleteMailbox(w http.ResponseWriter, r *http.Request) {
 	s.audit.Log(r.Context(), &adminID, "mailbox.delete", "mailbox", &mailboxID, nil, &ip)
 
 	respond(w, r, http.StatusOK, map[string]string{"message": "Mailbox deleted"})
+}
+
+// deliverWelcomeEmail writes a welcome message directly into the Maildir/new/
+// directory so the user sees it on first login.
+func (s *Server) deliverWelcomeEmail(maildirBase, email, domainName string) error {
+	now := time.Now().UTC()
+	msgID := randHex(16) + "@" + s.hostname
+
+	body := fmt.Sprintf(`From: "Vectis Mail" <postmaster@%s>
+To: <%s>
+Subject: Welcome to your new mailbox
+Date: %s
+Message-ID: <%s>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+
+Welcome to your new mailbox on %s!
+
+Your account has been created and is ready to use.
+
+=== Connection Details ===
+
+Email Address : %s
+
+IMAP (incoming mail):
+  Server : %s
+  Port   : 993
+  Security: SSL/TLS
+
+SMTP (outgoing mail):
+  Server : %s
+  Port   : 587
+  Security: STARTTLS
+
+Username: %s
+Password: the password set by your administrator
+
+Webmail: https://%s/webmail/
+
+If you have any questions, contact your mail administrator.
+`,
+		domainName,
+		email,
+		now.Format(time.RFC1123Z),
+		msgID,
+		s.hostname,
+		email,
+		s.hostname,
+		s.hostname,
+		email,
+		s.hostname,
+	)
+
+	filename := fmt.Sprintf("%d.%s.%s", now.UnixNano(), randHex(16), s.hostname)
+	path := filepath.Join(maildirBase, "new", filename)
+
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		return fmt.Errorf("write welcome email: %w", err)
+	}
+	// Ensure vmail ownership.
+	os.Chown(path, 5000, 5000)
+	return nil
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
