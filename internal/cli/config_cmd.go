@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -539,6 +540,14 @@ func runApply(cmd *cobra.Command, args []string) error {
 	// Write files.
 	if err := engine.WriteFiles(outputDir, files); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: write failed: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+
+	// Write Docker secret files.
+	secretsDir := filepath.Join(outputDir, "secrets")
+	if err := engine.WriteSecrets(secretsDir, data); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: write secrets failed: %s\n", err)
 		os.Exit(1)
 		return nil
 	}

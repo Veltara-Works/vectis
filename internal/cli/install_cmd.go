@@ -85,6 +85,11 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "\nError writing configs: %s\n", err)
 		os.Exit(1)
 	}
+	if err := engine.WriteSecrets(filepath.Join(genDir, "secrets"), data); err != nil {
+		fmt.Fprintln(cmd.OutOrStdout())
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nError writing Docker secrets: %s\n", err)
+		os.Exit(1)
+	}
 	done()
 
 	// Step 4: Create runtime directories and configure Docker IPv6

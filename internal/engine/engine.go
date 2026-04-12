@@ -153,6 +153,40 @@ func WriteFiles(outputDir string, files []GeneratedFile) error {
 	return nil
 }
 
+// WriteSecrets writes individual Docker secret files expected by docker-compose.
+// Each secret is written as a single-value file under secretsDir (e.g.
+// /var/vectis/generated/secrets/valkey_password). These files are referenced
+// by the Docker Compose `secrets:` section.
+func WriteSecrets(secretsDir string, data *TemplateData) error {
+	if err := os.MkdirAll(secretsDir, 0700); err != nil {
+		return fmt.Errorf("create secrets directory: %w", err)
+	}
+
+	secrets := map[string]string{
+		"valkey_password": data.Valkey.Password,
+	}
+
+	if data.Cloudflare != nil && data.Cloudflare.APIToken != "" {
+		secrets["cloudflare_token"] = data.Cloudflare.APIToken
+	}
+
+	if data.Observability.GrafanaEnabled && data.API.Secret != "" {
+		// Derive a Grafana admin password from the API secret rather than
+		// exposing the API secret itself. Use first 32 chars as a stable
+		// derived password.
+		secrets["grafana_admin_password"] = data.API.Secret[:min(32, len(data.API.Secret))]
+	}
+
+	for name, value := range secrets {
+		path := filepath.Join(secretsDir, name)
+		if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+			return fmt.Errorf("write secret %s: %w", name, err)
+		}
+	}
+
+	return nil
+}
+
 // DiffFiles compares generated files against what's currently on disk.
 // Returns a list of files that differ.
 func DiffFiles(outputDir string, files []GeneratedFile) ([]FileDiff, error) {
