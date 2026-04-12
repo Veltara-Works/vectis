@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go-lint-test:
+    name: Go Lint & Test
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: vectis
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: vectis_dev_super
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vectis"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      valkey:
+        image: valkey/valkey:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: go test ./internal/auth ./internal/dkim ./internal/engine -v -count=1
+
+      - name: Seed test database
+        run: |
+          PGPASSWORD=vectis_dev_super psql -h 127.0.0.1 -U postgres -d vectis -c "
+            CREATE USER vectis_postfix WITH PASSWORD 'vectis_dev_postfix';
+            CREATE USER vectis_dovecot WITH PASSWORD 'vectis_dev_dovecot';
+          "
+        env:
+          PGPASSWORD: vectis_dev_super
+
+      - name: Integration tests
+        run: go test -tags integration ./internal/ -v -count=1 -timeout 120s
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+      - run: npm run build
+
+  go-build:
+    name: Go Build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        run: go build -o vectis ./cmd/vectis/
