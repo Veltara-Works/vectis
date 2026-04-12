@@ -1,16 +1,38 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api/client.ts'
+
+interface SetupProgress {
+  hasDomain: boolean
+  domainVerified: boolean
+  hasMailbox: boolean
+  loading: boolean
+}
 
 export default function DashboardPage() {
   const [health, setHealth] = useState<{ status: string; services: Record<string, { status: string; response_ms: number }> } | null>(null)
-  const [domains, setDomains] = useState<Array<{ id: string; name: string; active: boolean }>>([])
+  const [domains, setDomains] = useState<Array<{ id: string; name: string; active: boolean; verification_status?: string }>>([])
   const [error, setError] = useState('')
   const [configApplying, setConfigApplying] = useState(false)
   const [configMessage, setConfigMessage] = useState('')
+  const [setup, setSetup] = useState<SetupProgress>({ hasDomain: false, domainVerified: false, hasMailbox: false, loading: true })
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setError('Failed to load health'))
-    api.listDomains().then(d => setDomains(d || [])).catch(() => {})
+    api.listDomains().then(async (d) => {
+      const allDomains = d || []
+      setDomains(allDomains)
+      const hasDomain = allDomains.length > 0
+      const domainVerified = allDomains.some((dom: { verification_status?: string }) => dom.verification_status === 'verified')
+      let hasMailbox = false
+      if (hasDomain) {
+        try {
+          const mbs = await api.listMailboxes(allDomains[0].id)
+          hasMailbox = (mbs || []).length > 0
+        } catch { /* */ }
+      }
+      setSetup({ hasDomain, domainVerified, hasMailbox, loading: false })
+    }).catch(() => {})
   }, [])
 
   const handleConfigApply = async () => {
@@ -55,6 +77,33 @@ export default function DashboardPage() {
           <div className="stat-value">{domains.filter(d => d.active).length}</div>
         </div>
       </div>
+
+      {!setup.loading && !(setup.hasDomain && setup.domainVerified && setup.hasMailbox) && (
+        <div className="card" style={{ borderColor: 'var(--primary)' }}>
+          <h3 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Getting Started</h3>
+          <div className="setup-checklist">
+            <div className={`setup-check ${setup.hasDomain ? 'setup-check-done' : ''}`}>
+              <span className="setup-check-icon">{setup.hasDomain ? '\u2713' : '1'}</span>
+              <span>Add your first domain</span>
+            </div>
+            <div className={`setup-check ${setup.hasDomain && setup.domainVerified ? 'setup-check-done' : ''}`}>
+              <span className="setup-check-icon">{setup.domainVerified ? '\u2713' : '2'}</span>
+              <span>Configure DNS and verify domain</span>
+            </div>
+            <div className={`setup-check ${setup.hasMailbox ? 'setup-check-done' : ''}`}>
+              <span className="setup-check-icon">{setup.hasMailbox ? '\u2713' : '3'}</span>
+              <span>Create your first mailbox</span>
+            </div>
+            <div className="setup-check">
+              <span className="setup-check-icon">4</span>
+              <span>Review deliverability</span>
+            </div>
+          </div>
+          <Link to="/admin/setup" className="btn" style={{ display: 'inline-block', marginTop: '1rem', textDecoration: 'none' }}>
+            {setup.hasDomain ? 'Resume Setup' : 'Start Setup'}
+          </Link>
+        </div>
+      )}
 
       <div className="card">
         <h3 className="mb-1">Configuration</h3>

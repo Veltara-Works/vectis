@@ -14,6 +14,7 @@ import BackupsPage from './pages/Backups.tsx'
 import SessionsPage from './pages/Sessions.tsx'
 import FilterRulesPage from './pages/FilterRules.tsx'
 import LogSearchPage from './pages/LogSearch.tsx'
+import SetupWizardPage from './pages/SetupWizard.tsx'
 
 interface AdminProfile {
   id: string
@@ -47,6 +48,7 @@ export default function App() {
 
   const nav = [
     { path: '/admin', label: 'Dashboard', show: true },
+    { path: '/admin/setup', label: 'Setup Wizard', show: true },
     { path: '/admin/domains', label: 'Domains', show: true },
     { path: '/admin/mailboxes', label: 'Mailboxes', show: true },
     { path: '/admin/aliases', label: 'Aliases', show: true },
@@ -78,6 +80,7 @@ export default function App() {
       <main className="main">
         <Routes>
           <Route path="/admin" element={<DashboardPage />} />
+          <Route path="/admin/setup" element={<SetupWizardPage />} />
           <Route path="/admin/domains" element={<DomainsPage />} />
           <Route path="/admin/mailboxes" element={<MailboxesPage />} />
           <Route path="/admin/aliases" element={<AliasesPage />} />
