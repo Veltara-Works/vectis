@@ -66,6 +66,10 @@ type Server struct {
 	ipWarmup     *repository.IPWarmupRepo
 	rblChecks    *repository.RBLCheckRepo
 	fblReports   *repository.FBLReportRepo
+	resetTokens  *repository.PasswordResetRepo
+
+	// Notifications
+	notifications *mail.NotificationSender
 
 	// TOTP
 	totpManager *auth.TOTPManager
@@ -144,6 +148,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		ipWarmup:     repository.NewIPWarmupRepo(db),
 		rblChecks:    repository.NewRBLCheckRepo(db),
 		fblReports:   repository.NewFBLReportRepo(db),
+		resetTokens:  repository.NewPasswordResetRepo(db),
 		totpManager:  auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
 	}
 
@@ -168,8 +173,9 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	// Register Prometheus metrics collector.
 	prometheus.MustRegister(vectismetrics.NewCollector(db, logger.With("component", "metrics")))
 
-	// Initialize mail sender, webhook dispatcher, and abuse detector.
+	// Initialize mail sender, notification sender, webhook dispatcher, and abuse detector.
 	s.mailSender = mail.NewSender("vectis-postfix:25", cfg.Hostname, logger.With("component", "mail-sender"))
+	s.notifications = mail.NewNotificationSender(s.mailSender, cfg.Hostname)
 	s.webhookDispatcher = mail.NewWebhookDispatcher(s.webhooks, logger.With("component", "webhook-dispatcher"))
 	s.abuseDetector = mail.NewAbuseDetector(vk, mail.DefaultAbuseConfig(), logger.With("component", "abuse-detector"))
 
@@ -420,7 +426,25 @@ func (s *Server) backupManager() *backup.Manager {
 		cfg.EncryptionKey = s.secrets.API.Secret
 	}
 
-	return backup.NewManager(s.db, s.logger.With("component", "backup"), cfg)
+	mgr := backup.NewManager(s.db, s.logger.With("component", "backup"), cfg)
+
+	// Wire up backup completion notifications.
+	if s.notifications != nil && s.secrets.API.AdminEmail != "" {
+		adminEmail := s.secrets.API.AdminEmail
+		mgr.SetOnComplete(func(path string, sizeMB int64, durationSecs int, err error) {
+			if err != nil {
+				if notifyErr := s.notifications.SendBackupFailed(adminEmail, err.Error()); notifyErr != nil {
+					s.logger.Error("send backup failed notification", "error", notifyErr)
+				}
+			} else {
+				if notifyErr := s.notifications.SendBackupComplete(adminEmail, path, sizeMB, durationSecs); notifyErr != nil {
+					s.logger.Error("send backup complete notification", "error", notifyErr)
+				}
+			}
+		})
+	}
+
+	return mgr
 }
 
 func (s *Server) buildRouter() chi.Router {
@@ -440,6 +464,8 @@ func (s *Server) buildRouter() chi.Router {
 		r.Get("/version", s.handleVersion)
 		r.Handle("/metrics/prometheus", promhttp.Handler())
 		r.With(chimw.Throttle(5)).Post("/auth/login", s.handleLogin)
+		r.With(chimw.Throttle(3)).Post("/auth/reset-request", s.handleRequestPasswordReset)
+		r.With(chimw.Throttle(3)).Post("/auth/reset-password", s.handleResetPassword)
 
 		// Internal service-to-service endpoints (token-authenticated, not session).
 		r.Post("/internal/inbound", s.handleInboundNotify)

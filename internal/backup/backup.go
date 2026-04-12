@@ -69,12 +69,18 @@ func DefaultConfig() Config {
 	}
 }
 
+// CompletionCallback is called when an async backup/restore finishes.
+// path is the archive path (empty on failure), sizeMB is the size in MB,
+// durationSecs is wall-clock seconds, and err is non-nil on failure.
+type CompletionCallback func(path string, sizeMB int64, durationSecs int, err error)
+
 // Manager handles backup creation and restoration.
 type Manager struct {
-	db     *pgxpool.Pool
-	logger *slog.Logger
-	cfg    Config
-	repo   *repository.BackupRepo
+	db         *pgxpool.Pool
+	logger     *slog.Logger
+	cfg        Config
+	repo       *repository.BackupRepo
+	onComplete CompletionCallback
 }
 
 // NewManager creates a new backup Manager.
@@ -85,6 +91,11 @@ func NewManager(db *pgxpool.Pool, logger *slog.Logger, cfg Config) *Manager {
 		cfg:    cfg,
 		repo:   repository.NewBackupRepo(db),
 	}
+}
+
+// SetOnComplete registers a callback invoked when async operations finish.
+func (m *Manager) SetOnComplete(cb CompletionCallback) {
+	m.onComplete = cb
 }
 
 // BackupInfo describes a backup archive on disk.
@@ -127,15 +138,23 @@ func (m *Manager) CreateAsync(ctx context.Context, triggeredBy *string) (string,
 	}
 
 	go func() {
+		start := time.Now()
 		bgCtx := context.Background()
-		path, _, err := m.runCreate(bgCtx, job.ID)
+		path, size, err := m.runCreate(bgCtx, job.ID)
+		duration := int(time.Since(start).Seconds())
 		if err != nil {
 			m.logger.Error("async backup failed", "job_id", job.ID, "error", err)
 			_ = m.repo.Fail(bgCtx, job.ID, err.Error())
+			if m.onComplete != nil {
+				m.onComplete("", 0, duration, err)
+			}
 			return
 		}
 		if err := m.repo.Complete(bgCtx, job.ID, path); err != nil {
 			m.logger.Error("failed to mark async backup complete", "job_id", job.ID, "error", err)
+		}
+		if m.onComplete != nil {
+			m.onComplete(path, size/(1024*1024), duration, nil)
 		}
 	}()
 

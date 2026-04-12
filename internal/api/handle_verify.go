@@ -82,11 +82,18 @@ func (s *Server) handleVerifyDomain(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Audit log on verification success.
+	// Audit log and notification on verification success.
 	if found && domain.VerificationStatus != "verified" {
 		adminID := getAdminID(r.Context())
 		s.audit.Log(r.Context(), &adminID, "domain.verify", "domain", &domainID,
 			map[string]any{"domain": domain.Name, "status": "verified"}, nil)
+
+		// Send domain verified email to the admin (best-effort).
+		if admin, err := s.admins.GetByID(r.Context(), adminID); err == nil && admin != nil {
+			if err := s.notifications.SendDomainVerified(admin.Email, domain.Name); err != nil {
+				s.logger.Error("send domain verified email failed", "error", err, "domain", domain.Name)
+			}
+		}
 	}
 
 	respond(w, r, http.StatusOK, verifyDomainResponse{
