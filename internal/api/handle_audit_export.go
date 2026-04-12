@@ -132,12 +132,14 @@ func (s *Server) handleExportAudit(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition",
 			fmt.Sprintf("attachment; filename=\"vectis-audit-%s-to-%s.json\"",
 				from.Format("20060102"), to.Format("20060102")))
-		json.NewEncoder(w).Encode(map[string]any{
+		if err := json.NewEncoder(w).Encode(map[string]any{
 			"exported_at": time.Now().UTC().Format(time.RFC3339),
 			"from":        from.Format(time.RFC3339),
 			"to":          to.Format(time.RFC3339),
 			"count":       len(entries),
 			"entries":     entries,
-		})
+		}); err != nil {
+			s.logger.Error("failed to encode audit export response", "error", err)
+		}
 	}
 }
