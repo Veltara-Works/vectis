@@ -47,7 +47,7 @@ jobs:
         run: go vet ./...
 
       - name: Unit tests
-        run: go test ./internal/auth ./internal/dkim ./internal/engine -v -count=1
+        run: go test ./internal/auth ./internal/backup ./internal/config ./internal/dkim ./internal/engine ./internal/orchestrator ./internal/types -v -count=1
 
       - name: Seed test database
         run: |
