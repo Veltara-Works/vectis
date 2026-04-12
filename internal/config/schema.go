@@ -238,7 +238,7 @@ type APISecrets struct {
 	Secret              string `yaml:"secret"`                         // cookie / JWT signing key
 	AdminEmail          string `yaml:"admin_email"`                    // initial admin, used by installer only
 	AdminPassword       string `yaml:"admin_password"`                 // initial admin, used by installer only
-	BackupEncryptionKey string `yaml:"backup_encryption_key,omitempty"` // AES-256 encryption key for backups; defaults to API secret if empty
+	BackupEncryptionKey string `yaml:"backup_encryption_key"` // AES-256 encryption key for backups; required for production
 }
 
 // OrchestratorSecrets holds authentication credentials for internal HTTP calls

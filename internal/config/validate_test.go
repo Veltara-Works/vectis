@@ -27,7 +27,7 @@ func validSecrets() *VectisSecrets {
 			Name:            "vectis",
 		},
 		Valkey:       ValkeySecrets{Password: "vkpass"},
-		API:          APISecrets{Secret: "12345678901234567890123456789012", AdminEmail: "admin@example.com", AdminPassword: "securepass"},
+		API:          APISecrets{Secret: "12345678901234567890123456789012", AdminEmail: "admin@example.com", AdminPassword: "securepass", BackupEncryptionKey: "0123456789abcdef0123456789abcdef"},
 		Orchestrator: OrchestratorSecrets{Token: "orchtoken"},
 	}
 }
@@ -169,25 +169,14 @@ func TestValidateSecrets_ShortAdminPassword(t *testing.T) {
 	assertHasError(t, r, "api.admin_password")
 }
 
-func TestValidateSecrets_BackupKeyWarning(t *testing.T) {
+func TestValidateSecrets_BackupKeyRequired(t *testing.T) {
 	s := validSecrets()
 	s.API.BackupEncryptionKey = ""
 	r := ValidateSecrets(s)
-	if r.IsValid() == false {
-		t.Fatal("missing backup key should be a warning, not an error")
+	if r.IsValid() {
+		t.Fatal("missing backup encryption key should be a validation error")
 	}
-	if len(r.Warnings) == 0 {
-		t.Fatal("expected warning about missing backup encryption key")
-	}
-	found := false
-	for _, w := range r.Warnings {
-		if w.Field == "api.backup_encryption_key" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("expected warning for api.backup_encryption_key")
-	}
+	assertHasError(t, r, "api.backup_encryption_key")
 }
 
 func TestValidateSecrets_BackupKeyNoWarningWhenSet(t *testing.T) {
