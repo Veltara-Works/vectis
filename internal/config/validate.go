@@ -173,5 +173,10 @@ func ValidateSecrets(secrets *VectisSecrets) *ValidationResult {
 		r.AddError("orchestrator.token", "must not be empty")
 	}
 
+	// api.backup_encryption_key — warn if not set (falls back to api.secret)
+	if secrets.API.BackupEncryptionKey == "" {
+		r.AddWarning("api.backup_encryption_key", "not set; backups will use api.secret for encryption — a dedicated key is recommended")
+	}
+
 	return r
 }

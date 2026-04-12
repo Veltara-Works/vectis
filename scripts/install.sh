@@ -97,6 +97,7 @@ if [ ! -f "$CONFIG_DIR/secrets.yaml" ] && [ -f "$VECTIS_DIR/secrets.yaml.example
     DB_DC_PASS=$(openssl rand -hex 16)
     VK_PASS=$(openssl rand -hex 16)
     ORCH_TOKEN=$(openssl rand -hex 32)
+    BACKUP_KEY=$(openssl rand -hex 32)
 
     sed -i "s/CHANGE_ME_api_password/$DB_API_PASS/" "$CONFIG_DIR/secrets.yaml"
     sed -i "s/CHANGE_ME_postfix_password/$DB_PF_PASS/" "$CONFIG_DIR/secrets.yaml"
@@ -105,6 +106,7 @@ if [ ! -f "$CONFIG_DIR/secrets.yaml" ] && [ -f "$VECTIS_DIR/secrets.yaml.example
     sed -i "s/CHANGE_ME_at_least_32_characters_long_random_string/$API_SECRET/" "$CONFIG_DIR/secrets.yaml"
     sed -i "s/CHANGE_ME_admin_password/$ADMIN_PASS/" "$CONFIG_DIR/secrets.yaml"
     sed -i "s/CHANGE_ME_orchestrator_bearer_token/$ORCH_TOKEN/" "$CONFIG_DIR/secrets.yaml"
+    sed -i "s/CHANGE_ME_backup_key/$BACKUP_KEY/" "$CONFIG_DIR/secrets.yaml"
 
     info "Generated random secrets in $CONFIG_DIR/secrets.yaml"
 fi
