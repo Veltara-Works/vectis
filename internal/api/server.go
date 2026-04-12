@@ -408,6 +408,7 @@ func (s *Server) buildRouter() chi.Router {
 
 	// Global middleware.
 	r.Use(chimw.RealIP)
+	r.Use(securityHeaders)
 	r.Use(requestIDMiddleware)
 	r.Use(s.loggingMiddleware)
 	r.Use(chimw.Recoverer)
