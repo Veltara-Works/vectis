@@ -51,6 +51,10 @@ type Config struct {
 	// are written as plaintext .tar.gz (not recommended for production).
 	// The key is derived from the API secret in secrets.yaml via SHA-256.
 	EncryptionKey string
+
+	// MaxIncrementalChain is the maximum number of incremental backups before
+	// a full backup is forced. Default 7 (one full per week with daily incrementals).
+	MaxIncrementalChain int
 }
 
 // DefaultConfig returns a Config with production defaults.
@@ -65,7 +69,8 @@ func DefaultConfig() Config {
 		DBPort:      5432,
 		DBName:      "vectis",
 		DBUser:      "vectis_api",
-		ComposePath: "/etc/vectis/docker-compose.yml",
+		ComposePath:         "/etc/vectis/docker-compose.yml",
+		MaxIncrementalChain: 7,
 	}
 }
 
@@ -127,6 +132,18 @@ func (m *Manager) Create(ctx context.Context, triggeredBy *string) (string, int6
 		m.logger.Error("failed to mark backup job complete", "error", err)
 	}
 
+	// Record in manifest.
+	manifest, _ := LoadManifest(m.cfg.BackupDir)
+	if manifest != nil {
+		manifest.Add(ManifestEntry{
+			ID:        job.ID,
+			Type:      BackupFull,
+			Path:      path,
+			Size:      size,
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+
 	return path, size, nil
 }
 
@@ -159,6 +176,92 @@ func (m *Manager) CreateAsync(ctx context.Context, triggeredBy *string) (string,
 	}()
 
 	return job.ID, nil
+}
+
+// CreateIncrementalAsync creates an incremental backup (or auto-promotes to full
+// if no prior full exists or the chain exceeds MaxIncrementalChain). Returns the
+// job ID and the effective backup type.
+func (m *Manager) CreateIncrementalAsync(ctx context.Context, triggeredBy *string) (string, BackupType, error) {
+	manifest, err := LoadManifest(m.cfg.BackupDir)
+	if err != nil {
+		m.logger.Warn("failed to load manifest, falling back to full backup", "error", err)
+	}
+
+	// Decide: full or incremental.
+	backupType := BackupIncremental
+	lastFull := manifest.LastFull()
+	if lastFull == nil || manifest.ChainDepth() >= m.cfg.MaxIncrementalChain {
+		backupType = BackupFull
+		if lastFull == nil {
+			m.logger.Info("no prior full backup found, performing full backup")
+		} else {
+			m.logger.Info("incremental chain depth exceeded, performing full backup",
+				"chain_depth", manifest.ChainDepth(),
+				"max", m.cfg.MaxIncrementalChain)
+		}
+	}
+
+	actionLabel := "create"
+	if backupType == BackupIncremental {
+		actionLabel = "create_incremental"
+	}
+
+	job, err := m.repo.Create(ctx, actionLabel, triggeredBy)
+	if err != nil {
+		return "", backupType, fmt.Errorf("create backup job: %w", err)
+	}
+
+	go func() {
+		start := time.Now()
+		bgCtx := context.Background()
+
+		var path string
+		var size int64
+		var runErr error
+
+		if backupType == BackupIncremental {
+			path, size, runErr = m.runCreateIncremental(bgCtx, job.ID, lastFull)
+		} else {
+			path, size, runErr = m.runCreate(bgCtx, job.ID)
+		}
+
+		duration := int(time.Since(start).Seconds())
+		if runErr != nil {
+			m.logger.Error("async backup failed", "job_id", job.ID, "type", backupType, "error", runErr)
+			_ = m.repo.Fail(bgCtx, job.ID, runErr.Error())
+			if m.onComplete != nil {
+				m.onComplete("", 0, duration, runErr)
+			}
+			return
+		}
+
+		if err := m.repo.Complete(bgCtx, job.ID, path); err != nil {
+			m.logger.Error("failed to mark backup complete", "job_id", job.ID, "error", err)
+		}
+
+		// Record in manifest.
+		parentID := ""
+		if backupType == BackupIncremental && lastFull != nil {
+			parentID = lastFull.ID
+		}
+		entry := ManifestEntry{
+			ID:        job.ID,
+			Type:      backupType,
+			Path:      path,
+			ParentID:  parentID,
+			Size:      size,
+			CreatedAt: time.Now().UTC(),
+		}
+		if err := manifest.Add(entry); err != nil {
+			m.logger.Error("failed to update manifest", "error", err)
+		}
+
+		if m.onComplete != nil {
+			m.onComplete(path, size/(1024*1024), duration, nil)
+		}
+	}()
+
+	return job.ID, backupType, nil
 }
 
 func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, error) {
@@ -281,6 +384,239 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 	)
 
 	return archivePath, info.Size(), nil
+}
+
+// runCreateIncremental creates a backup containing only the database (always full)
+// and mail files modified since the parent full backup. Config and DKIM are always
+// included in full since they're tiny.
+func (m *Manager) runCreateIncremental(ctx context.Context, jobID string, parent *ManifestEntry) (string, int64, error) {
+	if err := os.MkdirAll(m.cfg.BackupDir, 0700); err != nil {
+		return "", 0, fmt.Errorf("create backup directory: %w", err)
+	}
+
+	timestamp := time.Now().UTC().Format("20060102-150405")
+	encrypted := m.cfg.EncryptionKey != ""
+	ext := ".tar.gz"
+	if encrypted {
+		ext = ".tar.gz.enc"
+	}
+	archiveName := fmt.Sprintf("vectis-incr-%s%s", timestamp, ext)
+	archivePath := filepath.Join(m.cfg.BackupDir, archiveName)
+
+	tmpDir, err := os.MkdirTemp("", "vectis-backup-incr-*")
+	if err != nil {
+		return "", 0, fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Step 1: Database dump (always full — small relative to mail).
+	_ = m.repo.UpdateProgress(ctx, jobID, 5, "Dumping database")
+	m.logger.Info("incremental backup: dumping database", "job_id", jobID)
+
+	dbDumpPath := filepath.Join(tmpDir, "database.sql")
+	if err := m.dumpDatabase(ctx, dbDumpPath); err != nil {
+		return "", 0, fmt.Errorf("database dump: %w", err)
+	}
+	_ = m.repo.UpdateProgress(ctx, jobID, 25, "Database dump complete")
+
+	// Step 2: Archive only mail files modified since the parent backup.
+	_ = m.repo.UpdateProgress(ctx, jobID, 30, "Archiving changed mail data")
+	m.logger.Info("incremental backup: archiving mail changes since parent",
+		"job_id", jobID,
+		"since", parent.CreatedAt.Format(time.RFC3339))
+
+	mailArchive := filepath.Join(tmpDir, "mail-data.tar")
+	if err := m.archiveDirectoryNewer(ctx, m.cfg.MailDataDir, mailArchive, parent.CreatedAt); err != nil {
+		if !os.IsNotExist(err) {
+			return "", 0, fmt.Errorf("archive incremental mail data: %w", err)
+		}
+		m.logger.Warn("incremental backup: mail data directory not found, skipping", "path", m.cfg.MailDataDir)
+	}
+	_ = m.repo.UpdateProgress(ctx, jobID, 60, "Mail changes archived")
+
+	// Step 3: Config (always full, tiny).
+	_ = m.repo.UpdateProgress(ctx, jobID, 65, "Copying configuration (excluding secrets)")
+	configArchive := filepath.Join(tmpDir, "config.tar")
+	if err := m.archiveDirectoryExcluding(ctx, m.cfg.ConfigDir, configArchive, secretsExcludeFiles); err != nil {
+		if !os.IsNotExist(err) {
+			return "", 0, fmt.Errorf("archive config: %w", err)
+		}
+	}
+	_ = m.repo.UpdateProgress(ctx, jobID, 80, "Configuration copied")
+
+	// Step 4: DKIM (always full, tiny).
+	_ = m.repo.UpdateProgress(ctx, jobID, 85, "Copying DKIM keys")
+	dkimArchive := filepath.Join(tmpDir, "dkim.tar")
+	if err := m.archiveDirectory(ctx, m.cfg.DKIMDir, dkimArchive); err != nil {
+		if !os.IsNotExist(err) {
+			return "", 0, fmt.Errorf("archive DKIM keys: %w", err)
+		}
+	}
+	_ = m.repo.UpdateProgress(ctx, jobID, 90, "DKIM keys copied")
+
+	// Step 5: Write a type marker so restore knows this is incremental.
+	typeMarker := filepath.Join(tmpDir, "backup-type.txt")
+	os.WriteFile(typeMarker, []byte("incremental\n"), 0600)
+
+	// Step 6: Create final archive.
+	_ = m.repo.UpdateProgress(ctx, jobID, 92, "Creating backup archive")
+	m.logger.Info("incremental backup: creating final archive", "job_id", jobID, "path", archivePath)
+
+	if encrypted {
+		plaintextPath := filepath.Join(tmpDir, "backup.tar.gz")
+		if err := m.createFinalArchive(ctx, tmpDir, plaintextPath); err != nil {
+			os.Remove(archivePath)
+			return "", 0, fmt.Errorf("create archive: %w", err)
+		}
+		_ = m.repo.UpdateProgress(ctx, jobID, 96, "Encrypting backup archive")
+		if err := encryptFile(plaintextPath, archivePath, m.cfg.EncryptionKey); err != nil {
+			os.Remove(archivePath)
+			return "", 0, fmt.Errorf("encrypt archive: %w", err)
+		}
+		os.Remove(plaintextPath)
+	} else {
+		if err := m.createFinalArchive(ctx, tmpDir, archivePath); err != nil {
+			os.Remove(archivePath)
+			return "", 0, fmt.Errorf("create archive: %w", err)
+		}
+	}
+
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		return "", 0, fmt.Errorf("stat archive: %w", err)
+	}
+
+	m.logger.Info("incremental backup complete",
+		"job_id", jobID,
+		"path", archivePath,
+		"size_bytes", info.Size(),
+	)
+
+	return archivePath, info.Size(), nil
+}
+
+// archiveDirectoryNewer creates a tar of files modified since the given time.
+func (m *Manager) archiveDirectoryNewer(ctx context.Context, srcDir, dstPath string, since time.Time) error {
+	if _, err := os.Stat(srcDir); err != nil {
+		return err
+	}
+
+	sinceStr := since.Format("2006-01-02 15:04:05")
+	cmd := exec.CommandContext(ctx, "tar",
+		"-cf", dstPath,
+		"--newer="+sinceStr,
+		"-C", filepath.Dir(srcDir),
+		filepath.Base(srcDir),
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// tar exits 1 when "file changed as we read it" or "no files matched"
+		// — check if the archive was still created.
+		if _, statErr := os.Stat(dstPath); statErr == nil {
+			m.logger.Debug("tar --newer exited non-zero but archive was created",
+				"exit_error", err.Error(),
+				"output", string(output))
+			return nil
+		}
+		return fmt.Errorf("tar --newer failed for %s: %w: %s", srcDir, err, string(output))
+	}
+
+	return nil
+}
+
+// RestoreChain restores from the latest full backup plus all subsequent
+// incrementals. It reads the manifest to determine the chain.
+func (m *Manager) RestoreChain(ctx context.Context, triggeredBy *string) error {
+	manifest, err := LoadManifest(m.cfg.BackupDir)
+	if err != nil {
+		return fmt.Errorf("load manifest: %w", err)
+	}
+
+	chain := manifest.RestoreChain()
+	if len(chain) == 0 {
+		return fmt.Errorf("no backup chain found — manifest has no full backup")
+	}
+
+	// Verify all archives exist.
+	for _, entry := range chain {
+		if _, err := os.Stat(entry.Path); err != nil {
+			return fmt.Errorf("backup archive missing from chain: %s (%s)", entry.Path, entry.ID)
+		}
+	}
+
+	m.logger.Info("restoring from backup chain",
+		"full_id", chain[0].ID,
+		"chain_length", len(chain))
+
+	// Restore the full backup first.
+	if err := m.Restore(ctx, chain[0].Path, triggeredBy); err != nil {
+		return fmt.Errorf("restore full backup: %w", err)
+	}
+
+	// Apply each incremental on top (mail data overlay, database re-dumped).
+	for i, entry := range chain[1:] {
+		m.logger.Info("applying incremental backup",
+			"step", i+1,
+			"id", entry.ID,
+			"path", entry.Path)
+
+		if err := m.applyIncremental(ctx, entry.Path); err != nil {
+			return fmt.Errorf("apply incremental %s: %w", entry.ID, err)
+		}
+	}
+
+	return nil
+}
+
+// applyIncremental extracts an incremental backup on top of existing data.
+// It restores the database dump (overwriting the full one) and overlays
+// the mail data tar (newer files overwrite older ones).
+func (m *Manager) applyIncremental(ctx context.Context, archivePath string) error {
+	tmpDir, err := os.MkdirTemp("", "vectis-incr-apply-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	extractPath := archivePath
+	if strings.HasSuffix(archivePath, ".enc") {
+		if m.cfg.EncryptionKey == "" {
+			return fmt.Errorf("incremental is encrypted but no key configured")
+		}
+		decryptedPath := filepath.Join(tmpDir, "backup.tar.gz")
+		if err := decryptFile(archivePath, decryptedPath, m.cfg.EncryptionKey); err != nil {
+			return fmt.Errorf("decrypt incremental: %w", err)
+		}
+		extractPath = decryptedPath
+	}
+
+	cmd := exec.CommandContext(ctx, "tar", "-xzf", extractPath, "-C", tmpDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("extract incremental: %w: %s", err, string(output))
+	}
+
+	// Restore database (overwrites the one from full backup).
+	dbDump := filepath.Join(tmpDir, "database.sql")
+	if _, err := os.Stat(dbDump); err == nil {
+		if err := m.restoreDatabase(ctx, dbDump); err != nil {
+			return fmt.Errorf("restore incremental database: %w", err)
+		}
+	}
+
+	// Overlay mail data (extract on top of existing).
+	mailArchive := filepath.Join(tmpDir, "mail-data.tar")
+	if _, err := os.Stat(mailArchive); err == nil {
+		cmd := exec.CommandContext(ctx, "tar",
+			"-xf", mailArchive,
+			"-C", filepath.Dir(m.cfg.MailDataDir),
+		)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("overlay incremental mail data: %w: %s", err, string(output))
+		}
+	}
+
+	return nil
 }
 
 // Restore restores from a backup archive. This is a destructive operation:

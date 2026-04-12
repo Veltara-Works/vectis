@@ -43,6 +43,40 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// --- POST /api/v1/backup/incremental ---
+
+func (s *Server) handleBackupIncremental(w http.ResponseWriter, r *http.Request) {
+	adminID := getAdminID(r.Context())
+
+	mgr := s.backupManager()
+	if mgr == nil {
+		respondError(w, r, http.StatusServiceUnavailable, "BACKUP_NOT_CONFIGURED",
+			"Backup manager is not configured")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	var triggeredBy *string
+	if adminID != "" {
+		triggeredBy = &adminID
+	}
+
+	jobID, backupType, err := mgr.CreateIncrementalAsync(ctx, triggeredBy)
+	if err != nil {
+		s.logger.Error("incremental backup create failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "BACKUP_ERROR", "Failed to create backup")
+		return
+	}
+
+	respond(w, r, http.StatusAccepted, map[string]string{
+		"job_id":  jobID,
+		"type":    string(backupType),
+		"message": "Backup job started",
+	})
+}
+
 // --- GET /api/v1/backup/status/{jobId} ---
 
 func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {

@@ -611,6 +611,7 @@ func (s *Server) buildRouter() chi.Router {
 
 			// Backup/Restore — super_admin only.
 			r.With(requireSuperAdmin()).Post("/backup/create", s.handleBackupCreate)
+			r.With(requireSuperAdmin()).Post("/backup/incremental", s.handleBackupIncremental)
 			r.With(requireSuperAdmin()).Get("/backup/status/{jobId}", s.handleBackupStatus)
 			r.With(requireSuperAdmin()).Get("/backup/list", s.handleBackupList)
 			r.With(requireSuperAdmin()).Post("/backup/restore/{id}", s.handleBackupRestore)
