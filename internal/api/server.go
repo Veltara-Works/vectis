@@ -91,9 +91,10 @@ type Server struct {
 	clusterHealth *cluster.HealthChecker
 
 	// Background services
-	monitor       *monitor.Monitor
-	auditPruner   *audit.Pruner
-	usageReporter *validonx.UsageReporter
+	monitor        *monitor.Monitor
+	auditPruner    *audit.Pruner
+	sessionCleaner *auth.SessionCleaner
+	usageReporter  *validonx.UsageReporter
 }
 
 // Config holds API server configuration.
@@ -258,6 +259,24 @@ func (s *Server) StopMonitor() {
 	}
 }
 
+// StartSessionCleaner starts the background job that deletes expired
+// session rows from Postgres (Valkey entries auto-expire via EX).
+func (s *Server) StartSessionCleaner() {
+	s.sessionCleaner = auth.NewSessionCleaner(
+		s.sessions,
+		auth.DefaultSessionCleanerConfig(),
+		s.logger.With("component", "session-cleaner"),
+	)
+	s.sessionCleaner.Start()
+}
+
+// StopSessionCleaner stops the background session cleaner if it is running.
+func (s *Server) StopSessionCleaner() {
+	if s.sessionCleaner != nil {
+		s.sessionCleaner.Stop()
+	}
+}
+
 // StartAuditPruner initialises and starts the background audit log pruner.
 func (s *Server) StartAuditPruner() {
 	cfg := audit.DefaultPrunerConfig()
@@ -362,6 +381,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("shutting down API server")
 	s.StopMonitor()
 	s.StopAuditPruner()
+	s.StopSessionCleaner()
 	s.StopWebhookDispatcher()
 	s.StopUsageReporter()
 	s.StopRBLMonitor()
