@@ -52,13 +52,17 @@ func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, do
 		rateLimits = config.DefaultRateLimits()
 	}
 
+	dovecot := cfg.Dovecot
+	dovecot.ValkeyHost = secrets.Valkey.Host
+	dovecot.ValkeyPort = secrets.Valkey.Port
+
 	return &TemplateData{
 		Hostname:   cfg.Hostname,
 		TLS:        cfg.TLS,
 		ClamAV:     cfg.ClamAV,
 		Rspamd:     cfg.Rspamd,
 		Postfix:    cfg.Postfix,
-		Dovecot:    cfg.Dovecot,
+		Dovecot:    dovecot,
 		Logging:    cfg.Logging,
 		Admin:      cfg.Admin,
 		Webmail:       cfg.Webmail,

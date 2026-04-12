@@ -163,7 +163,7 @@ services:
         max-file: "{{ .Logging.MaxFiles }}"
 {{ if .Webmail.Enabled }}
   webmail:
-    image: roundcube/roundcubemail:1.6-fpm-alpine
+    image: roundcube/roundcubemail:latest-fpm-alpine
     container_name: vectis-webmail
     restart: unless-stopped
     networks:

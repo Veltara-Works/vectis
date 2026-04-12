@@ -64,6 +64,8 @@ type PostfixConfig struct {
 type DovecotConfig struct {
 	MailLocation   string `yaml:"mail_location"`    // default "maildir:/var/vectis/mail/%d/%n/Maildir"
 	QuotaDefaultMB int    `yaml:"quota_default_mb"` // default 1024
+	ValkeyHost     string `yaml:"valkey_host"`      // populated from secrets at render time
+	ValkeyPort     int    `yaml:"valkey_port"`      // populated from secrets at render time
 }
 
 // BackupConfig controls periodic backup behaviour.
