@@ -178,16 +178,37 @@ Host port mappings bind to both IPv4 and IPv6 by default (Docker's default behav
 
 ---
 
-## G.8 Future Clustering Considerations
+## G.8 Dual-Network Driver: Bridge vs Overlay
 
-The current network topology is designed for single-node deployment. For Phase 3 clustering:
+The Docker Compose template conditionally renders the network driver based on the `cluster.enabled` flag in `config.yaml`:
 
-- Docker overlay networks will replace bridge networks for cross-node communication
-- Traefik will use Docker Swarm or Kubernetes service discovery
-- Postgres may move to a separate node (connection via overlay network or external address)
-- Valkey may need a dedicated overlay network segment for replication traffic
+```yaml
+networks:
+  vectis-frontend:
+    driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
+    internal: false
+  vectis-mail:
+    driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
+    internal: true
+  vectis-data:
+    driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
+    internal: true
+  vectis-orchestrator:
+    driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
+    internal: true
+```
 
-The current network names and segmentation strategy (frontend / mail / data / orchestrator) will carry forward into the clustered topology. The separation of concerns doesn't change — only the network driver changes from bridge to overlay.
+**Single-node (default):** All four networks use the `bridge` driver. Traffic stays on the local Docker host. No Docker Swarm dependency.
+
+**Clustered (`cluster.enabled: true`):** All networks switch to `overlay` drivers, enabling cross-node container communication via Docker Swarm or equivalent. The network names and segmentation (frontend / mail / data / orchestrator) remain identical — only the driver changes.
+
+This is automatic at generation time — operators set `cluster.enabled: true` in `config.yaml` and run `vectis config apply`. No manual network reconfiguration is needed.
+
+### Operational notes
+
+- Overlay networks require Docker Swarm mode or an equivalent orchestrator. Single-node deployments must not set `cluster.enabled: true`.
+- When migrating from single-node to clustered, running `vectis config apply` regenerates `docker-compose.yml` with overlay drivers. Existing containers must be recreated (network driver changes are not hot-swappable).
+- Postgres and Valkey may move to external hosts in clustered deployments. Their connection details are in `secrets.yaml`, independent of Docker networking.
 
 ---
 
