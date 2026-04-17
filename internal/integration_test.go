@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -19,10 +20,15 @@ func TestIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Connect to Postgres.
+	// Connect to Postgres. Defaults match the CI service container; override
+	// via env vars when running against a disposable DB on a host that already
+	// has another Postgres on :5432 (e.g. the dev/prod VPS).
 	dbCfg := database.Config{
-		Host: "127.0.0.1", Port: 5432, Name: "vectis",
-		User: "postgres", Password: "vectis_dev_super",
+		Host:     envOr("VECTIS_TEST_PG_HOST", "127.0.0.1"),
+		Port:     envOrInt("VECTIS_TEST_PG_PORT", 5432),
+		Name:     envOr("VECTIS_TEST_PG_DB", "vectis"),
+		User:     envOr("VECTIS_TEST_PG_USER", "postgres"),
+		Password: envOr("VECTIS_TEST_PG_PASSWORD", "vectis_dev_super"),
 	}
 	pool, err := database.NewPool(ctx, dbCfg, logger)
 	if err != nil {
@@ -30,8 +36,16 @@ func TestIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 
+	if err := database.RunMigrations(dbCfg.DSN(), logger); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
 	// Connect to Valkey.
-	vkCfg := database.ValkeyConfig{Host: "127.0.0.1", Port: 6379, Password: "vectis_dev_valkey"}
+	vkCfg := database.ValkeyConfig{
+		Host:     envOr("VECTIS_TEST_VK_HOST", "127.0.0.1"),
+		Port:     envOrInt("VECTIS_TEST_VK_PORT", 6379),
+		Password: envOr("VECTIS_TEST_VK_PASSWORD", "vectis_dev_valkey"),
+	}
 	vk, err := database.NewValkeyClient(vkCfg, logger)
 	if err != nil {
 		t.Fatalf("connect to valkey: %v", err)
@@ -232,4 +246,20 @@ func TestIntegration(t *testing.T) {
 		mailboxRepo.Delete(ctx, mailboxID)
 		domainRepo.Delete(ctx, domainID)
 	})
+}
+
+func envOr(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envOrInt(key string, fallback int) int {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
 }

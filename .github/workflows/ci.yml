@@ -56,9 +56,10 @@ jobs:
       - name: Unit tests
         run: go test ./internal/auth ./internal/backup ./internal/config ./internal/dkim ./internal/engine ./internal/orchestrator ./internal/types -v -count=1
 
-      - name: Seed test database
+      - name: Seed test database roles (migrations GRANT to these)
         run: |
           PGPASSWORD=vectis_dev_super psql -h 127.0.0.1 -U postgres -d vectis -c "
+            CREATE USER vectis_api WITH PASSWORD 'vectis_dev_api';
             CREATE USER vectis_postfix WITH PASSWORD 'vectis_dev_postfix';
             CREATE USER vectis_dovecot WITH PASSWORD 'vectis_dev_dovecot';
           "
