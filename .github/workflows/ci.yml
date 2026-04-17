@@ -43,6 +43,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: TLS policy — no OpenSSL-family deps in module graph
+        run: |
+          if grep -iE 'openssl|boring|native-tls' go.mod go.sum; then
+            echo "::error::Found OpenSSL-family dependency in go.mod/go.sum. Vectis first-party code must use Go stdlib crypto/tls only. See docs/architecture/TLS_POLICY.md."
+            exit 1
+          fi
+
       - name: Go vet
         run: go vet ./...
 
@@ -91,5 +98,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build binary
-        run: go build -o vectis ./cmd/vectis/
+      - name: Build binary (CGO-free, pure-Go resolver — matches Dockerfile)
+        run: CGO_ENABLED=0 go build -tags netgo,osusergo -ldflags="-s -w" -o vectis ./cmd/vectis/
+        env:
+          CGO_ENABLED: "0"

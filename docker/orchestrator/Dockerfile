@@ -5,7 +5,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /orchestrator ./cmd/orchestrator/
+RUN CGO_ENABLED=0 go build -tags netgo,osusergo -ldflags="-s -w" -o /orchestrator ./cmd/orchestrator/
 
 FROM alpine:3.21
 

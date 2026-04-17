@@ -5,7 +5,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /vectis ./cmd/vectis/
+RUN CGO_ENABLED=0 go build -tags netgo,osusergo -ldflags="-s -w" -o /vectis ./cmd/vectis/
 
 FROM alpine:3.21
 
