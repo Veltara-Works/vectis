@@ -155,12 +155,45 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 		return nil, fmt.Errorf("get container versions: %w", err)
 	}
 
+	// Diff running container images against compose-declared images to build
+	// the Change list. Services with mismatched image refs get a PlanChange.
+	// Services not declared in compose (e.g. webmail on some deploys) are
+	// skipped — they aren't orchestrator-managed.
+	desired, desiredErr := o.docker.composeImages(ctx)
+	if desiredErr != nil {
+		o.logger.Warn("could not read compose images, plan.Changes will be empty",
+			"error", desiredErr,
+		)
+	}
+
+	var changes []PlanChange
+	for _, svc := range ServiceStartOrder {
+		declared, ok := desired[svc]
+		if !ok {
+			continue // Not in compose — not orchestrator's concern.
+		}
+		running := versions[svc]
+		if running == declared {
+			continue
+		}
+		changeType := "update"
+		if running == "" {
+			changeType = "create"
+		}
+		changes = append(changes, PlanChange{
+			Service:  svc,
+			Type:     changeType,
+			OldImage: running,
+			NewImage: declared,
+		})
+	}
+
 	plan := &Plan{
 		ID:               types.NewUUIDv7(),
 		CreatedAt:        time.Now().UTC(),
 		ConfigHash:       cfgHash,
 		BaselineVersions: versions,
-		Changes:          nil, // Populated by diff logic below.
+		Changes:          changes,
 		MigrationsUp:     o.detectPendingMigrations(),
 	}
 
@@ -168,6 +201,8 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 	planSummary := map[string]any{
 		"config_hash":       cfgHash,
 		"baseline_versions": versions,
+		"changes":           changes,
+		"migrations_up":     plan.MigrationsUp,
 	}
 	opID, err := o.sm.RecordOperation(ctx, "plan", "completed", cfgHash, planSummary, versions)
 	if err != nil {
