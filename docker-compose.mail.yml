@@ -136,9 +136,15 @@ services:
     image: vectis-orchestrator:dev
     container_name: vectis-orchestrator
     restart: unless-stopped
+    environment:
+      # Point orchestrator at the actually-deployed compose files, not the
+      # config-engine-generated /etc/vectis/docker-compose.yml which references
+      # unpushed ghcr images. See project_phase3_e2e_findings.md.
+      VECTIS_ORCH_COMPOSE_PATHS: /opt/vectis/docker-compose.yml:/opt/vectis/docker-compose.mail.yml
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /etc/vectis:/etc/vectis:ro
+      - /opt/vectis:/opt/vectis:ro
       - snapshots:/var/vectis/snapshots
     depends_on:
       postgres:

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -114,6 +115,25 @@ func run(logger *slog.Logger) error {
 	orchCfg.DBName = secrets.Database.Name
 	orchCfg.DBUser = secrets.Database.APIUser
 	orchCfg.DBPassword = secrets.Database.APIPassword
+
+	// VECTIS_ORCH_COMPOSE_PATHS lets the operator point the orchestrator at the
+	// actually-deployed compose files. Useful when prod runs from a two-file
+	// setup (e.g. /opt/vectis/docker-compose.yml + docker-compose.mail.yml) that
+	// differs from the config-engine-generated /etc/vectis/docker-compose.yml.
+	// Colon-separated list, order matters (matches docker compose -f precedence).
+	if raw := os.Getenv("VECTIS_ORCH_COMPOSE_PATHS"); raw != "" {
+		parts := strings.Split(raw, ":")
+		paths := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p = strings.TrimSpace(p); p != "" {
+				paths = append(paths, p)
+			}
+		}
+		if len(paths) > 0 {
+			orchCfg.ComposePaths = paths
+			logger.Info("overriding compose paths from env", "paths", paths)
+		}
+	}
 
 	orch, err := orchestrator.New(ctx, dbPool, vkClient, orchCfg, logger.With("component", "orchestrator"))
 	if err != nil {

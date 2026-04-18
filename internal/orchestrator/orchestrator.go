@@ -112,15 +112,21 @@ func (o *Orchestrator) releaseAdvisoryLock(ctx context.Context) {
 // configHash computes a SHA-256 hash of the current docker-compose file
 // as a proxy for the "desired state" config hash.
 func (o *Orchestrator) configHash() (string, error) {
-	// Read the compose file and hash it.
+	// Read all configured compose files in order and hash them as one blob.
 	// In a real implementation this would also incorporate config.yaml.
-	// For now we use the compose path as the source of truth.
-	data, err := readFileBytes(o.cfg.ComposePath)
-	if err != nil {
-		return "", fmt.Errorf("read compose file for hashing: %w", err)
+	// For now the compose files are the source of truth for orchestrator's
+	// view of the desired state.
+	h := sha256.New()
+	for _, path := range o.cfg.ComposePaths {
+		data, err := readFileBytes(path)
+		if err != nil {
+			return "", fmt.Errorf("read compose file %q for hashing: %w", path, err)
+		}
+		h.Write(data)
+		// Delimiter between files so concatenated contents can't collide.
+		h.Write([]byte{0})
 	}
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:]), nil
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Plan computes the diff between current and desired state (Spec D.3, D.9).
@@ -370,8 +376,12 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		return jobID, fmt.Errorf("image pull failed, rolled back: %w", err)
 	}
 
-	// 4.2 Stop services in reverse dependency order.
-	stopOrder := ServiceStopOrder()
+	// 4.2 Stop services in reverse dependency order. Postgres and valkey stay
+	// up: phase 4.3 (compose up) can fail, and rollback phase 2 (psql restore)
+	// needs postgres reachable. Originally every service was stopped here —
+	// which made restore impossible and left the stack unrecoverable when
+	// compose apply failed (see project_phase3_e2e_findings.md rollback run).
+	stopOrder := NonDataStopOrder()
 	if err := o.docker.StopServices(applyCtx, stopOrder); err != nil {
 		o.logger.Error("stop services failed, initiating rollback", "error", err)
 		rollbackErr := o.doRollback(applyCtx, snapshotPath)
@@ -384,7 +394,7 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 	}
 
 	// 4.3 Apply new docker-compose.yml.
-	if err := o.docker.ApplyCompose(applyCtx, o.cfg.ComposePath); err != nil {
+	if err := o.docker.ApplyCompose(applyCtx); err != nil {
 		o.logger.Error("apply compose failed, initiating rollback", "error", err)
 		rollbackErr := o.doRollback(applyCtx, snapshotPath)
 		if rollbackErr != nil {
@@ -532,7 +542,7 @@ func (o *Orchestrator) RollbackWithJobID(ctx context.Context, jobID string) (str
 func (o *Orchestrator) doRollback(ctx context.Context, snapshotPath string) error {
 	// Phase 1: Stop non-data services. Postgres + valkey keep running.
 	o.logger.Info("rollback phase 1: stopping services (keeping data services up)")
-	stopOrder := RollbackStopOrder()
+	stopOrder := NonDataStopOrder()
 	if err := o.docker.StopServices(ctx, stopOrder); err != nil {
 		return fmt.Errorf("rollback stop services: %w", err)
 	}
@@ -543,7 +553,7 @@ func (o *Orchestrator) doRollback(ctx context.Context, snapshotPath string) erro
 		o.logger.Error("rollback phase failed, attempting to restart stopped services",
 			"cause", cause,
 		)
-		if startErr := o.docker.StartServices(ctx, RollbackStartOrder()); startErr != nil {
+		if startErr := o.docker.StartServices(ctx, NonDataStartOrder()); startErr != nil {
 			o.logger.Error("recovery restart failed — manual intervention required",
 				"restart_error", startErr,
 			)
@@ -561,13 +571,13 @@ func (o *Orchestrator) doRollback(ctx context.Context, snapshotPath string) erro
 
 	// Phase 3: Apply previous docker-compose (revert containers).
 	o.logger.Info("rollback phase 3: applying previous compose")
-	if err := o.docker.ApplyCompose(ctx, o.cfg.ComposePath); err != nil {
+	if err := o.docker.ApplyCompose(ctx); err != nil {
 		return recover(fmt.Errorf("rollback apply compose: %w", err))
 	}
 
 	// Phase 4: Start services and health check. Data services already up.
 	o.logger.Info("rollback phase 4: starting services and health check")
-	if err := o.docker.StartServices(ctx, RollbackStartOrder()); err != nil {
+	if err := o.docker.StartServices(ctx, NonDataStartOrder()); err != nil {
 		return fmt.Errorf("rollback health check: %w", err)
 	}
 

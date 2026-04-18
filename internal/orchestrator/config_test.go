@@ -5,30 +5,30 @@ import (
 	"testing"
 )
 
-func TestRollbackStopOrder_ExcludesDataServices(t *testing.T) {
-	order := RollbackStopOrder()
+func TestNonDataStopOrder_ExcludesDataServices(t *testing.T) {
+	order := NonDataStopOrder()
 	for _, svc := range order {
 		if DataServices[svc] {
-			t.Errorf("rollback stop order contains data service %q; postgres+valkey must stay up so psql restore can connect", svc)
+			t.Errorf("non-data stop order contains data service %q; postgres+valkey must stay up so psql restore can connect", svc)
 		}
 	}
 
 	full := ServiceStopOrder()
 	if len(order) != len(full)-len(DataServices) {
-		t.Errorf("rollback stop order has wrong length: got %d, want %d (full=%d, data=%d)",
+		t.Errorf("non-data stop order has wrong length: got %d, want %d (full=%d, data=%d)",
 			len(order), len(full)-len(DataServices), len(full), len(DataServices))
 	}
 
-	if slices.Contains(order, "api") != true {
-		t.Errorf("rollback stop order must contain api")
+	if !slices.Contains(order, "api") {
+		t.Errorf("non-data stop order must contain api")
 	}
 }
 
-func TestRollbackStartOrder_ExcludesDataServices(t *testing.T) {
-	order := RollbackStartOrder()
+func TestNonDataStartOrder_ExcludesDataServices(t *testing.T) {
+	order := NonDataStartOrder()
 	for _, svc := range order {
 		if DataServices[svc] {
-			t.Errorf("rollback start order contains data service %q; they were never stopped, so shouldn't be restarted", svc)
+			t.Errorf("non-data start order contains data service %q; they were never stopped, so shouldn't be restarted", svc)
 		}
 	}
 
@@ -40,6 +40,16 @@ func TestRollbackStartOrder_ExcludesDataServices(t *testing.T) {
 		}
 	}
 	if !slices.Equal(order, want) {
-		t.Errorf("rollback start order = %v, want %v", order, want)
+		t.Errorf("non-data start order = %v, want %v", order, want)
+	}
+}
+
+// Deprecated-alias smoke tests — ensure the old names still resolve to the new.
+func TestRollbackAliases_MatchNonDataOrders(t *testing.T) {
+	if !slices.Equal(RollbackStopOrder(), NonDataStopOrder()) {
+		t.Error("RollbackStopOrder must alias NonDataStopOrder")
+	}
+	if !slices.Equal(RollbackStartOrder(), NonDataStartOrder()) {
+		t.Error("RollbackStartOrder must alias NonDataStartOrder")
 	}
 }

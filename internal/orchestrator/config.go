@@ -11,7 +11,7 @@ type Config struct {
 	ApplyTimeout       time.Duration // Overall apply cycle timeout (default 600s)
 	RollbackTimeout    time.Duration // Total rollback timeout (default 300s)
 	SnapshotDir        string        // Directory for pg_dump snapshots (default /var/vectis/snapshots)
-	ComposePath        string        // Path to docker-compose.yml
+	ComposePaths       []string      // Ordered list of docker-compose files; multiple are merged via -f flags
 	DBHost             string        // Postgres host (for pg_dump/psql)
 	DBPort             int           // Postgres port
 	DBName             string        // Postgres database name
@@ -28,12 +28,23 @@ func DefaultConfig() Config {
 		ApplyTimeout:       600 * time.Second,
 		RollbackTimeout:    300 * time.Second,
 		SnapshotDir:        "/var/vectis/snapshots",
-		ComposePath:        "/etc/vectis/docker-compose.yml",
+		ComposePaths:       []string{"/etc/vectis/docker-compose.yml"},
 		DBHost:             "postgres",
 		DBPort:             5432,
 		DBName:             "vectis",
 		DBUser:             "vectis_api",
 	}
+}
+
+// composeFileArgs returns the ordered -f flag pairs needed to run docker compose
+// across all configured compose files. Expands ["a.yml","b.yml"] to
+// ["-f","a.yml","-f","b.yml"].
+func (c Config) composeFileArgs() []string {
+	out := make([]string, 0, 2*len(c.ComposePaths))
+	for _, p := range c.ComposePaths {
+		out = append(out, "-f", p)
+	}
+	return out
 }
 
 // ServiceHealthTimeouts defines per-service health check timeouts per Spec D.5.
@@ -70,19 +81,20 @@ func ServiceStopOrder() []string {
 	return rev
 }
 
-// DataServices are services that must keep running during rollback so that
-// phase 2 (psql restore) has a postgres hostname it can resolve and connect
-// to. Stopping these would make restore fail with "could not translate host
-// name" and leave the stack unrecoverable.
+// DataServices are services that must keep running through any operation that
+// could fail midway. Rollback phase 2 (psql restore) needs postgres reachable;
+// stopping it earlier makes restore impossible and leaves the stack unrecoverable.
+// Valkey is kept for state-sync reasons (orchestrator writes state to it).
 var DataServices = map[string]bool{
 	"postgres": true,
 	"valkey":   true,
 }
 
-// RollbackStopOrder returns the stop order for a rollback: ServiceStopOrder
-// minus any DataServices. Postgres and valkey stay up so the restore step can
-// reach them.
-func RollbackStopOrder() []string {
+// NonDataStopOrder returns the stop order for phases that must not disrupt the
+// data layer: apply's phase 4.2 (stop-before-compose) and rollback's phase 1
+// (stop-before-restore) both use it. Same set as ServiceStopOrder minus the
+// DataServices.
+func NonDataStopOrder() []string {
 	full := ServiceStopOrder()
 	out := make([]string, 0, len(full))
 	for _, s := range full {
@@ -94,9 +106,10 @@ func RollbackStopOrder() []string {
 	return out
 }
 
-// RollbackStartOrder returns the start order for restoring services at the end
-// of a rollback. Skips DataServices since they were never stopped.
-func RollbackStartOrder() []string {
+// NonDataStartOrder returns the start order for recovery paths that don't need
+// to restart data services (because they were never stopped). Used by rollback's
+// final restart and recover() in doRollback.
+func NonDataStartOrder() []string {
 	out := make([]string, 0, len(ServiceStartOrder))
 	for _, s := range ServiceStartOrder {
 		if DataServices[s] {
@@ -106,3 +119,7 @@ func RollbackStartOrder() []string {
 	}
 	return out
 }
+
+// Deprecated aliases kept for backward compat; prefer NonData* names.
+func RollbackStopOrder() []string  { return NonDataStopOrder() }
+func RollbackStartOrder() []string { return NonDataStartOrder() }

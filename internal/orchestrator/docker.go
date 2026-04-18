@@ -125,10 +125,9 @@ func isLocalImageRef(ref string) bool {
 
 // composeServices returns the set of service names defined in the compose file.
 func (dm *DockerManager) composeServices(ctx context.Context) (map[string]bool, error) {
-	cmd := exec.CommandContext(ctx, "docker", "compose",
-		"-f", dm.cfg.ComposePath,
-		"config", "--services",
-	)
+	args := append([]string{"compose"}, dm.cfg.composeFileArgs()...)
+	args = append(args, "config", "--services")
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -148,10 +147,9 @@ func (dm *DockerManager) composeServices(ctx context.Context) (map[string]bool, 
 // composeImages returns the image reference per service as defined in the
 // compose file. Maps service name → image (e.g. "vectis-api:dev").
 func (dm *DockerManager) composeImages(ctx context.Context) (map[string]string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "compose",
-		"-f", dm.cfg.ComposePath,
-		"config", "--format", "json",
-	)
+	args := append([]string{"compose"}, dm.cfg.composeFileArgs()...)
+	args = append(args, "config", "--format", "json")
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -178,10 +176,9 @@ func (dm *DockerManager) composeImages(ctx context.Context) (map[string]string, 
 func (dm *DockerManager) pullImage(ctx context.Context, service string) error {
 	dm.logger.Info("pulling image", "service", service)
 
-	cmd := exec.CommandContext(ctx, "docker", "compose",
-		"-f", dm.cfg.ComposePath,
-		"pull", service,
-	)
+	args := append([]string{"compose"}, dm.cfg.composeFileArgs()...)
+	args = append(args, "pull", service)
+	cmd := exec.CommandContext(ctx, "docker", args...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -227,10 +224,9 @@ func (dm *DockerManager) StartServices(ctx context.Context, order []string) erro
 	for _, svc := range order {
 		dm.logger.Info("starting service", "service", svc)
 
-		cmd := exec.CommandContext(ctx, "docker", "compose",
-			"-f", dm.cfg.ComposePath,
-			"up", "-d", "--no-deps", svc,
-		)
+		args := append([]string{"compose"}, dm.cfg.composeFileArgs()...)
+		args = append(args, "up", "-d", "--no-deps", svc)
+		cmd := exec.CommandContext(ctx, "docker", args...)
 
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -353,23 +349,21 @@ func (dm *DockerManager) getContainerImage(ctx context.Context, name string) (st
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// ApplyCompose runs docker compose up -d with the given compose file path.
+// ApplyCompose runs docker compose up -d across all configured compose files.
 // This applies any changes to service definitions (new images, config, etc.).
-func (dm *DockerManager) ApplyCompose(ctx context.Context, composePath string) error {
-	dm.logger.Info("applying docker compose", "path", composePath)
+func (dm *DockerManager) ApplyCompose(ctx context.Context) error {
+	dm.logger.Info("applying docker compose", "paths", dm.cfg.ComposePaths)
 
-	cmd := exec.CommandContext(ctx, "docker", "compose",
-		"-f", composePath,
-		"up", "-d",
-		"--remove-orphans",
-	)
+	args := append([]string{"compose"}, dm.cfg.composeFileArgs()...)
+	args = append(args, "up", "-d", "--remove-orphans")
+	cmd := exec.CommandContext(ctx, "docker", args...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker compose up: %w: %s", err, string(output))
 	}
 
-	dm.logger.Info("docker compose applied", "path", composePath)
+	dm.logger.Info("docker compose applied", "paths", dm.cfg.ComposePaths)
 	return nil
 }
 
