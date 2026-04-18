@@ -979,15 +979,35 @@ func (m *Manager) restoreDirectory(ctx context.Context, archivePath, targetDir s
 
 // createFinalArchive creates a tar.gz of the assembled backup directory.
 func (m *Manager) createFinalArchive(ctx context.Context, srcDir, dstPath string) error {
+	// Guard against self-referential tar: if dstPath sits inside srcDir (the
+	// encrypted flow's staging pattern — tmpDir/backup.tar.gz with srcDir=tmpDir),
+	// tar races with itself because the output file grows while the parent
+	// directory is being walked, triggering "file changed as we read it" → exit 1.
+	// Write to a sibling temp path outside srcDir, then rename into place.
+	absSrc, _ := filepath.Abs(srcDir)
+	absDst, _ := filepath.Abs(dstPath)
+	writePath := dstPath
+	if strings.HasPrefix(absDst, absSrc+string(filepath.Separator)) {
+		writePath = filepath.Join(filepath.Dir(absSrc), "._tmp-"+filepath.Base(dstPath))
+	}
+
 	cmd := exec.CommandContext(ctx, "tar",
-		"-czf", dstPath,
+		"-czf", writePath,
 		"-C", srcDir,
 		".",
 	)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		os.Remove(writePath)
 		return fmt.Errorf("create final archive: %w: %s", err, string(output))
+	}
+
+	if writePath != dstPath {
+		if err := os.Rename(writePath, dstPath); err != nil {
+			os.Remove(writePath)
+			return fmt.Errorf("move archive into place: %w", err)
+		}
 	}
 
 	return nil

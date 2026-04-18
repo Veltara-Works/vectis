@@ -9,7 +9,7 @@ RUN CGO_ENABLED=0 go build -tags netgo,osusergo -ldflags="-s -w" -o /vectis ./cm
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata wget
+RUN apk add --no-cache ca-certificates tzdata wget postgresql17-client tar
 
 COPY --from=builder /vectis /usr/local/bin/vectis
 

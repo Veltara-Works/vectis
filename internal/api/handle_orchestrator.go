@@ -116,7 +116,7 @@ func (s *Server) handleOrchestratorHistory(w http.ResponseWriter, r *http.Reques
 	defer cancel()
 
 	rows, err := s.db.Query(ctx, `
-		SELECT id, action, status, plan_summary, error, started_at, completed_at, admin_id
+		SELECT id, action, status, plan_summary::text, error_message, started_at, completed_at, triggered_by
 		FROM orchestrator_history
 		ORDER BY started_at DESC
 		LIMIT 50
