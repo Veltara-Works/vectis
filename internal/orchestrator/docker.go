@@ -33,9 +33,41 @@ func containerName(service string) string {
 }
 
 // PullImages pulls container images in parallel for the given services.
-// Each pull is bounded by Config.ImagePullTimeout.
+// Services not defined in the compose file are skipped. Services whose image
+// reference is a locally-built tag (no registry hostname, e.g. "vectis-api:dev")
+// are also skipped — pulling them would fail with "denied" against ghcr.io.
+// Each remaining pull is bounded by Config.ImagePullTimeout.
 func (dm *DockerManager) PullImages(ctx context.Context, services []string) error {
-	dm.logger.Info("pulling images", "services", services)
+	defined, err := dm.composeServices(ctx)
+	if err != nil {
+		return fmt.Errorf("enumerate compose services: %w", err)
+	}
+
+	images, err := dm.composeImages(ctx)
+	if err != nil {
+		return fmt.Errorf("enumerate compose images: %w", err)
+	}
+
+	var toPull []string
+	for _, svc := range services {
+		if !defined[svc] {
+			dm.logger.Info("skipping pull: service not defined in compose", "service", svc)
+			continue
+		}
+		img := images[svc]
+		if isLocalImageRef(img) {
+			dm.logger.Info("skipping pull: local image reference", "service", svc, "image", img)
+			continue
+		}
+		toPull = append(toPull, svc)
+	}
+
+	if len(toPull) == 0 {
+		dm.logger.Info("pulling images: nothing to pull after filtering")
+		return nil
+	}
+
+	dm.logger.Info("pulling images", "services", toPull)
 
 	var (
 		mu   sync.Mutex
@@ -43,7 +75,7 @@ func (dm *DockerManager) PullImages(ctx context.Context, services []string) erro
 		wg   sync.WaitGroup
 	)
 
-	for _, svc := range services {
+	for _, svc := range toPull {
 		wg.Add(1)
 		go func(service string) {
 			defer wg.Done()
@@ -65,6 +97,81 @@ func (dm *DockerManager) PullImages(ctx context.Context, services []string) erro
 		return fmt.Errorf("image pull failures: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// isLocalImageRef reports whether an image reference points to a locally-built
+// image rather than a remote registry. Any reference without a dotted hostname
+// before the first slash (or with no slash at all) is treated as local: Docker
+// would default such refs to Docker Hub, which for our services means "this is
+// our locally-built :dev tag". Empty strings are treated as local (skip pull).
+func isLocalImageRef(ref string) bool {
+	if ref == "" {
+		return true
+	}
+	slash := strings.Index(ref, "/")
+	if slash < 0 {
+		// No slash at all → "name:tag" form → locally built or Docker Hub library.
+		return true
+	}
+	host := ref[:slash]
+	// Registry hostnames always contain a "." (ghcr.io, docker.io, quay.io) or
+	// a ":" for a port, or are literally "localhost".
+	if strings.ContainsAny(host, ".:") || host == "localhost" {
+		return false
+	}
+	// e.g. "library/postgres" — treat as Docker Hub official, pull.
+	return false
+}
+
+// composeServices returns the set of service names defined in the compose file.
+func (dm *DockerManager) composeServices(ctx context.Context) (map[string]bool, error) {
+	cmd := exec.CommandContext(ctx, "docker", "compose",
+		"-f", dm.cfg.ComposePath,
+		"config", "--services",
+	)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("docker compose config --services: %w", err)
+	}
+
+	out := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out[line] = true
+		}
+	}
+	return out, nil
+}
+
+// composeImages returns the image reference per service as defined in the
+// compose file. Maps service name → image (e.g. "vectis-api:dev").
+func (dm *DockerManager) composeImages(ctx context.Context) (map[string]string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "compose",
+		"-f", dm.cfg.ComposePath,
+		"config", "--format", "json",
+	)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("docker compose config --format json: %w", err)
+	}
+
+	var parsed struct {
+		Services map[string]struct {
+			Image string `json:"image"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &parsed); err != nil {
+		return nil, fmt.Errorf("parse compose json: %w", err)
+	}
+
+	out := make(map[string]string, len(parsed.Services))
+	for name, svc := range parsed.Services {
+		out[name] = svc.Image
+	}
+	return out, nil
 }
 
 // pullImage pulls the image for a single service using docker compose pull.

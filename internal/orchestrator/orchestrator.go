@@ -235,6 +235,21 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		return "", fmt.Errorf("record apply operation: %w", err)
 	}
 
+	// No-op short-circuit: if the plan has no container or migration changes,
+	// there's nothing to snapshot, pull, or restart. Complete the op as a no-op
+	// and stay in idle. Prevents accidental service restarts on zero-diff plans.
+	if plan.IsEmpty() {
+		o.logger.Info("apply: plan has no changes, short-circuiting", "job_id", jobID)
+		_ = o.sm.CompleteOperation(applyCtx, opID, "completed", "", "no-op: plan had no changes")
+		o.mu.Lock()
+		o.plan = nil
+		now := time.Now().UTC()
+		o.lastOp.State = StateIdle
+		o.lastOp.EndedAt = &now
+		o.mu.Unlock()
+		return jobID, nil
+	}
+
 	o.mu.Lock()
 	o.lastOp = &Operation{
 		JobID:     jobID,
@@ -474,29 +489,50 @@ func (o *Orchestrator) RollbackWithJobID(ctx context.Context, jobID string) (str
 
 // doRollback executes the internal 5-phase rollback sequence (Spec D.7).
 // This is used by both automatic rollback (from Apply) and manual Rollback().
+//
+// Postgres and valkey stay running throughout — phase 2 (psql restore) needs
+// them reachable. If any phase after the stop fails, we make a best-effort
+// attempt to restart the services we stopped so the stack doesn't end up half
+// down (see Phase 3 E2E findings, 2026-04-18).
 func (o *Orchestrator) doRollback(ctx context.Context, snapshotPath string) error {
-	// Phase 1: Stop all current containers.
-	o.logger.Info("rollback phase 1: stopping services")
-	stopOrder := ServiceStopOrder()
+	// Phase 1: Stop non-data services. Postgres + valkey keep running.
+	o.logger.Info("rollback phase 1: stopping services (keeping data services up)")
+	stopOrder := RollbackStopOrder()
 	if err := o.docker.StopServices(ctx, stopOrder); err != nil {
 		return fmt.Errorf("rollback stop services: %w", err)
+	}
+
+	// From here on, stopped services must be brought back up even if a
+	// subsequent phase fails, or the stack stays partially down.
+	recover := func(cause error) error {
+		o.logger.Error("rollback phase failed, attempting to restart stopped services",
+			"cause", cause,
+		)
+		if startErr := o.docker.StartServices(ctx, RollbackStartOrder()); startErr != nil {
+			o.logger.Error("recovery restart failed — manual intervention required",
+				"restart_error", startErr,
+			)
+			return fmt.Errorf("%w; recovery restart also failed: %v", cause, startErr)
+		}
+		o.logger.Info("recovery restart succeeded — services back up despite rollback failure")
+		return cause
 	}
 
 	// Phase 2: Restore database from snapshot.
 	o.logger.Info("rollback phase 2: restoring database", "snapshot", snapshotPath)
 	if err := o.snap.RestoreSnapshot(ctx, snapshotPath); err != nil {
-		return fmt.Errorf("rollback restore database: %w", err)
+		return recover(fmt.Errorf("rollback restore database: %w", err))
 	}
 
 	// Phase 3: Apply previous docker-compose (revert containers).
 	o.logger.Info("rollback phase 3: applying previous compose")
 	if err := o.docker.ApplyCompose(ctx, o.cfg.ComposePath); err != nil {
-		return fmt.Errorf("rollback apply compose: %w", err)
+		return recover(fmt.Errorf("rollback apply compose: %w", err))
 	}
 
-	// Phase 4: Start services and health check.
+	// Phase 4: Start services and health check. Data services already up.
 	o.logger.Info("rollback phase 4: starting services and health check")
-	if err := o.docker.StartServices(ctx, ServiceStartOrder); err != nil {
+	if err := o.docker.StartServices(ctx, RollbackStartOrder()); err != nil {
 		return fmt.Errorf("rollback health check: %w", err)
 	}
 

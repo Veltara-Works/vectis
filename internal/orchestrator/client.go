@@ -74,10 +74,11 @@ type MigrationInfo struct {
 
 // ApplyResult contains the output of an update apply operation.
 type ApplyResult struct {
-	Status   string         `json:"status"` // "running", "success", "failed", "rolled_back", "rollback_failed"
-	Steps    []ApplyStep    `json:"steps,omitempty"`
-	Error    string         `json:"error,omitempty"`
-	Rollback *RollbackInfo  `json:"rollback,omitempty"`
+	Status   string        `json:"status"` // "running", "success", "failed", "rolled_back", "rollback_failed"
+	JobID    string        `json:"job_id,omitempty"`
+	Steps    []ApplyStep   `json:"steps,omitempty"`
+	Error    string        `json:"error,omitempty"`
+	Rollback *RollbackInfo `json:"rollback,omitempty"`
 }
 
 // ApplyStep describes one step in the apply pipeline.
@@ -96,7 +97,8 @@ type RollbackInfo struct {
 
 // RollbackResult contains the output of a manual rollback operation.
 type RollbackResult struct {
-	Status string `json:"status"` // "success", "failed"
+	Status string `json:"status"` // "running", "success", "failed"
+	JobID  string `json:"job_id,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
 
@@ -112,43 +114,91 @@ type StatusResult struct {
 
 // --- API methods ---
 
+// The orchestrator server wraps every success response as {state, data: {...}}
+// (see internal/orchestrator/server.go). We unmarshal into these envelope
+// structs and copy the inner payload out.
+
+type planEnvelope struct {
+	State string `json:"state"`
+	Data  struct {
+		Plan PlanResult `json:"plan"`
+	} `json:"data"`
+}
+
+type jobEnvelope struct {
+	State string `json:"state"`
+	Data  struct {
+		JobID string `json:"job_id"`
+	} `json:"data"`
+}
+
+type statusEnvelope struct {
+	State string `json:"state"`
+	Data  struct {
+		LastOperation *lastOperation `json:"last_operation,omitempty"`
+	} `json:"data"`
+}
+
+type lastOperation struct {
+	JobID        string     `json:"job_id,omitempty"`
+	Type         string     `json:"type,omitempty"`
+	State        string     `json:"state,omitempty"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	EndedAt      *time.Time `json:"ended_at,omitempty"`
+	SnapshotPath string     `json:"snapshot_path,omitempty"`
+	Error        string     `json:"error,omitempty"`
+}
+
 // Plan requests the orchestrator to generate an update plan.
 func (c *Client) Plan(ctx context.Context) (*PlanResult, error) {
-	var result PlanResult
-	if err := c.doJSON(ctx, http.MethodPost, "/internal/plan", &result); err != nil {
+	var env planEnvelope
+	if err := c.doJSON(ctx, http.MethodPost, "/internal/plan", &env); err != nil {
 		return nil, fmt.Errorf("plan: %w", err)
 	}
+	result := env.Data.Plan
 	return &result, nil
 }
 
-// Apply requests the orchestrator to execute the current plan.
+// Apply requests the orchestrator to execute the current plan. Apply is
+// asynchronous: the orchestrator returns a job_id immediately and continues
+// the work in the background. The caller should poll /internal/status to
+// observe completion.
+//
 // If force is true, the orchestrator will plan and apply in one step.
 func (c *Client) Apply(ctx context.Context, force bool) (*ApplyResult, error) {
 	path := "/internal/apply"
 	if force {
 		path += "?force=true"
 	}
-	var result ApplyResult
-	if err := c.doJSON(ctx, http.MethodPost, path, &result); err != nil {
+	var env jobEnvelope
+	if err := c.doJSON(ctx, http.MethodPost, path, &env); err != nil {
 		return nil, fmt.Errorf("apply: %w", err)
 	}
-	return &result, nil
+	// Synthesise an ApplyResult. The actual apply runs asynchronously; the
+	// returned status is "running" until /status reports idle or failed.
+	return &ApplyResult{Status: "running", JobID: env.Data.JobID}, nil
 }
 
 // Rollback requests the orchestrator to roll back to the last snapshot.
+// Rollback is asynchronous; the returned RollbackResult carries the job_id.
 func (c *Client) Rollback(ctx context.Context) (*RollbackResult, error) {
-	var result RollbackResult
-	if err := c.doJSON(ctx, http.MethodPost, "/internal/rollback", &result); err != nil {
+	var env jobEnvelope
+	if err := c.doJSON(ctx, http.MethodPost, "/internal/rollback", &env); err != nil {
 		return nil, fmt.Errorf("rollback: %w", err)
 	}
-	return &result, nil
+	return &RollbackResult{Status: "running", JobID: env.Data.JobID}, nil
 }
 
 // Status returns the current orchestrator state machine status.
 func (c *Client) Status(ctx context.Context) (*StatusResult, error) {
-	var result StatusResult
-	if err := c.doJSON(ctx, http.MethodGet, "/internal/status", &result); err != nil {
+	var env statusEnvelope
+	if err := c.doJSON(ctx, http.MethodGet, "/internal/status", &env); err != nil {
 		return nil, fmt.Errorf("status: %w", err)
+	}
+	result := StatusResult{State: env.State}
+	if env.Data.LastOperation != nil {
+		result.CurrentStep = env.Data.LastOperation.Type
+		result.Error = env.Data.LastOperation.Error
 	}
 	return &result, nil
 }

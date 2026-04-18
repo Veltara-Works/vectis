@@ -69,3 +69,40 @@ func ServiceStopOrder() []string {
 	}
 	return rev
 }
+
+// DataServices are services that must keep running during rollback so that
+// phase 2 (psql restore) has a postgres hostname it can resolve and connect
+// to. Stopping these would make restore fail with "could not translate host
+// name" and leave the stack unrecoverable.
+var DataServices = map[string]bool{
+	"postgres": true,
+	"valkey":   true,
+}
+
+// RollbackStopOrder returns the stop order for a rollback: ServiceStopOrder
+// minus any DataServices. Postgres and valkey stay up so the restore step can
+// reach them.
+func RollbackStopOrder() []string {
+	full := ServiceStopOrder()
+	out := make([]string, 0, len(full))
+	for _, s := range full {
+		if DataServices[s] {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// RollbackStartOrder returns the start order for restoring services at the end
+// of a rollback. Skips DataServices since they were never stopped.
+func RollbackStartOrder() []string {
+	out := make([]string, 0, len(ServiceStartOrder))
+	for _, s := range ServiceStartOrder {
+		if DataServices[s] {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}

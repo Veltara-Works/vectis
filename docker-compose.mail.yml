@@ -114,6 +114,7 @@ services:
       - /etc/vectis:/etc/vectis:ro
       - mail-data:/var/vectis/mail
       - /var/vectis/dkim:/var/vectis/dkim
+      - backups:/var/vectis/backups
       - ./web/dist:/app/web/dist:ro
     depends_on:
       postgres:
@@ -189,3 +190,4 @@ volumes:
   mail-data:
   traefik-acme:
   snapshots:
+  backups:
