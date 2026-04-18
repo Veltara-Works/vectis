@@ -129,6 +129,29 @@ services:
     networks:
       - vectis-frontend
       - vectis-data
+      - vectis-orchestrator
+
+  orchestrator:
+    image: vectis-orchestrator:dev
+    container_name: vectis-orchestrator
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/vectis:/etc/vectis:ro
+      - snapshots:/var/vectis/snapshots
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8081/internal/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - vectis-orchestrator
+      - vectis-data
 
   traefik:
     image: traefik:v3.3
@@ -156,9 +179,13 @@ networks:
     driver: bridge
   vectis-data:
     driver: bridge
+  vectis-orchestrator:
+    driver: bridge
+    internal: true
 
 volumes:
   pgdata:
   valkeydata:
   mail-data:
   traefik-acme:
+  snapshots:
