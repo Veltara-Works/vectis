@@ -1,0 +1,132 @@
+package mail
+
+import (
+	"strings"
+	"testing"
+)
+
+// Example ARF message adapted from RFC 5965 appendix with CRLFs.
+const sampleARF = "From: <complaints@isp.example>\r\n" +
+	"To: <abuse@mail.example.com>\r\n" +
+	"Subject: FW: Earn money\r\n" +
+	"MIME-Version: 1.0\r\n" +
+	"Content-Type: multipart/report; report-type=feedback-report; boundary=\"b1\"\r\n" +
+	"\r\n" +
+	"--b1\r\n" +
+	"Content-Type: text/plain; charset=\"us-ascii\"\r\n" +
+	"\r\n" +
+	"This is an email abuse report for an email message received from IP\r\n" +
+	"203.0.113.4 on Thu, 8 Mar 2007 17:40:36 -0500.\r\n" +
+	"\r\n" +
+	"--b1\r\n" +
+	"Content-Type: message/feedback-report\r\n" +
+	"\r\n" +
+	"Feedback-Type: abuse\r\n" +
+	"User-Agent: SomeGenerator/1.0\r\n" +
+	"Version: 1\r\n" +
+	"Original-Mail-From: <sender@mail.example.com>\r\n" +
+	"Original-Rcpt-To: <user@isp.example>\r\n" +
+	"Arrival-Date: Thu, 8 Mar 2007 17:40:36 -0500\r\n" +
+	"Reporting-MTA: dns; mail.isp.example\r\n" +
+	"Source-IP: 203.0.113.4\r\n" +
+	"Reported-Domain: mail.example.com\r\n" +
+	"\r\n" +
+	"--b1\r\n" +
+	"Content-Type: message/rfc822\r\n" +
+	"\r\n" +
+	"From: <sender@mail.example.com>\r\n" +
+	"To: <user@isp.example>\r\n" +
+	"Subject: Earn money\r\n" +
+	"Message-ID: <abc-123@mail.example.com>\r\n" +
+	"\r\n" +
+	"Spam spam spam\r\n" +
+	"--b1--\r\n"
+
+func TestIsARFReport(t *testing.T) {
+	if !IsARFReport(`multipart/report; report-type=feedback-report; boundary=b1`) {
+		t.Fatalf("expected true for feedback-report")
+	}
+	if IsARFReport(`multipart/mixed; boundary=x`) {
+		t.Fatalf("expected false for multipart/mixed")
+	}
+	if IsARFReport(`multipart/report; report-type=delivery-status; boundary=b1`) {
+		t.Fatalf("expected false for DSN (delivery-status)")
+	}
+	if IsARFReport("") {
+		t.Fatalf("empty should be false")
+	}
+}
+
+func TestParseARF_HappyPath(t *testing.T) {
+	r, err := ParseARF([]byte(sampleARF))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if r.FeedbackType != "abuse" {
+		t.Errorf("feedback-type: got %q, want abuse", r.FeedbackType)
+	}
+	if r.OriginalMailFrom != "sender@mail.example.com" {
+		t.Errorf("original-mail-from: got %q", r.OriginalMailFrom)
+	}
+	if r.OriginalRcptTo != "user@isp.example" {
+		t.Errorf("original-rcpt-to: got %q", r.OriginalRcptTo)
+	}
+	if r.ReportedDomain != "mail.example.com" {
+		t.Errorf("reported-domain: got %q", r.ReportedDomain)
+	}
+	if r.SourceIP != "203.0.113.4" {
+		t.Errorf("source-ip: got %q", r.SourceIP)
+	}
+	if r.UserAgent != "SomeGenerator/1.0" {
+		t.Errorf("user-agent: got %q", r.UserAgent)
+	}
+	if r.ReportingMTA != "mail.isp.example" {
+		t.Errorf("reporting-mta: got %q", r.ReportingMTA)
+	}
+	if r.OriginalMessageID != "abc-123@mail.example.com" {
+		t.Errorf("original-message-id: got %q", r.OriginalMessageID)
+	}
+	if !strings.Contains(r.OriginalFrom, "sender@mail.example.com") {
+		t.Errorf("original-from: got %q", r.OriginalFrom)
+	}
+	if r.Raw["feedback-type"] != "abuse" {
+		t.Errorf("raw map should preserve feedback-type")
+	}
+}
+
+func TestParseARF_RejectsNonARF(t *testing.T) {
+	plain := "From: a@b\r\nTo: c@d\r\nContent-Type: text/plain\r\n\r\nhello"
+	if _, err := ParseARF([]byte(plain)); err == nil {
+		t.Fatalf("expected error for non-ARF message")
+	}
+}
+
+func TestParseARF_DomainDerivedFromMailFrom(t *testing.T) {
+	// Strip Reported-Domain from sample to force derivation fallback.
+	stripped := strings.Replace(sampleARF,
+		"Reported-Domain: mail.example.com\r\n", "", 1)
+	r, err := ParseARF([]byte(stripped))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if r.ReportedDomain != "mail.example.com" {
+		t.Errorf("expected domain derived from mail-from, got %q", r.ReportedDomain)
+	}
+}
+
+func TestComplaintTypeForDB(t *testing.T) {
+	cases := map[string]string{
+		"abuse":    "abuse",
+		"Abuse":    "abuse",
+		"fraud":    "fraud",
+		"virus":    "virus",
+		"not-spam": "other",
+		"other":    "other",
+		"":         "other",
+	}
+	for in, want := range cases {
+		if got := ComplaintTypeForDB(in); got != want {
+			t.Errorf("ComplaintTypeForDB(%q): got %q, want %q", in, got, want)
+		}
+	}
+}

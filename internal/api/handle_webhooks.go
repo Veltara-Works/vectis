@@ -16,6 +16,7 @@ var validWebhookEvents = map[string]bool{
 	"mail.delivered":      true,
 	"mail.bounced":        true,
 	"mail.failed":         true,
+	"mail.complained":     true,
 	"mail.received":       true,
 	"mail.received.full":  true,
 	"mail.spam":           true,

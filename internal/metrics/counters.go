@@ -22,6 +22,18 @@ var (
 		Help:      "Total inbound emails classified as spam by Rspamd",
 	})
 
+	EmailsDelivered = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "emails_delivered_total",
+		Help:      "Total outbound emails successfully delivered to the remote MTA (parsed from Postfix log)",
+	})
+
+	EmailsBounced = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "emails_bounced_total",
+		Help:      "Total outbound emails that bounced at the remote MTA (parsed from Postfix log)",
+	})
+
 	EmailsSendSuspended = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "emails_send_suspended_total",
@@ -76,6 +88,8 @@ func init() {
 		EmailsSent,
 		EmailsReceived,
 		EmailsSpam,
+		EmailsDelivered,
+		EmailsBounced,
 		EmailsSendSuspended,
 		WebhookDeliveries,
 		APIRequests,

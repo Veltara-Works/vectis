@@ -37,6 +37,7 @@ services:
       - /etc/vectis:/etc/vectis:ro
       - mail-data:/var/vectis/mail
       - dkim-keys:/var/vectis/dkim
+      - postfix-logs:/var/log/postfix:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,6 +97,7 @@ services:
       - postfix-config:/etc/postfix
       - mail-data:/var/vectis/mail
       - mail-certs:/etc/ssl/mail:ro
+      - postfix-logs:/var/log/postfix
     depends_on:
       postgres:
         condition: service_healthy
@@ -436,6 +438,7 @@ volumes:
   mail-certs:
   dkim-keys:
   postfix-config:
+  postfix-logs:
   dovecot-config:
   rspamd-config:
   traefik-config:

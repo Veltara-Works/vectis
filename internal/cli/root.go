@@ -108,6 +108,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		OrchestratorToken:   secrets.Orchestrator.Token,
 		OrchestratorCertDir: orchCertDir,
 		CallbackBaseURL:     "https://" + cfg.Hostname,
+		PostfixLogPath:      postfixLogPath(),
 	}, logger)
 
 	// Start background services.
@@ -115,6 +116,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	srv.StartAuditPruner()
 	srv.StartSessionCleaner()
 	srv.StartWebhookDispatcher()
+	srv.StartPostfixLogTailer()
 	srv.StartUsageReporter()
 
 	// Graceful shutdown.
@@ -142,6 +144,24 @@ func runServe(cmd *cobra.Command, args []string) error {
 func isQuiet(cmd *cobra.Command) bool {
 	q, _ := cmd.Flags().GetBool("quiet")
 	return q
+}
+
+// postfixLogPath returns the path to the Postfix mail log that should be
+// tailed for delivery/bounce events. Operators can override via env var; by
+// default we use the shared postfix-logs volume mount. If the file doesn't
+// exist yet the tailer will poll until it appears.
+func postfixLogPath() string {
+	if p := os.Getenv("VECTIS_POSTFIX_LOG"); p != "" {
+		return p
+	}
+	const defaultPath = "/var/log/postfix/mail.log"
+	// Only enable the tailer when the volume mount is actually present in
+	// the container. Outside the api container (e.g. running the binary on
+	// a dev laptop) this path won't exist and we should no-op.
+	if _, err := os.Stat("/var/log/postfix"); err == nil {
+		return defaultPath
+	}
+	return ""
 }
 
 // isVerbose returns true if the --verbose flag is set.

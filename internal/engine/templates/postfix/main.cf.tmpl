@@ -80,5 +80,8 @@ milter_mail_macros = i {mail_addr} {client_addr} {client_name} {auth_authen}
 inet_protocols = all
 
 # Misc
-maillog_file = /dev/stdout
+# Log to a file on the shared postfix-logs volume so the API container can
+# tail delivery status events (mail.delivered / mail.bounced webhooks).
+# The entrypoint also tails this file to stdout to preserve `docker logs` output.
+maillog_file = /var/log/postfix/mail.log
 compatibility_level = 3.6

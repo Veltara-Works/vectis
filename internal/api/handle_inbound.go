@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	stdmail "net/mail"
 	"net/http"
 	"strings"
 	"time"
@@ -147,7 +150,127 @@ func (s *Server) handleInboundNotify(w http.ResponseWriter, r *http.Request) {
 		go s.dispatchFullInbound(domain.ID, notif)
 	}
 
+	// Detect RFC 5965 feedback-loop complaints (ARF). If the inbound is an
+	// ISP complaint report about one of our outbound messages, record it in
+	// fbl_reports and fire mail.complained. This runs in its own goroutine
+	// because the parse + lookup is cheap but independent of the main
+	// response path.
+	if notif.RawMessageB64 != "" {
+		go s.handleARFComplaint(domain.ID, notif)
+	}
+
 	respond(w, r, http.StatusOK, map[string]string{"status": "processed"})
+}
+
+// handleARFComplaint inspects an inbound message to see if it's a
+// feedback-loop complaint (RFC 5965). If so, it links the complaint back to
+// one of our outbound messages / mailboxes where possible, stores it in
+// fbl_reports, and dispatches a mail.complained webhook keyed to the
+// originating domain (not the domain the complaint was addressed to).
+func (s *Server) handleARFComplaint(deliveredDomainID string, notif inboundNotification) {
+	raw, err := base64.StdEncoding.DecodeString(notif.RawMessageB64)
+	if err != nil {
+		return
+	}
+
+	// Quick check on the outer Content-Type before doing a full parse.
+	msg, err := stdmail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		return
+	}
+	if !mail.IsARFReport(msg.Header.Get("Content-Type")) {
+		return
+	}
+
+	report, err := mail.ParseARF(raw)
+	if err != nil {
+		s.logger.Warn("arf parse failed", "error", err, "message_id", notif.MessageID)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Try to attribute the complaint to one of our managed domains (the
+	// originating domain, not the complainer's ISP domain).
+	var (
+		originDomainID  *string
+		originMailboxID *string
+	)
+	if report.ReportedDomain != "" {
+		if d, err := s.domains.GetByName(ctx, report.ReportedDomain); err == nil && d != nil {
+			originDomainID = &d.ID
+			// Link to mailbox if the original sender matches one of ours.
+			if report.OriginalMailFrom != "" {
+				local := extractLocalPart(report.OriginalMailFrom)
+				if local != "" {
+					if mb, _ := s.mailboxes.GetByEmail(ctx, d.ID, local); mb != nil {
+						originMailboxID = &mb.ID
+					}
+				}
+			}
+		}
+	}
+
+	// Persist the report. Details JSON carries every machine-readable field
+	// verbatim so we can audit later without reparsing.
+	detailsJSON, _ := json.Marshal(report.Raw)
+	var originalMsgID *string
+	if report.OriginalMessageID != "" {
+		v := report.OriginalMessageID
+		originalMsgID = &v
+	}
+	var feedbackID *string
+	if fid, ok := report.Raw["feedback-id"]; ok && fid != "" {
+		feedbackID = &fid
+	}
+	if _, err := s.fblReports.Create(ctx, &repository.FBLReport{
+		DomainID:          originDomainID,
+		MailboxID:         originMailboxID,
+		OriginalMessageID: originalMsgID,
+		ReporterDomain:    report.ReportingMTA,
+		ComplaintType:     mail.ComplaintTypeForDB(report.FeedbackType),
+		FeedbackID:        feedbackID,
+		Details:           detailsJSON,
+	}); err != nil {
+		s.logger.Error("store fbl report failed", "error", err, "message_id", notif.MessageID)
+		// Still try to fire the webhook — the ISP complaint matters even if
+		// our storage layer hiccups.
+	}
+
+	vectismetrics.FBLComplaints.Inc()
+
+	if s.webhookDispatcher == nil {
+		return
+	}
+
+	// Dispatch target: prefer the origin domain (subscribers to that domain
+	// care about complaints against their mail). Fall back to the domain
+	// that received the complaint so it isn't silently dropped.
+	dispatchDomainID := deliveredDomainID
+	if originDomainID != nil {
+		dispatchDomainID = *originDomainID
+	}
+
+	payload := map[string]any{
+		"feedback_type":       report.FeedbackType,
+		"complaint_type":      mail.ComplaintTypeForDB(report.FeedbackType),
+		"original_mail_from":  report.OriginalMailFrom,
+		"original_rcpt_to":    report.OriginalRcptTo,
+		"original_message_id": report.OriginalMessageID,
+		"reported_domain":     report.ReportedDomain,
+		"source_ip":           report.SourceIP,
+		"reporting_mta":       report.ReportingMTA,
+		"user_agent":          report.UserAgent,
+		"arrival_date":        report.ArrivalDate,
+	}
+
+	s.webhookDispatcher.Dispatch(ctx, dispatchDomainID, mail.WebhookEvent{
+		ID:        notif.MessageID,
+		Event:     "mail.complained",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Data:      payload,
+	})
 }
 
 // dispatchFullInbound parses the raw RFC 5322 message and fires a

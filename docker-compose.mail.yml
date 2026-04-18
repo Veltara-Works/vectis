@@ -62,6 +62,7 @@ services:
       - ./var/generated/postfix/pgsql_virtual_catchall.cf:/etc/postfix/pgsql_virtual_catchall.cf:ro
       - mail-data:/var/vectis/mail
       - ./var/certs:/etc/ssl/mail:ro
+      - postfix-logs:/var/log/postfix
     depends_on:
       postgres:
         condition: service_healthy
@@ -115,6 +116,7 @@ services:
       - mail-data:/var/vectis/mail
       - /var/vectis/dkim:/var/vectis/dkim
       - backups:/var/vectis/backups
+      - postfix-logs:/var/log/postfix:ro
       - ./web/dist:/app/web/dist:ro
     depends_on:
       postgres:
@@ -197,3 +199,4 @@ volumes:
   traefik-acme:
   snapshots:
   backups:
+  postfix-logs:

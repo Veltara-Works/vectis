@@ -8,10 +8,11 @@ RUN apk add --no-cache \
     && (adduser -D -u 5000 -G vmail -h /var/vectis/mail vmail 2>/dev/null || true)
 
 # Create required directories
-RUN mkdir -p /var/vectis/mail && chown vmail:vmail /var/vectis/mail
+RUN mkdir -p /var/vectis/mail && chown vmail:vmail /var/vectis/mail \
+ && mkdir -p /var/log/postfix && chown postfix:postfix /var/log/postfix
 
 # Config will be bind-mounted from generated configs
-VOLUME ["/etc/postfix", "/var/vectis/mail", "/etc/ssl/mail"]
+VOLUME ["/etc/postfix", "/var/vectis/mail", "/etc/ssl/mail", "/var/log/postfix"]
 
 EXPOSE 25 465 587
 

@@ -23,6 +23,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/cluster"
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/mail"
+	"github.com/Veltara-Works/vectis/internal/mail/postfixlog"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
 	"github.com/Veltara-Works/vectis/internal/monitor"
 	"github.com/Veltara-Works/vectis/internal/validonx"
@@ -81,6 +82,7 @@ type Server struct {
 	mailSender        *mail.Sender
 	webhookDispatcher *mail.WebhookDispatcher
 	abuseDetector     *mail.AbuseDetector
+	postfixTailer     *postfixlog.Tailer
 
 	// Sieve filter management
 	sieveClient *mail.SieveClient
@@ -117,6 +119,7 @@ type Config struct {
 	OrchestratorCertDir  string // mTLS certificate directory; when set, upgrades to mTLS
 	CallbackBaseURL      string // base URL for OIDC callbacks (e.g. https://mail.example.com)
 	ServerIPs            []string // server IP addresses for RBL monitoring
+	PostfixLogPath       string   // path to Postfix mail log for delivery/bounce event tailing; empty disables
 }
 
 // New creates a new API server with all routes registered.
@@ -178,6 +181,19 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	s.notifications = mail.NewNotificationSender(s.mailSender, cfg.Hostname)
 	s.webhookDispatcher = mail.NewWebhookDispatcher(s.webhooks, logger.With("component", "webhook-dispatcher"))
 	s.abuseDetector = mail.NewAbuseDetector(vk, mail.DefaultAbuseConfig(), logger.With("component", "abuse-detector"))
+
+	// Initialize Postfix log tailer if a log path is configured. The tailer
+	// resolves Postfix queue_ids back to RFC 5322 Message-IDs and emits
+	// mail.delivered / mail.bounced webhooks for outbound messages.
+	if cfg.PostfixLogPath != "" {
+		tailerLogger := logger.With("component", "postfix-log-tailer")
+		emitter := postfixlog.NewWebhookEmitter(s.messages, s.webhookDispatcher, s.mailStats, tailerLogger)
+		s.postfixTailer = postfixlog.New(postfixlog.Options{
+			Path:    cfg.PostfixLogPath,
+			Handler: emitter,
+			Logger:  tailerLogger,
+		})
+	}
 
 	// Initialize ValidonX usage reporter if configured.
 	if cfg.VectisSecrets != nil && cfg.VectisSecrets.ValidonXConfigured() {
@@ -319,6 +335,22 @@ func (s *Server) StopWebhookDispatcher() {
 	}
 }
 
+// StartPostfixLogTailer begins tailing the Postfix mail log for delivery
+// and bounce events that get translated into mail.delivered / mail.bounced
+// webhook dispatches. No-op when PostfixLogPath is unset.
+func (s *Server) StartPostfixLogTailer() {
+	if s.postfixTailer != nil {
+		s.postfixTailer.Start()
+	}
+}
+
+// StopPostfixLogTailer stops the Postfix log tailer if running.
+func (s *Server) StopPostfixLogTailer() {
+	if s.postfixTailer != nil {
+		s.postfixTailer.Stop()
+	}
+}
+
 // StartUsageReporter starts the ValidonX usage metrics reporter.
 func (s *Server) StartUsageReporter() {
 	if s.usageReporter != nil {
@@ -389,6 +421,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.StopAuditPruner()
 	s.StopSessionCleaner()
 	s.StopWebhookDispatcher()
+	s.StopPostfixLogTailer()
 	s.StopUsageReporter()
 	s.StopRBLMonitor()
 	s.StopWarmupManager()
