@@ -22,6 +22,20 @@ virtual_minimum_uid = 5000
 # Delivery via LMTP to Dovecot (ADR-008: TCP port 24)
 virtual_transport = lmtp:inet:dovecot:24
 
+# Inbound notification — BCC a copy of every inbound message to a synthetic
+# address under the reserved vectis.notify zone, which transport_maps routes
+# to the vectis_notify pipe service (master.cf). The pipe script POSTs the
+# raw message to /api/v1/internal/inbound, which fires mail.received /
+# mail.received.full / mail.spam / mail.complained webhooks.
+#
+# The pgsql lookup only returns a BCC address for recipients whose domain
+# is in the local `domains` table, so outbound mail from submission/smtps
+# (recipient domain external) never triggers it. The BCC address encodes
+# the original recipient in the local part (@ → =) so the pipe script can
+# recover it; the BCC leg doesn't re-enter cleanup, so no loop.
+recipient_bcc_maps = pgsql:/etc/postfix/pgsql_virtual_bcc.cf
+transport_maps = texthash:/etc/postfix/transport
+
 # TLS — inbound (port 25 stays opportunistic per RFC 3207; 587/465 enforce in master.cf)
 smtpd_tls_cert_file = /etc/ssl/mail/fullchain.pem
 smtpd_tls_key_file = /etc/ssl/mail/privkey.pem

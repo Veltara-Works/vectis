@@ -42,3 +42,12 @@ lmtp      unix  -       -       n       -       -       lmtp
 anvil     unix  -       -       n       -       1       anvil
 scache    unix  -       -       n       -       1       scache
 postlog   unix-dgram n  -       n       -       1       postlogd
+
+# Vectis inbound notification pipe. Receives BCC copies of inbound mail via
+# recipient_bcc_maps + transport_maps. The script POSTs the raw message to
+# /api/v1/internal/inbound and always exits 0 so delivery is never blocked.
+# Runs as nobody; argv carries the encoded original recipient (${user}) and
+# envelope sender (${sender}) so the script doesn't need header parsing to
+# identify the inbox.
+vectis_notify unix  -       n       n       -       10      pipe
+  flags=q user=nobody argv=/usr/local/bin/vectis-inbound-notify ${user} ${sender} ${queue_id}

@@ -16,6 +16,15 @@ if [ -d /etc/postfix ]; then
     chmod 640 /etc/postfix/pgsql_*.cf 2>/dev/null || true
 fi
 
+# Install the inbound notification pipe script into /usr/local/bin so the
+# master.cf pipe service can exec it. The source is bind-mounted read-only
+# at /etc/postfix/inbound-notify.sh (generated per-install with the API
+# internal token baked in), so we copy and chmod here rather than trying
+# to mutate the bind mount.
+if [ -f /etc/postfix/inbound-notify.sh ]; then
+    install -m 0755 /etc/postfix/inbound-notify.sh /usr/local/bin/vectis-inbound-notify
+fi
+
 # Mirror the Postfix log file to stdout so `docker logs vectis-postfix`
 # keeps showing mail activity, while the API container tails the same
 # file via the shared postfix-logs volume for delivery/bounce webhooks.

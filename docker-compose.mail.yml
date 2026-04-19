@@ -60,6 +60,9 @@ services:
       - ./var/generated/postfix/pgsql_virtual_mailboxes.cf:/etc/postfix/pgsql_virtual_mailboxes.cf:ro
       - ./var/generated/postfix/pgsql_virtual_aliases.cf:/etc/postfix/pgsql_virtual_aliases.cf:ro
       - ./var/generated/postfix/pgsql_virtual_catchall.cf:/etc/postfix/pgsql_virtual_catchall.cf:ro
+      - ./var/generated/postfix/pgsql_virtual_bcc.cf:/etc/postfix/pgsql_virtual_bcc.cf:ro
+      - ./var/generated/postfix/transport:/etc/postfix/transport:ro
+      - ./var/generated/postfix/inbound-notify.sh:/etc/postfix/inbound-notify.sh:ro
       - mail-data:/var/vectis/mail
       - ./var/certs:/etc/ssl/mail:ro
       - postfix-logs:/var/log/postfix

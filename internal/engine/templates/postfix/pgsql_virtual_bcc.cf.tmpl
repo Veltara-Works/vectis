@@ -1,0 +1,5 @@
+hosts = {{ if .Cluster.PgBouncer.Enabled }}pgbouncer:{{ if .Cluster.PgBouncer.ListenPort }}{{ .Cluster.PgBouncer.ListenPort }}{{ else }}6432{{ end }}{{ else }}postgres{{ end }}
+user = {{ .Database.PostfixUser }}
+password = {{ .Database.PostfixPassword }}
+dbname = {{ .Database.Name }}
+query = SELECT REPLACE('%s', '@', '=') || '@vectis.notify' FROM domains WHERE name = '%d' AND active = true LIMIT 1

@@ -4,6 +4,7 @@ RUN apk add --no-cache \
     postfix \
     postfix-pgsql \
     ca-certificates \
+    curl \
  # Remove any pre-existing vmail user/group the postfix-pgsql package may
  # have created at a system UID (~100). We need vmail at numeric UID 5000
  # so the on-disk ownership matches the dovecot container (mail_uid=5000).

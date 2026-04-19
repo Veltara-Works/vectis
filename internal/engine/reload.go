@@ -25,6 +25,12 @@ var reloadMatrix = map[string]struct {
 	"postfix/pgsql_virtual_mailboxes.cf": {service: "postfix", action: "none"},
 	"postfix/pgsql_virtual_aliases.cf":   {service: "postfix", action: "none"},
 	"postfix/pgsql_virtual_catchall.cf":  {service: "postfix", action: "none"},
+	"postfix/pgsql_virtual_bcc.cf":       {service: "postfix", action: "none"},
+	// transport is texthash — read in memory at startup, needs reload.
+	"postfix/transport":                  {service: "postfix", action: "reload"},
+	// inbound-notify.sh is copied to /usr/local/bin by the entrypoint on container
+	// start (the bind mount is read-only), so changes need a full restart.
+	"postfix/inbound-notify.sh":          {service: "postfix", action: "restart"},
 
 	"dovecot/dovecot.conf":           {service: "dovecot", action: "restart"},
 	"dovecot/dovecot-sql.conf.ext":   {service: "dovecot", action: "reload"},
