@@ -1,17 +1,50 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Veltara-Works/vectis/internal/dkim"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
+
+// publicDNSResolver bypasses Docker's embedded resolver (127.0.0.11) so
+// hostname→A lookups aren't intercepted by in-network containers that share
+// the public hostname. Without this, mail.vectismail.com resolves to the
+// postfix container's internal IP (172.x.x.x) inside the api container,
+// which poisons the PTR check in deliverability reports.
+var publicDNSResolver = &net.Resolver{
+	PreferGo: true,
+	Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		d := net.Dialer{Timeout: 3 * time.Second}
+		return d.DialContext(ctx, network, "1.1.1.1:53")
+	},
+}
+
+// firstPublicAddr returns the first non-RFC1918, non-loopback, non-link-local
+// address in the list — defensive belt-and-braces alongside the public
+// resolver, so even if Docker DNS leaks an internal address we never report
+// on it.
+func firstPublicAddr(addrs []string) string {
+	for _, a := range addrs {
+		ip := net.ParseIP(a)
+		if ip == nil {
+			continue
+		}
+		if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			continue
+		}
+		return a
+	}
+	return ""
+}
 
 type dkimResponse struct {
 	DNSName  string `json:"dns_name"`
@@ -317,21 +350,28 @@ func (s *Server) handleDeliverability(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// PTR record check (reverse DNS)
-	addrs, _ := net.LookupHost(s.hostname)
-	if len(addrs) > 0 {
-		names, _ := net.LookupAddr(addrs[0])
+	// PTR record check (reverse DNS).
+	// Resolve the hostname via a public resolver rather than Docker's
+	// embedded DNS — otherwise `mail.vectismail.com` collides with the
+	// postfix container's hostname inside the same network and we report
+	// on a 172.x internal IP instead of the real public one.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	addrs, _ := publicDNSResolver.LookupHost(ctx, s.hostname)
+	publicAddr := firstPublicAddr(addrs)
+	if publicAddr != "" {
+		names, _ := publicDNSResolver.LookupAddr(ctx, publicAddr)
 		if len(names) > 0 {
 			checks = append(checks, deliverabilityCheck{
 				Name:   "PTR",
 				Status: "pass",
-				Value:  fmt.Sprintf("%s → %s", addrs[0], strings.TrimSuffix(names[0], ".")),
+				Value:  fmt.Sprintf("%s → %s", publicAddr, strings.TrimSuffix(names[0], ".")),
 			})
 		} else {
 			checks = append(checks, deliverabilityCheck{
 				Name:   "PTR",
 				Status: "warn",
-				Hint:   fmt.Sprintf("No PTR record for %s. Ask your hosting provider to set it to %s", addrs[0], s.hostname),
+				Hint:   fmt.Sprintf("No PTR record for %s. Ask your hosting provider to set it to %s", publicAddr, s.hostname),
 			})
 		}
 	}
