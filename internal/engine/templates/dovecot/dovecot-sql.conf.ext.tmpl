@@ -9,7 +9,7 @@ password_query = SELECT \
     CONCAT('maildir:/var/vectis/mail/', d.name, '/', m.local_part, '/Maildir') AS userdb_mail, \
     5000 AS userdb_uid, \
     5000 AS userdb_gid, \
-    CONCAT('*:bytes=', m.quota_mb * 1048576) AS userdb_quota_rule \
+    CONCAT('*:bytes=', m.quota_mb::bigint * 1048576) AS userdb_quota_rule \
     FROM mailboxes m \
     JOIN domains d ON m.domain_id = d.id \
     WHERE CONCAT(m.local_part, '@', d.name) = '%u' \
@@ -20,7 +20,7 @@ user_query = SELECT \
     CONCAT('maildir:/var/vectis/mail/', d.name, '/', m.local_part, '/Maildir') AS mail, \
     5000 AS uid, \
     5000 AS gid, \
-    CONCAT('*:bytes=', m.quota_mb * 1048576) AS quota_rule \
+    CONCAT('*:bytes=', m.quota_mb::bigint * 1048576) AS quota_rule \
     FROM mailboxes m \
     JOIN domains d ON m.domain_id = d.id \
     WHERE CONCAT(m.local_part, '@', d.name) = '%u' \
