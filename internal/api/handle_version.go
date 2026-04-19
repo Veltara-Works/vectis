@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"runtime"
+
+	"github.com/Veltara-Works/vectis/internal/version"
 )
 
 type versionResponse struct {
@@ -14,7 +16,7 @@ type versionResponse struct {
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	respond(w, r, http.StatusOK, versionResponse{
-		Version:   apiVersion,
+		Version:   version.Version,
 		GoVersion: runtime.Version(),
 		OS:        runtime.GOOS,
 		Arch:      runtime.GOARCH,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/repository"
+	"github.com/Veltara-Works/vectis/internal/version"
 )
 
 //go:embed templates
@@ -19,6 +20,11 @@ var templatesFS embed.FS
 
 // TemplateData holds all data needed to render config templates.
 type TemplateData struct {
+	// Vectis release version, used to pin image tags in the generated compose
+	// file so rollback can restore the exact prior version. "dev" for local
+	// builds — the orchestrator pull logic skips tags with no registry prefix.
+	Version string
+
 	// From config.yaml
 	Hostname   string
 	TLS        config.TLSConfig
@@ -57,6 +63,7 @@ func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, do
 	dovecot.ValkeyPort = secrets.Valkey.Port
 
 	return &TemplateData{
+		Version:    version.Version,
 		Hostname:   cfg.Hostname,
 		TLS:        cfg.TLS,
 		ClamAV:     cfg.ClamAV,

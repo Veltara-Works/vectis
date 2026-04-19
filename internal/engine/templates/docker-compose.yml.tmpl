@@ -26,7 +26,7 @@ services:
         max-file: "{{ .Logging.MaxFiles }}"
 
   api:
-    image: ghcr.io/veltara-works/vectis-api:latest
+    image: ghcr.io/veltara-works/vectis-api:{{ .Version }}
     container_name: vectis-api
     restart: unless-stopped
     networks:
@@ -55,7 +55,7 @@ services:
         max-file: "{{ .Logging.MaxFiles }}"
 
   orchestrator:
-    image: ghcr.io/veltara-works/vectis-orchestrator:latest
+    image: ghcr.io/veltara-works/vectis-orchestrator:{{ .Version }}
     container_name: vectis-orchestrator
     restart: unless-stopped
     networks:
@@ -82,7 +82,7 @@ services:
         max-file: "{{ .Logging.MaxFiles }}"
 
   postfix:
-    image: ghcr.io/veltara-works/vectis-postfix:latest
+    image: ghcr.io/veltara-works/vectis-postfix:{{ .Version }}
     container_name: vectis-postfix
     restart: unless-stopped
     hostname: {{ .Hostname }}
@@ -113,7 +113,7 @@ services:
         max-file: "{{ .Logging.MaxFiles }}"
 
   dovecot:
-    image: ghcr.io/veltara-works/vectis-dovecot:latest
+    image: ghcr.io/veltara-works/vectis-dovecot:{{ .Version }}
     container_name: vectis-dovecot
     restart: unless-stopped
     networks:
@@ -141,7 +141,7 @@ services:
         max-file: "{{ .Logging.MaxFiles }}"
 
   rspamd:
-    image: ghcr.io/veltara-works/vectis-rspamd:latest
+    image: ghcr.io/veltara-works/vectis-rspamd:{{ .Version }}
     container_name: vectis-rspamd
     restart: unless-stopped
     networks:
@@ -292,7 +292,7 @@ services:
 {{ end }}
 {{ if ne .ClamAV.Profile "none" }}
   clamav:
-    image: ghcr.io/veltara-works/vectis-clamav:latest
+    image: ghcr.io/veltara-works/vectis-clamav:{{ .Version }}
     container_name: vectis-clamav
     restart: unless-stopped
     networks:

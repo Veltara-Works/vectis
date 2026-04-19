@@ -127,6 +127,10 @@ jobs:
           go-version-file: go.mod
 
       - name: Build binary (CGO-free, pure-Go resolver — matches Dockerfile)
-        run: CGO_ENABLED=0 go build -tags netgo,osusergo -ldflags="-s -w" -o vectis ./cmd/vectis/
+        run: |
+          CGO_ENABLED=0 go build -tags netgo,osusergo \
+            -ldflags="-s -w -X github.com/Veltara-Works/vectis/internal/version.Version=ci-${GITHUB_SHA::7}" \
+            -o vectis ./cmd/vectis/
+          ./vectis version
         env:
           CGO_ENABLED: "0"

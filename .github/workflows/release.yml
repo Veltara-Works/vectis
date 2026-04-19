@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: veltara-works
+
+jobs:
+  build-binary:
+    name: Build & Publish Binary
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha256: ${{ steps.checksum.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build binary (linux/amd64, CGO-free)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -tags netgo,osusergo \
+              -ldflags="-s -w -X github.com/Veltara-Works/vectis/internal/version.Version=${VERSION}" \
+              -o vectis-linux-amd64 ./cmd/vectis/
+          ./vectis-linux-amd64 version
+
+      - id: checksum
+        run: |
+          sha256sum vectis-linux-amd64 | tee vectis-linux-amd64.sha256
+          echo "sha256=$(awk '{print $1}' vectis-linux-amd64.sha256)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to Cloudflare R2
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          for obj in vectis-linux-amd64 vectis-linux-amd64.sha256; do
+            aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+              "$obj" "s3://$R2_BUCKET/${VERSION}/$obj"
+            aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+              "$obj" "s3://$R2_BUCKET/latest/$obj"
+          done
+
+          # Install script at the versioned path so users can pin
+          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+            scripts/install.sh "s3://$R2_BUCKET/${VERSION}/install.sh"
+          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+            scripts/install.sh "s3://$R2_BUCKET/latest/install.sh"
+
+      - name: Upload binary to GitHub Release
+        uses: actions/upload-artifact@v4
+        with:
+          name: vectis-linux-amd64
+          path: |
+            vectis-linux-amd64
+            vectis-linux-amd64.sha256
+          retention-days: 7
+
+  build-images:
+    name: Build & Push Image
+    runs-on: ubuntu-24.04
+    needs: build-binary
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, orchestrator, postfix, dovecot, rspamd]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/${{ matrix.service }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/vectis-${{ matrix.service }}:${{ needs.build-binary.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/vectis-${{ matrix.service }}:latest
+          build-args: |
+            VERSION=${{ needs.build-binary.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-24.04
+    needs: [build-binary, build-images]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vectis-linux-amd64
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${GITHUB_REF_NAME}"
+          else
+            RANGE="${GITHUB_REF_NAME}"
+          fi
+          {
+            echo "## Install"
+            echo ""
+            echo '```bash'
+            echo "curl -fsSL https://dl.vectismail.com/${GITHUB_REF_NAME}/install.sh | sudo bash"
+            echo '```'
+            echo ""
+            echo "## Artifacts"
+            echo ""
+            echo "- Binary: \`https://dl.vectismail.com/${GITHUB_REF_NAME}/vectis-linux-amd64\`"
+            echo "- SHA256: \`${{ needs.build-binary.outputs.sha256 }}\`"
+            echo "- Images: \`ghcr.io/veltara-works/vectis-{api,orchestrator,postfix,dovecot,rspamd}:${GITHUB_REF_NAME}\`"
+            echo ""
+            echo "## Changes"
+            echo ""
+            git log --pretty=format:'- %s (%h)' "$RANGE"
+          } > release-notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: |
+            vectis-linux-amd64
+            vectis-linux-amd64.sha256
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}

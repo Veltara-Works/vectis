@@ -1,11 +1,15 @@
 FROM golang:1.25-alpine AS builder
 
+ARG VERSION=dev
+
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -tags netgo,osusergo -ldflags="-s -w" -o /orchestrator ./cmd/orchestrator/
+RUN CGO_ENABLED=0 go build -tags netgo,osusergo \
+    -ldflags="-s -w -X github.com/Veltara-Works/vectis/internal/version.Version=${VERSION}" \
+    -o /orchestrator ./cmd/orchestrator/
 
 FROM alpine:3.21
 

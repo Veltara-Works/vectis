@@ -6,9 +6,8 @@ import (
 	"time"
 
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
+	"github.com/Veltara-Works/vectis/internal/version"
 )
-
-const apiVersion = "v0.5.0-dev"
 
 type healthResponse struct {
 	Status   string                    `json:"status"`
@@ -80,7 +79,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	respond(w, r, status, healthResponse{
 		Status:   overall,
-		Version:  apiVersion,
+		Version:  version.Version,
 		Services: services,
 		TLS:      tlsInfo,
 	})

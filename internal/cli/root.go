@@ -14,16 +14,15 @@ import (
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/database"
 	"github.com/Veltara-Works/vectis/internal/logging"
+	"github.com/Veltara-Works/vectis/internal/version"
 )
-
-const version = "v0.5.0-dev"
 
 // RootCmd is the top-level Cobra command for the Vectis CLI.
 var RootCmd = &cobra.Command{
 	Use:     "vectis",
 	Short:   "Vectis Mail Server",
 	Long:    "Vectis Mail Server — a modern, multi-tenant email platform.",
-	Version: version,
+	Version: version.Version,
 }
 
 var serveCmd = &cobra.Command{
@@ -36,7 +35,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version of Vectis",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("vectis %s\n", version)
+		fmt.Printf("vectis %s\n", version.Version)
 	},
 }
 
