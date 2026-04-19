@@ -18,3 +18,9 @@ BEGIN
     END IF;
 END
 $$;
+
+-- vectis_api owns application tables and runs golang-migrate from the API
+-- binary, so it needs CREATE on schema public. Postgres 15+ removed this
+-- from PUBLIC by default; without an explicit grant, the very first
+-- migration fails with "permission denied for schema public".
+GRANT CREATE ON SCHEMA public TO vectis_api;
