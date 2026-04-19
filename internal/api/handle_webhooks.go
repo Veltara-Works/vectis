@@ -128,14 +128,16 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	s.audit.Log(r.Context(), &adminID, "webhook.create", "webhook", &wh.ID,
 		map[string]string{"url": wh.URL}, &ip)
 
-	// Return view + secret (secret shown only at creation, like API keys).
+	// Mirror the API-key creation pattern: raw secret at the top level with
+	// a "shown once" contract, persistent view nested. Subsequent GETs never
+	// include the secret (toWebhookView has no Secret field).
 	type createResponse struct {
-		webhookView
-		Secret string `json:"secret"`
+		Secret  string      `json:"secret"` // raw signing secret — shown only once
+		Webhook webhookView `json:"webhook"`
 	}
 	respond(w, r, http.StatusCreated, createResponse{
-		webhookView: toWebhookView(*wh),
-		Secret:      secret,
+		Secret:  secret,
+		Webhook: toWebhookView(*wh),
 	})
 }
 
