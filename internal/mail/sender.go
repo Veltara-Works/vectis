@@ -47,6 +47,11 @@ type Message struct {
 	HTMLBody    string       `json:"html_body,omitempty"`
 	Attachments []Attachment `json:"attachments,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"` // custom headers (X-*)
+	// MessageID, when non-empty, is used verbatim as the RFC 5322 Message-ID.
+	// Callers pre-generate this (via GenerateMessageID) when they need to
+	// reference the ID before submission — e.g., to stamp tracking tokens
+	// into the HTML body. If empty, Sender generates one.
+	MessageID string `json:"-"`
 }
 
 // Address is an email address with optional display name.
@@ -77,7 +82,10 @@ func (a Address) String() string {
 
 // Send submits a message to Postfix and returns the generated message ID.
 func (s *Sender) Send(msg *Message) (*SendResult, error) {
-	messageID := generateMessageID(s.ehlo)
+	messageID := msg.MessageID
+	if messageID == "" {
+		messageID = GenerateMessageID(s.ehlo)
+	}
 
 	// Build RFC 5322 message.
 	raw, err := buildMessage(msg, messageID, s.ehlo)
@@ -280,7 +288,11 @@ func writeAttachment(w *multipart.Writer, att Attachment) error {
 	return nil
 }
 
-func generateMessageID(hostname string) string {
+// GenerateMessageID returns a new RFC 5322 Message-ID local part (without
+// angle brackets) rooted at hostname. Callers that need to reference the ID
+// before submission (e.g. to stamp tracking tokens into the body) should
+// generate it here and assign it to Message.MessageID.
+func GenerateMessageID(hostname string) string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return fmt.Sprintf("%x.%d@%s",

@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Veltara-Works/vectis/internal/mail"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
 )
 
@@ -69,6 +70,25 @@ func (s *Server) handleTrackingStats(w http.ResponseWriter, r *http.Request) {
 		"pixel_url":   "/api/v1/track/open/{token}",
 		"click_url":   "/api/v1/track/click/{token}?url={target}",
 	})
+}
+
+// applyEngagementTracking pre-generates a Message-ID and rewrites msg.HTMLBody
+// with a tracking pixel and/or click-redirect links when the caller opted in.
+// No-op when neither flag is set, when there is no HTML body, or when the
+// server hostname is unknown (can't build an absolute tracking URL).
+func (s *Server) applyEngagementTracking(msg *mail.Message, trackOpens, trackClicks bool) {
+	if !trackOpens && !trackClicks {
+		return
+	}
+	if msg.HTMLBody == "" || s.hostname == "" {
+		return
+	}
+	if msg.MessageID == "" {
+		msg.MessageID = mail.GenerateMessageID(s.hostname)
+	}
+	token := s.GenerateTrackingToken(msg.MessageID)
+	baseURL := "https://" + s.hostname
+	msg.HTMLBody = mail.InjectTracking(msg.HTMLBody, token, baseURL, trackOpens, trackClicks)
 }
 
 // GenerateTrackingToken creates an HMAC-signed token for a message ID.

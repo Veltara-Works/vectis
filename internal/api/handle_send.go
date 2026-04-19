@@ -22,6 +22,8 @@ type sendRequest struct {
 	HTMLBody    string            `json:"html_body,omitempty"`
 	Attachments []mail.Attachment `json:"attachments,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"`
+	TrackOpens  bool              `json:"track_opens,omitempty"`
+	TrackClicks bool              `json:"track_clicks,omitempty"`
 }
 
 type sendResponse struct {
@@ -180,6 +182,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		Attachments: req.Attachments,
 		Headers:     req.Headers,
 	}
+	s.applyEngagementTracking(msg, req.TrackOpens, req.TrackClicks)
 
 	result, err := s.mailSender.Send(msg)
 	if err != nil {

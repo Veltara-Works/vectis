@@ -192,6 +192,7 @@ func (s *Server) processSingleSend(r *http.Request, req sendRequest, adminID, ad
 		Attachments: req.Attachments,
 		Headers:     req.Headers,
 	}
+	s.applyEngagementTracking(msg, req.TrackOpens, req.TrackClicks)
 
 	result, err := s.mailSender.Send(msg)
 	if err != nil {
