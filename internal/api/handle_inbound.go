@@ -342,6 +342,10 @@ func (s *Server) dispatchFullInbound(domainID string, notif inboundNotification)
 		"spam_score":  notif.SpamScore,
 		"spam_action": notif.SpamAction,
 		"queue_id":    notif.QueueID,
+		// Raw MIME passthrough — base64-encoded verbatim RFC 5322 source.
+		// Consumers that need full-fidelity reconstruction (forensics, legal,
+		// DMARC re-verification) can decode and reparse this.
+		"raw_mime_b64": notif.RawMessageB64,
 	}
 
 	if parsed.ReplyTo != nil {
