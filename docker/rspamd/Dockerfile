@@ -13,7 +13,7 @@ VOLUME ["/etc/rspamd/local.d", "/var/vectis/dkim"]
 # Milter port for Postfix, controller for management
 EXPOSE 11332 11334
 
-COPY docker-entrypoint.sh /usr/local/bin/
+COPY docker/rspamd/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Healthcheck via the controller HTTP endpoint (port 11334)

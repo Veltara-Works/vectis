@@ -20,7 +20,7 @@ VOLUME ["/etc/dovecot", "/var/vectis/mail", "/etc/ssl/mail"]
 # IMAP(S), POP3(S), LMTP, SASL auth for Postfix
 EXPOSE 993 995 24 12345
 
-COPY docker-entrypoint.sh /usr/local/bin/
+COPY docker/dovecot/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \

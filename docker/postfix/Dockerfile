@@ -26,7 +26,7 @@ VOLUME ["/etc/postfix", "/var/vectis/mail", "/etc/ssl/mail", "/var/log/postfix"]
 EXPOSE 25 465 587
 
 # Postfix needs to run in foreground
-COPY docker-entrypoint.sh /usr/local/bin/
+COPY docker/postfix/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
