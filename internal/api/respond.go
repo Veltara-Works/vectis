@@ -93,11 +93,20 @@ func respondPaginated(w http.ResponseWriter, r *http.Request, status int, data a
 	}
 }
 
-// maxBodySize is the maximum size of a JSON request body (1 MB).
+// maxBodySize is the default JSON request body cap (1 MB).
 const maxBodySize = 1 << 20
 
+// maxInboundBodySize caps the internal inbound-notify endpoint, which carries a
+// base64-encoded raw MIME message. Sized to accommodate Postfix's 50 MB limit
+// after ~33% base64 expansion plus JSON overhead.
+const maxInboundBodySize = 72 << 20
+
 func decodeJSON(r *http.Request, v any) error {
-	r.Body = http.MaxBytesReader(nil, r.Body, maxBodySize)
+	return decodeJSONLimit(r, v, maxBodySize)
+}
+
+func decodeJSONLimit(r *http.Request, v any, limit int64) error {
+	r.Body = http.MaxBytesReader(nil, r.Body, limit)
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
 }

@@ -44,7 +44,10 @@ func (s *Server) handleInboundNotify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var notif inboundNotification
-	if err := decodeJSON(r, &notif); err != nil {
+	// Inbound carries a base64-encoded raw MIME message, which the default
+	// 1 MB JSON cap would truncate on anything larger than ~750 KB raw. Use
+	// the larger cap matched to Postfix's message_size_limit.
+	if err := decodeJSONLimit(r, &notif, maxInboundBodySize); err != nil {
 		respondError(w, r, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON request body")
 		return
 	}
