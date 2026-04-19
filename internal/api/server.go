@@ -64,6 +64,7 @@ type Server struct {
 	alerts       *repository.AlertRepo
 	messages     *repository.MessageRepo
 	mailStats    *repository.MailStatsRepo
+	emailEvents  *repository.EmailEventRepo
 	ipWarmup     *repository.IPWarmupRepo
 	rblChecks    *repository.RBLCheckRepo
 	fblReports   *repository.FBLReportRepo
@@ -148,6 +149,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		alerts:       repository.NewAlertRepo(db),
 		messages:     repository.NewMessageRepo(db),
 		mailStats:    repository.NewMailStatsRepo(db),
+		emailEvents:  repository.NewEmailEventRepo(db),
 		ipWarmup:     repository.NewIPWarmupRepo(db),
 		rblChecks:    repository.NewRBLCheckRepo(db),
 		fblReports:   repository.NewFBLReportRepo(db),
@@ -596,6 +598,8 @@ func (s *Server) buildRouter() chi.Router {
 
 			// Engagement tracking stats — admin and super_admin.
 			r.With(requireAdminOrAbove()).Get("/tracking/stats", s.handleTrackingStats)
+			r.With(requireAdminOrAbove()).Get("/tracking/messages/{messageID}", s.handleMessageEngagement)
+			r.With(requireAdminOrAbove()).Get("/tracking/messages/{messageID}/events", s.handleMessageEngagementEvents)
 
 			// Abuse detection — admin and super_admin.
 			r.With(requireAdminOrAbove()).Get("/abuse/dashboard", s.handleAbuseDashboard)

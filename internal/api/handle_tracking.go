@@ -4,13 +4,16 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Veltara-Works/vectis/internal/mail"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
+	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
 // handleTrackOpen records an email open event via a 1x1 tracking pixel.
@@ -25,18 +28,8 @@ func (s *Server) handleTrackOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Record the open event.
 	vectismetrics.EmailOpens.Inc()
-
-	if s.messages != nil {
-		msg, _ := s.messages.GetByMessageID(r.Context(), messageID)
-		if msg != nil && s.mailStats != nil {
-			// We don't have an "opens" column in mail_stats yet — use details on the message.
-			// For now, just log it and increment the metric.
-			_ = msg
-		}
-	}
-
+	s.recordEngagement(r, messageID, "open", "")
 	s.serveTrackingPixel(w)
 }
 
@@ -51,24 +44,183 @@ func (s *Server) handleTrackClick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, ok := s.verifyTrackingToken(token)
+	messageID, ok := s.verifyTrackingToken(token)
 	if ok {
 		vectismetrics.EmailClicks.Inc()
+		s.recordEngagement(r, messageID, "click", targetURL)
 	}
 
 	http.Redirect(w, r, targetURL, http.StatusFound)
 }
 
-// handleTrackingStats returns aggregate open/click metrics for the admin dashboard.
+// recordEngagement persists an open/click event. It looks up the message to
+// resolve the domain_id; if the message is unknown (expired, never stored, or
+// test token), the insert is skipped. Silent on errors — tracking must never
+// block pixel/redirect response.
+func (s *Server) recordEngagement(r *http.Request, messageID, eventType, targetURL string) {
+	if s.emailEvents == nil || s.messages == nil {
+		return
+	}
+	msg, _ := s.messages.GetByMessageID(r.Context(), messageID)
+	if msg == nil {
+		return
+	}
+	ev := &repository.EmailEvent{
+		DomainID:  msg.DomainID,
+		MessageID: messageID,
+	}
+	ev.EventType = eventType
+	if targetURL != "" {
+		ev.TargetURL = &targetURL
+	}
+	if ua := r.Header.Get("User-Agent"); ua != "" {
+		ev.UserAgent = &ua
+	}
+	if ip := trackingClientIP(r); ip != "" {
+		ev.IPAddress = &ip
+	}
+	_ = s.emailEvents.Create(r.Context(), ev)
+}
+
+// trackingClientIP extracts the client IP for engagement tracking, honoring
+// X-Forwarded-For since Traefik sits in front of the API. Unlike the shared
+// clientIP helper, XFF matters here so we record the real recipient's IP
+// rather than the reverse proxy.
+func trackingClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if xr := r.Header.Get("X-Real-IP"); xr != "" {
+		return strings.TrimSpace(xr)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// handleTrackingStats returns aggregate open/click metrics for a domain over a
+// time range. Query params: domain_id (required), period (1h, 24h, 7d, 30d).
 func (s *Server) handleTrackingStats(w http.ResponseWriter, r *http.Request) {
-	// Return current counter values. These are monotonic counters reset on restart;
-	// for persistent stats, per-domain analytics (mail_stats) should be used.
+	domainID := r.URL.Query().Get("domain_id")
+	if domainID == "" {
+		respondError(w, r, http.StatusBadRequest, "MISSING_DOMAIN_ID", "domain_id query parameter is required")
+		return
+	}
+	if !s.canAccessDomain(r.Context(), domainID) {
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this domain")
+		return
+	}
+
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "24h"
+	}
+	now := time.Now().UTC()
+	var from time.Time
+	switch period {
+	case "1h":
+		from = now.Add(-1 * time.Hour)
+	case "24h":
+		from = now.Add(-24 * time.Hour)
+	case "7d":
+		from = now.Add(-7 * 24 * time.Hour)
+	case "30d":
+		from = now.Add(-30 * 24 * time.Hour)
+	default:
+		respondError(w, r, http.StatusBadRequest, "INVALID_PERIOD", "Valid periods: 1h, 24h, 7d, 30d")
+		return
+	}
+
+	agg, err := s.emailEvents.GetDomainEngagement(r.Context(), domainID, from, now)
+	if err != nil {
+		s.logger.Error("get domain engagement failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get engagement stats")
+		return
+	}
+
 	respond(w, r, http.StatusOK, map[string]any{
-		"description": "Engagement metrics (opt-in tracking pixel and click redirect)",
-		"note":        "Counters are since last server restart. Use /analytics for persistent per-domain stats.",
-		"available":   true,
-		"pixel_url":   "/api/v1/track/open/{token}",
-		"click_url":   "/api/v1/track/click/{token}?url={target}",
+		"domain_id": domainID,
+		"period":    period,
+		"from":      from,
+		"to":        now,
+		"opens":     agg.Opens,
+		"clicks":    agg.Clicks,
+		"messages_opened":  agg.MessagesOpened,
+		"messages_clicked": agg.MessagesClicked,
+	})
+}
+
+// handleMessageEngagement returns aggregate open/click counts for a single message.
+// URL: /tracking/messages/{messageID}
+func (s *Server) handleMessageEngagement(w http.ResponseWriter, r *http.Request) {
+	messageID := chi.URLParam(r, "messageID")
+	if messageID == "" {
+		respondError(w, r, http.StatusBadRequest, "MISSING_MESSAGE_ID", "messageID is required")
+		return
+	}
+
+	msg, err := s.messages.GetByMessageID(r.Context(), messageID)
+	if err != nil {
+		s.logger.Error("lookup message failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to look up message")
+		return
+	}
+	if msg == nil {
+		respondError(w, r, http.StatusNotFound, "NOT_FOUND", "Message not found")
+		return
+	}
+	if !s.canAccessDomain(r.Context(), msg.DomainID) {
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this message")
+		return
+	}
+
+	eng, err := s.emailEvents.GetMessageEngagement(r.Context(), messageID)
+	if err != nil {
+		s.logger.Error("get message engagement failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get engagement")
+		return
+	}
+	respond(w, r, http.StatusOK, eng)
+}
+
+// handleMessageEngagementEvents returns the raw event list for a single message.
+// URL: /tracking/messages/{messageID}/events
+func (s *Server) handleMessageEngagementEvents(w http.ResponseWriter, r *http.Request) {
+	messageID := chi.URLParam(r, "messageID")
+	if messageID == "" {
+		respondError(w, r, http.StatusBadRequest, "MISSING_MESSAGE_ID", "messageID is required")
+		return
+	}
+
+	msg, err := s.messages.GetByMessageID(r.Context(), messageID)
+	if err != nil {
+		s.logger.Error("lookup message failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to look up message")
+		return
+	}
+	if msg == nil {
+		respondError(w, r, http.StatusNotFound, "NOT_FOUND", "Message not found")
+		return
+	}
+	if !s.canAccessDomain(r.Context(), msg.DomainID) {
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this message")
+		return
+	}
+
+	events, err := s.emailEvents.ListByMessage(r.Context(), messageID, 200)
+	if err != nil {
+		s.logger.Error("list message events failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list events")
+		return
+	}
+	respond(w, r, http.StatusOK, map[string]any{
+		"message_id": messageID,
+		"events":     events,
 	})
 }
 
