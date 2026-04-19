@@ -287,13 +287,13 @@ func (t *Tailer) processLine(line string) {
 			return
 		}
 
-		// For local LMTP delivery (Postfix → Dovecot) we don't want to fire
-		// mail.delivered — that's inbound delivery to our own mailbox. Only
-		// outbound SMTP (external relay) produces customer-facing delivery.
-		if component == "lmtp" {
-			return
-		}
-
+		// mail.delivered fires for BOTH smtp (external relay) and lmtp
+		// (Dovecot on our own cluster) deliveries. The sender-facing
+		// semantic of "your mail reached its destination mailserver" is
+		// the same in both cases — cross-domain within Vectis is still a
+		// successful delivery from the sender's perspective. The
+		// complementary mail.received event (fired by the inbound pipeline
+		// for the recipient's domain owner) is a different audience.
 		ev := Event{
 			Type:      evType,
 			QueueID:   queueID,

@@ -97,12 +97,26 @@ func TestProcessLine_DeferredEmitsEvent(t *testing.T) {
 	}
 }
 
-func TestProcessLine_LMTPIgnored(t *testing.T) {
-	tr := newTestTailer(func(ctx context.Context, ev Event) {
-		t.Fatalf("LMTP deliveries (local Dovecot) must not emit events, got %+v", ev)
-	})
+func TestProcessLine_LMTPEmitsEvent(t *testing.T) {
+	// LMTP deliveries (Postfix → local Dovecot) now fire mail.delivered
+	// just like external SMTP. From the sender's perspective, mail reached
+	// its destination mailserver — whether that server is ours or external
+	// is an implementation detail. The complementary mail.received event
+	// is fired by the inbound pipeline for the recipient's domain owner.
+	var got Event
+	tr := newTestTailer(func(ctx context.Context, ev Event) { got = ev })
 	tr.rememberQueueID("ABCDEF12", "abc@mail.example.com")
-	tr.processLine(`postfix/lmtp[5678]: ABCDEF12: to=<mail@local.example.com>, relay=dovecot[172.19.0.4]:24, delay=0.1, status=sent (250 2.0.0 <mail@local.example.com> Sfkz... Saved)`)
+	tr.processLine(`postfix/lmtp[5678]: ABCDEF12: to=<mail@local.example.com>, relay=dovecot[172.19.0.4]:24, delay=0.1, dsn=2.0.0, status=sent (250 2.0.0 <mail@local.example.com> Sfkz... Saved)`)
+
+	if got.Type != EventDelivered {
+		t.Fatalf("expected delivered, got %s", got.Type)
+	}
+	if got.MessageID != "abc@mail.example.com" {
+		t.Fatalf("expected message_id resolved, got %q", got.MessageID)
+	}
+	if got.Relay != "dovecot[172.19.0.4]:24" {
+		t.Fatalf("expected local dovecot relay, got %q", got.Relay)
+	}
 }
 
 func TestProcessLine_NoQueueIDMapping(t *testing.T) {

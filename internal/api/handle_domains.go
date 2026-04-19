@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 
 	"github.com/go-chi/chi/v5"
@@ -112,6 +114,21 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("create domain failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create domain")
 		return
+	}
+
+	// Pre-create the domain's maildir root with vmail ownership (uid/gid
+	// 5000). If we don't, the first process to touch the path (Dovecot LMTP
+	// auto-create, Postfix virtual delivery, a manual debug command) might
+	// create it with the wrong uid — we've seen domains land at uid 101,
+	// breaking delivery with "permission denied / missing +x" because
+	// Dovecot runs as uid 5000. This is the defensive half of the fix; the
+	// other half is getting the postfix container's vmail user to uid 5000.
+	domainMaildir := filepath.Join("/var/vectis/mail", domain.Name)
+	if err := os.MkdirAll(domainMaildir, 0700); err != nil {
+		s.logger.Warn("pre-create domain maildir failed", "path", domainMaildir, "error", err)
+	}
+	if err := os.Chown(domainMaildir, 5000, 5000); err != nil {
+		s.logger.Warn("chown domain maildir failed", "path", domainMaildir, "error", err)
 	}
 
 	// Auto-generate DKIM key pair (Spec A.3: domain creation triggers DKIM generation).
