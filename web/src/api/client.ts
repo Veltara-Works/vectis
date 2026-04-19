@@ -198,6 +198,63 @@ export const api = {
     return request<unknown>('GET', `/analytics?${q.toString()}`)
   },
 
+  // Messages (metadata)
+  listMessages: (params: {
+    domain_id?: string; direction?: string; status?: string;
+    search?: string; sender?: string; cursor?: string; limit?: number
+  }) => {
+    const q = new URLSearchParams()
+    if (params.domain_id) q.set('domain_id', params.domain_id)
+    if (params.direction) q.set('direction', params.direction)
+    if (params.status) q.set('status', params.status)
+    if (params.search) q.set('search', params.search)
+    if (params.sender) q.set('sender', params.sender)
+    if (params.cursor) q.set('cursor', params.cursor)
+    if (params.limit) q.set('limit', String(params.limit))
+    return fetch(`${BASE}/messages${q.toString() ? '?' + q : ''}`, {
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+    }).then(async res => {
+      const json = await res.json()
+      if (json.error) throw new Error(json.error.message)
+      return { data: (json.data || []) as Array<{
+        id: string; domain_id: string; mailbox_id?: string; message_id: string;
+        direction: string; sender: string; recipients: string[]; subject?: string;
+        size_bytes: number; status: string; spam_score?: number; spam_action?: string;
+        queue_id?: string; created_at: string
+      }>, meta: json.meta }
+    })
+  },
+  getMessage: (id: string) =>
+    request<{
+      id: string; domain_id: string; mailbox_id?: string; message_id: string;
+      direction: string; sender: string; recipients: string[]; subject?: string;
+      size_bytes: number; status: string; spam_score?: number; spam_action?: string;
+      queue_id?: string; headers?: Record<string, unknown>; created_at: string
+    }>('GET', `/messages/${id}`),
+
+  // Engagement tracking
+  trackingStats: (domain_id: string, period: '1h' | '24h' | '7d' | '30d' = '24h') =>
+    request<{
+      domain_id: string; period: string; from: string; to: string;
+      opens: number; clicks: number; messages_opened: number; messages_clicked: number
+    }>('GET', `/tracking/stats?domain_id=${domain_id}&period=${period}`),
+  messageEngagement: (messageID: string) =>
+    request<{
+      message_id: string; opens: number; unique_opens: number;
+      clicks: number; unique_clicks: number;
+      first_open_at?: string; last_open_at?: string;
+      first_click_at?: string; last_click_at?: string
+    }>('GET', `/tracking/messages/${encodeURIComponent(messageID)}`),
+  messageEngagementEvents: (messageID: string) =>
+    request<{
+      message_id: string;
+      events: Array<{
+        id: string; domain_id: string; message_id: string; event_type: string;
+        target_url?: string; user_agent?: string; ip_address?: string; created_at: string
+      }>
+    }>('GET', `/tracking/messages/${encodeURIComponent(messageID)}/events`),
+
   // Impersonation
   impersonate: (mailboxId: string) =>
     request<{ imap_host: string; imap_port: number; username: string; password: string; expires_at: string; expires_in_seconds: number }>(

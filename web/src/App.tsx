@@ -6,6 +6,7 @@ import DashboardPage from './pages/Dashboard.tsx'
 import DomainsPage from './pages/Domains.tsx'
 import MailboxesPage from './pages/Mailboxes.tsx'
 import AliasesPage from './pages/Aliases.tsx'
+import MessagesPage from './pages/Messages.tsx'
 import DeliverabilityPage from './pages/Deliverability.tsx'
 import AdminsPage from './pages/Admins.tsx'
 import AuditLogPage from './pages/AuditLog.tsx'
@@ -52,6 +53,7 @@ export default function App() {
     { path: '/admin/domains', label: 'Domains', show: true },
     { path: '/admin/mailboxes', label: 'Mailboxes', show: true },
     { path: '/admin/aliases', label: 'Aliases', show: true },
+    { path: '/admin/messages', label: 'Messages', show: true },
     { path: '/admin/deliverability', label: 'Deliverability', show: true },
     { path: '/admin/filters', label: 'Filter Rules', show: true },
     { path: '/admin/admins', label: 'Admins', show: isAdminOrAbove },
@@ -84,6 +86,7 @@ export default function App() {
           <Route path="/admin/domains" element={<DomainsPage />} />
           <Route path="/admin/mailboxes" element={<MailboxesPage />} />
           <Route path="/admin/aliases" element={<AliasesPage />} />
+          <Route path="/admin/messages" element={<MessagesPage />} />
           <Route path="/admin/deliverability" element={<DeliverabilityPage />} />
           <Route path="/admin/filters" element={<FilterRulesPage />} />
           {isAdminOrAbove && <Route path="/admin/admins" element={<AdminsPage />} />}
