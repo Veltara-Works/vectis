@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -581,5 +582,746 @@ func TestEmailEvent_Tracking(t *testing.T) {
 	}
 	if len(limited) != 2 {
 		t.Errorf("limited event count = %d, want 2", len(limited))
+	}
+}
+
+// ---------- Mailbox / Alias ----------
+
+func TestMailbox_CRUD(t *testing.T) {
+	ctx := context.Background()
+	domainRepo := repository.NewDomainRepo(testPool)
+	repo := repository.NewMailboxRepo(testPool)
+
+	suffix := uniqueSuffix()
+	domain, err := domainRepo.Create(ctx, repository.DomainCreate{Name: "mbox-" + suffix + ".test"})
+	if err != nil {
+		t.Fatalf("create domain: %v", err)
+	}
+	defer domainRepo.Delete(ctx, domain.ID)
+
+	quota := 512
+	display := "Test User"
+	mb, err := repo.Create(ctx, repository.MailboxCreate{
+		DomainID:     domain.ID,
+		LocalPart:    "alice",
+		PasswordHash: "{PLAIN}dummy",
+		DisplayName:  &display,
+		QuotaMB:      &quota,
+	})
+	if err != nil {
+		t.Fatalf("create mailbox: %v", err)
+	}
+	defer repo.Delete(ctx, mb.ID)
+
+	if mb.QuotaMB != 512 {
+		t.Errorf("QuotaMB = %d, want 512", mb.QuotaMB)
+	}
+	if !mb.Active {
+		t.Error("new mailbox should be Active")
+	}
+
+	byID, err := repo.GetByID(ctx, mb.ID)
+	if err != nil || byID == nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if byID.LocalPart != "alice" {
+		t.Errorf("LocalPart = %q, want alice", byID.LocalPart)
+	}
+
+	byEmail, err := repo.GetByEmail(ctx, domain.ID, "alice")
+	if err != nil || byEmail == nil {
+		t.Fatalf("GetByEmail: %v", err)
+	}
+	if byEmail.ID != mb.ID {
+		t.Errorf("GetByEmail.ID mismatch")
+	}
+
+	list, err := repo.ListByDomain(ctx, domain.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != mb.ID {
+		t.Errorf("ListByDomain = %+v, want single mailbox %s", list, mb.ID)
+	}
+
+	inactive := false
+	newQuota := 1024
+	updated, err := repo.Update(ctx, mb.ID, repository.MailboxUpdate{
+		Active:  &inactive,
+		QuotaMB: &newQuota,
+	})
+	if err != nil || updated == nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Active {
+		t.Error("Active should be false after update")
+	}
+	if updated.QuotaMB != 1024 {
+		t.Errorf("QuotaMB after update = %d, want 1024", updated.QuotaMB)
+	}
+
+	ok, err := repo.Delete(ctx, mb.ID)
+	if err != nil || !ok {
+		t.Fatalf("delete: %v (ok=%v)", err, ok)
+	}
+
+	ok, _ = repo.Delete(ctx, mb.ID)
+	if ok {
+		t.Error("double delete should return false")
+	}
+}
+
+func TestAlias_CRUD(t *testing.T) {
+	ctx := context.Background()
+	domainRepo := repository.NewDomainRepo(testPool)
+	repo := repository.NewAliasRepo(testPool)
+
+	suffix := uniqueSuffix()
+	domain, err := domainRepo.Create(ctx, repository.DomainCreate{Name: "alias-" + suffix + ".test"})
+	if err != nil {
+		t.Fatalf("create domain: %v", err)
+	}
+	defer domainRepo.Delete(ctx, domain.ID)
+
+	a, err := repo.Create(ctx, repository.AliasCreate{
+		DomainID:        domain.ID,
+		SourceLocalPart: "info",
+		Destination:     "forward@example.com",
+	})
+	if err != nil {
+		t.Fatalf("create alias: %v", err)
+	}
+	defer repo.Delete(ctx, a.ID)
+
+	if a.Destination != "forward@example.com" {
+		t.Errorf("Destination = %q", a.Destination)
+	}
+
+	bySrc, err := repo.GetBySource(ctx, domain.ID, "info")
+	if err != nil || bySrc == nil {
+		t.Fatalf("GetBySource: %v", err)
+	}
+	if bySrc.ID != a.ID {
+		t.Error("GetBySource.ID mismatch")
+	}
+
+	list, err := repo.ListByDomain(ctx, domain.ID)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("ListByDomain: %v (len=%d)", err, len(list))
+	}
+
+	newDest := "newforward@example.com"
+	updated, err := repo.Update(ctx, a.ID, repository.AliasUpdate{Destination: &newDest})
+	if err != nil || updated == nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Destination != newDest {
+		t.Errorf("Destination after update = %q, want %q", updated.Destination, newDest)
+	}
+
+	ok, err := repo.Delete(ctx, a.ID)
+	if err != nil || !ok {
+		t.Fatalf("delete: %v", err)
+	}
+}
+
+// ---------- Audit / Abuse / Backup ----------
+
+func TestAudit_LogAndList(t *testing.T) {
+	ctx := context.Background()
+	domainRepo := repository.NewDomainRepo(testPool)
+	repo := repository.NewAuditRepo(testPool)
+
+	suffix := uniqueSuffix()
+	// audit.resource_id is UUID, not free-form text — piggyback on a real
+	// domain row to get a valid one.
+	domain, err := domainRepo.Create(ctx, repository.DomainCreate{Name: "audit-" + suffix + ".test"})
+	if err != nil {
+		t.Fatalf("create domain: %v", err)
+	}
+	defer domainRepo.Delete(ctx, domain.ID)
+
+	resourceID := domain.ID
+	ip := "10.0.0.1"
+	if err := repo.Log(ctx, nil, "domain.create", "domain", &resourceID,
+		map[string]string{"note": "synthetic"}, &ip); err != nil {
+		t.Fatalf("log audit: %v", err)
+	}
+
+	byRes, err := repo.ListByResource(ctx, "domain", resourceID, 10)
+	if err != nil || len(byRes) == 0 {
+		t.Fatalf("ListByResource: %v (len=%d)", err, len(byRes))
+	}
+	if byRes[0].Action != "domain.create" {
+		t.Errorf("Action = %q, want domain.create", byRes[0].Action)
+	}
+
+	recent, err := repo.ListRecent(ctx, 20)
+	if err != nil {
+		t.Fatalf("ListRecent: %v", err)
+	}
+	foundRecent := false
+	for _, e := range recent {
+		if e.ResourceID != nil && *e.ResourceID == resourceID {
+			foundRecent = true
+		}
+	}
+	if !foundRecent {
+		t.Error("just-logged entry not in ListRecent")
+	}
+
+	paged, err := repo.ListPaginated(ctx, "domain.create", "domain", "", repository.PaginationParams{Limit: 50})
+	if err != nil {
+		t.Fatalf("ListPaginated: %v", err)
+	}
+	foundPaged := false
+	for _, e := range paged {
+		if e.ResourceID != nil && *e.ResourceID == resourceID {
+			foundPaged = true
+		}
+	}
+	if !foundPaged {
+		t.Error("just-logged entry not in ListPaginated with action+resource filter")
+	}
+
+	// Prune into the future — removes the entry we just created. Cheap
+	// guarantee that the delete path at least runs; avoids a side-effect
+	// on unrelated rows by not pruning far back.
+	// Use a cutoff slightly after "now" to catch the row we just inserted.
+	deleted, err := repo.DeleteOlderThan(ctx, time.Now().UTC().Add(1*time.Minute))
+	if err != nil {
+		t.Fatalf("DeleteOlderThan: %v", err)
+	}
+	if deleted < 1 {
+		t.Errorf("DeleteOlderThan returned %d, expected >=1", deleted)
+	}
+}
+
+func TestAbuse_SuspendCycle(t *testing.T) {
+	ctx := context.Background()
+	domainRepo := repository.NewDomainRepo(testPool)
+	mbRepo := repository.NewMailboxRepo(testPool)
+	adminRepo := repository.NewAdminRepo(testPool)
+	repo := repository.NewAbuseRepo(testPool)
+
+	suffix := uniqueSuffix()
+	domain, err := domainRepo.Create(ctx, repository.DomainCreate{Name: "abuse-" + suffix + ".test"})
+	if err != nil {
+		t.Fatalf("create domain: %v", err)
+	}
+	defer domainRepo.Delete(ctx, domain.ID)
+
+	mb, err := mbRepo.Create(ctx, repository.MailboxCreate{
+		DomainID:     domain.ID,
+		LocalPart:    "bad",
+		PasswordHash: "{PLAIN}dummy",
+	})
+	if err != nil {
+		t.Fatalf("create mailbox: %v", err)
+	}
+	defer mbRepo.Delete(ctx, mb.ID)
+
+	admin, err := adminRepo.Create(ctx, repository.AdminCreate{
+		Email:        "abuse-" + suffix + "@repo-test.com",
+		PasswordHash: "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQ$dGVzdGhhc2g",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	defer adminRepo.Delete(ctx, admin.ID)
+
+	action := "suspend"
+	evID, err := repo.LogEvent(ctx, &domain.ID, &mb.ID, "high_send_rate", "high",
+		map[string]int{"rate": 1000}, &action)
+	if err != nil || evID == "" {
+		t.Fatalf("log event: %v (id=%q)", err, evID)
+	}
+
+	suspended, _, err := repo.IsMailboxSuspended(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("IsMailboxSuspended (pre): %v", err)
+	}
+	if suspended {
+		t.Error("mailbox should not be suspended before Suspend")
+	}
+
+	if err := repo.SuspendMailbox(ctx, mb.ID, "auto: high send rate"); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	suspended, reason, err := repo.IsMailboxSuspended(ctx, mb.ID)
+	if err != nil {
+		t.Fatalf("IsMailboxSuspended (post): %v", err)
+	}
+	if !suspended {
+		t.Error("mailbox should be suspended after Suspend")
+	}
+	if reason != "auto: high send rate" {
+		t.Errorf("reason = %q", reason)
+	}
+
+	if err := repo.UnsuspendMailbox(ctx, mb.ID); err != nil {
+		t.Fatalf("unsuspend: %v", err)
+	}
+	suspended, _, _ = repo.IsMailboxSuspended(ctx, mb.ID)
+	if suspended {
+		t.Error("mailbox should not be suspended after Unsuspend")
+	}
+
+	unresolved, err := repo.ListUnresolved(ctx, 50)
+	if err != nil {
+		t.Fatalf("ListUnresolved: %v", err)
+	}
+	foundUnresolved := false
+	for _, e := range unresolved {
+		if e.ID == evID {
+			foundUnresolved = true
+		}
+	}
+	if !foundUnresolved {
+		t.Error("new event should appear in ListUnresolved")
+	}
+
+	if err := repo.Resolve(ctx, evID, admin.ID); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	unresolved2, _ := repo.ListUnresolved(ctx, 50)
+	for _, e := range unresolved2 {
+		if e.ID == evID {
+			t.Error("resolved event should not be in ListUnresolved")
+		}
+	}
+}
+
+func TestBackup_Lifecycle(t *testing.T) {
+	ctx := context.Background()
+	adminRepo := repository.NewAdminRepo(testPool)
+	repo := repository.NewBackupRepo(testPool)
+
+	suffix := uniqueSuffix()
+	// triggered_by FKs admins(id), so provision a throwaway admin.
+	admin, err := adminRepo.Create(ctx, repository.AdminCreate{
+		Email:        "backup-" + suffix + "@repo-test.com",
+		PasswordHash: "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQ$dGVzdGhhc2g",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	defer adminRepo.Delete(ctx, admin.ID)
+
+	triggeredBy := admin.ID
+	job, err := repo.Create(ctx, "create", &triggeredBy)
+	if err != nil {
+		t.Fatalf("create backup job: %v", err)
+	}
+	if job.Status != "pending" {
+		t.Errorf("initial status = %q, want pending", job.Status)
+	}
+
+	if err := repo.UpdateProgress(ctx, job.ID, 50, "dumping postgres"); err != nil {
+		t.Fatalf("update progress: %v", err)
+	}
+	mid, err := repo.GetByID(ctx, job.ID)
+	if err != nil || mid == nil {
+		t.Fatalf("GetByID mid: %v", err)
+	}
+	if mid.Progress != 50 {
+		t.Errorf("Progress = %d, want 50", mid.Progress)
+	}
+	if mid.CurrentStep == nil || *mid.CurrentStep != "dumping postgres" {
+		t.Error("CurrentStep not set")
+	}
+
+	if err := repo.Complete(ctx, job.ID, "/var/backups/test.tar.gz"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	done, err := repo.GetByID(ctx, job.ID)
+	if err != nil || done == nil {
+		t.Fatalf("GetByID done: %v", err)
+	}
+	if done.Status != "completed" {
+		t.Errorf("status = %q, want completed", done.Status)
+	}
+	if done.CompletedAt == nil {
+		t.Error("CompletedAt should be set")
+	}
+	if done.BackupPath == nil || *done.BackupPath != "/var/backups/test.tar.gz" {
+		t.Error("BackupPath not set")
+	}
+
+	// Separate job to exercise the Fail path.
+	job2, err := repo.Create(ctx, "create", &triggeredBy)
+	if err != nil {
+		t.Fatalf("create backup job 2: %v", err)
+	}
+	if err := repo.Fail(ctx, job2.ID, "disk full"); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	failed, _ := repo.GetByID(ctx, job2.ID)
+	if failed.Status != "failed" {
+		t.Errorf("status after Fail = %q", failed.Status)
+	}
+	if failed.ErrorMessage == nil || *failed.ErrorMessage != "disk full" {
+		t.Error("ErrorMessage not set")
+	}
+
+	list, err := repo.List(ctx, 50)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	seen := 0
+	for _, j := range list {
+		if j.ID == job.ID || j.ID == job2.ID {
+			seen++
+		}
+	}
+	if seen != 2 {
+		t.Errorf("expected both jobs in List, saw %d", seen)
+	}
+}
+
+// ---------- FBLReport / IPWarmup / MailStats ----------
+
+func TestFBLReport_CRUD(t *testing.T) {
+	ctx := context.Background()
+	domainRepo := repository.NewDomainRepo(testPool)
+	repo := repository.NewFBLReportRepo(testPool)
+
+	suffix := uniqueSuffix()
+	domain, err := domainRepo.Create(ctx, repository.DomainCreate{Name: "fbl-" + suffix + ".test"})
+	if err != nil {
+		t.Fatalf("create domain: %v", err)
+	}
+	defer domainRepo.Delete(ctx, domain.ID)
+
+	origMsgID := "<orig-" + suffix + "@v.local>"
+	feedbackID := "fid-" + suffix
+	details, _ := json.Marshal(map[string]string{"source-ip": "203.0.113.42"})
+	id, err := repo.Create(ctx, &repository.FBLReport{
+		DomainID:          &domain.ID,
+		OriginalMessageID: &origMsgID,
+		ReporterDomain:    "gmail.com",
+		ComplaintType:     "abuse",
+		FeedbackID:        &feedbackID,
+		Details:           details,
+	})
+	if err != nil || id == "" {
+		t.Fatalf("create fbl: %v (id=%q)", err, id)
+	}
+
+	byDomain, err := repo.ListByDomain(ctx, domain.ID, 10)
+	if err != nil || len(byDomain) == 0 {
+		t.Fatalf("ListByDomain: %v (len=%d)", err, len(byDomain))
+	}
+	if byDomain[0].ID != id {
+		t.Error("ListByDomain.ID mismatch")
+	}
+
+	recent, err := repo.ListRecent(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListRecent: %v", err)
+	}
+	foundRecent := false
+	for _, r := range recent {
+		if r.ID == id {
+			foundRecent = true
+		}
+	}
+	if !foundRecent {
+		t.Error("new report not in ListRecent")
+	}
+
+	// Count within a window covering now.
+	from := time.Now().UTC().Add(-1 * time.Hour)
+	to := time.Now().UTC().Add(1 * time.Hour)
+	count, err := repo.CountByDomain(ctx, domain.ID, from, to)
+	if err != nil {
+		t.Fatalf("CountByDomain: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1", count)
+	}
+
+	// Window that excludes our row.
+	countEmpty, err := repo.CountByDomain(ctx, domain.ID, to, to.Add(1*time.Hour))
+	if err != nil {
+		t.Fatalf("CountByDomain empty: %v", err)
+	}
+	if countEmpty != 0 {
+		t.Errorf("empty window count = %d, want 0", countEmpty)
+	}
+}
+
+func TestIPWarmup_Lifecycle(t *testing.T) {
+	ctx := context.Background()
+	repo := repository.NewIPWarmupRepo(testPool)
+
+	suffix := uniqueSuffix()
+	// Unique test IP per run — use 10.254.x.y so collisions are rare.
+	ip := fmt.Sprintf("10.254.%d.%d", time.Now().Unix()%250, os.Getpid()%250)
+	label := "warmup-" + suffix
+
+	w, err := repo.Create(ctx, ip, label)
+	if err != nil {
+		t.Fatalf("create warmup: %v", err)
+	}
+	defer repo.Delete(ctx, w.ID)
+
+	if w.WarmupDay != 1 {
+		t.Errorf("initial WarmupDay = %d, want 1", w.WarmupDay)
+	}
+	if !w.Active {
+		t.Error("new warmup should be active")
+	}
+
+	byIP, err := repo.GetByIP(ctx, ip)
+	if err != nil || byIP == nil {
+		t.Fatalf("GetByIP: %v", err)
+	}
+	if byIP.ID != w.ID {
+		t.Error("GetByIP.ID mismatch")
+	}
+
+	list, err := repo.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	foundList := false
+	for _, r := range list {
+		if r.ID == w.ID {
+			foundList = true
+		}
+	}
+	if !foundList {
+		t.Error("new warmup not in List")
+	}
+
+	if err := repo.IncrementSent(ctx, w.ID); err != nil {
+		t.Fatalf("increment: %v", err)
+	}
+	afterInc, _ := repo.GetByIP(ctx, ip)
+	if afterInc.DailySent != 1 {
+		t.Errorf("DailySent after increment = %d, want 1", afterInc.DailySent)
+	}
+
+	if err := repo.AdvanceDay(ctx, w.ID, 2, 100); err != nil {
+		t.Fatalf("advance day: %v", err)
+	}
+	afterAdv, _ := repo.GetByIP(ctx, ip)
+	if afterAdv.WarmupDay != 2 || afterAdv.DailyLimit != 100 {
+		t.Errorf("after advance = day=%d limit=%d, want 2/100", afterAdv.WarmupDay, afterAdv.DailyLimit)
+	}
+	if afterAdv.DailySent != 0 {
+		t.Errorf("DailySent after advance = %d, want 0 (reset)", afterAdv.DailySent)
+	}
+
+	if err := repo.Deactivate(ctx, w.ID); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+	afterDeact, _ := repo.GetByIP(ctx, ip)
+	if afterDeact.Active {
+		t.Error("Active should be false after Deactivate")
+	}
+}
+
+func TestMailStats_IncrementAndAggregate(t *testing.T) {
+	ctx := context.Background()
+	domainRepo := repository.NewDomainRepo(testPool)
+	repo := repository.NewMailStatsRepo(testPool)
+
+	suffix := uniqueSuffix()
+	domain, err := domainRepo.Create(ctx, repository.DomainCreate{Name: "stats-" + suffix + ".test"})
+	if err != nil {
+		t.Fatalf("create domain: %v", err)
+	}
+	defer domainRepo.Delete(ctx, domain.ID)
+
+	// Two sent + one bounce, with sizes.
+	if err := repo.Increment(ctx, domain.ID, "sent", 1000); err != nil {
+		t.Fatalf("increment sent 1: %v", err)
+	}
+	if err := repo.Increment(ctx, domain.ID, "sent", 2000); err != nil {
+		t.Fatalf("increment sent 2: %v", err)
+	}
+	if err := repo.Increment(ctx, domain.ID, "bounced", 0); err != nil {
+		t.Fatalf("increment bounced: %v", err)
+	}
+
+	// Unknown field should error.
+	if err := repo.Increment(ctx, domain.ID, "bogus", 0); err == nil {
+		t.Error("Increment with unknown field should error")
+	}
+
+	from := time.Now().UTC().Add(-2 * time.Hour)
+	to := time.Now().UTC().Add(1 * time.Hour)
+
+	hourly, err := repo.GetHourly(ctx, domain.ID, from, to)
+	if err != nil {
+		t.Fatalf("GetHourly: %v", err)
+	}
+	if len(hourly) != 1 {
+		t.Fatalf("hourly len = %d, want 1 (same hour upserts)", len(hourly))
+	}
+	h := hourly[0]
+	if h.Sent != 2 {
+		t.Errorf("Sent = %d, want 2", h.Sent)
+	}
+	if h.Bounced != 1 {
+		t.Errorf("Bounced = %d, want 1", h.Bounced)
+	}
+	if h.SizeBytesTotal != 3000 {
+		t.Errorf("SizeBytesTotal = %d, want 3000", h.SizeBytesTotal)
+	}
+
+	agg, err := repo.GetAllDomainsAggregate(ctx, []string{domain.ID}, from, to)
+	if err != nil {
+		t.Fatalf("GetAllDomainsAggregate: %v", err)
+	}
+	if len(agg) != 1 {
+		t.Fatalf("aggregate rows = %d, want 1", len(agg))
+	}
+	if agg[0].Sent != 2 || agg[0].Bounced != 1 {
+		t.Errorf("aggregate = sent=%d bounced=%d, want 2/1", agg[0].Sent, agg[0].Bounced)
+	}
+}
+
+// ---------- PasswordReset / RBLCheck ----------
+
+func TestPasswordReset_Flow(t *testing.T) {
+	ctx := context.Background()
+	adminRepo := repository.NewAdminRepo(testPool)
+	repo := repository.NewPasswordResetRepo(testPool)
+
+	suffix := uniqueSuffix()
+	admin, err := adminRepo.Create(ctx, repository.AdminCreate{
+		Email:        "pwreset-" + suffix + "@repo-test.com",
+		PasswordHash: "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQ$dGVzdGhhc2g",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	defer adminRepo.Delete(ctx, admin.ID)
+
+	hash := "sha256-" + suffix
+	tok, err := repo.Create(ctx, admin.ID, hash, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	if tok.ID == "" {
+		t.Error("token ID should be set")
+	}
+
+	found, err := repo.FindByHash(ctx, hash)
+	if err != nil || found == nil {
+		t.Fatalf("FindByHash: %v", err)
+	}
+	if found.AdminID != admin.ID {
+		t.Errorf("AdminID = %q, want %q", found.AdminID, admin.ID)
+	}
+	if found.UsedAt != nil {
+		t.Error("new token should not be used")
+	}
+
+	if err := repo.MarkUsed(ctx, found.ID); err != nil {
+		t.Fatalf("mark used: %v", err)
+	}
+
+	// FindByHash filters out used/expired tokens — a used token must not come
+	// back. That's the security guarantee callers rely on.
+	afterMark, err := repo.FindByHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("FindByHash post-mark: %v", err)
+	}
+	if afterMark != nil {
+		t.Error("FindByHash should return nil for a used token")
+	}
+
+	// Issue a fresh token, then invalidate — InvalidateForAdmin must also
+	// hide it from FindByHash.
+	hash2 := "sha256b-" + suffix
+	if _, err := repo.Create(ctx, admin.ID, hash2, 1*time.Hour); err != nil {
+		t.Fatalf("create token 2: %v", err)
+	}
+	if err := repo.InvalidateForAdmin(ctx, admin.ID); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+	afterInv, err := repo.FindByHash(ctx, hash2)
+	if err != nil {
+		t.Fatalf("FindByHash post-invalidate: %v", err)
+	}
+	if afterInv != nil {
+		t.Error("FindByHash should return nil for a token invalidated via InvalidateForAdmin")
+	}
+
+	// CleanExpired should be safe to call even when nothing is expired.
+	if _, err := repo.CleanExpired(ctx); err != nil {
+		t.Fatalf("clean expired: %v", err)
+	}
+}
+
+func TestRBLCheck_CRUD(t *testing.T) {
+	ctx := context.Background()
+	repo := repository.NewRBLCheckRepo(testPool)
+
+	// Unique IP range per run.
+	ip := fmt.Sprintf("10.253.%d.%d", time.Now().Unix()%250, os.Getpid()%250)
+
+	response := "127.0.0.2"
+	id1, err := repo.Create(ctx, ip, "zen.spamhaus.org", true, &response)
+	if err != nil || id1 == "" {
+		t.Fatalf("create listed: %v", err)
+	}
+	id2, err := repo.Create(ctx, ip, "b.barracudacentral.org", false, nil)
+	if err != nil || id2 == "" {
+		t.Fatalf("create unlisted: %v", err)
+	}
+
+	latest, err := repo.GetLatestByIP(ctx, ip)
+	if err != nil {
+		t.Fatalf("GetLatestByIP: %v", err)
+	}
+	if len(latest) < 2 {
+		t.Errorf("latest by IP rows = %d, want >=2", len(latest))
+	}
+	var sawListed, sawUnlisted bool
+	for _, r := range latest {
+		if r.RBLName == "zen.spamhaus.org" && r.Listed {
+			sawListed = true
+		}
+		if r.RBLName == "b.barracudacentral.org" && !r.Listed {
+			sawUnlisted = true
+		}
+	}
+	if !sawListed || !sawUnlisted {
+		t.Errorf("expected both rows represented: sawListed=%v sawUnlisted=%v", sawListed, sawUnlisted)
+	}
+
+	listed, err := repo.GetListedIPs(ctx)
+	if err != nil {
+		t.Fatalf("GetListedIPs: %v", err)
+	}
+	// ip_address::text in the underlying query returns the inet in CIDR form
+	// ("10.253.1.1/32") — match on prefix rather than exact equality.
+	foundListed := false
+	for _, r := range listed {
+		stripped := r.IPAddress
+		if idx := strings.IndexByte(stripped, '/'); idx >= 0 {
+			stripped = stripped[:idx]
+		}
+		if stripped == ip && r.Listed {
+			foundListed = true
+		}
+	}
+	if !foundListed {
+		t.Errorf("our listed IP %q not in GetListedIPs (rows=%d)", ip, len(listed))
+	}
+
+	// Prune in the future — both rows are older than (now + 1m).
+	deleted, err := repo.PruneOlderThan(ctx, -1*time.Minute)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if deleted < 2 {
+		t.Errorf("pruned %d rows, want >=2", deleted)
 	}
 }
