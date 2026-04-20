@@ -283,7 +283,16 @@ export default function SetupWizard() {
           <div className="card">
             <h3 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Configure DNS Records</h3>
             <p className="text-muted mb-1">
-              Add the following DNS records to <strong>{activeDomain.name}</strong>. These are required for email delivery and security.
+              The records below are required for email delivery and security.
+              Add them where <strong>{activeDomain.name}</strong>'s DNS is
+              managed — usually your domain registrar (GoDaddy, Namecheap,
+              etc.) or <strong>Cloudflare</strong> if your nameservers point
+              there. Use the <em>Copy Value</em> buttons to grab each record.
+            </p>
+            <p className="text-muted mb-1" style={{ fontSize: '0.9em' }}>
+              Not sure where to go? Check your registrar's dashboard for a
+              "DNS" or "Nameservers" section. If the nameservers read
+              <code>*.ns.cloudflare.com</code>, your DNS lives at Cloudflare.
             </p>
           </div>
 

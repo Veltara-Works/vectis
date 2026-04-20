@@ -279,11 +279,13 @@ func printHostnameDNS(cmd *cobra.Command, hostname string) {
 
 	fmt.Fprintln(cmd.OutOrStdout(), "  DNS records you must publish now:")
 	fmt.Fprintln(cmd.OutOrStdout())
+	fmt.Fprintln(cmd.OutOrStdout(), "  At your domain registrar (GoDaddy, Namecheap, etc.)")
+	fmt.Fprintln(cmd.OutOrStdout(), "  — or Cloudflare if your nameservers point there:")
 	fmt.Fprintf(cmd.OutOrStdout(), "    A     %s.   →  %s\n", hostname, ipField)
 	fmt.Fprintln(cmd.OutOrStdout())
-	fmt.Fprintln(cmd.OutOrStdout(), "  Also at your VPS provider (not the registrar):")
+	fmt.Fprintln(cmd.OutOrStdout(), "  At your VPS provider's control panel (NOT the registrar):")
 	fmt.Fprintf(cmd.OutOrStdout(), "    PTR   %s   →  %s.\n", ipField, hostname)
-	fmt.Fprintln(cmd.OutOrStdout(), "    (required for outbound mail to avoid being rejected as spam)")
+	fmt.Fprintln(cmd.OutOrStdout(), "    (reverse DNS — required or outbound mail is rejected as spam)")
 
 	if publicIP == "" {
 		fmt.Fprintln(cmd.OutOrStdout())
