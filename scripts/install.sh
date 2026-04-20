@@ -158,6 +158,124 @@ if [ -f "$VECTIS_DIR/secrets.yaml.example" ] && [ ! -f "$CONFIG_DIR/secrets.yaml
     info "Generated random secrets in $CONFIG_DIR/secrets.yaml"
 fi
 
+# --- Hostname + TLS email -------------------------------------------------
+#
+# Try to save the operator from having to hand-edit config.yaml. Detect the
+# public IPv4 and look up its PTR — if the VPS provider has set reverse DNS
+# (the recommended prereq), that's the hostname they mean. Fall back to an
+# interactive prompt via /dev/tty, or leave the placeholder if we're running
+# non-interactively (CI, headless).
+
+config_hostname_value() {
+    # Reads the live 'hostname:' value (trimmed, unquoted).
+    awk '/^hostname:/ { sub(/^hostname: */,""); gsub(/"/,""); print; exit }' "$CONFIG_DIR/config.yaml"
+}
+
+set_config_hostname() {
+    # Idempotent: replaces whatever 'hostname:' line currently exists.
+    local new="$1"
+    sed -i -E "s|^hostname:.*$|hostname: $new|" "$CONFIG_DIR/config.yaml"
+}
+
+set_config_tls_email() {
+    # Only touch lines where email: already has an address on the right of
+    # the colon — there are other `email:` *block* headers in the file
+    # (e.g. alerts.email:) that we must not clobber. Trailing `# comment`
+    # is preserved.
+    local new="$1"
+    sed -i -E "s|^(\\s*)email:\\s+[^[:space:]#]+@[^[:space:]#]+(\\s*#.*)?$|\\1email: $new\\2|" "$CONFIG_DIR/config.yaml"
+}
+
+current_hostname=$(config_hostname_value)
+if [ "$current_hostname" = "mail.example.com" ] || [ -z "$current_hostname" ]; then
+    # Public IPv4 detection — best effort, 3s per endpoint.
+    PUBLIC_IP=""
+    for url in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
+        ip=$(curl -fsS --max-time 3 -4 "$url" 2>/dev/null | tr -d '[:space:]' || true)
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            PUBLIC_IP="$ip"
+            break
+        fi
+    done
+
+    # Reverse-DNS: prefer `getent hosts` (pure glibc, always present on
+    # Ubuntu); fall back to `host` / `dig` if they happen to be installed.
+    DETECTED_FQDN=""
+    if [ -n "$PUBLIC_IP" ]; then
+        DETECTED_FQDN=$(getent hosts "$PUBLIC_IP" 2>/dev/null | awk '{print $2}' | head -1)
+        if [ -z "$DETECTED_FQDN" ] && command -v host &>/dev/null; then
+            DETECTED_FQDN=$(host "$PUBLIC_IP" 2>/dev/null | awk '/pointer/ {print $NF}' | sed 's/\.$//' | head -1)
+        fi
+        if [ -z "$DETECTED_FQDN" ] && command -v dig &>/dev/null; then
+            DETECTED_FQDN=$(dig +short +time=2 +tries=1 -x "$PUBLIC_IP" 2>/dev/null | sed 's/\.$//' | head -1)
+        fi
+    fi
+
+    # Reject obvious non-answers (IP-shaped strings, single-label names).
+    if [[ "$DETECTED_FQDN" =~ ^[0-9.]+$ ]] || ! [[ "$DETECTED_FQDN" == *.* ]]; then
+        DETECTED_FQDN=""
+    fi
+
+    # Default tls.email to admin@<apex-of-hostname> when we have a hostname.
+    DETECTED_EMAIL=""
+    if [ -n "$DETECTED_FQDN" ]; then
+        # Strip the leftmost label if there are ≥3 labels (mail.foo.com → foo.com),
+        # otherwise use the whole FQDN (foo.com → foo.com).
+        apex=$(echo "$DETECTED_FQDN" | awk -F. '{
+            if (NF >= 3) { for (i=2; i<=NF; i++) printf "%s%s", $i, (i<NF?".":"") }
+            else { print $0 }
+        }')
+        DETECTED_EMAIL="admin@$apex"
+    fi
+
+    echo ""
+    if [ -n "$PUBLIC_IP" ]; then
+        info "Detected public IPv4: $PUBLIC_IP"
+    else
+        warn "Could not detect public IPv4 — set the hostname manually below."
+    fi
+    if [ -n "$DETECTED_FQDN" ]; then
+        info "Reverse DNS (PTR): $DETECTED_FQDN"
+    else
+        warn "No usable PTR found for this IP — set reverse DNS at your VPS provider for production."
+    fi
+
+    # Prompt the operator if we have a TTY. curl | sudo bash redirects stdin
+    # to the pipe, so read from /dev/tty explicitly.
+    FQDN_INPUT=""
+    EMAIL_INPUT=""
+    if [ -t 0 ] || [ -e /dev/tty ]; then
+        prompt_default="${DETECTED_FQDN:-mail.yourdomain.com}"
+        read -r -p "Mail server hostname [$prompt_default]: " FQDN_INPUT </dev/tty || true
+        FQDN_INPUT="${FQDN_INPUT:-$DETECTED_FQDN}"
+
+        if [ -n "$FQDN_INPUT" ]; then
+            # Recompute default email from whatever hostname was chosen.
+            apex=$(echo "$FQDN_INPUT" | awk -F. '{
+                if (NF >= 3) { for (i=2; i<=NF; i++) printf "%s%s", $i, (i<NF?".":"") }
+                else { print $0 }
+            }')
+            email_default="admin@$apex"
+            read -r -p "TLS / admin email [$email_default]: " EMAIL_INPUT </dev/tty || true
+            EMAIL_INPUT="${EMAIL_INPUT:-$email_default}"
+        fi
+    else
+        # Non-interactive: only write what we detected; leave placeholder
+        # otherwise so `vectis install`'s guardrail catches it.
+        FQDN_INPUT="$DETECTED_FQDN"
+        EMAIL_INPUT="$DETECTED_EMAIL"
+    fi
+
+    if [ -n "$FQDN_INPUT" ]; then
+        set_config_hostname "$FQDN_INPUT"
+        info "Set hostname → $FQDN_INPUT in $CONFIG_DIR/config.yaml"
+    fi
+    if [ -n "$EMAIL_INPUT" ]; then
+        set_config_tls_email "$EMAIL_INPUT"
+        info "Set tls.email → $EMAIL_INPUT in $CONFIG_DIR/config.yaml"
+    fi
+fi
+
 echo ""
 echo -e "${GREEN}================================================================${NC}"
 echo -e "${GREEN} Vectis downloaded successfully${NC}"
@@ -165,12 +283,19 @@ echo -e "${GREEN}===============================================================
 echo ""
 echo "  The binary is in place but nothing is running yet. Next steps:"
 echo ""
-echo "    1. Edit $CONFIG_DIR/config.yaml"
-echo "         - set 'hostname' to your mail server's FQDN"
-echo "         - set 'tls.email' to your admin email"
-echo ""
-echo "    2. vectis preflight    # verify system + ports + DNS"
-echo "    3. vectis install      # deploy containers, run migrations, create admin"
+current_hostname=$(config_hostname_value)
+if [ "$current_hostname" = "mail.example.com" ] || [ -z "$current_hostname" ]; then
+    echo "    1. Edit $CONFIG_DIR/config.yaml"
+    echo "         - set 'hostname' to your mail server's FQDN"
+    echo "         - set 'tls.email' to your admin email"
+    echo ""
+    echo "    2. vectis preflight    # verify system + ports + DNS"
+    echo "    3. vectis install      # deploy containers, run migrations, create admin"
+else
+    echo "    1. Review $CONFIG_DIR/config.yaml (hostname: $current_hostname)"
+    echo "    2. vectis preflight    # verify system + ports + DNS"
+    echo "    3. vectis install      # deploy containers, run migrations, create admin"
+fi
 echo ""
 echo "  Config directory: $CONFIG_DIR"
 echo "  Docs:             https://vectismail.com/getting-started/installation"
