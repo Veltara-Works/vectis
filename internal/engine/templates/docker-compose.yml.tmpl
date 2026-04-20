@@ -352,8 +352,22 @@ services:
     restart: unless-stopped
     networks:
       - vectis-data
+    # Bind to loopback only so the host-side `vectis` binary can run
+    # migrations against `127.0.0.1:5432` without exposing Postgres to
+    # the public interface. In-container clients still reach it as
+    # `postgres:5432` over the vectis-data network.
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "{{ .Database.SuperuserPassword }}"
+      POSTGRES_DB: "{{ .Database.Name }}"
+      VECTIS_API_PASSWORD: "{{ .Database.APIPassword }}"
+      VECTIS_POSTFIX_PASSWORD: "{{ .Database.PostfixPassword }}"
+      VECTIS_DOVECOT_PASSWORD: "{{ .Database.DovecotPassword }}"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - /var/vectis/generated/postgres/init-users.sh:/docker-entrypoint-initdb.d/01-init-users.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d {{ .Database.Name }}"]
       interval: 10s

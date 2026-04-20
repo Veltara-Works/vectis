@@ -129,6 +129,9 @@ func ValidateSecrets(secrets *VectisSecrets) *ValidationResult {
 	r := &ValidationResult{}
 
 	// database passwords
+	if secrets.Database.SuperuserPassword == "" {
+		r.AddError("database.superuser_password", "must not be empty")
+	}
 	if secrets.Database.APIPassword == "" {
 		r.AddError("database.api_password", "must not be empty")
 	}

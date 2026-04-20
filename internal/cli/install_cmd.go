@@ -22,10 +22,16 @@ import (
 var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install Vectis on a fresh host",
-	Long: `Performs a full installation: generates configs, pulls images,
-starts containers, runs migrations, and creates the initial admin account.
+	Long: `Installs Vectis end-to-end on a host that already has Docker.
 
-Requires config.yaml and secrets.yaml in the config directory.`,
+Reads config.yaml and secrets.yaml from --config-dir (default /etc/vectis),
+renders the service templates, brings Postgres up, runs database migrations,
+seeds the initial admin account, then starts the rest of the stack.
+
+This command is non-interactive: edit the config files first, then run it.
+The bundled install.sh seeds both files with sensible defaults and random
+secrets — only 'hostname' and 'tls.email' in config.yaml typically need
+manual editing before running.`,
 	RunE: runInstall,
 }
 
@@ -33,66 +39,60 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	configDir, _ := cmd.Flags().GetString("config-dir")
 
 	step := 0
-	totalSteps := 10
+	totalSteps := 11
 	printStep := func(msg string) {
 		step++
 		fmt.Fprintf(cmd.OutOrStdout(), "[%d/%d] %s...", step, totalSteps, msg)
 	}
 	done := func() { fmt.Fprintln(cmd.OutOrStdout(), " done") }
+	fail := func(format string, a ...any) {
+		fmt.Fprintln(cmd.OutOrStdout())
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nError: "+format+"\n", a...)
+		os.Exit(1)
+	}
 
 	// Step 1: Load and validate config
 	printStep("Validating configuration")
 	cfg, secrets, err := config.LoadAll(configDir)
 	if err != nil {
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintf(cmd.ErrOrStderr(), "\nError: %s\n", err)
-		os.Exit(1)
+		fail("%s", err)
 	}
 	done()
 
-	// Step 2: Generate secrets if they're still defaults
+	// Step 2: Reject default-value secrets
 	printStep("Checking secrets")
 	if secrets.API.Secret == "CHANGE_ME_at_least_32_characters_long_random_string" {
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintln(cmd.ErrOrStderr(), "\nError: secrets.yaml contains default values. Generate real secrets before installing.")
-		fmt.Fprintln(cmd.ErrOrStderr(), "Tip: Use 'openssl rand -hex 32' to generate random values.")
-		os.Exit(1)
+		fail("secrets.yaml contains default values. Generate real secrets before installing.\nTip: install.sh seeds these for you on first download; otherwise use 'openssl rand -hex 32'.")
+	}
+	if secrets.Database.SuperuserPassword == "" || secrets.Database.SuperuserPassword == "CHANGE_ME_superuser_password" {
+		fail("database.superuser_password is unset. Re-run install.sh, or set a value before installing.")
 	}
 	done()
 
-	// Step 3: Generate config files
+	// Step 3: Render service configurations + docker-compose
 	printStep("Generating service configurations")
 	genDir, _ := cmd.Flags().GetString("output")
 	if genDir == "" {
 		genDir = "/var/vectis/generated"
 	}
 	if err := os.MkdirAll(genDir, 0755); err != nil {
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintf(cmd.ErrOrStderr(), "\nError creating output directory: %s\n", err)
-		os.Exit(1)
+		fail("creating output directory: %s", err)
 	}
 
-	// No domains yet for fresh install
-	data := engine.NewTemplateData(cfg, secrets, nil)
+	data := engine.NewTemplateData(cfg, secrets, nil) // no domains yet on fresh install
 	files, err := engine.Generate(data)
 	if err != nil {
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintf(cmd.ErrOrStderr(), "\nError generating configs: %s\n", err)
-		os.Exit(1)
+		fail("generating configs: %s", err)
 	}
 	if err := engine.WriteFiles(genDir, files); err != nil {
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintf(cmd.ErrOrStderr(), "\nError writing configs: %s\n", err)
-		os.Exit(1)
+		fail("writing configs: %s", err)
 	}
 	if err := engine.WriteSecrets(filepath.Join(genDir, "secrets"), data); err != nil {
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintf(cmd.ErrOrStderr(), "\nError writing Docker secrets: %s\n", err)
-		os.Exit(1)
+		fail("writing Docker secrets: %s", err)
 	}
 	done()
 
-	// Step 4: Create runtime directories and configure Docker IPv6
+	// Step 4: Runtime directories + Docker IPv6
 	printStep("Creating runtime directories")
 	for _, dir := range []string{
 		"/var/vectis/mail",
@@ -121,70 +121,13 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 	done()
 
-	// Step 5: Install and configure Fail2ban (host-level brute-force protection)
+	// Step 5: Fail2ban
 	printStep("Configuring Fail2ban")
 	configureFail2ban(cmd)
 	done()
 
-	// Step 6: Connect to database and run migrations
-	printStep("Running database migrations")
-	logger := logging.NewLogger("warn")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	dbCfg := database.ConfigFromSecrets(
-		secrets.Database.Host, secrets.Database.Port, secrets.Database.Name,
-		secrets.Database.APIUser, secrets.Database.APIPassword,
-	)
-	pool, err := database.NewPool(ctx, dbCfg, logger)
-	if err != nil {
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintf(cmd.ErrOrStderr(), "\nError: cannot connect to database: %s\n", err)
-		fmt.Fprintln(cmd.ErrOrStderr(), "Ensure Postgres is running: docker compose up -d postgres")
-		os.Exit(1)
-	}
-	defer pool.Close()
-
-	if err := database.RunMigrations(dbCfg.DSN(), logger); err != nil {
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintf(cmd.ErrOrStderr(), "\nError: migration failed: %s\n", err)
-		os.Exit(1)
-	}
-	done()
-
-	// Step 6: Create initial admin account
-	printStep("Creating initial admin account")
-	adminRepo := repository.NewAdminRepo(pool)
-
-	existing, _ := adminRepo.GetByEmail(ctx, secrets.API.AdminEmail)
-	adminPassword := secrets.API.AdminPassword
-
-	if existing == nil {
-		// Generate a random password if the secrets still has the default
-		if adminPassword == "CHANGE_ME_admin_password" {
-			adminPassword = generateRandomPassword(16)
-		}
-
-		hash, err := auth.HashPassword(adminPassword)
-		if err != nil {
-			fmt.Fprintln(cmd.OutOrStdout())
-			fmt.Fprintf(cmd.ErrOrStderr(), "\nError hashing admin password: %s\n", err)
-			os.Exit(1)
-		}
-
-		_, err = adminRepo.Create(ctx, repository.AdminCreate{
-			Email:        secrets.API.AdminEmail,
-			PasswordHash: hash,
-		})
-		if err != nil {
-			fmt.Fprintln(cmd.OutOrStdout())
-			fmt.Fprintf(cmd.ErrOrStderr(), "\nError creating admin: %s\n", err)
-			os.Exit(1)
-		}
-	}
-	done()
-
-	// Step 7: Write generated docker-compose.yml
+	// Step 6: Move generated docker-compose.yml into place. Must happen before
+	// any `docker compose -f` invocation below.
 	printStep("Writing docker-compose.yml")
 	composeSrc := filepath.Join(genDir, "docker-compose.yml")
 	composeDst := filepath.Join(filepath.Dir(configDir), "docker-compose.yml")
@@ -192,12 +135,16 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		composeDst = "/opt/vectis/docker-compose.production.yml"
 	}
 	composeContent, err := os.ReadFile(composeSrc)
-	if err == nil {
-		os.WriteFile(composeDst, composeContent, 0644)
+	if err != nil {
+		fail("reading generated compose file %s: %s", composeSrc, err)
+	}
+	if err := os.WriteFile(composeDst, composeContent, 0644); err != nil {
+		fail("writing %s: %s", composeDst, err)
 	}
 	done()
 
-	// Step 8: Pull container images
+	// Step 7: Pull container images. Doing this before `up` keeps timing
+	// failures separate from health-wait failures.
 	printStep("Pulling container images")
 	pullCmd := exec.Command("docker", "compose", "-f", composeDst, "pull")
 	pullCmd.Stdout = os.Stdout
@@ -209,8 +156,76 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 	done()
 
-	// Step 9: Start services
-	printStep("Starting services")
+	// Step 8: Bring up Postgres alone and block until it's healthy. Postgres
+	// must be reachable before migrations can run, and the bootstrap script
+	// (init-users.sh) creates the vectis_api role on the same first start.
+	printStep("Starting Postgres and waiting for it to become healthy")
+	pgUp := exec.Command("docker", "compose", "-f", composeDst, "up", "-d", "--wait", "postgres")
+	pgUp.Stdout = os.Stdout
+	pgUp.Stderr = os.Stderr
+	if err := pgUp.Run(); err != nil {
+		fail("postgres did not become healthy: %s", err)
+	}
+	done()
+
+	// Step 9: Run database migrations. Connect via 127.0.0.1 because the
+	// generated compose publishes Postgres on the loopback interface; the
+	// `postgres` hostname only resolves inside the vectis-data Docker network.
+	printStep("Running database migrations")
+	logger := logging.NewLogger("warn")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	dbHost := secrets.Database.Host
+	if dbHost == "postgres" {
+		dbHost = "127.0.0.1"
+	}
+	dbCfg := database.ConfigFromSecrets(
+		dbHost, secrets.Database.Port, secrets.Database.Name,
+		secrets.Database.APIUser, secrets.Database.APIPassword,
+	)
+	pool, err := database.NewPool(ctx, dbCfg, logger)
+	if err != nil {
+		fail("cannot connect to database at %s:%d: %s", dbHost, secrets.Database.Port, err)
+	}
+	defer pool.Close()
+
+	if err := database.RunMigrations(dbCfg.DSN(), logger); err != nil {
+		fail("migration failed: %s", err)
+	}
+	done()
+
+	// Step 10: Seed the initial admin account
+	printStep("Creating initial admin account")
+	adminRepo := repository.NewAdminRepo(pool)
+
+	existing, _ := adminRepo.GetByEmail(ctx, secrets.API.AdminEmail)
+	adminPassword := secrets.API.AdminPassword
+
+	if existing == nil {
+		if adminPassword == "CHANGE_ME_admin_password" {
+			adminPassword = generateRandomPassword(16)
+		}
+
+		hash, err := auth.HashPassword(adminPassword)
+		if err != nil {
+			fail("hashing admin password: %s", err)
+		}
+
+		_, err = adminRepo.Create(ctx, repository.AdminCreate{
+			Email:        secrets.API.AdminEmail,
+			PasswordHash: hash,
+		})
+		if err != nil {
+			fail("creating admin: %s", err)
+		}
+	}
+	done()
+
+	// Step 11: Bring up the rest of the stack. Postgres is already healthy;
+	// `up -d` against the same compose file is a no-op for it and starts
+	// everything else.
+	printStep("Starting remaining services")
 	upCmd := exec.Command("docker", "compose", "-f", composeDst, "up", "-d")
 	upCmd.Stdout = os.Stdout
 	upCmd.Stderr = os.Stderr

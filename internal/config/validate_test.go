@@ -21,10 +21,11 @@ func validConfig() *VectisConfig {
 func validSecrets() *VectisSecrets {
 	return &VectisSecrets{
 		Database: DatabaseSecrets{
-			APIPassword:     "apipass",
-			PostfixPassword: "pfpass",
-			DovecotPassword: "dcpass",
-			Name:            "vectis",
+			SuperuserPassword: "superpass",
+			APIPassword:       "apipass",
+			PostfixPassword:   "pfpass",
+			DovecotPassword:   "dcpass",
+			Name:              "vectis",
 		},
 		Valkey:       ValkeySecrets{Password: "vkpass"},
 		API:          APISecrets{Secret: "12345678901234567890123456789012", AdminEmail: "admin@example.com", AdminPassword: "securepass", BackupEncryptionKey: "0123456789abcdef0123456789abcdef"},

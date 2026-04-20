@@ -212,16 +212,22 @@ type VectisSecrets struct {
 
 // DatabaseSecrets holds connection details and per-service credentials for
 // the PostgreSQL database (three DB users per ADR-019).
+//
+// SuperuserPassword is the password for the built-in `postgres` superuser. It
+// is only used by the Postgres container itself (POSTGRES_PASSWORD) and by the
+// init-users.sh bootstrap script — application code always connects as one of
+// the three least-privilege users.
 type DatabaseSecrets struct {
-	Host            string `yaml:"host"`
-	Port            int    `yaml:"port"`
-	Name            string `yaml:"name"`
-	APIUser         string `yaml:"api_user"`
-	APIPassword     string `yaml:"api_password"`
-	PostfixUser     string `yaml:"postfix_user"`
-	PostfixPassword string `yaml:"postfix_password"`
-	DovecotUser     string `yaml:"dovecot_user"`
-	DovecotPassword string `yaml:"dovecot_password"`
+	Host               string `yaml:"host"`
+	Port               int    `yaml:"port"`
+	Name               string `yaml:"name"`
+	SuperuserPassword  string `yaml:"superuser_password"`
+	APIUser            string `yaml:"api_user"`
+	APIPassword        string `yaml:"api_password"`
+	PostfixUser        string `yaml:"postfix_user"`
+	PostfixPassword    string `yaml:"postfix_password"`
+	DovecotUser        string `yaml:"dovecot_user"`
+	DovecotPassword    string `yaml:"dovecot_password"`
 }
 
 // ValkeySecrets holds connection details for the Valkey (Redis-compatible)

@@ -89,6 +89,11 @@ type GeneratedFile struct {
 	// RelPath is the path relative to the output root (e.g., "postfix/main.cf").
 	RelPath string
 	Content []byte
+	// Mode is the file permission mode. Zero means use the default (0600).
+	// Shell scripts and other files that need to be readable/executable by
+	// non-root processes inside containers (e.g. postgres init scripts) are
+	// rendered with a more permissive mode.
+	Mode os.FileMode
 }
 
 // funcMap provides custom template functions.
@@ -131,9 +136,17 @@ func Generate(data *TemplateData) ([]GeneratedFile, error) {
 		relPath := strings.TrimPrefix(path, "templates/")
 		relPath = strings.TrimSuffix(relPath, ".tmpl")
 
+		// Shell scripts must be readable + executable inside their container
+		// (e.g. postgres `/docker-entrypoint-initdb.d/01-init-users.sh`).
+		var mode os.FileMode
+		if strings.HasSuffix(relPath, ".sh") {
+			mode = 0755
+		}
+
 		files = append(files, GeneratedFile{
 			RelPath: relPath,
 			Content: buf.Bytes(),
+			Mode:    mode,
 		})
 		return nil
 	})
@@ -153,7 +166,11 @@ func WriteFiles(outputDir string, files []GeneratedFile) error {
 			return fmt.Errorf("create directory for %s: %w", f.RelPath, err)
 		}
 
-		if err := os.WriteFile(outPath, f.Content, 0600); err != nil {
+		mode := f.Mode
+		if mode == 0 {
+			mode = 0600
+		}
+		if err := os.WriteFile(outPath, f.Content, mode); err != nil {
 			return fmt.Errorf("write %s: %w", f.RelPath, err)
 		}
 	}

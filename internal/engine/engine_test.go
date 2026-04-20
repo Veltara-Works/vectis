@@ -21,7 +21,8 @@ func testData() *TemplateData {
 		Logging:  config.LoggingConfig{Level: "info", Driver: "json-file", MaxSizeMB: 50, MaxFiles: 5},
 		Admin:    config.AdminConfig{ListenAddr: ":8080", SessionTTLHours: 24},
 		Database: config.DatabaseSecrets{Host: "postgres", Port: 5432, Name: "vectis",
-			APIUser: "vectis_api", APIPassword: "secret_api",
+			SuperuserPassword: "secret_super",
+			APIUser:           "vectis_api", APIPassword: "secret_api",
 			PostfixUser: "vectis_postfix", PostfixPassword: "secret_postfix",
 			DovecotUser: "vectis_dovecot", DovecotPassword: "secret_dovecot"},
 		Valkey: config.ValkeySecrets{Host: "valkey", Port: 6379, Password: "secret_valkey"},
@@ -140,6 +141,54 @@ func TestDKIMSigningConf(t *testing.T) {
 	}
 	if !strings.Contains(dkimConf, "202603") {
 		t.Error("dkim_signing.conf should contain selector 202603")
+	}
+}
+
+func TestPostgresBootstrap(t *testing.T) {
+	files, _ := Generate(testData())
+
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if compose == "" {
+		t.Fatal("docker-compose.yml not generated")
+	}
+
+	checks := []string{
+		`POSTGRES_USER: postgres`,
+		`POSTGRES_PASSWORD: "secret_super"`,
+		`POSTGRES_DB: "vectis"`,
+		`VECTIS_API_PASSWORD: "secret_api"`,
+		`/var/vectis/generated/postgres/init-users.sh:/docker-entrypoint-initdb.d/01-init-users.sh:ro`,
+		`"127.0.0.1:5432:5432"`,
+	}
+	for _, c := range checks {
+		if !strings.Contains(compose, c) {
+			t.Errorf("docker-compose.yml missing postgres bootstrap line: %s", c)
+		}
+	}
+
+	// init-users.sh must be rendered with executable mode so the postgres
+	// uid inside the container can read+exec it from the host bind-mount.
+	var initScript *GeneratedFile
+	for i := range files {
+		if files[i].RelPath == "postgres/init-users.sh" {
+			initScript = &files[i]
+			break
+		}
+	}
+	if initScript == nil {
+		t.Fatal("postgres/init-users.sh not generated")
+	}
+	if initScript.Mode != 0755 {
+		t.Errorf("postgres/init-users.sh: expected mode 0755, got %o", initScript.Mode)
+	}
+	if !strings.Contains(string(initScript.Content), "CREATE ROLE vectis_api") {
+		t.Error("init-users.sh missing CREATE ROLE vectis_api")
 	}
 }
 

@@ -137,6 +137,7 @@ if [ -f "$VECTIS_DIR/secrets.yaml.example" ] && [ ! -f "$CONFIG_DIR/secrets.yaml
 
     API_SECRET=$(openssl rand -hex 32)
     ADMIN_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+    DB_SUPER_PASS=$(openssl rand -hex 16)
     DB_API_PASS=$(openssl rand -hex 16)
     DB_PF_PASS=$(openssl rand -hex 16)
     DB_DC_PASS=$(openssl rand -hex 16)
@@ -144,6 +145,7 @@ if [ -f "$VECTIS_DIR/secrets.yaml.example" ] && [ ! -f "$CONFIG_DIR/secrets.yaml
     ORCH_TOKEN=$(openssl rand -hex 32)
     BACKUP_KEY=$(openssl rand -hex 32)
 
+    sed -i "s/CHANGE_ME_superuser_password/$DB_SUPER_PASS/" "$CONFIG_DIR/secrets.yaml"
     sed -i "s/CHANGE_ME_api_password/$DB_API_PASS/" "$CONFIG_DIR/secrets.yaml"
     sed -i "s/CHANGE_ME_postfix_password/$DB_PF_PASS/" "$CONFIG_DIR/secrets.yaml"
     sed -i "s/CHANGE_ME_dovecot_password/$DB_DC_PASS/" "$CONFIG_DIR/secrets.yaml"
