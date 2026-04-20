@@ -197,7 +197,9 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	// Step 10: Seed the initial admin account via the same one-shot path.
 	// `vectis admin init` is idempotent: no-op if the admin already exists,
 	// otherwise creates it (and prints a generated password when the secrets
-	// file still carries the placeholder).
+	// file still carries the placeholder). We capture the output, parse the
+	// password out, and surface it in the final banner so operators using
+	// scrollback-less web terminals don't lose it.
 	printStep("Creating initial admin account")
 	adminArgs := composeRunAPI(composeDst, "vectis", "admin", "init")
 	runAdmin := exec.Command(adminArgs[0], adminArgs[1:]...)
@@ -207,9 +209,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	if err := runAdmin.Run(); err != nil {
 		fail("admin init failed: %s", err)
 	}
-	// Surface any generated password line to the caller.
-	adminOutput := adminOut.String()
-	fmt.Fprint(cmd.OutOrStdout(), adminOutput)
+	generatedAdminPassword := parseAdminPassword(adminOut.String())
 	done()
 
 	// Step 11: Bring up the rest of the stack. Postgres is already healthy;
@@ -234,11 +234,17 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "═══════════════════════════════════════════")
 	fmt.Fprintln(cmd.OutOrStdout(), "  Vectis is ready!")
 	fmt.Fprintln(cmd.OutOrStdout())
-	fmt.Fprintf(cmd.OutOrStdout(), "  Admin URL:   https://%s/admin\n", cfg.Hostname)
-	fmt.Fprintf(cmd.OutOrStdout(), "  Admin email: %s\n", secrets.API.AdminEmail)
-	fmt.Fprintln(cmd.OutOrStdout())
-	fmt.Fprintln(cmd.OutOrStdout(), "  (see 'Creating initial admin account' output above for")
-	fmt.Fprintln(cmd.OutOrStdout(), "   the generated admin password, if one was created)")
+	fmt.Fprintf(cmd.OutOrStdout(), "  Admin URL:      https://%s/admin\n", cfg.Hostname)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Admin email:    %s\n", secrets.API.AdminEmail)
+	if generatedAdminPassword != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "  Admin password: %s\n", generatedAdminPassword)
+		fmt.Fprintln(cmd.OutOrStdout())
+		fmt.Fprintln(cmd.OutOrStdout(), "  !! SAVE THE PASSWORD ABOVE — it is shown only here, it is")
+		fmt.Fprintln(cmd.OutOrStdout(), "     not written to disk, and it will not be recoverable.")
+		fmt.Fprintln(cmd.OutOrStdout(), "     Change it immediately after your first login.")
+	} else {
+		fmt.Fprintln(cmd.OutOrStdout(), "  Admin password: (the one you set in secrets.yaml — admin already existed)")
+	}
 	fmt.Fprintln(cmd.OutOrStdout())
 
 	printHostnameDNS(cmd, cfg.Hostname)
@@ -280,6 +286,20 @@ func printHostnameDNS(cmd *cobra.Command, hostname string) {
 		fmt.Fprintln(cmd.OutOrStdout(), "  Note: public IP auto-detection failed — substitute your VPS's")
 		fmt.Fprintln(cmd.OutOrStdout(), "  public IPv4 for the placeholder above.")
 	}
+}
+
+// parseAdminPassword pulls the `admin_password=...` line out of the
+// key=value output emitted by `vectis admin init`. Returns "" if the
+// line is absent (which means the admin already existed and no password
+// was generated). Input is trusted — it comes from our own binary in a
+// one-shot container — so no escaping gymnastics are needed.
+func parseAdminPassword(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "admin_password=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "admin_password="))
+		}
+	}
+	return ""
 }
 
 // detectPublicIP asks a handful of well-known IP-echo endpoints for this
