@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/smtp"
 	"net/textproto"
@@ -227,13 +228,17 @@ func buildMessage(msg *Message, messageID, hostname string) ([]byte, error) {
 		writeHeader(&buf, "Content-Type", "text/html; charset=utf-8")
 		writeHeader(&buf, "Content-Transfer-Encoding", "quoted-printable")
 		buf.WriteString("\r\n")
-		buf.WriteString(msg.HTMLBody)
+		if err := writeQuotedPrintable(&buf, msg.HTMLBody); err != nil {
+			return nil, err
+		}
 
 	default:
 		writeHeader(&buf, "Content-Type", "text/plain; charset=utf-8")
 		writeHeader(&buf, "Content-Transfer-Encoding", "quoted-printable")
 		buf.WriteString("\r\n")
-		buf.WriteString(msg.TextBody)
+		if err := writeQuotedPrintable(&buf, msg.TextBody); err != nil {
+			return nil, err
+		}
 	}
 
 	return buf.Bytes(), nil
@@ -259,7 +264,19 @@ func writeTextPart(w *multipart.Writer, contentType, body string) {
 	h.Set("Content-Type", contentType+"; charset=utf-8")
 	h.Set("Content-Transfer-Encoding", "quoted-printable")
 	part, _ := w.CreatePart(h)
-	io.WriteString(part, body)
+	_ = writeQuotedPrintable(part, body)
+}
+
+// writeQuotedPrintable encodes body per RFC 2045 §6.7 and writes it to w.
+// The QP encoder escapes literal '=' to '=3D' and wraps lines at 76 chars,
+// which is required whenever a part declares
+// Content-Transfer-Encoding: quoted-printable.
+func writeQuotedPrintable(w io.Writer, body string) error {
+	enc := quotedprintable.NewWriter(w)
+	if _, err := io.WriteString(enc, body); err != nil {
+		return err
+	}
+	return enc.Close()
 }
 
 func writeTextPartMixed(w *multipart.Writer, contentType, body string) {
