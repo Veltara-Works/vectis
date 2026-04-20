@@ -117,10 +117,18 @@ mkdir -p "$CONFIG_DIR"
 mkdir -p /var/vectis/{mail,dkim,backups,snapshots,certs,generated}
 mkdir -p "$VECTIS_DIR"
 
-# Example configs are embedded in later releases; for now, warn if missing.
+# Fetch example configs published alongside the binary.
+EXAMPLES_BASE="${VECTIS_DOWNLOAD_BASE}/${VECTIS_VERSION}"
+for example in config.yaml.example secrets.yaml.example; do
+    if [ ! -f "$VECTIS_DIR/$example" ]; then
+        curl -fsSL --retry 3 -o "$VECTIS_DIR/$example" "$EXAMPLES_BASE/$example" \
+            || { error "Failed to download $example from $EXAMPLES_BASE"; exit 1; }
+    fi
+done
+
 if [ -f "$VECTIS_DIR/config.yaml.example" ] && [ ! -f "$CONFIG_DIR/config.yaml" ]; then
     cp "$VECTIS_DIR/config.yaml.example" "$CONFIG_DIR/config.yaml"
-    info "Copied config.yaml.example → $CONFIG_DIR/config.yaml"
+    info "Copied config.yaml.example → $CONFIG_DIR/config.yaml (edit hostname before 'vectis install')"
 fi
 
 if [ -f "$VECTIS_DIR/secrets.yaml.example" ] && [ ! -f "$CONFIG_DIR/secrets.yaml" ]; then
@@ -148,11 +156,20 @@ if [ -f "$VECTIS_DIR/secrets.yaml.example" ] && [ ! -f "$CONFIG_DIR/secrets.yaml
     info "Generated random secrets in $CONFIG_DIR/secrets.yaml"
 fi
 
-info ""
-info "Vectis binary and base directories are ready."
-info ""
-info "Next steps:"
-info "  1. Edit $CONFIG_DIR/config.yaml (set your hostname)"
-info "  2. Review $CONFIG_DIR/secrets.yaml (random secrets generated for you)"
-info "  3. Run: vectis preflight"
-info "  4. Run: vectis install"
+echo ""
+echo -e "${GREEN}================================================================${NC}"
+echo -e "${GREEN} Vectis downloaded successfully${NC}"
+echo -e "${GREEN}================================================================${NC}"
+echo ""
+echo "  The binary is in place but nothing is running yet. Next steps:"
+echo ""
+echo "    1. Edit $CONFIG_DIR/config.yaml"
+echo "         - set 'hostname' to your mail server's FQDN"
+echo "         - set 'tls.email' to your admin email"
+echo ""
+echo "    2. vectis preflight    # verify system + ports + DNS"
+echo "    3. vectis install      # deploy containers, run migrations, create admin"
+echo ""
+echo "  Config directory: $CONFIG_DIR"
+echo "  Docs:             https://vectismail.com/getting-started/installation"
+echo ""

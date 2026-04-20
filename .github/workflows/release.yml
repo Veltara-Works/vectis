@@ -80,6 +80,14 @@ jobs:
           aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
             scripts/install.sh "s3://$R2_BUCKET/latest/install.sh"
 
+          # Example configs the installer drops into /etc/vectis on a fresh host
+          for example in config.yaml.example secrets.yaml.example; do
+            aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+              "$example" "s3://$R2_BUCKET/${VERSION}/$example"
+            aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+              "$example" "s3://$R2_BUCKET/latest/$example"
+          done
+
       - name: Upload binary to GitHub Release
         uses: actions/upload-artifact@v4
         with:
