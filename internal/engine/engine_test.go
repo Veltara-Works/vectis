@@ -203,6 +203,54 @@ func TestPostgresBootstrap(t *testing.T) {
 	}
 }
 
+// TestGeneratedConfigsAreBindMounted catches the rc12 regression where
+// traefik / postfix / dovecot / rspamd were mounted as empty named volumes
+// and silently ran their image-default configs. The generated files live
+// on the host under /var/vectis/generated/<service>/ and MUST be
+// bind-mounted into the container paths expected by each daemon.
+func TestGeneratedConfigsAreBindMounted(t *testing.T) {
+	files, _ := Generate(testData())
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+		}
+	}
+
+	requiredMounts := []string{
+		// Traefik — without these, no routers match and the admin UI 404s.
+		`/var/vectis/generated/traefik/traefik.yml:/etc/traefik/traefik.yml:ro`,
+		`/var/vectis/generated/traefik/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro`,
+		// Postfix core configs.
+		`/var/vectis/generated/postfix/main.cf:/etc/postfix/main.cf:ro`,
+		`/var/vectis/generated/postfix/master.cf:/etc/postfix/master.cf:ro`,
+		`/var/vectis/generated/postfix/pgsql_virtual_domains.cf:/etc/postfix/pgsql_virtual_domains.cf:ro`,
+		`/var/vectis/generated/postfix/inbound-notify.sh:/etc/postfix/inbound-notify.sh:ro`,
+		// Dovecot auth + SQL lookup.
+		`/var/vectis/generated/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro`,
+		`/var/vectis/generated/dovecot/dovecot-sql.conf.ext:/etc/dovecot/dovecot-sql.conf.ext:ro`,
+		// Rspamd scoring + DKIM signing.
+		`/var/vectis/generated/rspamd/dkim_signing.conf:/etc/rspamd/local.d/dkim_signing.conf:ro`,
+	}
+	for _, m := range requiredMounts {
+		if !strings.Contains(compose, m) {
+			t.Errorf("generated compose is missing required bind mount: %s", m)
+		}
+	}
+
+	forbiddenMounts := []string{
+		`traefik-config:/etc/traefik`,
+		`postfix-config:/etc/postfix`,
+		`dovecot-config:/etc/dovecot`,
+		`rspamd-config:/etc/rspamd/local.d`,
+	}
+	for _, m := range forbiddenMounts {
+		if strings.Contains(compose, m) {
+			t.Errorf("compose still has named-volume config mount: %s (must be a bind mount from /var/vectis/generated)", m)
+		}
+	}
+}
+
 func TestClamAVNoneOmitsContainer(t *testing.T) {
 	files, _ := Generate(testData()) // ClamAV profile is "none"
 	var compose string
