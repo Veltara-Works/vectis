@@ -22,7 +22,11 @@ certificatesResolvers:
   letsencrypt:
     acme:
       email: {{ .TLS.Email }}
-      storage: /etc/traefik/acme/acme.json
+      # Stored outside /etc/traefik because that mount is read-only —
+      # Docker cannot create the /etc/traefik/acme mountpoint inside a
+      # read-only overlay, and traefik needs to write acme.json as certs
+      # are issued/renewed.
+      storage: /var/traefik/acme/acme.json
       httpChallenge:
         entryPoint: web
 {{ end }}

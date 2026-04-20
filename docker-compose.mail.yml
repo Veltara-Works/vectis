@@ -177,7 +177,7 @@ services:
     volumes:
       - ./var/generated/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./var/generated/traefik/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
-      - traefik-acme:/etc/traefik/acme
+      - traefik-acme:/var/traefik/acme
     networks:
       - vectis-frontend
     healthcheck:

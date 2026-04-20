@@ -13,7 +13,7 @@ services:
       - "443:443"
     volumes:
       - traefik-config:/etc/traefik:ro
-      - traefik-acme:/etc/traefik/acme
+      - traefik-acme:/var/traefik/acme
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 10s
