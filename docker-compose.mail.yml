@@ -1,5 +1,7 @@
-# Vectis Mail Server — Integration Test Compose
-# Tests end-to-end mail flow: Postfix → LMTP → Dovecot → Maildir
+# Vectis Mail Server — Production Compose
+# Vectis service images pinned to a released version on ghcr.io/veltara-works/.
+# To deploy a new version: bump all five vectis-* image tags below, then
+# `docker compose pull && docker compose up -d`.
 
 services:
   postgres:
@@ -44,7 +46,7 @@ services:
       - vectis-data
 
   postfix:
-    image: vectis-postfix:dev
+    image: ghcr.io/veltara-works/vectis-postfix:v0.1.0-rc3
     container_name: vectis-postfix
     hostname: mail.vectismail.com
     restart: unless-stopped
@@ -74,7 +76,7 @@ services:
       - vectis-data
 
   dovecot:
-    image: vectis-dovecot:dev
+    image: ghcr.io/veltara-works/vectis-dovecot:v0.1.0-rc3
     container_name: vectis-dovecot
     restart: unless-stopped
     ports:
@@ -94,7 +96,7 @@ services:
       - vectis-data
 
   rspamd:
-    image: vectis-rspamd:dev
+    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.0-rc3
     container_name: vectis-rspamd
     restart: unless-stopped
     volumes:
@@ -109,7 +111,7 @@ services:
       - vectis-data
 
   api:
-    image: vectis-api:dev
+    image: ghcr.io/veltara-works/vectis-api:v0.1.0-rc3
     container_name: vectis-api
     restart: unless-stopped
     ports:
@@ -138,7 +140,7 @@ services:
       - vectis-orchestrator
 
   orchestrator:
-    image: vectis-orchestrator:dev
+    image: ghcr.io/veltara-works/vectis-orchestrator:v0.1.0-rc3
     container_name: vectis-orchestrator
     restart: unless-stopped
     environment:
