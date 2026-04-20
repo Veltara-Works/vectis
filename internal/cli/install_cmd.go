@@ -16,6 +16,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/engine"
 	"github.com/Veltara-Works/vectis/internal/logging"
 	"github.com/Veltara-Works/vectis/internal/repository"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 )
 
@@ -184,9 +185,20 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		dbHost, secrets.Database.Port, secrets.Database.Name,
 		secrets.Database.APIUser, secrets.Database.APIPassword,
 	)
-	pool, err := database.NewPool(ctx, dbCfg, logger)
-	if err != nil {
-		fail("cannot connect to database at %s:%d: %s", dbHost, secrets.Database.Port, err)
+
+	// Belt-and-braces: even with a TCP-aware healthcheck, on slow VPSes
+	// docker-proxy can take a beat to bind the published port after the
+	// container reports healthy. Retry briefly before giving up.
+	var pool *pgxpool.Pool
+	for attempt := 1; attempt <= 15; attempt++ {
+		pool, err = database.NewPool(ctx, dbCfg, logger)
+		if err == nil {
+			break
+		}
+		if attempt == 15 {
+			fail("cannot connect to database at %s:%d after %d attempts: %s", dbHost, secrets.Database.Port, attempt, err)
+		}
+		time.Sleep(2 * time.Second)
 	}
 	defer pool.Close()
 

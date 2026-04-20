@@ -165,6 +165,8 @@ func TestPostgresBootstrap(t *testing.T) {
 		`VECTIS_API_PASSWORD: "secret_api"`,
 		`/var/vectis/generated/postgres/init-users.sh:/docker-entrypoint-initdb.d/01-init-users.sh:ro`,
 		`"127.0.0.1:5432:5432"`,
+		// Healthcheck must hit TCP — see template comment.
+		`pg_isready -h 127.0.0.1`,
 	}
 	for _, c := range checks {
 		if !strings.Contains(compose, c) {
