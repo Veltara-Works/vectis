@@ -1,3 +1,11 @@
+FROM node:22-alpine AS web-builder
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 FROM golang:1.25-alpine AS builder
 
 ARG VERSION=dev
@@ -16,6 +24,7 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata wget postgresql17-client tar
 
 COPY --from=builder /vectis /usr/local/bin/vectis
+COPY --from=web-builder /web/dist /usr/share/vectis/web
 
 # Config and data volumes
 VOLUME ["/etc/vectis", "/var/vectis/mail", "/var/vectis/dkim"]
@@ -26,4 +35,4 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
     CMD wget -q --spider http://localhost:8080/api/v1/health || exit 1
 
 ENTRYPOINT ["vectis"]
-CMD ["serve"]
+CMD ["serve", "--web-dir=/usr/share/vectis/web"]

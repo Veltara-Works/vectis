@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/engine"
@@ -51,6 +53,18 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	cfg, secrets, err := config.LoadAll(configDir)
 	if err != nil {
 		fail("%s", err)
+	}
+
+	// Refuse to install with the placeholder hostname. Otherwise the
+	// generated traefik router binds to `mail.example.com`, Let's Encrypt
+	// attempts a cert for a domain the user doesn't own, and the admin UI
+	// is permanently unreachable because there is no matching DNS record.
+	if cfg.Hostname == "" || strings.HasSuffix(cfg.Hostname, ".example.com") || cfg.Hostname == "example.com" {
+		fail("config.yaml 'hostname' is still the placeholder (%q).\n\n"+
+			"  Edit %s/config.yaml and set 'hostname' to the FQDN that points at this\n"+
+			"  server (e.g. mail.yourdomain.com). Also set 'tls.email' to the address\n"+
+			"  Let's Encrypt should use for renewal reminders. Then re-run `vectis install`.",
+			cfg.Hostname, configDir)
 	}
 	done()
 
@@ -212,7 +226,10 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 	done()
 
-	// Print success banner
+	// Print success banner. The host-level DNS records are shown here so a
+	// first-time user can get the admin UI reachable without hunting through
+	// docs. Per-mail-domain records (MX / SPF / DKIM / DMARC) are emitted by
+	// `vectis domain add` because they don't exist yet on a fresh install.
 	fmt.Fprintln(cmd.OutOrStdout())
 	fmt.Fprintln(cmd.OutOrStdout(), "═══════════════════════════════════════════")
 	fmt.Fprintln(cmd.OutOrStdout(), "  Vectis is ready!")
@@ -223,13 +240,69 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "  (see 'Creating initial admin account' output above for")
 	fmt.Fprintln(cmd.OutOrStdout(), "   the generated admin password, if one was created)")
 	fmt.Fprintln(cmd.OutOrStdout())
+
+	printHostnameDNS(cmd, cfg.Hostname)
+
+	fmt.Fprintln(cmd.OutOrStdout())
 	fmt.Fprintln(cmd.OutOrStdout(), "  Next steps:")
-	fmt.Fprintln(cmd.OutOrStdout(), "  1. Log in to the admin panel")
-	fmt.Fprintln(cmd.OutOrStdout(), "  2. Add your DNS records (shown in Deliverability section)")
-	fmt.Fprintln(cmd.OutOrStdout(), "  3. Create your first domain and mailbox")
+	fmt.Fprintln(cmd.OutOrStdout(), "  1. Publish the records above at your DNS provider")
+	fmt.Fprintln(cmd.OutOrStdout(), "  2. Wait for DNS to propagate, then open the Admin URL")
+	fmt.Fprintln(cmd.OutOrStdout(), "  3. Add your first mail domain — 'vectis domain add'")
+	fmt.Fprintln(cmd.OutOrStdout(), "     will print the MX / SPF / DKIM / DMARC records you need")
+	fmt.Fprintln(cmd.OutOrStdout(), "     to publish for that sending domain.")
 	fmt.Fprintln(cmd.OutOrStdout(), "═══════════════════════════════════════════")
 
 	return nil
+}
+
+// printHostnameDNS emits the records a first-time installer needs at the
+// registrar before the admin UI is reachable: the A record for the Vectis
+// hostname and a reminder that PTR (reverse DNS) lives at the VPS provider,
+// not the registrar. Public-IP lookup is best-effort — if it fails we print
+// a placeholder so the user knows what shape to fill in.
+func printHostnameDNS(cmd *cobra.Command, hostname string) {
+	publicIP := detectPublicIP()
+	ipField := publicIP
+	if ipField == "" {
+		ipField = "<this server's public IPv4>"
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout(), "  DNS records you must publish now:")
+	fmt.Fprintln(cmd.OutOrStdout())
+	fmt.Fprintf(cmd.OutOrStdout(), "    A     %s.   →  %s\n", hostname, ipField)
+	fmt.Fprintln(cmd.OutOrStdout())
+	fmt.Fprintln(cmd.OutOrStdout(), "  Also at your VPS provider (not the registrar):")
+	fmt.Fprintf(cmd.OutOrStdout(), "    PTR   %s   →  %s.\n", ipField, hostname)
+	fmt.Fprintln(cmd.OutOrStdout(), "    (required for outbound mail to avoid being rejected as spam)")
+
+	if publicIP == "" {
+		fmt.Fprintln(cmd.OutOrStdout())
+		fmt.Fprintln(cmd.OutOrStdout(), "  Note: public IP auto-detection failed — substitute your VPS's")
+		fmt.Fprintln(cmd.OutOrStdout(), "  public IPv4 for the placeholder above.")
+	}
+}
+
+// detectPublicIP asks a handful of well-known IP-echo endpoints for this
+// server's public IPv4. Returns "" if all of them fail or give nonsense.
+// Kept best-effort and tightly time-bounded — the banner has to print in a
+// few seconds even on a flaky egress path.
+func detectPublicIP() string {
+	endpoints := []string{
+		"https://api.ipify.org",
+		"https://ifconfig.me/ip",
+		"https://icanhazip.com",
+	}
+	for _, url := range endpoints {
+		out, err := exec.Command("curl", "-fsS", "--max-time", "3", "-4", url).Output()
+		if err != nil {
+			continue
+		}
+		ip := strings.TrimSpace(string(out))
+		if net.ParseIP(ip) != nil && !strings.Contains(ip, ":") {
+			return ip
+		}
+	}
+	return ""
 }
 
 // composeRunAPI returns the `docker compose run` invocation that executes
