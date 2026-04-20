@@ -136,7 +136,6 @@ if [ -f "$VECTIS_DIR/secrets.yaml.example" ] && [ ! -f "$CONFIG_DIR/secrets.yaml
     chmod 600 "$CONFIG_DIR/secrets.yaml"
 
     API_SECRET=$(openssl rand -hex 32)
-    ADMIN_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
     DB_SUPER_PASS=$(openssl rand -hex 16)
     DB_API_PASS=$(openssl rand -hex 16)
     DB_PF_PASS=$(openssl rand -hex 16)
@@ -151,9 +150,14 @@ if [ -f "$VECTIS_DIR/secrets.yaml.example" ] && [ ! -f "$CONFIG_DIR/secrets.yaml
     sed -i "s/CHANGE_ME_dovecot_password/$DB_DC_PASS/" "$CONFIG_DIR/secrets.yaml"
     sed -i "s/CHANGE_ME_valkey_password/$VK_PASS/" "$CONFIG_DIR/secrets.yaml"
     sed -i "s/CHANGE_ME_at_least_32_characters_long_random_string/$API_SECRET/" "$CONFIG_DIR/secrets.yaml"
-    sed -i "s/CHANGE_ME_admin_password/$ADMIN_PASS/" "$CONFIG_DIR/secrets.yaml"
     sed -i "s/CHANGE_ME_orchestrator_bearer_token/$ORCH_TOKEN/" "$CONFIG_DIR/secrets.yaml"
     sed -i "s/CHANGE_ME_backup_key/$BACKUP_KEY/" "$CONFIG_DIR/secrets.yaml"
+
+    # Deliberately leave CHANGE_ME_admin_password alone — `vectis admin init`
+    # (during `vectis install`) generates the admin password itself and
+    # prints it once in the success banner, BinaryLane-style. Seeding a
+    # random value here would hide the password from that banner because
+    # admin init would treat the secrets.yaml value as "user-set".
 
     info "Generated random secrets in $CONFIG_DIR/secrets.yaml"
 fi
@@ -184,6 +188,13 @@ set_config_tls_email() {
     # is preserved.
     local new="$1"
     sed -i -E "s|^(\\s*)email:\\s+[^[:space:]#]+@[^[:space:]#]+(\\s*#.*)?$|\\1email: $new\\2|" "$CONFIG_DIR/config.yaml"
+}
+
+set_secrets_admin_email() {
+    # Rewrites the `admin_email:` line in secrets.yaml. Only touches lines
+    # that already have an address value (not block headers).
+    local new="$1"
+    sed -i -E "s|^(\\s*)admin_email:\\s+[^[:space:]#]+@[^[:space:]#]+(\\s*#.*)?$|\\1admin_email: $new\\2|" "$CONFIG_DIR/secrets.yaml"
 }
 
 current_hostname=$(config_hostname_value)
@@ -272,7 +283,8 @@ if [ "$current_hostname" = "mail.example.com" ] || [ -z "$current_hostname" ]; t
     fi
     if [ -n "$EMAIL_INPUT" ]; then
         set_config_tls_email "$EMAIL_INPUT"
-        info "Set tls.email → $EMAIL_INPUT in $CONFIG_DIR/config.yaml"
+        set_secrets_admin_email "$EMAIL_INPUT"
+        info "Set tls.email + admin_email → $EMAIL_INPUT"
     fi
 fi
 

@@ -243,7 +243,11 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "     not written to disk, and it will not be recoverable.")
 		fmt.Fprintln(cmd.OutOrStdout(), "     Change it immediately after your first login.")
 	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), "  Admin password: (the one you set in secrets.yaml — admin already existed)")
+		fmt.Fprintln(cmd.OutOrStdout(), "  Admin password: (admin already existed — this install left it unchanged)")
+		fmt.Fprintln(cmd.OutOrStdout())
+		fmt.Fprintln(cmd.OutOrStdout(), "  If you have lost it, generate a new one with:")
+		fmt.Fprintf(cmd.OutOrStdout(), "    docker compose -f %s run --rm \\\n", composeDst)
+		fmt.Fprintln(cmd.OutOrStdout(), "      --no-deps --entrypoint vectis api admin reset-password")
 	}
 	fmt.Fprintln(cmd.OutOrStdout())
 
