@@ -25,4 +25,9 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     -- from PUBLIC by default; without an explicit grant, the very first
     -- migration fails with "permission denied for schema public".
     GRANT CREATE ON SCHEMA public TO vectis_api;
+
+    -- Extensions can only be created by a superuser (or by a role with
+    -- CREATE on the database for "trusted" extensions). Create the ones
+    -- the migrations need here so vectis_api never has to.
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
 EOSQL
