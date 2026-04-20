@@ -164,9 +164,18 @@ func TestPostgresBootstrap(t *testing.T) {
 		`POSTGRES_DB: "vectis"`,
 		`VECTIS_API_PASSWORD: "secret_api"`,
 		`/var/vectis/generated/postgres/init-users.sh:/docker-entrypoint-initdb.d/01-init-users.sh:ro`,
-		`"127.0.0.1:5432:5432"`,
-		// Healthcheck must hit TCP — see template comment.
+		// Healthcheck must hit TCP — see template comment. Port publishing
+		// was removed: vectis-data is internal: true and Docker silently
+		// drops `ports:` on internal networks, so host-side connections
+		// were never viable. Bootstrap work runs in-container instead.
 		`pg_isready -h 127.0.0.1`,
+	}
+
+	// Postgres must not expose a published port on any host interface —
+	// doing so would be a silent no-op today (vectis-data is internal)
+	// and a security regression the day we lift that constraint.
+	if strings.Contains(compose, `127.0.0.1:5432:5432`) {
+		t.Error("postgres should not publish 5432 on the host; run bootstrap via docker compose run")
 	}
 	for _, c := range checks {
 		if !strings.Contains(compose, c) {

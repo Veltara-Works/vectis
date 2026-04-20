@@ -352,12 +352,10 @@ services:
     restart: unless-stopped
     networks:
       - vectis-data
-    # Bind to loopback only so the host-side `vectis` binary can run
-    # migrations against `127.0.0.1:5432` without exposing Postgres to
-    # the public interface. In-container clients still reach it as
-    # `postgres:5432` over the vectis-data network.
-    ports:
-      - "127.0.0.1:5432:5432"
+    # No host port publishing: `vectis-data` is `internal: true`, which
+    # makes Docker silently drop any `ports:` directive. Host-side tooling
+    # (migrations, admin seeding) therefore runs in a one-shot container
+    # attached to this network — see install_cmd.go and vectis admin init.
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: "{{ .Database.SuperuserPassword }}"
@@ -371,8 +369,9 @@ services:
     # Healthcheck must hit TCP, not the unix socket: during first-start
     # postgres runs init scripts against a temp server bound only to the
     # socket, so a socket-only `pg_isready` reports healthy before the
-    # 5432 listener is up. Forcing -h 127.0.0.1 ensures the host-side
-    # migration step in `vectis install` can actually connect.
+    # 5432 listener is up. Forcing -h 127.0.0.1 guarantees that downstream
+    # containers waiting on `condition: service_healthy` only unblock once
+    # the real TCP listener is accepting connections.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U postgres -d {{ .Database.Name }}"]
       interval: 5s

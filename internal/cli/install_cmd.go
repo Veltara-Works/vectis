@@ -1,22 +1,16 @@
 package cli
 
 import (
-	"context"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"time"
 
-	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/config"
-	"github.com/Veltara-Works/vectis/internal/database"
 	"github.com/Veltara-Works/vectis/internal/engine"
-	"github.com/Veltara-Works/vectis/internal/logging"
-	"github.com/Veltara-Works/vectis/internal/repository"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 )
 
@@ -128,12 +122,14 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	done()
 
 	// Step 6: Move generated docker-compose.yml into place. Must happen before
-	// any `docker compose -f` invocation below.
+	// any `docker compose -f` invocation below. Always writes to the canonical
+	// /opt/vectis location so `vectis status`, ops runbooks, and manual
+	// operators all share a single compose path regardless of --config-dir.
 	printStep("Writing docker-compose.yml")
 	composeSrc := filepath.Join(genDir, "docker-compose.yml")
-	composeDst := filepath.Join(filepath.Dir(configDir), "docker-compose.yml")
-	if composeDst == "/docker-compose.yml" {
-		composeDst = "/opt/vectis/docker-compose.production.yml"
+	composeDst := "/opt/vectis/docker-compose.production.yml"
+	if err := os.MkdirAll(filepath.Dir(composeDst), 0755); err != nil {
+		fail("creating %s: %s", filepath.Dir(composeDst), err)
 	}
 	composeContent, err := os.ReadFile(composeSrc)
 	if err != nil {
@@ -169,69 +165,37 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 	done()
 
-	// Step 9: Run database migrations. Connect via 127.0.0.1 because the
-	// generated compose publishes Postgres on the loopback interface; the
-	// `postgres` hostname only resolves inside the vectis-data Docker network.
+	// Step 9: Run database migrations inside a one-shot api container on the
+	// vectis-data network. The host cannot reach Postgres directly because
+	// vectis-data is `internal: true` — Docker silently drops any port
+	// publish from internal networks, so all DB-touching bootstrap work
+	// runs in-container where `postgres` resolves over Docker DNS.
 	printStep("Running database migrations")
-	logger := logging.NewLogger("warn")
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	dbHost := secrets.Database.Host
-	if dbHost == "postgres" {
-		dbHost = "127.0.0.1"
-	}
-	dbCfg := database.ConfigFromSecrets(
-		dbHost, secrets.Database.Port, secrets.Database.Name,
-		secrets.Database.APIUser, secrets.Database.APIPassword,
-	)
-
-	// Belt-and-braces: even with a TCP-aware healthcheck, on slow VPSes
-	// docker-proxy can take a beat to bind the published port after the
-	// container reports healthy. Retry briefly before giving up.
-	var pool *pgxpool.Pool
-	for attempt := 1; attempt <= 15; attempt++ {
-		pool, err = database.NewPool(ctx, dbCfg, logger)
-		if err == nil {
-			break
-		}
-		if attempt == 15 {
-			fail("cannot connect to database at %s:%d after %d attempts: %s", dbHost, secrets.Database.Port, attempt, err)
-		}
-		time.Sleep(2 * time.Second)
-	}
-	defer pool.Close()
-
-	if err := database.RunMigrations(dbCfg.DSN(), logger); err != nil {
+	migrateArgs := composeRunAPI(composeDst, "vectis", "migrate", "up")
+	runMigrate := exec.Command(migrateArgs[0], migrateArgs[1:]...)
+	runMigrate.Stdout = os.Stdout
+	runMigrate.Stderr = os.Stderr
+	if err := runMigrate.Run(); err != nil {
 		fail("migration failed: %s", err)
 	}
 	done()
 
-	// Step 10: Seed the initial admin account
+	// Step 10: Seed the initial admin account via the same one-shot path.
+	// `vectis admin init` is idempotent: no-op if the admin already exists,
+	// otherwise creates it (and prints a generated password when the secrets
+	// file still carries the placeholder).
 	printStep("Creating initial admin account")
-	adminRepo := repository.NewAdminRepo(pool)
-
-	existing, _ := adminRepo.GetByEmail(ctx, secrets.API.AdminEmail)
-	adminPassword := secrets.API.AdminPassword
-
-	if existing == nil {
-		if adminPassword == "CHANGE_ME_admin_password" {
-			adminPassword = generateRandomPassword(16)
-		}
-
-		hash, err := auth.HashPassword(adminPassword)
-		if err != nil {
-			fail("hashing admin password: %s", err)
-		}
-
-		_, err = adminRepo.Create(ctx, repository.AdminCreate{
-			Email:        secrets.API.AdminEmail,
-			PasswordHash: hash,
-		})
-		if err != nil {
-			fail("creating admin: %s", err)
-		}
+	adminArgs := composeRunAPI(composeDst, "vectis", "admin", "init")
+	runAdmin := exec.Command(adminArgs[0], adminArgs[1:]...)
+	var adminOut bytes.Buffer
+	runAdmin.Stdout = &adminOut
+	runAdmin.Stderr = os.Stderr
+	if err := runAdmin.Run(); err != nil {
+		fail("admin init failed: %s", err)
 	}
+	// Surface any generated password line to the caller.
+	adminOutput := adminOut.String()
+	fmt.Fprint(cmd.OutOrStdout(), adminOutput)
 	done()
 
 	// Step 11: Bring up the rest of the stack. Postgres is already healthy;
@@ -255,13 +219,9 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(cmd.OutOrStdout())
 	fmt.Fprintf(cmd.OutOrStdout(), "  Admin URL:   https://%s/admin\n", cfg.Hostname)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Admin email: %s\n", secrets.API.AdminEmail)
-	if existing == nil {
-		fmt.Fprintf(cmd.OutOrStdout(), "  Password:    %s\n", adminPassword)
-		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintln(cmd.OutOrStdout(), "  IMPORTANT: Change this password immediately.")
-	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), "  (admin account already exists)")
-	}
+	fmt.Fprintln(cmd.OutOrStdout())
+	fmt.Fprintln(cmd.OutOrStdout(), "  (see 'Creating initial admin account' output above for")
+	fmt.Fprintln(cmd.OutOrStdout(), "   the generated admin password, if one was created)")
 	fmt.Fprintln(cmd.OutOrStdout())
 	fmt.Fprintln(cmd.OutOrStdout(), "  Next steps:")
 	fmt.Fprintln(cmd.OutOrStdout(), "  1. Log in to the admin panel")
@@ -270,6 +230,19 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "═══════════════════════════════════════════")
 
 	return nil
+}
+
+// composeRunAPI returns the `docker compose run` invocation that executes
+// the given command inside a transient api container on the same networks
+// as the running stack. The api image's entrypoint is `vectis`, so args[0]
+// must be "vectis" or a sibling binary baked into the image.
+func composeRunAPI(composePath string, args ...string) []string {
+	return append([]string{
+		"docker", "compose", "-f", composePath,
+		"run", "--rm", "--no-deps",
+		"--entrypoint", args[0],
+		"api",
+	}, args[1:]...)
 }
 
 // configureFail2ban installs and configures Fail2ban with jails for SSH and
