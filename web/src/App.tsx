@@ -74,30 +74,65 @@ export default function App() {
             {n.label}
           </Link>
         ))}
-        <a href="#" onClick={e => { e.preventDefault(); api.logout().then(() => { setLoggedIn(false); setAdmin(null) }) }}
-          style={{ marginTop: 'auto', position: 'absolute', bottom: '1rem', left: 0, right: 0 }}>
-          Logout
-        </a>
       </nav>
-      <main className="main">
-        <Routes>
-          <Route path="/admin" element={<DashboardPage />} />
-          <Route path="/admin/setup" element={<SetupWizardPage />} />
-          <Route path="/admin/domains" element={<DomainsPage />} />
-          <Route path="/admin/mailboxes" element={<MailboxesPage />} />
-          <Route path="/admin/aliases" element={<AliasesPage />} />
-          <Route path="/admin/messages" element={<MessagesPage />} />
-          <Route path="/admin/deliverability" element={<DeliverabilityPage />} />
-          <Route path="/admin/filters" element={<FilterRulesPage />} />
-          {isAdminOrAbove && <Route path="/admin/admins" element={<AdminsPage />} />}
-          {isAdminOrAbove && <Route path="/admin/audit" element={<AuditLogPage />} />}
-          {isSuperAdmin && <Route path="/admin/logs" element={<LogSearchPage />} />}
-          {isSuperAdmin && <Route path="/admin/updates" element={<UpdatesPage />} />}
-          {isSuperAdmin && <Route path="/admin/backups" element={<BackupsPage />} />}
-          <Route path="/admin/sessions" element={<SessionsPage />} />
-          <Route path="*" element={<Navigate to="/admin" />} />
-        </Routes>
-      </main>
+      <div className="main-wrap">
+        <header className="topbar">
+          <AccountMenu
+            email={admin?.email ?? ''}
+            role={admin?.role ?? ''}
+            onLogout={() => api.logout().then(() => { setLoggedIn(false); setAdmin(null) })}
+          />
+        </header>
+        <main className="main">
+          <Routes>
+            <Route path="/admin" element={<DashboardPage />} />
+            <Route path="/admin/setup" element={<SetupWizardPage />} />
+            <Route path="/admin/domains" element={<DomainsPage />} />
+            <Route path="/admin/mailboxes" element={<MailboxesPage />} />
+            <Route path="/admin/aliases" element={<AliasesPage />} />
+            <Route path="/admin/messages" element={<MessagesPage />} />
+            <Route path="/admin/deliverability" element={<DeliverabilityPage />} />
+            <Route path="/admin/filters" element={<FilterRulesPage />} />
+            {isAdminOrAbove && <Route path="/admin/admins" element={<AdminsPage />} />}
+            {isAdminOrAbove && <Route path="/admin/audit" element={<AuditLogPage />} />}
+            {isSuperAdmin && <Route path="/admin/logs" element={<LogSearchPage />} />}
+            {isSuperAdmin && <Route path="/admin/updates" element={<UpdatesPage />} />}
+            {isSuperAdmin && <Route path="/admin/backups" element={<BackupsPage />} />}
+            <Route path="/admin/sessions" element={<SessionsPage />} />
+            <Route path="*" element={<Navigate to="/admin" />} />
+          </Routes>
+        </main>
+      </div>
+    </div>
+  )
+}
+
+function AccountMenu({ email, role, onLogout }: { email: string; role: string; onLogout: () => void }) {
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    if (!open) return
+    const close = () => setOpen(false)
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [open])
+  return (
+    <div className="account-menu" onClick={e => e.stopPropagation()}>
+      <button className="account-menu-trigger" onClick={() => setOpen(o => !o)} aria-haspopup="menu" aria-expanded={open}>
+        <span className="account-menu-email-text">{email || 'Account'}</span>
+        <span className="account-menu-caret" aria-hidden>▾</span>
+      </button>
+      {open && (
+        <div className="account-menu-dropdown" role="menu">
+          <div className="account-menu-header">
+            <div className="account-menu-label">Signed in as</div>
+            <div className="account-menu-email">{email}</div>
+            {role && <div className="account-menu-role">{role}</div>}
+          </div>
+          <button className="account-menu-item" role="menuitem" onClick={() => { setOpen(false); onLogout() }}>
+            Logout
+          </button>
+        </div>
+      )}
     </div>
   )
 }

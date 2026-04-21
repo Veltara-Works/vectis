@@ -29,6 +29,7 @@ body {
   border-right: 1px solid var(--border);
   padding: 1.5rem 0;
   flex-shrink: 0;
+  position: relative;
 }
 
 .sidebar h1 {
@@ -50,7 +51,70 @@ body {
   background: var(--bg-input);
 }
 
+.main-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+.topbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 0.65rem 2rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
 .main { flex: 1; padding: 2rem; overflow-x: auto; }
+
+.account-menu { position: relative; }
+
+.account-menu-trigger {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: inherit;
+}
+.account-menu-trigger:hover { background: var(--bg-card); }
+.account-menu-email-text { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-menu-caret { color: var(--text-muted); font-size: 0.7rem; }
+
+.account-menu-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 240px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  overflow: hidden;
+}
+.account-menu-header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.account-menu-label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.account-menu-email { font-size: 0.875rem; color: var(--text); word-break: break-all; }
+.account-menu-role { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.15rem; }
+.account-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 0.6rem 1rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+.account-menu-item:hover { background: var(--bg-input); }
 
 .page-title { font-size: 1.5rem; margin-bottom: 1.5rem; }
 
