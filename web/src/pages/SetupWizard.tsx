@@ -51,9 +51,15 @@ export default function SetupWizard() {
   const [checks, setChecks] = useState<Check[]>([])
   const [checkLoading, setCheckLoading] = useState(false)
 
+  // Server hostname (for the "Connect your device" panel) — fetched once
+  // from /config so the IMAP/SMTP host is the actual server FQDN, not a
+  // guess based on the mail-domain name.
+  const [serverHost, setServerHost] = useState('')
+
   // Load existing state to determine starting step
   useEffect(() => {
     loadState()
+    api.getConfig().then(c => setServerHost(c.config.hostname)).catch(() => {})
   }, [])
 
   const loadState = async () => {
@@ -435,7 +441,7 @@ export default function SetupWizard() {
               <label>Username</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <input value={mbForm.local_part} onChange={e => setMbForm({ ...mbForm, local_part: e.target.value })}
-                  placeholder="e.g. admin" required autoFocus style={{ flex: 1 }} />
+                  placeholder="e.g. john.doe" required autoFocus style={{ flex: 1 }} />
                 <span className="text-muted">@{activeDomain.name}</span>
               </div>
             </div>
@@ -516,6 +522,60 @@ export default function SetupWizard() {
               )}
             </div>
           ))}
+
+          {mailboxes.length > 0 && serverHost && (
+            <div className="card">
+              <h3 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Connect Your Mail App</h3>
+              <p className="text-muted mb-1">
+                Use these settings in Outlook, Apple Mail, Thunderbird, or any
+                IMAP/SMTP client. SSL/TLS is recommended — the alternative
+                (STARTTLS on 587/143) works but is less robust on flaky networks.
+              </p>
+              <div className="card" style={{ background: 'var(--bg-input)', marginBottom: '0.75rem' }}>
+                <strong>Secure SSL/TLS Settings (Recommended)</strong>
+                <table style={{ marginTop: '0.5rem', width: '100%' }}>
+                  <tbody>
+                    <tr>
+                      <td className="text-muted" style={{ width: '180px', verticalAlign: 'top' }}>Username</td>
+                      <td className="mono">{mailboxes[0].local_part}@{activeDomain.name}</td>
+                    </tr>
+                    <tr>
+                      <td className="text-muted" style={{ verticalAlign: 'top' }}>Password</td>
+                      <td>The mailbox password you set when creating it.</td>
+                    </tr>
+                    <tr>
+                      <td className="text-muted" style={{ verticalAlign: 'top' }}>Incoming Server</td>
+                      <td>
+                        <div className="mono">{serverHost}</div>
+                        <div className="mono text-muted" style={{ fontSize: '0.85rem' }}>IMAP Port: 993 &nbsp;&nbsp; POP3 Port: 995</div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="text-muted" style={{ verticalAlign: 'top' }}>Outgoing Server</td>
+                      <td>
+                        <div className="mono">{serverHost}</div>
+                        <div className="mono text-muted" style={{ fontSize: '0.85rem' }}>SMTP Port: 465 (SSL) or 587 (STARTTLS)</div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="text-muted">Authentication</td>
+                      <td>Required for IMAP, POP3, and SMTP.</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <button className="btn btn-sm mt-1" onClick={() => copyToClipboard(
+                  `Username: ${mailboxes[0].local_part}@${activeDomain.name}\nIncoming (IMAP/SSL): ${serverHost}:993\nIncoming (POP3/SSL): ${serverHost}:995\nOutgoing (SMTP/SSL): ${serverHost}:465\nOutgoing (SMTP/STARTTLS): ${serverHost}:587`,
+                  'connect'
+                )}>
+                  {copied === 'connect' ? 'Copied!' : 'Copy All Settings'}
+                </button>
+              </div>
+              <p className="text-muted" style={{ fontSize: '0.85rem' }}>
+                <strong>IMAP vs POP3:</strong> IMAP keeps mail in sync across devices (read on phone, marked read on laptop too).
+                POP3 downloads mail to one device only — older clients sometimes default to it. <strong>Use IMAP unless you have a specific reason not to.</strong>
+              </p>
+            </div>
+          )}
 
           {allPassed && (
             <div className="card" style={{ borderColor: 'var(--success)' }}>

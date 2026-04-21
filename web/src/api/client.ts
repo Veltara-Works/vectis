@@ -87,6 +87,10 @@ export const api = {
 
   // Config
   applyConfig: () => request<{ message: string }>('POST', '/config/apply'),
+  getConfig: () =>
+    request<{
+      config: { hostname: string; tls?: { provider?: string; email?: string } }
+    }>('GET', '/config'),
 
   // Admins
   listAdmins: () =>

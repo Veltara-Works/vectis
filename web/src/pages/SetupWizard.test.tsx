@@ -12,6 +12,7 @@ vi.mock('../api/client', () => ({
     verifyDomain: vi.fn(),
     createMailbox: vi.fn(),
     deliverability: vi.fn(),
+    getConfig: vi.fn(),
   },
 }))
 
@@ -20,6 +21,7 @@ const mockApi = vi.mocked(api)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockApi.getConfig.mockResolvedValue({ config: { hostname: 'mail.example.com' } })
 })
 
 describe('SetupWizard', () => {
