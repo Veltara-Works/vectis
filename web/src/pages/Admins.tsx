@@ -129,7 +129,8 @@ export default function AdminsPage() {
               <label>Role</label>
               <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}>
                 <option value="admin">admin</option>
-                <option value="superadmin">superadmin</option>
+                <option value="super_admin">super_admin</option>
+                <option value="domain_admin">domain_admin</option>
               </select>
             </div>
             <button className="btn" type="submit">Create Admin</button>
