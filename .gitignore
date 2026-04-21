@@ -35,6 +35,9 @@ desktop.ini
 # Claude Code local config
 .claude/
 
+# Playwright MCP scratch dir
+.playwright-mcp/
+
 # Auto-provisioner (local tool, not part of Vectis repo)
 full_auto_provisioner_setup/
 
