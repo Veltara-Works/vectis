@@ -222,8 +222,12 @@ func (s *Server) handleDeliverability(w http.ResponseWriter, r *http.Request) {
 
 	var checks []deliverabilityCheck
 
-	// MX record check
-	mxRecords, err := net.LookupMX(domain.Name)
+	// MX record check. Docker's embedded DNS resolver (127.0.0.11) has
+	// known flakiness forwarding MX queries — go straight to a public
+	// resolver so deliverability results match what remote senders see.
+	dnsCtx, dnsCancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer dnsCancel()
+	mxRecords, err := publicDNSResolver.LookupMX(dnsCtx, domain.Name)
 	if err != nil || len(mxRecords) == 0 {
 		checks = append(checks, deliverabilityCheck{
 			Name:   "MX",
@@ -242,8 +246,8 @@ func (s *Server) handleDeliverability(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// SPF record check
-	txtRecords, _ := net.LookupTXT(domain.Name)
+	// SPF record check — public resolver for consistency with MX above.
+	txtRecords, _ := publicDNSResolver.LookupTXT(dnsCtx, domain.Name)
 	spfFound := false
 	for _, txt := range txtRecords {
 		if strings.HasPrefix(txt, "v=spf1") {
@@ -267,7 +271,7 @@ func (s *Server) handleDeliverability(w http.ResponseWriter, r *http.Request) {
 	// DKIM record check
 	if domain.DKIMKeyPath != nil && *domain.DKIMKeyPath != "" {
 		dkimHost := fmt.Sprintf("%s._domainkey.%s", domain.DKIMSelector, domain.Name)
-		dkimTxt, _ := net.LookupTXT(dkimHost)
+		dkimTxt, _ := publicDNSResolver.LookupTXT(dnsCtx, dkimHost)
 		dkimFound := false
 		for _, txt := range dkimTxt {
 			if strings.Contains(txt, "v=DKIM1") {
@@ -296,7 +300,7 @@ func (s *Server) handleDeliverability(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// DMARC record check
-	dmarcTxt, _ := net.LookupTXT("_dmarc." + domain.Name)
+	dmarcTxt, _ := publicDNSResolver.LookupTXT(dnsCtx, "_dmarc."+domain.Name)
 	dmarcFound := false
 	for _, txt := range dmarcTxt {
 		if strings.HasPrefix(txt, "v=DMARC1") {
