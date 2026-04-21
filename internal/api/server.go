@@ -563,6 +563,7 @@ func (s *Server) buildRouter() chi.Router {
 			// Admins — super_admin only for mutations.
 			r.Get("/admins", s.handleListAdmins)
 			r.With(requireSuperAdmin()).Post("/admins", s.handleCreateAdmin)
+			r.With(requireSuperAdmin()).Patch("/admins/{adminID}", s.handleUpdateAdmin)
 			r.With(requireSuperAdmin()).Delete("/admins/{adminID}", s.handleDeleteAdmin)
 
 			// Sending API — all roles (domain scoping enforced in handler).

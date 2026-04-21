@@ -100,6 +100,8 @@ export const api = {
     }>>('GET', '/admins'),
   createAdmin: (email: string, password: string, role?: string) =>
     request<{ id: string; email: string; role: string }>('POST', '/admins', { email, password, role }),
+  updateAdmin: (id: string, patch: { email?: string; password?: string; role?: string; domain_ids?: string[]; totp_code?: string }) =>
+    request<{ id: string; email: string; role: string; totp_enabled: boolean; created_at: string; last_login_at?: string }>('PATCH', `/admins/${id}`, patch),
   deleteAdmin: (id: string) => {
     return fetch(`${BASE}/admins/${id}`, {
       method: 'DELETE',

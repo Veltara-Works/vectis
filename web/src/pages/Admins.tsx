@@ -14,9 +14,55 @@ export default function AdminsPage() {
   const [success, setSuccess] = useState('')
   const [totpURI, setTotpURI] = useState('')
   const [totpCode, setTotpCode] = useState('')
+  const [editTarget, setEditTarget] = useState<Admin | null>(null)
+  const [editForm, setEditForm] = useState({ email: '', role: 'admin', password: '', totp_code: '' })
+  const [currentAdminTotp, setCurrentAdminTotp] = useState(false)
 
   const load = () => api.listAdmins().then(d => setAdmins(d || [])).catch(() => setError('Failed to load admins'))
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    api.me().then(m => setCurrentAdminTotp(m.totp_enabled)).catch(() => {})
+  }, [])
+
+  const openEdit = (a: Admin) => {
+    setEditTarget(a)
+    setEditForm({ email: a.email, role: a.role, password: '', totp_code: '' })
+    setError(''); setSuccess('')
+  }
+
+  const closeEdit = () => {
+    setEditTarget(null)
+    setEditForm({ email: '', role: 'admin', password: '', totp_code: '' })
+  }
+
+  const handleEdit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!editTarget) return
+    setError(''); setSuccess('')
+
+    const patch: { email?: string; password?: string; role?: string; totp_code?: string } = {}
+    if (editForm.email !== editTarget.email) patch.email = editForm.email
+    if (editForm.role !== editTarget.role) patch.role = editForm.role
+    if (editForm.password) patch.password = editForm.password
+    if (currentAdminTotp && editForm.totp_code) patch.totp_code = editForm.totp_code
+
+    if (Object.keys(patch).length === 0) {
+      setError('No changes to save')
+      return
+    }
+
+    try {
+      await api.updateAdmin(editTarget.id, patch)
+      const changedPassword = !!patch.password
+      setSuccess(changedPassword
+        ? `Admin ${editTarget.email} updated (password reset)`
+        : `Admin ${editTarget.email} updated`)
+      closeEdit()
+      load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to update admin')
+    }
+  }
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault()
@@ -112,6 +158,45 @@ export default function AdminsPage() {
         </div>
       )}
 
+      {editTarget && (
+        <div className="card">
+          <h3 className="mb-1" style={{ marginTop: 0 }}>Edit admin — {editTarget.email}</h3>
+          <p className="text-muted mb-1">Update email, role, or set a new password. Leave the password field blank to keep the current one.</p>
+          <form onSubmit={handleEdit}>
+            <div className="form-group">
+              <label>Email</label>
+              <input type="email" value={editForm.email} onChange={e => setEditForm({ ...editForm, email: e.target.value })} required autoFocus />
+            </div>
+            <div className="form-group">
+              <label>Role</label>
+              <select value={editForm.role} onChange={e => setEditForm({ ...editForm, role: e.target.value })}>
+                <option value="admin">admin</option>
+                <option value="super_admin">super_admin</option>
+                <option value="domain_admin">domain_admin</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>New Password <span className="text-muted">(optional)</span></label>
+              <input type="password" value={editForm.password}
+                onChange={e => setEditForm({ ...editForm, password: e.target.value })}
+                placeholder="Leave blank to keep current password" autoComplete="new-password" />
+            </div>
+            {currentAdminTotp && (
+              <div className="form-group">
+                <label>Your TOTP code</label>
+                <input type="text" value={editForm.totp_code}
+                  onChange={e => setEditForm({ ...editForm, totp_code: e.target.value })}
+                  placeholder="6-digit code" required maxLength={6} pattern="[0-9]{6}" inputMode="numeric"
+                  autoComplete="one-time-code" />
+                <small className="text-muted">Required because you have TOTP enabled on your own account.</small>
+              </div>
+            )}
+            <button className="btn" type="submit">Save Changes</button>
+            <button type="button" className="btn btn-sm" style={{ marginLeft: '0.5rem' }} onClick={closeEdit}>Cancel</button>
+          </form>
+        </div>
+      )}
+
       {showAdd && (
         <div className="card">
           <form onSubmit={handleAdd}>
@@ -162,6 +247,7 @@ export default function AdminsPage() {
                   {a.totp_enabled && (
                     <button className="btn btn-sm btn-danger" style={{ marginRight: '0.5rem' }} onClick={handleTotpDisable}>Disable TOTP</button>
                   )}
+                  <button className="btn btn-sm" style={{ marginRight: '0.5rem' }} onClick={() => openEdit(a)}>Edit</button>
                   <button className="btn btn-sm btn-danger" onClick={() => handleDelete(a.id, a.email)}>Delete</button>
                 </td>
               </tr>
