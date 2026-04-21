@@ -89,6 +89,50 @@ describe('AdminsPage', () => {
     })
   })
 
+  it('generates a password and puts it in the field', async () => {
+    mockApi.listAdmins.mockResolvedValue([
+      { id: '42', email: 'admin@test.com', role: 'admin', totp_enabled: false, created_at: '2026-01-01' },
+    ])
+
+    const { container } = render(<AdminsPage />)
+    await waitFor(() => expect(screen.getByText('admin@test.com')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }))
+
+    const pwInput = container.querySelector('input[placeholder*="Leave blank"]') as HTMLInputElement
+    expect(pwInput.value).toBe('')
+
+    fireEvent.click(screen.getByRole('button', { name: /^Generate$/ }))
+
+    expect(pwInput.value.length).toBeGreaterThanOrEqual(16)
+    // generator reveals the value so the admin can verify/copy it
+    expect(pwInput.type).toBe('text')
+  })
+
+  it('copy button writes password to clipboard and shows feedback', async () => {
+    mockApi.listAdmins.mockResolvedValue([
+      { id: '42', email: 'admin@test.com', role: 'admin', totp_enabled: false, created_at: '2026-01-01' },
+    ])
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+
+    const { container } = render(<AdminsPage />)
+    await waitFor(() => expect(screen.getByText('admin@test.com')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Generate$/ }))
+
+    const pwInput = container.querySelector('input[placeholder*="Leave blank"]') as HTMLInputElement
+    const generated = pwInput.value
+
+    fireEvent.click(screen.getByRole('button', { name: /^Copy$/ }))
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(generated)
+      expect(screen.getByRole('button', { name: /Copied!/ })).toBeInTheDocument()
+    })
+  })
+
   it('requires TOTP code when acting admin has TOTP enabled', async () => {
     mockApi.me.mockResolvedValue({ id: 'self', email: 'me@test.com', role: 'super_admin', totp_enabled: true })
     mockApi.listAdmins.mockResolvedValue([

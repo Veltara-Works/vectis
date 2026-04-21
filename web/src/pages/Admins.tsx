@@ -6,6 +6,64 @@ interface Admin {
   created_at: string; last_login_at?: string;
 }
 
+const PW_ALPHABET = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+export function generatePassword(len = 20): string {
+  const buf = new Uint32Array(len)
+  crypto.getRandomValues(buf)
+  let out = ''
+  for (let i = 0; i < len; i++) out += PW_ALPHABET[buf[i] % PW_ALPHABET.length]
+  return out
+}
+
+function PasswordInput({ value, onChange, placeholder, required, autoFocus }: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  required?: boolean
+  autoFocus?: boolean
+}) {
+  const [show, setShow] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const handleGenerate = () => {
+    onChange(generatePassword())
+    setShow(true)
+  }
+  const handleCopy = async () => {
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+    } catch {
+      // clipboard API unavailable — no-op; user can still read the revealed value
+    }
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1800)
+  }
+
+  return (
+    <>
+      <input
+        type={show ? 'text' : 'password'}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete="new-password"
+        required={required}
+        autoFocus={autoFocus}
+      />
+      <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+        <button type="button" className="btn btn-sm" onClick={handleGenerate}>Generate</button>
+        <button type="button" className="btn btn-sm" onClick={handleCopy} disabled={!value}>
+          {copied ? 'Copied!' : 'Copy'}
+        </button>
+        <button type="button" className="btn btn-sm" onClick={() => setShow(s => !s)} disabled={!value}>
+          {show ? 'Hide' : 'Show'}
+        </button>
+      </div>
+    </>
+  )
+}
+
 export default function AdminsPage() {
   const [admins, setAdmins] = useState<Admin[]>([])
   const [showAdd, setShowAdd] = useState(false)
@@ -177,9 +235,11 @@ export default function AdminsPage() {
             </div>
             <div className="form-group">
               <label>New Password <span className="text-muted">(optional)</span></label>
-              <input type="password" value={editForm.password}
-                onChange={e => setEditForm({ ...editForm, password: e.target.value })}
-                placeholder="Leave blank to keep current password" autoComplete="new-password" />
+              <PasswordInput
+                value={editForm.password}
+                onChange={v => setEditForm({ ...editForm, password: v })}
+                placeholder="Leave blank to keep current password"
+              />
             </div>
             {currentAdminTotp && (
               <div className="form-group">
