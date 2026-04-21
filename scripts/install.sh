@@ -219,21 +219,32 @@ if [ "$current_hostname" = "mail.example.com" ] || [ -z "$current_hostname" ]; t
     # tool is present (Ubuntu Server minimal doesn't ship them). Falling
     # back to getent only happens if the apt install is also unavailable.
     if ! command -v dig &>/dev/null && ! command -v host &>/dev/null; then
-        apt-get install -y -qq dnsutils >/dev/null 2>&1 || true
+        info "Installing dnsutils for PTR lookup..."
+        apt-get update -qq 2>/dev/null || true
+        if apt-get install -y -qq dnsutils 2>&1 | tail -3; then
+            :
+        else
+            warn "apt-get install dnsutils failed — PTR detection may fall back to /etc/hosts"
+        fi
     fi
 
     DETECTED_FQDN=""
+    DETECTED_VIA=""
     if [ -n "$PUBLIC_IP" ]; then
         if command -v dig &>/dev/null; then
             DETECTED_FQDN=$(dig +short +time=2 +tries=1 -x "$PUBLIC_IP" @1.1.1.1 2>/dev/null | sed 's/\.$//' | head -1)
+            [ -n "$DETECTED_FQDN" ] && DETECTED_VIA="dig @1.1.1.1"
         fi
         if [ -z "$DETECTED_FQDN" ] && command -v host &>/dev/null; then
             DETECTED_FQDN=$(host "$PUBLIC_IP" 1.1.1.1 2>/dev/null | awk '/pointer/ {print $NF}' | sed 's/\.$//' | head -1)
+            [ -n "$DETECTED_FQDN" ] && DETECTED_VIA="host @1.1.1.1"
         fi
         if [ -z "$DETECTED_FQDN" ]; then
-            # Last resort — may return the /etc/hosts fiction; better than nothing
-            # if both dig and host are unavailable and apt couldn't install them.
+            # Last resort — getent reads /etc/hosts first which on most VPSes
+            # contains a cloud-init line `<public-ip> <short-hostname>`. Flag
+            # the source so the operator knows the default isn't authoritative.
             DETECTED_FQDN=$(getent hosts "$PUBLIC_IP" 2>/dev/null | awk '{print $2}' | head -1)
+            [ -n "$DETECTED_FQDN" ] && DETECTED_VIA="getent hosts (may be /etc/hosts entry — verify against your VPS panel)"
         fi
     fi
 
@@ -261,7 +272,7 @@ if [ "$current_hostname" = "mail.example.com" ] || [ -z "$current_hostname" ]; t
         warn "Could not detect public IPv4 — set the hostname manually below."
     fi
     if [ -n "$DETECTED_FQDN" ]; then
-        info "Reverse DNS (PTR): $DETECTED_FQDN"
+        info "Reverse DNS (PTR): $DETECTED_FQDN  [via $DETECTED_VIA]"
     else
         warn "No usable PTR found for this IP — set reverse DNS at your VPS provider for production."
     fi
