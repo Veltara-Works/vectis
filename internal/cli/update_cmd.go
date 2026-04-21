@@ -111,7 +111,7 @@ func runUpdatePlan(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if plan.NoUpdates {
+	if plan.IsEmpty() {
 		fmt.Fprintln(cmd.OutOrStdout(), "No updates available.")
 		return nil
 	}
@@ -119,39 +119,23 @@ func runUpdatePlan(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "Update plan generated:")
 	fmt.Fprintln(cmd.OutOrStdout())
 
-	if len(plan.ContainerChanges) > 0 {
+	if len(plan.Changes) > 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "  Container changes:")
-		for _, c := range plan.ContainerChanges {
-			fmt.Fprintf(cmd.OutOrStdout(), "    %-12s %s -> %s\n", c.Service+":", c.CurrentTag, c.NewTag)
-		}
-		fmt.Fprintln(cmd.OutOrStdout())
-	}
-
-	if len(plan.Migrations) > 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "  Database migrations:")
-		for _, m := range plan.Migrations {
-			kind := "non-destructive"
-			if m.Destructive {
-				kind = "DESTRUCTIVE"
+		for _, c := range plan.Changes {
+			switch {
+			case c.OldImage != "" && c.NewImage != "":
+				fmt.Fprintf(cmd.OutOrStdout(), "    %-12s %s  %s -> %s\n", c.Service+":", c.Type, c.OldImage, c.NewImage)
+			case c.NewImage != "":
+				fmt.Fprintf(cmd.OutOrStdout(), "    %-12s %s  %s\n", c.Service+":", c.Type, c.NewImage)
+			default:
+				fmt.Fprintf(cmd.OutOrStdout(), "    %-12s %s  %s\n", c.Service+":", c.Type, c.Detail)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "    %s (%s)\n", m.Name, kind)
 		}
 		fmt.Fprintln(cmd.OutOrStdout())
 	}
 
-	if len(plan.ConfigChanges) > 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "  Config changes:")
-		for _, c := range plan.ConfigChanges {
-			fmt.Fprintf(cmd.OutOrStdout(), "    %s\n", c)
-		}
-		fmt.Fprintln(cmd.OutOrStdout())
-	}
-
-	if len(plan.Warnings) > 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "  Warnings:")
-		for _, w := range plan.Warnings {
-			fmt.Fprintf(cmd.OutOrStdout(), "    ! %s\n", w)
-		}
+	if plan.MigrationsUp > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "  Database migrations: %d pending\n", plan.MigrationsUp)
 		fmt.Fprintln(cmd.OutOrStdout())
 	}
 

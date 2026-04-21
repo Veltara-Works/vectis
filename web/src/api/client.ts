@@ -137,7 +137,20 @@ export const api = {
   orchestratorStatus: () =>
     request<{ state: string; current_operation?: string; last_operation?: string }>('GET', '/orchestrator/status'),
   orchestratorPlan: () =>
-    request<{ plan: string; changes: Array<{ service: string; action: string; detail?: string }> }>('POST', '/orchestrator/plan'),
+    request<{
+      id: string;
+      created_at: string;
+      config_hash: string;
+      baseline_versions?: Record<string, string>;
+      changes: Array<{
+        service: string;
+        type: string;
+        old_image?: string;
+        new_image?: string;
+        detail?: string;
+      }>;
+      migrations_up: number;
+    }>('POST', '/orchestrator/plan'),
   orchestratorApply: (force?: boolean) =>
     request<{ message: string; steps?: Array<{ service: string; status: string }> }>('POST', `/orchestrator/apply${force ? '?force=true' : ''}`),
   orchestratorRollback: () =>

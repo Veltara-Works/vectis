@@ -10,8 +10,21 @@ interface HistoryEntry {
   error?: string; started_at: string; completed_at?: string; admin_id?: string;
 }
 
+interface PlanChange {
+  service: string;
+  type: string; // "create" | "update" | "remove" | "config" | "migrate"
+  old_image?: string;
+  new_image?: string;
+  detail?: string;
+}
+
 interface PlanResult {
-  plan: string; changes: Array<{ service: string; action: string; detail?: string }>;
+  id: string;
+  created_at: string;
+  config_hash: string;
+  baseline_versions?: Record<string, string>;
+  changes: PlanChange[];
+  migrations_up: number;
 }
 
 interface ApplyResult {
@@ -144,25 +157,29 @@ export default function UpdatesPage() {
           {plan.changes && plan.changes.length > 0 ? (
             <table>
               <thead>
-                <tr><th>Service</th><th>Action</th><th>Detail</th></tr>
+                <tr><th>Service</th><th>Action</th><th>Change</th></tr>
               </thead>
               <tbody>
                 {plan.changes.map((c, i) => (
                   <tr key={i}>
                     <td><strong>{c.service}</strong></td>
-                    <td><span className="badge">{c.action}</span></td>
-                    <td className="text-muted">{c.detail || '-'}</td>
+                    <td><span className="badge">{c.type}</span></td>
+                    <td className="text-muted mono" style={{ fontSize: '0.85rem' }}>
+                      {c.old_image && c.new_image
+                        ? `${c.old_image}  →  ${c.new_image}`
+                        : c.new_image || c.detail || '-'}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          ) : (
+          ) : plan.migrations_up > 0 ? null : (
             <p className="text-muted">No changes needed — all services are up to date.</p>
           )}
-          {plan.plan && (
-            <pre style={{ marginTop: '1rem', padding: '0.75rem', background: '#1a1a2e', borderRadius: '0.375rem', overflow: 'auto', fontSize: '0.85rem' }}>
-              {plan.plan}
-            </pre>
+          {plan.migrations_up > 0 && (
+            <p className="text-muted" style={{ marginTop: '0.75rem' }}>
+              Database migrations pending: <strong>{plan.migrations_up}</strong>
+            </p>
           )}
         </div>
       )}

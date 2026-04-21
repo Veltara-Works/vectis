@@ -165,11 +165,16 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 	// the Change list. Services with mismatched image refs get a PlanChange.
 	// Services not declared in compose (e.g. webmail on some deploys) are
 	// skipped — they aren't orchestrator-managed.
-	desired, desiredErr := o.docker.composeImages(ctx)
-	if desiredErr != nil {
-		o.logger.Warn("could not read compose images, plan.Changes will be empty",
-			"error", desiredErr,
-		)
+	//
+	// A failure to read the compose file MUST be a hard error: silently
+	// returning an empty plan used to surface as "all services up to date"
+	// in the UI, which gave users a false sense of currency when in fact
+	// the orchestrator couldn't see their compose at all (see
+	// deferred-items.md §10 blocker #4).
+	desired, err := o.docker.composeImages(ctx)
+	if err != nil {
+		o.sm.Transition(ctx, StateFailed) //nolint:errcheck
+		return nil, fmt.Errorf("read compose images: %w", err)
 	}
 
 	var changes []PlanChange

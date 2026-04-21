@@ -48,29 +48,11 @@ func NewMTLSClient(baseURL string, tlsConfig *tls.Config) *Client {
 
 // --- Response types ---
 
-// PlanResult contains the output of an update plan operation.
-type PlanResult struct {
-	ID               string           `json:"id"`
-	CreatedAt        time.Time        `json:"created_at"`
-	ContainerChanges []ContainerDiff  `json:"container_changes,omitempty"`
-	Migrations       []MigrationInfo  `json:"migrations,omitempty"`
-	ConfigChanges    []string         `json:"config_changes,omitempty"`
-	Warnings         []string         `json:"warnings,omitempty"`
-	NoUpdates        bool             `json:"no_updates"`
-}
-
-// ContainerDiff describes a version change for a single container image.
-type ContainerDiff struct {
-	Service    string `json:"service"`
-	CurrentTag string `json:"current_tag"`
-	NewTag     string `json:"new_tag"`
-}
-
-// MigrationInfo describes a pending database migration.
-type MigrationInfo struct {
-	Name        string `json:"name"`
-	Destructive bool   `json:"destructive"`
-}
+// The Plan type is defined in plan.go and is the single canonical shape of a
+// plan response — the orchestrator server, the API HTTP client, the CLI, and
+// the admin UI all consume it directly. Previously a duplicate PlanResult
+// struct lived here with mismatched JSON tags, which silently ate drift
+// detection end-to-end (see deferred-items.md §10).
 
 // ApplyResult contains the output of an update apply operation.
 type ApplyResult struct {
@@ -121,7 +103,7 @@ type StatusResult struct {
 type planEnvelope struct {
 	State string `json:"state"`
 	Data  struct {
-		Plan PlanResult `json:"plan"`
+		Plan Plan `json:"plan"`
 	} `json:"data"`
 }
 
@@ -150,7 +132,7 @@ type lastOperation struct {
 }
 
 // Plan requests the orchestrator to generate an update plan.
-func (c *Client) Plan(ctx context.Context) (*PlanResult, error) {
+func (c *Client) Plan(ctx context.Context) (*Plan, error) {
 	var env planEnvelope
 	if err := c.doJSON(ctx, http.MethodPost, "/internal/plan", &env); err != nil {
 		return nil, fmt.Errorf("plan: %w", err)
