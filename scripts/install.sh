@@ -209,16 +209,31 @@ if [ "$current_hostname" = "mail.example.com" ] || [ -z "$current_hostname" ]; t
         fi
     done
 
-    # Reverse-DNS: prefer `getent hosts` (pure glibc, always present on
-    # Ubuntu); fall back to `host` / `dig` if they happen to be installed.
+    # Reverse-DNS lookup. Must hit real DNS, not /etc/hosts: cloud-init on
+    # most VPS providers writes a line like `<public-ip> <short-hostname>`
+    # there, and `getent hosts` would happily return that fiction instead
+    # of the actual PTR record set at the provider's panel.
+    #
+    # Prefer dig/host queried against 1.1.1.1 directly so we bypass both
+    # /etc/hosts and any flaky local resolver. Install dnsutils if neither
+    # tool is present (Ubuntu Server minimal doesn't ship them). Falling
+    # back to getent only happens if the apt install is also unavailable.
+    if ! command -v dig &>/dev/null && ! command -v host &>/dev/null; then
+        apt-get install -y -qq dnsutils >/dev/null 2>&1 || true
+    fi
+
     DETECTED_FQDN=""
     if [ -n "$PUBLIC_IP" ]; then
-        DETECTED_FQDN=$(getent hosts "$PUBLIC_IP" 2>/dev/null | awk '{print $2}' | head -1)
-        if [ -z "$DETECTED_FQDN" ] && command -v host &>/dev/null; then
-            DETECTED_FQDN=$(host "$PUBLIC_IP" 2>/dev/null | awk '/pointer/ {print $NF}' | sed 's/\.$//' | head -1)
+        if command -v dig &>/dev/null; then
+            DETECTED_FQDN=$(dig +short +time=2 +tries=1 -x "$PUBLIC_IP" @1.1.1.1 2>/dev/null | sed 's/\.$//' | head -1)
         fi
-        if [ -z "$DETECTED_FQDN" ] && command -v dig &>/dev/null; then
-            DETECTED_FQDN=$(dig +short +time=2 +tries=1 -x "$PUBLIC_IP" 2>/dev/null | sed 's/\.$//' | head -1)
+        if [ -z "$DETECTED_FQDN" ] && command -v host &>/dev/null; then
+            DETECTED_FQDN=$(host "$PUBLIC_IP" 1.1.1.1 2>/dev/null | awk '/pointer/ {print $NF}' | sed 's/\.$//' | head -1)
+        fi
+        if [ -z "$DETECTED_FQDN" ]; then
+            # Last resort — may return the /etc/hosts fiction; better than nothing
+            # if both dig and host are unavailable and apt couldn't install them.
+            DETECTED_FQDN=$(getent hosts "$PUBLIC_IP" 2>/dev/null | awk '{print $2}' | head -1)
         fi
     fi
 
