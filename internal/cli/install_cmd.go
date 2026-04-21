@@ -282,6 +282,27 @@ func printHostnameDNS(cmd *cobra.Command, hostname string) {
 	fmt.Fprintln(cmd.OutOrStdout(), "  At your domain registrar (GoDaddy, Namecheap, etc.)")
 	fmt.Fprintln(cmd.OutOrStdout(), "  — or Cloudflare if your nameservers point there:")
 	fmt.Fprintf(cmd.OutOrStdout(), "    A     %s.   →  %s\n", hostname, ipField)
+
+	// IPv6 is only suggested when (a) we can reach the v6 internet AND
+	// (b) reverse DNS for that v6 address already resolves back to this
+	// hostname. Publishing AAAA without matching IPv6 PTR causes Gmail
+	// and Outlook to reject mail outright — strictly worse than no AAAA.
+	publicIPv6 := detectPublicIPv6()
+	if publicIPv6 != "" {
+		fmt.Fprintln(cmd.OutOrStdout())
+		if reverseDNSMatches(publicIPv6, hostname) {
+			fmt.Fprintln(cmd.OutOrStdout(), "  IPv6 detected with matching PTR — also publish AAAA:")
+			fmt.Fprintf(cmd.OutOrStdout(), "    AAAA  %s.   →  %s\n", hostname, publicIPv6)
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), "  IPv6 detected but reverse DNS doesn't match this hostname.")
+			fmt.Fprintln(cmd.OutOrStdout(), "  DO NOT publish an AAAA record yet — Gmail/Outlook will")
+			fmt.Fprintln(cmd.OutOrStdout(), "  reject mail when v6 PTR doesn't match the EHLO hostname.")
+			fmt.Fprintf(cmd.OutOrStdout(), "    Detected v6: %s\n", publicIPv6)
+			fmt.Fprintf(cmd.OutOrStdout(), "    Set v6 PTR to %s at your VPS provider, then add:\n", hostname)
+			fmt.Fprintf(cmd.OutOrStdout(), "      AAAA  %s.   →  %s\n", hostname, publicIPv6)
+		}
+	}
+
 	fmt.Fprintln(cmd.OutOrStdout())
 	fmt.Fprintln(cmd.OutOrStdout(), "  At your VPS provider's control panel (NOT the registrar):")
 	fmt.Fprintf(cmd.OutOrStdout(), "    PTR   %s   →  %s.\n", ipField, hostname)
@@ -313,22 +334,60 @@ func parseAdminPassword(output string) string {
 // Kept best-effort and tightly time-bounded — the banner has to print in a
 // few seconds even on a flaky egress path.
 func detectPublicIP() string {
-	endpoints := []string{
-		"https://api.ipify.org",
-		"https://ifconfig.me/ip",
-		"https://icanhazip.com",
+	return detectPublicIPFamily("-4")
+}
+
+// detectPublicIPv6 mirrors detectPublicIP for IPv6. Many VPSes have IPv6
+// addresses but no AAAA published — that's fine, mail still works over
+// v4. Returns "" if no public v6 is reachable, in which case AAAA-related
+// banner output is skipped entirely.
+func detectPublicIPv6() string {
+	return detectPublicIPFamily("-6")
+}
+
+func detectPublicIPFamily(curlFlag string) string {
+	// Family-specific hostnames so curl -4 / -6 succeeds at DNS too.
+	endpoints := map[string][]string{
+		"-4": {"https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"},
+		"-6": {"https://api6.ipify.org", "https://ifconfig.co", "https://ipv6.icanhazip.com"},
 	}
-	for _, url := range endpoints {
-		out, err := exec.Command("curl", "-fsS", "--max-time", "3", "-4", url).Output()
+	for _, url := range endpoints[curlFlag] {
+		out, err := exec.Command("curl", "-fsS", "--max-time", "3", curlFlag, url).Output()
 		if err != nil {
 			continue
 		}
 		ip := strings.TrimSpace(string(out))
-		if net.ParseIP(ip) != nil && !strings.Contains(ip, ":") {
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			continue
+		}
+		isV6 := strings.Contains(ip, ":")
+		if curlFlag == "-4" && !isV6 {
+			return ip
+		}
+		if curlFlag == "-6" && isV6 {
 			return ip
 		}
 	}
 	return ""
+}
+
+// reverseDNSMatches returns true if the IP's PTR record exists and resolves
+// to the given hostname (case-insensitive, trailing-dot tolerant). Used as
+// a guardrail before recommending the operator publish AAAA — IPv6 mail
+// without matching reverse DNS is silently rejected by Gmail/Outlook.
+func reverseDNSMatches(ip, hostname string) bool {
+	out, err := exec.Command("getent", "hosts", ip).Output()
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) < 2 {
+		return false
+	}
+	got := strings.TrimSuffix(strings.ToLower(fields[1]), ".")
+	want := strings.TrimSuffix(strings.ToLower(hostname), ".")
+	return got == want
 }
 
 // composeRunAPI returns the `docker compose run` invocation that executes
