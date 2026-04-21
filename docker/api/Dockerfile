@@ -1,5 +1,11 @@
-FROM node:22-alpine AS web-builder
+FROM node:22 AS web-builder
 
+# Debian-based image (not alpine) so native modules like lightningcss
+# get their glibc binary from npm's optionalDependencies. The Alpine
+# variant intermittently fails because lightningcss-linux-x64-musl
+# isn't always pinned in package-lock and npm ci skips optionals it
+# doesn't know about. Output is static files — base image doesn't
+# matter past the COPY into the alpine stage below.
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
