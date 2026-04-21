@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/engine"
@@ -36,7 +37,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	configDir, _ := cmd.Flags().GetString("config-dir")
 
 	step := 0
-	totalSteps := 11
+	totalSteps := 12
 	printStep := func(msg string) {
 		step++
 		fmt.Fprintf(cmd.OutOrStdout(), "[%d/%d] %s...", step, totalSteps, msg)
@@ -226,6 +227,23 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 	done()
 
+	// Step 12: Traefik tries to issue its Let's Encrypt cert ~3 seconds
+	// into compose-up. If the operator hasn't published their A record
+	// yet — or DNS hasn't propagated — that first ACME attempt fails and
+	// traefik won't retry until the next router request hits, which can
+	// leave the admin URL serving a self-signed cert + tripping HSTS for
+	// hours. Poll DNS for up to 60s; if it's already live, restart
+	// traefik to trigger a fresh cert immediately.
+	printStep("Waiting for DNS to come up so TLS can issue")
+	publicIP := detectPublicIP()
+	dnsLive := waitForHostnameDNS(cfg.Hostname, publicIP, 60*time.Second)
+	if dnsLive {
+		_ = exec.Command("docker", "restart", "vectis-traefik").Run()
+		fmt.Fprintln(cmd.OutOrStdout(), " DNS resolved — triggered cert issuance")
+	} else {
+		fmt.Fprintln(cmd.OutOrStdout(), " DNS not live yet (see banner for retry command)")
+	}
+
 	// Print success banner. The host-level DNS records are shown here so a
 	// first-time user can get the admin UI reachable without hunting through
 	// docs. Per-mail-domain records (MX / SPF / DKIM / DMARC) are emitted by
@@ -260,6 +278,11 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "  3. Add your first mail domain — 'vectis domain add'")
 	fmt.Fprintln(cmd.OutOrStdout(), "     will print the MX / SPF / DKIM / DMARC records you need")
 	fmt.Fprintln(cmd.OutOrStdout(), "     to publish for that sending domain.")
+	fmt.Fprintln(cmd.OutOrStdout())
+	fmt.Fprintln(cmd.OutOrStdout(), "  TLS cert: Let's Encrypt issuance happens automatically as soon")
+	fmt.Fprintln(cmd.OutOrStdout(), "  as DNS is live. If the admin URL shows a cert warning, your DNS")
+	fmt.Fprintln(cmd.OutOrStdout(), "  hadn't propagated when traefik first tried — force a retry with:")
+	fmt.Fprintln(cmd.OutOrStdout(), "    docker restart vectis-traefik")
 	fmt.Fprintln(cmd.OutOrStdout(), "═══════════════════════════════════════════")
 
 	return nil
@@ -313,6 +336,36 @@ func printHostnameDNS(cmd *cobra.Command, hostname string) {
 		fmt.Fprintln(cmd.OutOrStdout(), "  Note: public IP auto-detection failed — substitute your VPS's")
 		fmt.Fprintln(cmd.OutOrStdout(), "  public IPv4 for the placeholder above.")
 	}
+}
+
+// waitForHostnameDNS polls public DNS until the given hostname resolves
+// to expectedIP, or until timeout. Used after `docker compose up` so the
+// installer can trigger a fresh ACME issuance the moment DNS comes up,
+// rather than letting the operator hit a self-signed cert (which then
+// gets HSTS-pinned in their browser for hours).
+//
+// Resolution goes through the public resolver (1.1.1.1) so /etc/hosts
+// fictions can't pretend DNS is live. expectedIP empty → just check
+// that ANY A record exists.
+func waitForHostnameDNS(hostname, expectedIP string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		out, err := exec.Command("dig", "+short", "+time=2", "+tries=1",
+			"A", hostname, "@1.1.1.1").Output()
+		if err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				ip := strings.TrimSpace(line)
+				if net.ParseIP(ip) == nil {
+					continue
+				}
+				if expectedIP == "" || ip == expectedIP {
+					return true
+				}
+			}
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return false
 }
 
 // parseAdminPassword pulls the `admin_password=...` line out of the
