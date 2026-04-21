@@ -96,6 +96,7 @@ func runAdminInit(cmd *cobra.Command, args []string) error {
 	if _, err := adminRepo.Create(ctx, repository.AdminCreate{
 		Email:        secrets.API.AdminEmail,
 		PasswordHash: hash,
+		Role:         auth.RoleSuperAdmin,
 	}); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error creating admin: %s\n", err)
 		os.Exit(1)
