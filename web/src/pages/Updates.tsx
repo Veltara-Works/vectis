@@ -25,6 +25,8 @@ interface PlanResult {
   baseline_versions?: Record<string, string>;
   changes: PlanChange[];
   migrations_up: number;
+  release_tag?: string;
+  warnings?: string[];
 }
 
 interface ApplyResult {
@@ -154,6 +156,18 @@ export default function UpdatesPage() {
       {plan && (
         <div className="card">
           <h3 className="mb-1">Update Plan</h3>
+          {plan.release_tag && (
+            <p className="text-muted" style={{ marginBottom: '0.75rem' }}>
+              Release channel target: <strong className="mono">{plan.release_tag}</strong>
+            </p>
+          )}
+          {plan.warnings && plan.warnings.length > 0 && (
+            <div className="alert alert-warning" style={{ marginBottom: '0.75rem' }}>
+              {plan.warnings.map((w, i) => (
+                <div key={i}>⚠ {w}</div>
+              ))}
+            </div>
+          )}
           {plan.changes && plan.changes.length > 0 ? (
             <table>
               <thead>

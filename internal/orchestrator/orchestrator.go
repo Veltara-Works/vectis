@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -177,6 +178,35 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 		return nil, fmt.Errorf("read compose images: %w", err)
 	}
 
+	// Fetch the release-channel manifest and, on success, rewrite every
+	// vectis-* image in `desired` to the lockstep tag. Diff then reports
+	// "you're on rc21, released channel says rc24" — the actual point of
+	// the Updates page for free self-hosted users (§10 blocker #4 goal).
+	//
+	// A fetch failure is non-fatal: Plan still reports compose-vs-running
+	// drift from local state alone, with a warning attached so the user
+	// knows the result may be stale. Unlike compose-read failures (which
+	// produce a wholly-wrong plan), a missing release channel just means
+	// we can't tell the user about newer versions — the local plan is
+	// still correct for what it can see.
+	var releaseTag string
+	var warnings []string
+	if o.cfg.ReleaseChannelURL != "" {
+		releaseCtx, releaseCancel := context.WithTimeout(ctx, 10*time.Second)
+		m, ferr := fetchReleaseManifest(releaseCtx, &http.Client{}, o.cfg.ReleaseChannelURL)
+		releaseCancel()
+		if ferr != nil {
+			o.logger.Warn("release channel fetch failed; planning from local compose only",
+				"url", o.cfg.ReleaseChannelURL, "error", ferr)
+			warnings = append(warnings, fmt.Sprintf("release channel unavailable: %v (plan shows local compose-vs-running drift only)", ferr))
+		} else {
+			releaseTag = m.Latest
+			for svc, img := range desired {
+				desired[svc] = rewriteReleaseTag(img, m.Latest)
+			}
+		}
+	}
+
 	var changes []PlanChange
 	for _, svc := range ServiceStartOrder {
 		declared, ok := desired[svc]
@@ -206,6 +236,8 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 		BaselineVersions: versions,
 		Changes:          changes,
 		MigrationsUp:     o.detectPendingMigrations(),
+		ReleaseTag:       releaseTag,
+		Warnings:         warnings,
 	}
 
 	// Record the operation.

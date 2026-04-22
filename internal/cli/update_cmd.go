@@ -113,10 +113,19 @@ func runUpdatePlan(cmd *cobra.Command, args []string) error {
 
 	if plan.IsEmpty() {
 		fmt.Fprintln(cmd.OutOrStdout(), "No updates available.")
+		for _, w := range plan.Warnings {
+			fmt.Fprintf(cmd.OutOrStdout(), "  ! %s\n", w)
+		}
 		return nil
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout(), "Update plan generated:")
+	if plan.ReleaseTag != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "  Release channel target: %s\n", plan.ReleaseTag)
+	}
+	for _, w := range plan.Warnings {
+		fmt.Fprintf(cmd.OutOrStdout(), "  ! %s\n", w)
+	}
 	fmt.Fprintln(cmd.OutOrStdout())
 
 	if len(plan.Changes) > 0 {

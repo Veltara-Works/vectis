@@ -150,6 +150,8 @@ export const api = {
         detail?: string;
       }>;
       migrations_up: number;
+      release_tag?: string;
+      warnings?: string[];
     }>('POST', '/orchestrator/plan'),
   orchestratorApply: (force?: boolean) =>
     request<{ message: string; steps?: Array<{ service: string; status: string }> }>('POST', `/orchestrator/apply${force ? '?force=true' : ''}`),

@@ -135,6 +135,16 @@ func run(logger *slog.Logger) error {
 		}
 	}
 
+	// VECTIS_ORCH_RELEASE_CHANNEL_URL lets the operator point the Plan step
+	// at a custom release manifest. Useful for airgapped installs pointing at
+	// an internal mirror, or tests pointing at a local httptest server. An
+	// empty value disables release-channel discovery entirely (Plan then only
+	// reports local compose-vs-running drift).
+	if raw := os.Getenv("VECTIS_ORCH_RELEASE_CHANNEL_URL"); raw != "" {
+		orchCfg.ReleaseChannelURL = strings.TrimSpace(raw)
+		logger.Info("overriding release channel URL from env", "url", orchCfg.ReleaseChannelURL)
+	}
+
 	orch, err := orchestrator.New(ctx, dbPool, vkClient, orchCfg, logger.With("component", "orchestrator"))
 	if err != nil {
 		return fmt.Errorf("init orchestrator: %w", err)

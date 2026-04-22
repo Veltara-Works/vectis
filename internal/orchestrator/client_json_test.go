@@ -34,6 +34,8 @@ func TestPlan_ClientEnvelopeRoundTrip(t *testing.T) {
 			},
 		},
 		MigrationsUp: 2,
+		ReleaseTag:   "v0.1.0-rc24",
+		Warnings:     []string{"release channel unavailable: network timeout"},
 	}
 
 	// Marshal the wire shape that server.go:handlePlan emits.
@@ -71,6 +73,12 @@ func TestPlan_ClientEnvelopeRoundTrip(t *testing.T) {
 	}
 	if len(got.BaselineVersions) != len(original.BaselineVersions) {
 		t.Errorf("BaselineVersions length drift: want %d got %d", len(original.BaselineVersions), len(got.BaselineVersions))
+	}
+	if got.ReleaseTag != original.ReleaseTag {
+		t.Errorf("ReleaseTag drift: want %q got %q", original.ReleaseTag, got.ReleaseTag)
+	}
+	if len(got.Warnings) != len(original.Warnings) || (len(got.Warnings) > 0 && got.Warnings[0] != original.Warnings[0]) {
+		t.Errorf("Warnings drift: want %v got %v", original.Warnings, got.Warnings)
 	}
 }
 

@@ -171,6 +171,39 @@ jobs:
             git log --pretty=format:'- %s (%h)' "$RANGE"
           } > release-notes.md
 
+      - name: Publish release manifest to R2
+        env:
+          VERSION: ${{ github.ref_name }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          # releases.json at the bucket root is consumed by every running
+          # orchestrator during Plan (see internal/orchestrator/releases.go).
+          # Publishing it last — after the binary + all 5 images are live —
+          # avoids a window where the orchestrator advertises a tag whose
+          # images haven't been pushed yet.
+          if [[ "$VERSION" == *-rc* || "$VERSION" == *-beta* ]]; then
+            CHANNEL=rc
+          else
+            CHANNEL=stable
+          fi
+          RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          cat > releases.json <<JSON
+          {
+            "latest": "${VERSION}",
+            "released_at": "${RELEASED_AT}",
+            "channel": "${CHANNEL}"
+          }
+          JSON
+          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+            releases.json "s3://$R2_BUCKET/releases.json" \
+            --content-type application/json \
+            --cache-control "max-age=300"
+
       - uses: softprops/action-gh-release@v2
         with:
           body_path: release-notes.md

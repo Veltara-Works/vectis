@@ -6,12 +6,22 @@ import "time"
 // Computed by Plan() and consumed by Apply(). Becomes stale if the system
 // state changes between plan and apply (Spec D.9).
 type Plan struct {
-	ID                string            `json:"id"`
-	CreatedAt         time.Time         `json:"created_at"`
-	ConfigHash        string            `json:"config_hash"`
-	BaselineVersions  map[string]string `json:"baseline_versions"`
-	Changes           []PlanChange      `json:"changes"`
-	MigrationsUp      int               `json:"migrations_up"`
+	ID               string            `json:"id"`
+	CreatedAt        time.Time         `json:"created_at"`
+	ConfigHash       string            `json:"config_hash"`
+	BaselineVersions map[string]string `json:"baseline_versions"`
+	Changes          []PlanChange      `json:"changes"`
+	MigrationsUp     int               `json:"migrations_up"`
+	// ReleaseTag, if non-empty, is the lockstep target tag fetched from the
+	// release channel during Plan. Changes[] are computed against this tag
+	// (not the compose file's on-disk tags). The UI renders this so users
+	// can see which release the proposed update would land them on.
+	ReleaseTag string `json:"release_tag,omitempty"`
+	// Warnings collects non-fatal issues that the caller should surface to
+	// the user (e.g. release-channel fetch failed, falling back to local
+	// compose). Not a substitute for error returns — hard failures still
+	// propagate as errors per §10 blocker #2.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // PlanChange describes a single change in a plan.
