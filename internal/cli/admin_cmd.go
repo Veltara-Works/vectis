@@ -44,7 +44,7 @@ example when running the installer inside a VPS-provider web terminal
 that truncates scrollback.
 
 Run the same way as 'admin init' — inside a one-shot vectis-api container:
-  docker compose -f /opt/vectis/docker-compose.production.yml run --rm \
+  docker compose -f /etc/vectis/docker-compose.yml run --rm \
     --no-deps --entrypoint vectis api admin reset-password`,
 	RunE: runAdminResetPassword,
 }

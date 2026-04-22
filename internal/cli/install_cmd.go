@@ -138,11 +138,13 @@ func runInstall(cmd *cobra.Command, args []string) error {
 
 	// Step 6: Move generated docker-compose.yml into place. Must happen before
 	// any `docker compose -f` invocation below. Always writes to the canonical
-	// /opt/vectis location so `vectis status`, ops runbooks, and manual
-	// operators all share a single compose path regardless of --config-dir.
+	// /etc/vectis location so the orchestrator, backup flow, `vectis update`,
+	// ops runbooks, and manual operators all share a single compose path.
+	// (Pre-rc25 installs wrote to /opt/vectis/docker-compose.production.yml,
+	// which the orchestrator never looked at — see deferred-items.md §9.)
 	printStep("Writing docker-compose.yml")
 	composeSrc := filepath.Join(genDir, "docker-compose.yml")
-	composeDst := "/opt/vectis/docker-compose.production.yml"
+	composeDst := "/etc/vectis/docker-compose.yml"
 	if err := os.MkdirAll(filepath.Dir(composeDst), 0755); err != nil {
 		fail("creating %s: %s", filepath.Dir(composeDst), err)
 	}
