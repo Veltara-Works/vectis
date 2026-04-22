@@ -104,8 +104,21 @@ type AlertsConfig struct {
 }
 
 // AlertEmailConfig configures email-based alerts.
+//
+// SMTPHost is the "host:port" the alerter dials to submit mail. Empty
+// disables email delivery even when Enabled=true — the api container
+// has no local SMTP listener and the previous hard-coded `127.0.0.1:25`
+// failed silently on every fresh install. Typical values:
+//   - "vectis-postfix:25"  — relay via the bundled Postfix (requires
+//     postfix's mynetworks to include the vectis-data subnet)
+//   - ""                    — disabled; monitor logs a warning once
+//
+// Recipients may be left empty, in which case the alerter falls back
+// to the installer's admin_email so a fresh install doesn't require
+// duplicating the address in two files.
 type AlertEmailConfig struct {
 	Enabled    bool     `yaml:"enabled"`
+	SMTPHost   string   `yaml:"smtp_host"`
 	Recipients []string `yaml:"recipients"`
 }
 

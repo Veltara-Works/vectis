@@ -258,9 +258,17 @@ func (s *Server) Start() error {
 // StartMonitor initialises and starts the background health monitor. It
 // should be called after the server is constructed but before Start().
 func (s *Server) StartMonitor() {
+	// Fall back to the installer's admin email when alerts.email.recipients
+	// is left empty — avoids forcing the operator to write the same address
+	// in two files just to get container-health alerts.
+	emailCfg := s.cfg.Alerts.Email
+	if len(emailCfg.Recipients) == 0 && s.secrets.API.AdminEmail != "" {
+		emailCfg.Recipients = []string{s.secrets.API.AdminEmail}
+	}
+
 	alerter := monitor.NewAlerter(
 		s.alerts,
-		s.cfg.Alerts.Email,
+		emailCfg,
 		s.cfg.Alerts.Webhook,
 		s.hostname,
 		s.logger.With("component", "alerter"),

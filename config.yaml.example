@@ -85,12 +85,21 @@ rate_limits:
 
 # Alerting configuration (Phase 1).
 # Alerts are sent when services fail, disks fill, certs expire, etc.
+#
+# Email is OFF by default — on a fresh install the api container has no
+# local SMTP listener, and turning this on without setting smtp_host to
+# a reachable relay would fail silently. To enable:
+#   1. Set enabled: true
+#   2. Set smtp_host to a reachable SMTP server. Using the bundled Postfix
+#      (`vectis-postfix:25`) works only if you also allow relay from the
+#      vectis-data subnet in the Postfix mynetworks directive.
+#   3. Leave recipients empty to fall back to secrets.yaml api.admin_email,
+#      or list explicit addresses to override.
 alerts:
   email:
-    enabled: true
-    recipients:
-      - admin@example.com
-    # Uses the local Postfix to send (no external SMTP needed)
+    enabled: false
+    smtp_host: ""            # e.g. "vectis-postfix:25" or "smtp.external.example:587"
+    recipients: []           # empty → falls back to secrets.yaml api.admin_email
   webhook:
     enabled: false
     url: ""                  # e.g. https://hooks.slack.com/services/...

@@ -67,6 +67,26 @@ func runInstall(cmd *cobra.Command, args []string) error {
 			"  Let's Encrypt should use for renewal reminders. Then re-run `vectis install`.",
 			cfg.Hostname, configDir)
 	}
+
+	// Same guardrail for tls.email and admin_email — non-interactive
+	// install.sh (cloud-init, airgapped) can't prompt the operator and
+	// leaves the placeholders in place. If we install with those, the
+	// Let's Encrypt ACME account is registered against a bogus address
+	// and all future alert emails go to admin@example.com, which bounces.
+	if cfg.TLS.Provider == "letsencrypt" {
+		if cfg.TLS.Email == "" || isPlaceholderEmail(cfg.TLS.Email) {
+			fail("config.yaml 'tls.email' is still the placeholder (%q).\n\n"+
+				"  Edit %s/config.yaml and set 'tls.email' to a real address you control —\n"+
+				"  Let's Encrypt will send cert-renewal reminders there. Then re-run `vectis install`.",
+				cfg.TLS.Email, configDir)
+		}
+	}
+	if isPlaceholderEmail(secrets.API.AdminEmail) {
+		fail("secrets.yaml 'api.admin_email' is still the placeholder (%q).\n\n"+
+			"  Edit %s/secrets.yaml and set 'api.admin_email' to the address you'll use\n"+
+			"  to log in to the admin UI. Then re-run `vectis install`.",
+			secrets.API.AdminEmail, configDir)
+	}
 	done()
 
 	// Step 2: Reject default-value secrets
@@ -368,6 +388,18 @@ func waitForHostnameDNS(hostname, expectedIP string, timeout time.Duration) bool
 		time.Sleep(3 * time.Second)
 	}
 	return false
+}
+
+// isPlaceholderEmail returns true for addresses that are clearly
+// default-values shipped with the config/secrets examples. Matches any
+// address in the reserved example.com domain (RFC 2606) — both
+// admin@example.com (shipped default) and my@example.com (historical).
+func isPlaceholderEmail(email string) bool {
+	e := strings.ToLower(strings.TrimSpace(email))
+	if e == "" {
+		return false // empty is handled separately so the error message is clearer
+	}
+	return strings.HasSuffix(e, "@example.com")
 }
 
 // parseAdminPassword pulls the `admin_password=...` line out of the

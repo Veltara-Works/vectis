@@ -39,12 +39,14 @@ func DefaultConfig() Config {
 // Monitor runs periodic health checks against all Vectis services and
 // dispatches alerts when thresholds are exceeded.
 type Monitor struct {
-	db      *pgxpool.Pool
-	vk      valkey.Client
-	alerter *Alerter
-	logger  *slog.Logger
-	cfg     Config
-	stopCh  chan struct{}
+	db           *pgxpool.Pool
+	vk           valkey.Client
+	alerter      *Alerter
+	logger       *slog.Logger
+	cfg          Config
+	stopCh       chan struct{}
+	dockerCLI    bool // whether the `docker` CLI is on PATH
+	postfixExec  bool // whether `docker exec vectis-postfix` is viable (implies dockerCLI)
 }
 
 // New creates a new health monitor.
@@ -61,13 +63,28 @@ func New(db *pgxpool.Pool, vk valkey.Client, alerter *Alerter, cfg Config, logge
 	if cfg.CertWarnDays <= 0 {
 		cfg.CertWarnDays = 14
 	}
+
+	// The api image ships without a `docker` CLI on purpose — only the
+	// orchestrator holds the Docker socket. Detect that absence here
+	// and skip the two checks that shell out to docker rather than
+	// emitting spurious ERROR alerts for every service every minute.
+	// Long-term these checks belong in the orchestrator (deferred-items
+	// §10); this is the rc25 stop-gap.
+	_, dockerErr := exec.LookPath("docker")
+	dockerCLI := dockerErr == nil
+	if !dockerCLI {
+		logger.Warn("docker CLI not on PATH — container-health and mail-queue checks will be skipped (expected inside the api container)")
+	}
+
 	return &Monitor{
-		db:      db,
-		vk:      vk,
-		alerter: alerter,
-		logger:  logger,
-		cfg:     cfg,
-		stopCh:  make(chan struct{}),
+		db:          db,
+		vk:          vk,
+		alerter:     alerter,
+		logger:      logger,
+		cfg:         cfg,
+		stopCh:      make(chan struct{}),
+		dockerCLI:   dockerCLI,
+		postfixExec: dockerCLI,
 	}
 }
 
@@ -88,9 +105,13 @@ func (m *Monitor) Stop() {
 func (m *Monitor) RunCheck(ctx context.Context) {
 	m.logger.Debug("running health checks")
 
-	m.checkContainerHealth(ctx)
+	if m.dockerCLI {
+		m.checkContainerHealth(ctx)
+	}
 	m.checkDiskUsage(ctx)
-	m.checkMailQueue(ctx)
+	if m.postfixExec {
+		m.checkMailQueue(ctx)
+	}
 	m.checkCertExpiry(ctx)
 	m.checkPostgres(ctx)
 	m.checkValkey(ctx)

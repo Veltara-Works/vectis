@@ -38,8 +38,17 @@ type Alerter struct {
 	logger     *slog.Logger
 }
 
-// NewAlerter creates a new alert dispatcher.
+// NewAlerter creates a new alert dispatcher. If the email config is
+// enabled but SMTPHost is empty, this logs a single warning at startup
+// and treats email as disabled — the previous behaviour of dialing
+// 127.0.0.1:25 inside the api container always failed silently.
 func NewAlerter(alerts *repository.AlertRepo, emailCfg config.AlertEmailConfig, webhookCfg config.AlertWebhookConfig, hostname string, logger *slog.Logger) *Alerter {
+	if emailCfg.Enabled && emailCfg.SMTPHost == "" {
+		logger.Warn("email alerts enabled but alerts.email.smtp_host is empty — email delivery disabled until set (e.g. 'vectis-postfix:25')")
+	}
+	if emailCfg.Enabled && len(emailCfg.Recipients) == 0 {
+		logger.Warn("email alerts enabled but alerts.email.recipients is empty — email delivery disabled until set")
+	}
 	return &Alerter{
 		alerts:     alerts,
 		emailCfg:   emailCfg,
@@ -47,6 +56,13 @@ func NewAlerter(alerts *repository.AlertRepo, emailCfg config.AlertEmailConfig, 
 		hostname:   hostname,
 		logger:     logger,
 	}
+}
+
+// emailReady reports whether email delivery has a chance of succeeding.
+// Gate every Send/Resolve path through this so we don't dial an empty
+// host or send to zero recipients.
+func (a *Alerter) emailReady() bool {
+	return a.emailCfg.Enabled && a.emailCfg.SMTPHost != "" && len(a.emailCfg.Recipients) > 0
 }
 
 // Send dispatches an alert through configured channels. It deduplicates by
@@ -75,7 +91,7 @@ func (a *Alerter) Send(ctx context.Context, severity, service, message string) {
 	suggestedAction := suggestAction(service)
 
 	// Send via email.
-	if a.emailCfg.Enabled && len(a.emailCfg.Recipients) > 0 {
+	if a.emailReady() {
 		a.sendEmail(severity, service, message, suggestedAction)
 	}
 
@@ -107,7 +123,7 @@ func (a *Alerter) Resolve(ctx context.Context, dedupKey string) {
 
 	recoveryMsg := fmt.Sprintf("RESOLVED: %s is now healthy", service)
 
-	if a.emailCfg.Enabled && len(a.emailCfg.Recipients) > 0 {
+	if a.emailReady() {
 		a.sendEmail("INFO", service, recoveryMsg, "No action required.")
 	}
 
@@ -139,7 +155,7 @@ func (a *Alerter) sendEmail(severity, service, message, suggestedAction string) 
 		body,
 	)
 
-	err := smtp.SendMail("127.0.0.1:25", nil, from, a.emailCfg.Recipients, []byte(msg))
+	err := smtp.SendMail(a.emailCfg.SMTPHost, nil, from, a.emailCfg.Recipients, []byte(msg))
 	if err != nil {
 		a.logger.Error("failed to send alert email",
 			"error", err,
