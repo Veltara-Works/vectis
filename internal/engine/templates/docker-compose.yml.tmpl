@@ -477,7 +477,19 @@ networks:
     internal: false
   vectis-mail:
     driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
-    internal: true
+    # MUST be external: mail by definition flows in/out of the public
+    # internet (inbound port 25, outbound delivery to other MTAs, IMAPS
+    # connections from end-user clients). Docker silently drops `ports:`
+    # directives on containers whose networks are ALL `internal: true`,
+    # so setting this to `true` on vectis-mail meant postfix/dovecot's
+    # host port publishing was never honoured — postfix status +
+    # doveadm service status still reported healthy (their healthchecks
+    # are process-local), but 25/465/587/993/995 weren't bound on the
+    # host. Surfaced rc27 walkthrough on sysadmin1001 — first install
+    # where dovecot actually stayed up long enough for the missing port
+    # bindings to be observable. Do NOT revert to `true` even if it
+    # feels cleaner.
+    internal: false
   vectis-data:
     driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
     internal: true
