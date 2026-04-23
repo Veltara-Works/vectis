@@ -398,6 +398,49 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		}
 	}
 
+	// ===== PHASE 3.5: REWRITE COMPOSE TAGS =====
+	//
+	// The on-disk compose file was written at install time with whatever
+	// release tag was current *then*. Plan's Changes[] carry the target tags
+	// from the release channel. If we skipped this step, `docker compose
+	// pull` at 4.1 would just re-pull whatever's already in the file — so
+	// "Apply v0.1.0-rc29" after a Plan that says "rc28 → rc29" would be a
+	// no-op on a box that was installed at rc28. Surfaced end-to-end
+	// post-rc27 on sysadmin1001.
+	//
+	// Any failure here rolls back (DB + compose), same as every other Apply
+	// phase. The backup path is derived from snapshotPath so rollback can
+	// find it without needing a new persisted field.
+	o.logger.Info("phase 3.5: rewriting compose with target tags", "job_id", jobID)
+
+	composePath := ""
+	if len(o.cfg.ComposePaths) > 0 {
+		composePath = o.cfg.ComposePaths[0]
+	}
+	if composePath != "" {
+		backupPath := composeBackupPathFor(snapshotPath)
+		rewritten, rewriteErr := RewriteComposeTags(composePath, plan.Changes, backupPath)
+		if rewriteErr != nil {
+			o.logger.Error("compose rewrite failed, initiating rollback", "error", rewriteErr)
+			rollbackErr := o.doRollback(applyCtx, snapshotPath)
+			if rollbackErr != nil {
+				o.failApply(applyCtx, opID, jobID, fmt.Sprintf("compose rewrite failed and rollback also failed: rewrite=%v, rollback=%v", rewriteErr, rollbackErr))
+				return "", fmt.Errorf("compose rewrite and rollback both failed: %w", rollbackErr)
+			}
+			_ = o.sm.CompleteOperation(applyCtx, opID, "rolled_back", snapshotPath, fmt.Sprintf("compose rewrite failed: %v", rewriteErr))
+			return jobID, fmt.Errorf("compose rewrite failed, rolled back: %w", rewriteErr)
+		}
+		if rewritten {
+			o.logger.Info("compose rewritten with target tags",
+				"job_id", jobID,
+				"backup", backupPath,
+				"change_count", len(plan.Changes),
+			)
+		} else {
+			o.logger.Info("compose needed no rewrite (tags already match plan)", "job_id", jobID)
+		}
+	}
+
 	// ===== PHASE 4: UPDATE CONTAINERS =====
 	o.logger.Info("phase 4: updating containers", "job_id", jobID)
 
@@ -606,8 +649,18 @@ func (o *Orchestrator) doRollback(ctx context.Context, snapshotPath string) erro
 		return recover(fmt.Errorf("rollback restore database: %w", err))
 	}
 
-	// Phase 3: Apply previous docker-compose (revert containers).
-	o.logger.Info("rollback phase 3: applying previous compose")
+	// Phase 3: Restore the pre-Apply compose file (if Apply rewrote it), then
+	// apply so containers revert to the old image tags. RestoreComposeBackup
+	// is a no-op if the backup file doesn't exist — covers both pre-rc30
+	// snapshots (no backup file) and the Apply-failed-before-rewrite case.
+	o.logger.Info("rollback phase 3: restoring compose backup (if any) and applying")
+	if len(o.cfg.ComposePaths) > 0 {
+		composePath := o.cfg.ComposePaths[0]
+		backupPath := composeBackupPathFor(snapshotPath)
+		if err := RestoreComposeBackup(composePath, backupPath); err != nil {
+			return recover(fmt.Errorf("rollback restore compose: %w", err))
+		}
+	}
 	if err := o.docker.ApplyCompose(ctx); err != nil {
 		return recover(fmt.Errorf("rollback apply compose: %w", err))
 	}
