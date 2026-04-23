@@ -2,8 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -276,9 +279,34 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	printStep("Waiting for DNS to come up so TLS can issue")
 	publicIP := detectPublicIP()
 	dnsLive := waitForHostnameDNS(cfg.Hostname, publicIP, 60*time.Second)
+
+	// leCertOK drives the footer message below. Stays false if DNS wasn't
+	// live (we never even try), or if the verification poll times out
+	// without seeing a trusted cert on :443.
+	leCertOK := false
+	var leCertIssuer, leCertError string
+
 	if dnsLive {
 		_ = exec.Command("docker", "restart", "vectis-traefik").Run()
 		fmt.Fprintln(cmd.OutOrStdout(), " DNS resolved — triggered cert issuance")
+
+		// Verify the issuance actually landed. Before rc31 we just printed
+		// "triggered cert issuance" and called the install done, which was
+		// misleading when LE failed (rate-limited, :80 unreachable, wrong
+		// tls.email, etc.) — the admin URL would serve Traefik's default
+		// self-signed cert and users would blame DNS. Now we poll the local
+		// :443 listener for up to 90s looking for a non-default cert; if
+		// that times out, scrape traefik's logs for the actual ACME error
+		// so operators see a real reason rather than a generic DNS hint.
+		fmt.Fprint(cmd.OutOrStdout(), "  verifying Let's Encrypt issuance (up to 90s)...")
+		leCertIssuer = waitForTrustedCert(cfg.Hostname, 90*time.Second)
+		if leCertIssuer != "" {
+			leCertOK = true
+			fmt.Fprintf(cmd.OutOrStdout(), " issued by %s\n", leCertIssuer)
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), " not yet")
+			leCertError = scrapeTraefikACMEError()
+		}
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), " DNS not live yet (see banner for retry command)")
 	}
@@ -323,10 +351,28 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "     will print the MX / SPF / DKIM / DMARC records you need")
 	fmt.Fprintln(cmd.OutOrStdout(), "     to publish for that sending domain.")
 	fmt.Fprintln(cmd.OutOrStdout())
-	fmt.Fprintln(cmd.OutOrStdout(), "  TLS cert: Let's Encrypt issuance happens automatically as soon")
-	fmt.Fprintln(cmd.OutOrStdout(), "  as DNS is live. If the admin URL shows a cert warning, your DNS")
-	fmt.Fprintln(cmd.OutOrStdout(), "  hadn't propagated when traefik first tried — force a retry with:")
-	fmt.Fprintln(cmd.OutOrStdout(), "    docker restart vectis-traefik")
+	// TLS footer varies based on what actually happened with cert issuance.
+	// Happy path (leCertOK): one-line confirmation, issuer name named.
+	// Failed path (leCertError != ""): surface the actual ACME error so
+	// the operator can act on it instead of guessing at DNS propagation.
+	// Unknown path (!dnsLive or verification timed out without a log hit):
+	// fall back to the old generic hint.
+	switch {
+	case leCertOK:
+		fmt.Fprintf(cmd.OutOrStdout(), "  TLS cert: issued by %s — admin URL is trusted and ready.\n", leCertIssuer)
+	case leCertError != "":
+		fmt.Fprintln(cmd.OutOrStdout(), red("  TLS cert: Let's Encrypt did NOT issue a cert. Traefik says:"))
+		fmt.Fprintf(cmd.OutOrStdout(), "    %s\n", leCertError)
+		fmt.Fprintln(cmd.OutOrStdout(), "  Full log: docker logs vectis-traefik")
+		fmt.Fprintln(cmd.OutOrStdout(), "  Common causes: LE rate-limited, port 80 unreachable from")
+		fmt.Fprintln(cmd.OutOrStdout(), "  the internet, or tls.email in config.yaml invalid.")
+		fmt.Fprintln(cmd.OutOrStdout(), "  Fix the underlying issue, then: docker restart vectis-traefik")
+	default:
+		fmt.Fprintln(cmd.OutOrStdout(), "  TLS cert: Let's Encrypt issuance happens automatically as soon")
+		fmt.Fprintln(cmd.OutOrStdout(), "  as DNS is live. If the admin URL shows a cert warning, your DNS")
+		fmt.Fprintln(cmd.OutOrStdout(), "  hadn't propagated when traefik first tried — force a retry with:")
+		fmt.Fprintln(cmd.OutOrStdout(), "    docker restart vectis-traefik")
+	}
 	fmt.Fprintln(cmd.OutOrStdout(), "═══════════════════════════════════════════")
 
 	return nil
@@ -633,6 +679,137 @@ func generateRandomPassword(length int) string {
 	b := make([]byte, length)
 	rand.Read(b)
 	return hex.EncodeToString(b)[:length]
+}
+
+// waitForTrustedCert polls the local Traefik listener on :443 for up to
+// timeout looking for a cert whose issuer is NOT Traefik's built-in
+// default. Returns the issuer CN (e.g. "R12" for Let's Encrypt) on
+// success, or "" on timeout.
+//
+// Uses crypto/tls.Dial with InsecureSkipVerify because we're only
+// inspecting the cert metadata, not trusting it for communication. SNI
+// is set to hostname so Traefik serves the right cert instead of the
+// default.
+//
+// When Traefik hasn't yet obtained a cert (rate-limited, challenge
+// failed, still retrying), it serves a self-signed "TRAEFIK DEFAULT
+// CERT" — issuer.CommonName == "TRAEFIK DEFAULT CERT". We treat any
+// non-default issuer as success, including custom intermediates, so
+// operators using a non-Let's-Encrypt ACME CA don't false-fail here.
+func waitForTrustedCert(hostname string, timeout time.Duration) string {
+	deadline := time.Now().Add(timeout)
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		rawConn, err := dialer.DialContext(ctx, "tcp", "127.0.0.1:443")
+		cancel()
+		if err != nil {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		conn := tls.Client(rawConn, &tls.Config{
+			ServerName:         hostname,
+			InsecureSkipVerify: true, //nolint:gosec // inspecting only
+		})
+		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			_ = conn.Close()
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		if err := conn.Handshake(); err != nil {
+			_ = conn.Close()
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		certs := conn.ConnectionState().PeerCertificates
+		_ = conn.Close()
+		if len(certs) == 0 {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		issuer := certs[0].Issuer.CommonName
+		if issuer != "" && !strings.Contains(strings.ToUpper(issuer), "TRAEFIK") {
+			return issuer
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return ""
+}
+
+// scrapeTraefikACMEError runs `docker logs --since=2m vectis-traefik`
+// and passes the combined output to extractACMEErrorFromLogs. Split in
+// two so the parser is unit-testable without shelling out to docker.
+func scrapeTraefikACMEError() string {
+	cmd := exec.Command("docker", "logs", "--since=2m", "vectis-traefik")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return extractACMEErrorFromLogs(string(out))
+}
+
+// extractACMEErrorFromLogs scans Traefik docker-logs output for the
+// most recent ACME-related error line and returns a condensed excerpt.
+// Returns "" if nothing matched.
+//
+// Traefik emits JSON log lines. The useful fields for us are `level`
+// ("error"), the `error` field (the actual upstream cause), and
+// `message` (Traefik's wrapper text). We prefer `error` when present
+// (concrete reason like "acme: error: 429 :: rateLimited") and fall
+// back to `message` when it's absent. Plain-text log lines (rare on
+// traefik 3.x but possible) go through a keyword-match path.
+func extractACMEErrorFromLogs(logs string) string {
+	var last string
+	for _, raw := range strings.Split(logs, "\n") {
+		if raw == "" {
+			continue
+		}
+		var rec map[string]any
+		if jerr := json.Unmarshal([]byte(raw), &rec); jerr != nil {
+			lower := strings.ToLower(raw)
+			if strings.Contains(lower, "acme") &&
+				(strings.Contains(lower, "error") || strings.Contains(lower, "unable") || strings.Contains(lower, "ratelimit")) {
+				last = condenseLine(raw)
+			}
+			continue
+		}
+		level, _ := rec["level"].(string)
+		if level != "error" {
+			continue
+		}
+		msg, _ := rec["message"].(string)
+		errField, _ := rec["error"].(string)
+		combined := strings.TrimSpace(msg + " " + errField)
+		lower := strings.ToLower(combined)
+		if !strings.Contains(lower, "acme") && !strings.Contains(lower, "ratelimit") &&
+			!strings.Contains(lower, "unable to obtain") {
+			continue
+		}
+		chosen := errField
+		if chosen == "" {
+			chosen = msg
+		}
+		last = condenseLine(chosen)
+	}
+	return last
+}
+
+// condenseLine trims whitespace and collapses multi-line error bodies
+// into a single line so the banner stays readable. Also caps length at
+// 200 chars with an ellipsis so a novel-length upstream error message
+// doesn't swallow the terminal.
+func condenseLine(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > 200 {
+		s = s[:197] + "..."
+	}
+	return s
 }
 
 func init() {

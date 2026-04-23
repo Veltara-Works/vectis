@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestIsMalformedEmail(t *testing.T) {
 	tests := []struct {
@@ -29,6 +32,102 @@ func TestIsMalformedEmail(t *testing.T) {
 				t.Errorf("isMalformedEmail(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCondenseLine(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"trim whitespace", "  hello  ", "hello"},
+		{"collapse newlines", "line1\nline2\nline3", "line1 line2 line3"},
+		{"collapse carriage returns", "line1\rline2", "line1 line2"},
+		{"collapse multiple spaces", "a    b  c", "a b c"},
+		{"truncate at 200 with ellipsis", strings.Repeat("x", 300), strings.Repeat("x", 197) + "..."},
+		{"exactly 200 stays", strings.Repeat("y", 200), strings.Repeat("y", 200)},
+		{"201 truncates", strings.Repeat("z", 201), strings.Repeat("z", 197) + "..."},
+		{"empty", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := condenseLine(tc.in)
+			if got != tc.want {
+				t.Errorf("condenseLine(%q) len=%d, want len=%d\ngot  %q\nwant %q", tc.in, len(got), len(tc.want), got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractACMEErrorFromLogs(t *testing.T) {
+	// Real-world-shaped log line from the 2026-04-23 rc28 walkthrough
+	// when Let's Encrypt rate-limited our hostname. This is the exact
+	// scenario rc31 is designed to surface clearly to operators.
+	rateLimitLog := `{"level":"info","time":"2026-04-23T07:30:03Z","message":"Starting provider *acme.Provider"}
+{"level":"info","providerName":"letsencrypt.acme","time":"2026-04-23T07:30:07Z","message":"Register..."}
+{"level":"error","providerName":"letsencrypt.acme","error":"unable to generate a certificate for the domains [mail.sysadmin1001.com]: acme: error: 429 :: POST :: https://acme-v02.api.letsencrypt.org/acme/new-order :: urn:ietf:params:acme:error:rateLimited :: too many certificates (5) already issued for this exact set of identifiers in the last 168h0m0s, retry after 2026-04-23 21:09:53 UTC","domains":["mail.sysadmin1001.com"],"time":"2026-04-23T07:30:09Z","message":"Unable to obtain ACME certificate for domains"}
+{"level":"info","time":"2026-04-23T07:30:14Z","message":"I have to go..."}`
+
+	got := extractACMEErrorFromLogs(rateLimitLog)
+	if got == "" {
+		t.Fatal("expected extraction, got empty string")
+	}
+	if !strings.Contains(got, "rateLimited") {
+		t.Errorf("extraction should include rateLimited keyword; got %q", got)
+	}
+	if !strings.Contains(got, "429") {
+		t.Errorf("extraction should include the 429 status; got %q", got)
+	}
+	// Should pick the `error` field, not the shorter `message` field.
+	if strings.Contains(got, "Unable to obtain ACME") && !strings.Contains(got, "too many certificates") {
+		t.Errorf("prefer error field over message; got %q", got)
+	}
+}
+
+func TestExtractACMEErrorFromLogs_IgnoresInfoLevelLines(t *testing.T) {
+	logs := `{"level":"info","time":"2026-04-23T07:30:03Z","message":"Starting provider"}
+{"level":"info","time":"2026-04-23T07:30:07Z","message":"acme Register..."}`
+	got := extractACMEErrorFromLogs(logs)
+	if got != "" {
+		t.Errorf("info-level lines should not produce extraction; got %q", got)
+	}
+}
+
+func TestExtractACMEErrorFromLogs_IgnoresUnrelatedErrors(t *testing.T) {
+	// An error that's not about ACME/rate-limiting shouldn't be surfaced —
+	// the banner is specifically about TLS issuance, so showing an
+	// unrelated "postfix connection reset" would confuse operators.
+	logs := `{"level":"error","time":"2026-04-23T07:30:03Z","message":"postfix connection reset by peer","error":"read: connection reset by peer"}`
+	got := extractACMEErrorFromLogs(logs)
+	if got != "" {
+		t.Errorf("unrelated errors should not surface; got %q", got)
+	}
+}
+
+func TestExtractACMEErrorFromLogs_ReturnsMostRecent(t *testing.T) {
+	// If there are multiple ACME errors across the scrape window (e.g.
+	// first attempt + retry both failed), we want the LAST one since that
+	// reflects the current state.
+	logs := `{"level":"error","time":"2026-04-23T07:00:00Z","message":"Unable to obtain ACME certificate","error":"acme: error old"}
+{"level":"error","time":"2026-04-23T07:10:00Z","message":"Unable to obtain ACME certificate","error":"acme: error newer"}`
+	got := extractACMEErrorFromLogs(logs)
+	if got != "acme: error newer" {
+		t.Errorf("should return most recent; got %q", got)
+	}
+}
+
+func TestExtractACMEErrorFromLogs_FallsBackToPlainText(t *testing.T) {
+	// Not all traefik output is JSON (container startup banner, some
+	// panics). If we hit a matching plain-text line it should still
+	// surface.
+	logs := `ERROR: acme challenge failed: connection refused on :80`
+	got := extractACMEErrorFromLogs(logs)
+	if got == "" {
+		t.Errorf("plain-text ACME error should surface; got empty string")
+	}
+	if !strings.Contains(got, "acme challenge failed") {
+		t.Errorf("got unexpected content: %q", got)
 	}
 }
 
