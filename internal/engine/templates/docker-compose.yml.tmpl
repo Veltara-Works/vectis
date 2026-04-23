@@ -67,7 +67,16 @@ services:
     image: ghcr.io/veltara-works/vectis-orchestrator:{{ .Version }}
     container_name: vectis-orchestrator
     restart: unless-stopped
+    # vectis-frontend gives the orchestrator outbound internet access —
+    # required for release-channel discovery (fetches releases.json from
+    # dl.vectismail.com via Plan). Without it, the orchestrator is trapped
+    # on two `internal: true` networks and every release-channel fetch
+    # fails DNS. Found during the 2026-04-23 rc25 §10 walkthrough.
+    # Blast-radius note: orchestrator already holds the Docker socket, so
+    # it's the most trusted container in the stack; incremental exposure
+    # on vectis-frontend (shared with traefik/api) is minimal.
     networks:
+      - vectis-frontend
       - vectis-orchestrator
       - vectis-data
     volumes:

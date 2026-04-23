@@ -73,6 +73,11 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	// leaves the placeholders in place. If we install with those, the
 	// Let's Encrypt ACME account is registered against a bogus address
 	// and all future alert emails go to admin@example.com, which bounces.
+	//
+	// Placeholder checks catch shipped-default values (@example.com);
+	// malformed checks catch whatever garbage a pre-rc26 install.sh
+	// without FQDN validation might have produced (whitespace, no @,
+	// non-FQDN domains). Two layers behind the install.sh-side fixes.
 	if cfg.TLS.Provider == "letsencrypt" {
 		if cfg.TLS.Email == "" || isPlaceholderEmail(cfg.TLS.Email) {
 			fail("config.yaml 'tls.email' is still the placeholder (%q).\n\n"+
@@ -80,11 +85,23 @@ func runInstall(cmd *cobra.Command, args []string) error {
 				"  Let's Encrypt will send cert-renewal reminders there. Then re-run `vectis install`.",
 				cfg.TLS.Email, configDir)
 		}
+		if isMalformedEmail(cfg.TLS.Email) {
+			fail("config.yaml 'tls.email' (%q) is not a valid email address.\n\n"+
+				"  An email must have no whitespace, contain `@`, and use an FQDN for the\n"+
+				"  domain (e.g. `admin@yourdomain.com`). Edit %s/config.yaml and re-run.",
+				cfg.TLS.Email, configDir)
+		}
 	}
 	if isPlaceholderEmail(secrets.API.AdminEmail) {
 		fail("secrets.yaml 'api.admin_email' is still the placeholder (%q).\n\n"+
 			"  Edit %s/secrets.yaml and set 'api.admin_email' to the address you'll use\n"+
 			"  to log in to the admin UI. Then re-run `vectis install`.",
+			secrets.API.AdminEmail, configDir)
+	}
+	if isMalformedEmail(secrets.API.AdminEmail) {
+		fail("secrets.yaml 'api.admin_email' (%q) is not a valid email address.\n\n"+
+			"  An email must have no whitespace, contain `@`, and use an FQDN for the\n"+
+			"  domain (e.g. `admin@yourdomain.com`). Edit %s/secrets.yaml and re-run.",
 			secrets.API.AdminEmail, configDir)
 	}
 	done()
@@ -274,13 +291,18 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "═══════════════════════════════════════════")
 	fmt.Fprintln(cmd.OutOrStdout(), "  Vectis is ready!")
 	fmt.Fprintln(cmd.OutOrStdout())
-	fmt.Fprintf(cmd.OutOrStdout(), "  Admin URL:      https://%s/admin\n", cfg.Hostname)
-	fmt.Fprintf(cmd.OutOrStdout(), "  Admin email:    %s\n", secrets.API.AdminEmail)
+	// Admin URL / email / password printed green-bold so they stand out
+	// in a dense terminal scrollback. The password line especially — it
+	// is unrecoverable, and a user skimming the banner who misses it
+	// ends up locked out. Gated on isStdoutTTY() so `vectis install >
+	// install.log` doesn't end up full of ANSI escape codes.
+	fmt.Fprintf(cmd.OutOrStdout(), "  Admin URL:      %s\n", green(fmt.Sprintf("https://%s/admin", cfg.Hostname)))
+	fmt.Fprintf(cmd.OutOrStdout(), "  Admin email:    %s\n", green(secrets.API.AdminEmail))
 	if generatedAdminPassword != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "  Admin password: %s\n", generatedAdminPassword)
+		fmt.Fprintf(cmd.OutOrStdout(), "  Admin password: %s\n", green(generatedAdminPassword))
 		fmt.Fprintln(cmd.OutOrStdout())
-		fmt.Fprintln(cmd.OutOrStdout(), "  !! SAVE THE PASSWORD ABOVE — it is shown only here, it is")
-		fmt.Fprintln(cmd.OutOrStdout(), "     not written to disk, and it will not be recoverable.")
+		fmt.Fprintln(cmd.OutOrStdout(), red("  !! SAVE THE PASSWORD ABOVE !!"))
+		fmt.Fprintln(cmd.OutOrStdout(), "     It is shown only here — not written to disk, and not recoverable.")
 		fmt.Fprintln(cmd.OutOrStdout(), "     Change it immediately after your first login.")
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "  Admin password: (admin already existed — this install left it unchanged)")
@@ -400,6 +422,68 @@ func isPlaceholderEmail(email string) bool {
 		return false // empty is handled separately so the error message is clearer
 	}
 	return strings.HasSuffix(e, "@example.com")
+}
+
+// isMalformedEmail returns true for addresses that cannot possibly work
+// regardless of policy — whitespace, missing `@`, empty local or domain,
+// or a domain part with no dot. Second layer of defence behind
+// install.sh's hostname validation: even if install.sh somehow produced
+// garbage (e.g. `admin@vectis preflight` from a fat-fingered hostname
+// prompt in a pre-rc26 installer), this guardrail catches it before the
+// ACME account registration or any config write happens. Returns false
+// on empty input so the "missing value" case can produce a clearer
+// error message upstream.
+func isMalformedEmail(email string) bool {
+	e := strings.TrimSpace(email)
+	if e == "" {
+		return false
+	}
+	if strings.ContainsAny(e, " \t\r\n") {
+		return true
+	}
+	at := strings.LastIndex(e, "@")
+	if at <= 0 || at == len(e)-1 {
+		return true // missing @, empty local, or empty domain
+	}
+	domain := e[at+1:]
+	if !strings.Contains(domain, ".") {
+		return true // no dot in domain — not a FQDN
+	}
+	return false
+}
+
+// isStdoutTTY reports whether this process's stdout is connected to a
+// terminal. Used to gate ANSI colour codes in the success banner —
+// emitting them to a pipe or log file would pollute the output with
+// unreadable escape sequences.
+func isStdoutTTY() bool {
+	stat, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
+// ANSI colour helpers — return `code` when stdout is a TTY, otherwise
+// the empty string. Keeps the colour call-sites readable.
+const (
+	ansiReset    = "\033[0m"
+	ansiGreenBld = "\033[1;32m"
+	ansiRedBld   = "\033[1;31m"
+)
+
+func green(s string) string {
+	if !isStdoutTTY() {
+		return s
+	}
+	return ansiGreenBld + s + ansiReset
+}
+
+func red(s string) string {
+	if !isStdoutTTY() {
+		return s
+	}
+	return ansiRedBld + s + ansiReset
 }
 
 // parseAdminPassword pulls the `admin_password=...` line out of the

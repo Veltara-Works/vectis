@@ -132,6 +132,28 @@ export default function DashboardPage() {
                   </td>
                 </tr>
               ))}
+              {/*
+                The api container has no Docker socket access (only the
+                orchestrator does), so container-level health for
+                postfix/dovecot/rspamd/traefik can't be queried here.
+                Render them as "pending" — but only if the health API
+                didn't already report on them, so we don't double-count
+                when the orchestrator eventually takes over these checks.
+                Docker's own restart policy + the api readiness probe
+                still catch hard failures today.
+              */}
+              {['postfix', 'dovecot', 'rspamd', 'traefik']
+                .filter((name) => !(name in health.services))
+                .map((name) => (
+                  <tr key={`pending-${name}`}>
+                    <td>{name}</td>
+                    <td>
+                      <span className="badge badge-muted" title="Monitored by Docker restart policy. Full health checks moving to the orchestrator in a future release.">
+                        pending
+                      </span>
+                    </td>
+                  </tr>
+                ))}
             </tbody>
           </table>
         </div>

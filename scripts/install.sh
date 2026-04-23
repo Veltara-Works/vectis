@@ -92,6 +92,22 @@ if ! docker compose version &>/dev/null; then
     exit 1
 fi
 
+# Add the invoking sudo user to the `docker` group so they can run
+# `docker ps`, `docker logs`, etc. without prefixing every command with
+# `sudo`. Only acts when install.sh was invoked via sudo (real
+# non-root operator present) — `curl | sudo bash` exposes the original
+# user through $SUDO_USER. Idempotent: usermod -aG is a no-op if the
+# user is already in the group. Takes effect on the user's next login
+# session (they may need to log out + back in, or `newgrp docker`).
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    if id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+        : # already a member, nothing to do
+    else
+        info "Adding $SUDO_USER to the 'docker' group (log out + back in for it to take effect)"
+        usermod -aG docker "$SUDO_USER" || warn "usermod failed — you'll need to prefix docker commands with sudo"
+    fi
+fi
+
 DAEMON_JSON="/etc/docker/daemon.json"
 if [ ! -f "$DAEMON_JSON" ]; then
     info "Configuring Docker daemon (log rotation, IPv6)..."
@@ -277,30 +293,104 @@ if [ "$current_hostname" = "mail.example.com" ] || [ -z "$current_hostname" ]; t
         warn "No usable PTR found for this IP — set reverse DNS at your VPS provider for production."
     fi
 
+    # ── Input validators ────────────────────────────────────────────────
+    # Both catch the class of fat-finger error that rc25 found: user
+    # typing `vectis preflight` at the hostname prompt, script accepting
+    # it blind, then deriving `admin@vectis preflight` as the email
+    # default. FQDN shape check is the first line of defence; the
+    # `vectis install` guardrail is the second.
+    #
+    # Rules:
+    #   - ≥1 dot (so `localhost` is rejected)
+    #   - no whitespace
+    #   - only letters/digits/hyphen/dot (no `@`, spaces, shell metachars)
+    #   - labels can't start/end with hyphen, can't be empty
+    is_valid_fqdn() {
+        local s="$1"
+        [[ "$s" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$ ]]
+    }
+
+    is_valid_email() {
+        local s="$1"
+        # local@domain with domain being a valid FQDN. Local part is
+        # intentionally permissive (RFC 5322 is vast); we mostly care
+        # that there's no whitespace and the domain is FQDN-shaped.
+        [[ "$s" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]]
+    }
+
     # Prompt the operator if we have a TTY. curl | sudo bash redirects stdin
     # to the pipe, so read from /dev/tty explicitly.
     FQDN_INPUT=""
     EMAIL_INPUT=""
     if [ -t 0 ] || [ -e /dev/tty ]; then
         prompt_default="${DETECTED_FQDN:-mail.yourdomain.com}"
-        read -r -p "Mail server hostname [$prompt_default]: " FQDN_INPUT </dev/tty || true
-        FQDN_INPUT="${FQDN_INPUT:-$DETECTED_FQDN}"
 
-        if [ -n "$FQDN_INPUT" ]; then
-            # Recompute default email from whatever hostname was chosen.
-            apex=$(echo "$FQDN_INPUT" | awk -F. '{
-                if (NF >= 3) { for (i=2; i<=NF; i++) printf "%s%s", $i, (i<NF?".":"") }
-                else { print $0 }
-            }')
-            email_default="admin@$apex"
+        # Re-prompt until the user gives a valid FQDN (or accepts the
+        # detected default by pressing Enter).
+        while :; do
+            read -r -p "Mail server hostname [$prompt_default]: " FQDN_INPUT </dev/tty || true
+            FQDN_INPUT="${FQDN_INPUT:-$DETECTED_FQDN}"
+            if [ -z "$FQDN_INPUT" ]; then
+                warn "Hostname is required. Please enter a fully-qualified domain (e.g. mail.yourdomain.com)."
+                continue
+            fi
+            if ! is_valid_fqdn "$FQDN_INPUT"; then
+                warn "'$FQDN_INPUT' is not a valid hostname. An FQDN needs ≥1 dot, no spaces, and only letters/digits/hyphens (e.g. mail.yourdomain.com)."
+                continue
+            fi
+            break
+        done
+
+        # Recompute default email from whatever hostname was chosen.
+        apex=$(echo "$FQDN_INPUT" | awk -F. '{
+            if (NF >= 3) { for (i=2; i<=NF; i++) printf "%s%s", $i, (i<NF?".":"") }
+            else { print $0 }
+        }')
+        email_default="admin@$apex"
+
+        while :; do
             read -r -p "TLS / admin email [$email_default]: " EMAIL_INPUT </dev/tty || true
             EMAIL_INPUT="${EMAIL_INPUT:-$email_default}"
-        fi
+            if ! is_valid_email "$EMAIL_INPUT"; then
+                warn "'$EMAIL_INPUT' is not a valid email address. Must be local@domain with no spaces (e.g. admin@yourdomain.com)."
+                continue
+            fi
+            break
+        done
+
+        # Read-back confirmation before writing to config files. Catches
+        # the shape-valid-but-wrong case (e.g. user typed mail.example.com
+        # when they meant mail.vectismail.com). Default Y → one keystroke
+        # happy path.
+        echo ""
+        echo "  About to write:"
+        echo "    hostname:    $FQDN_INPUT"
+        echo "    tls.email:   $EMAIL_INPUT"
+        echo "    admin_email: $EMAIL_INPUT"
+        echo ""
+        CONFIRM=""
+        read -r -p "Proceed? [Y/n]: " CONFIRM </dev/tty || true
+        case "${CONFIRM,,}" in
+            ""|y|yes) ;;  # happy path
+            *)
+                warn "Aborted by user. Re-run the installer when you're ready."
+                exit 1
+                ;;
+        esac
     else
         # Non-interactive: only write what we detected; leave placeholder
-        # otherwise so `vectis install`'s guardrail catches it.
+        # otherwise so `vectis install`'s guardrail catches it. Still
+        # validate so we don't write garbage in automated contexts.
         FQDN_INPUT="$DETECTED_FQDN"
         EMAIL_INPUT="$DETECTED_EMAIL"
+        if [ -n "$FQDN_INPUT" ] && ! is_valid_fqdn "$FQDN_INPUT"; then
+            warn "Detected FQDN '$FQDN_INPUT' is not valid — leaving placeholder for vectis install to flag."
+            FQDN_INPUT=""
+        fi
+        if [ -n "$EMAIL_INPUT" ] && ! is_valid_email "$EMAIL_INPUT"; then
+            warn "Derived email '$EMAIL_INPUT' is not valid — leaving placeholder for vectis install to flag."
+            EMAIL_INPUT=""
+        fi
     fi
 
     if [ -n "$FQDN_INPUT" ]; then
