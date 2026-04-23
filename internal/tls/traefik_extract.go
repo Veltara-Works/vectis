@@ -282,9 +282,39 @@ func Watch(ctx context.Context, opts ExtractOptions) error {
 // watchState tracks counters across poll iterations so the logger can
 // escalate / throttle based on how long the extractor has been waiting.
 type watchState struct {
-	totalPolls       int
-	consecutiveEmpty int  // polls since last successful Found=true
-	certEverSeen     bool // true once we've written or confirmed a cert at least once
+	totalPolls           int
+	consecutiveEmpty     int  // polls since last successful Found=true
+	certEverSeen         bool // true once we've written or confirmed a cert at least once
+	placeholderAttempted bool // true once we've tried the bootstrap placeholder write (success or fail)
+}
+
+// maybeWritePlaceholder writes a short-lived self-signed cert into OutDir
+// if no fullchain.pem is already present there. A no-op when a cert
+// already exists (either a previous placeholder or a real cert from a
+// prior run).
+func maybeWritePlaceholder(opts ExtractOptions, log *slog.Logger) error {
+	fullchain := filepath.Join(opts.OutDir, "fullchain.pem")
+	if _, err := os.Stat(fullchain); err == nil {
+		log.Debug("placeholder skipped — cert already present", "path", fullchain)
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat existing cert: %w", err)
+	}
+
+	if opts.Hostname == "" || opts.OutDir == "" {
+		return fmt.Errorf("hostname or outdir empty; refusing placeholder write")
+	}
+
+	log.Info("writing self-signed placeholder cert so dovecot can start",
+		"hostname", opts.Hostname,
+		"out_dir", opts.OutDir,
+		"validity_days", 7,
+		"note", "will be replaced when Traefik issues the real cert",
+	)
+	if err := GenerateSelfSignedPlaceholder(opts.OutDir, opts.Hostname); err != nil {
+		return fmt.Errorf("generate placeholder: %w", err)
+	}
+	return nil
 }
 
 const (
@@ -312,6 +342,19 @@ func runOnce(ctx context.Context, opts ExtractOptions, log *slog.Logger, state *
 
 	if !res.Found {
 		state.consecutiveEmpty++
+		// No real cert yet — if the mail-certs directory is also empty,
+		// dovecot will crashloop with exit 89 ("ssl_cert: Can't open
+		// fullchain.pem") every 30s under Docker's restart policy. Write
+		// a short-lived self-signed placeholder so dovecot can at least
+		// start. When the real cert arrives, the content-hash check in
+		// Extract() detects the difference and SIGHUPs dovecot+postfix
+		// to reload.
+		if !state.placeholderAttempted {
+			state.placeholderAttempted = true
+			if err := maybeWritePlaceholder(opts, log); err != nil {
+				log.Warn("placeholder cert write failed", "error", err)
+			}
+		}
 		// First WARN: the moment we cross warnAfterPolls.
 		if state.consecutiveEmpty == warnAfterPolls {
 			log.Warn("no cert in acme.json yet — Traefik has not issued",

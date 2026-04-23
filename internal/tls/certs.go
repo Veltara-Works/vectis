@@ -17,7 +17,55 @@ import (
 // GenerateSelfSigned creates a self-signed TLS certificate for development use.
 // Writes fullchain.pem and privkey.pem to the given directory.
 func GenerateSelfSigned(certDir, hostname string) error {
-	if err := os.MkdirAll(certDir, 0755); err != nil {
+	return generateSelfSigned(selfSignedOptions{
+		CertDir:      certDir,
+		Hostname:     hostname,
+		Organization: "Vectis Mail Server (self-signed)",
+		Validity:     365 * 24 * time.Hour,
+		WriteCertPem: false,
+	})
+}
+
+// GenerateSelfSignedPlaceholder creates a short-lived self-signed cert
+// used as a mail-TLS bootstrap when the real Let's Encrypt cert hasn't
+// been issued yet (e.g. Traefik still completing HTTP-01, LE rate-limited,
+// port-80 unreachable). Same shape as GenerateSelfSigned but:
+//
+//   - Organization = "VECTIS PLACEHOLDER — awaiting Let's Encrypt" so
+//     any cert-validation tooling can identify + skip placeholder certs.
+//   - Validity = 7 days, short enough that a forgotten placeholder can't
+//     linger silently serving mail indefinitely.
+//   - Writes all three files (fullchain.pem, cert.pem, privkey.pem) so
+//     consumers that look for either fullchain or cert both find a PEM.
+//
+// Called by the cert-extractor sidecar when it polls an empty acme.json
+// on a fresh install: dovecot otherwise crashloops with exit 89 until
+// Traefik issues, which can take minutes on a fresh DNS record and
+// forever if LE fails. The placeholder lets dovecot start cleanly; when
+// the real cert arrives, the extractor's content-hash check detects the
+// change and SIGHUPs dovecot/postfix so they reload the real cert.
+func GenerateSelfSignedPlaceholder(certDir, hostname string) error {
+	return generateSelfSigned(selfSignedOptions{
+		CertDir:      certDir,
+		Hostname:     hostname,
+		Organization: "VECTIS PLACEHOLDER — awaiting Let's Encrypt",
+		Validity:     7 * 24 * time.Hour,
+		WriteCertPem: true,
+	})
+}
+
+type selfSignedOptions struct {
+	CertDir      string
+	Hostname     string
+	Organization string
+	Validity     time.Duration
+	// WriteCertPem duplicates fullchain.pem to cert.pem for consumers
+	// (e.g. postfix main.cf) that look for the shorter name.
+	WriteCertPem bool
+}
+
+func generateSelfSigned(opts selfSignedOptions) error {
+	if err := os.MkdirAll(opts.CertDir, 0o755); err != nil {
 		return fmt.Errorf("create cert directory: %w", err)
 	}
 
@@ -31,12 +79,12 @@ func GenerateSelfSigned(certDir, hostname string) error {
 	template := x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   hostname,
-			Organization: []string{"Vectis Mail Server (self-signed)"},
+			CommonName:   opts.Hostname,
+			Organization: []string{opts.Organization},
 		},
-		DNSNames:  []string{hostname},
+		DNSNames:  []string{opts.Hostname},
 		NotBefore: time.Now(),
-		NotAfter:  time.Now().Add(365 * 24 * time.Hour),
+		NotAfter:  time.Now().Add(opts.Validity),
 
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
@@ -48,27 +96,30 @@ func GenerateSelfSigned(certDir, hostname string) error {
 		return fmt.Errorf("create certificate: %w", err)
 	}
 
-	// Write certificate.
-	certPath := filepath.Join(certDir, "fullchain.pem")
-	certFile, err := os.OpenFile(certPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("create cert file: %w", err)
-	}
-	defer certFile.Close()
-	pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
-	// Write private key.
-	keyPath := filepath.Join(certDir, "privkey.pem")
-	keyFile, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("create key file: %w", err)
+	fullchainPath := filepath.Join(opts.CertDir, "fullchain.pem")
+	if err := os.WriteFile(fullchainPath, certPEM, 0o644); err != nil {
+		return fmt.Errorf("write fullchain.pem: %w", err)
 	}
-	defer keyFile.Close()
+
+	if opts.WriteCertPem {
+		certPath := filepath.Join(opts.CertDir, "cert.pem")
+		if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+			return fmt.Errorf("write cert.pem: %w", err)
+		}
+	}
+
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
 		return fmt.Errorf("marshal private key: %w", err)
 	}
-	pem.Encode(keyFile, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	keyPath := filepath.Join(opts.CertDir, "privkey.pem")
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return fmt.Errorf("write privkey.pem: %w", err)
+	}
 
 	return nil
 }

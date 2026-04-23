@@ -436,6 +436,140 @@ func TestRunOnce_CertAlreadyPresentLogsOnce(t *testing.T) {
 	}
 }
 
+func TestMaybeWritePlaceholder_WritesWhenNoCertPresent(t *testing.T) {
+	tmp := t.TempDir()
+	lg, buf := bufferedLogger()
+	opts := ExtractOptions{
+		OutDir:   tmp,
+		Hostname: "mail.example.com",
+		Logger:   lg,
+	}
+	if err := maybeWritePlaceholder(opts, lg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// All three files should exist.
+	for _, name := range []string{"fullchain.pem", "cert.pem", "privkey.pem"} {
+		if _, err := os.Stat(filepath.Join(tmp, name)); err != nil {
+			t.Errorf("%s should exist after placeholder write: %v", name, err)
+		}
+	}
+	// Log should announce the placeholder write at INFO.
+	if !strings.Contains(buf.String(), "placeholder cert") {
+		t.Errorf("expected placeholder announcement log; got %s", buf.String())
+	}
+	// fullchain should have a VECTIS PLACEHOLDER issuer so operators + tests
+	// can distinguish placeholder from real cert.
+	data, _ := os.ReadFile(filepath.Join(tmp, "fullchain.pem"))
+	info, err := ReadCertInfo(filepath.Join(tmp, "fullchain.pem"))
+	if err != nil {
+		t.Fatalf("parse placeholder cert: %v; content:\n%s", err, data)
+	}
+	if info.DaysLeft > 8 || info.DaysLeft < 6 {
+		t.Errorf("placeholder validity should be ~7 days; got days_left=%d", info.DaysLeft)
+	}
+}
+
+func TestMaybeWritePlaceholder_SkipsWhenCertExists(t *testing.T) {
+	tmp := t.TempDir()
+	// Pre-existing cert; placeholder should NOT overwrite.
+	existing := []byte("-----BEGIN CERTIFICATE-----\nEXISTING\n-----END CERTIFICATE-----\n")
+	if err := os.WriteFile(filepath.Join(tmp, "fullchain.pem"), existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lg, _ := bufferedLogger()
+	opts := ExtractOptions{OutDir: tmp, Hostname: "mail.example.com", Logger: lg}
+	if err := maybeWritePlaceholder(opts, lg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(tmp, "fullchain.pem"))
+	if string(data) != string(existing) {
+		t.Errorf("existing cert should not be overwritten; got:\n%s", string(data))
+	}
+}
+
+func TestRunOnce_PlaceholderAttemptedOnceThenSkipped(t *testing.T) {
+	tmp := t.TempDir()
+	acme := filepath.Join(tmp, "acme.json")
+	if err := os.WriteFile(acme, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(tmp, "out")
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lg, _ := bufferedLogger()
+	opts := ExtractOptions{
+		ACMEJSONPath: acme,
+		Hostname:     "mail.example.com",
+		OutDir:       outDir,
+		Logger:       lg,
+	}
+	state := &watchState{}
+
+	// First poll with empty acme.json should write the placeholder.
+	runOnce(context.Background(), opts, lg, state)
+	if !state.placeholderAttempted {
+		t.Fatalf("placeholderAttempted should be true after first empty poll")
+	}
+	fullchainStat1, err := os.Stat(filepath.Join(outDir, "fullchain.pem"))
+	if err != nil {
+		t.Fatalf("fullchain.pem should exist after first poll: %v", err)
+	}
+
+	// Second poll with same empty acme.json — should NOT rewrite.
+	// Sleep 10ms so mtime would change if we did rewrite (we shouldn't).
+	runOnce(context.Background(), opts, lg, state)
+	fullchainStat2, _ := os.Stat(filepath.Join(outDir, "fullchain.pem"))
+	if fullchainStat1.ModTime() != fullchainStat2.ModTime() {
+		t.Errorf("placeholder should not be rewritten on subsequent empty polls")
+	}
+}
+
+func TestRunOnce_RealCertOverwritesPlaceholder(t *testing.T) {
+	tmp := t.TempDir()
+	acme := filepath.Join(tmp, "acme.json")
+	outDir := filepath.Join(tmp, "out")
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lg, buf := bufferedLogger()
+	opts := ExtractOptions{
+		ACMEJSONPath: acme,
+		Hostname:     "mail.example.com",
+		OutDir:       outDir,
+		Logger:       lg,
+	}
+	state := &watchState{}
+
+	// First: empty acme.json → placeholder written.
+	if err := os.WriteFile(acme, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runOnce(context.Background(), opts, lg, state)
+	if !state.placeholderAttempted {
+		t.Fatal("placeholder should have been attempted")
+	}
+	placeholderInfo, _ := ReadCertInfo(filepath.Join(outDir, "fullchain.pem"))
+	if placeholderInfo == nil {
+		t.Fatal("placeholder fullchain should be parseable")
+	}
+
+	// Second: acme.json now has a real cert. Should overwrite placeholder.
+	if err := os.WriteFile(acme, makeACMEFile("letsencrypt", "mail.example.com", nil, samplePEMCert, samplePEMKey), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runOnce(context.Background(), opts, lg, state)
+	// fullchain content should now be the sample PEM, not placeholder DER.
+	data, _ := os.ReadFile(filepath.Join(outDir, "fullchain.pem"))
+	if !strings.Contains(string(data), "MIIBsTCCAVegAwIBAgIBAjAN") { // first chars of samplePEMCert body
+		t.Errorf("real cert should have overwritten placeholder; content:\n%s", string(data))
+	}
+	// "cert written" INFO should appear.
+	if !strings.Contains(buf.String(), "cert written") {
+		t.Errorf("expected 'cert written' log; got %s", buf.String())
+	}
+}
+
 func TestWriteAtomic_ReplacesAtomically(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "f")
