@@ -272,8 +272,13 @@ type DKIMSecrets struct {
 	KeyBasePath string `yaml:"key_base_path"` // default "/var/vectis/dkim"
 }
 
-// CloudflareSecrets is optional and supplies the API token used by acme.sh
-// for DNS-01 challenges.
+// CloudflareSecrets is retained only so pre-rc27 secrets.yaml files still
+// parse — the acme.sh sidecar that consumed this token was removed in rc27
+// in favour of Traefik-based cert issuance + a cert-extractor sidecar.
+// The field is ignored at runtime and can be deleted from secrets.yaml.
+//
+// Deprecated: unused; scheduled for removal once we're comfortable asking
+// operators to drop the block from secrets.yaml.
 type CloudflareSecrets struct {
 	APIToken string `yaml:"api_token"`
 }

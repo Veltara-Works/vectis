@@ -1,9 +1,14 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
 	"github.com/spf13/cobra"
@@ -35,6 +40,75 @@ var tlsStatusCmd = &cobra.Command{
 var tlsCertDir string
 var tlsHostname string
 var tlsInternalCertDir string
+
+var (
+	tlsExtractACMEJSON     string
+	tlsExtractOutDir       string
+	tlsExtractHostname     string
+	tlsExtractReloadPost   string
+	tlsExtractReloadDove   string
+	tlsExtractWatch        bool
+	tlsExtractPollInterval time.Duration
+)
+
+var tlsExtractTraefikCmd = &cobra.Command{
+	Use:   "extract-traefik",
+	Short: "Extract a TLS cert from Traefik's acme.json into the mail cert dir",
+	Long: `Read Traefik's acme.json, find the certificate whose main/SAN matches
+--hostname, and write fullchain.pem + privkey.pem into --out-dir atomically.
+
+With --watch the command runs indefinitely, polling acme.json every
+--poll-interval (default 30s) and re-extracting on change. When the cert
+content changes, --reload-postfix and/or --reload-dovecot container names
+are signalled with SIGHUP via 'docker kill' so Postfix/Dovecot pick up
+the renewed cert without a full restart.
+
+This is the replacement for the old acme.sh sidecar — Traefik already
+issues and renews the mail cert as a side-effect of serving the admin UI,
+so we just mirror it into the mail-certs volume.`,
+	RunE: runTLSExtractTraefik,
+}
+
+func runTLSExtractTraefik(cmd *cobra.Command, args []string) error {
+	if tlsExtractHostname == "" {
+		return fmt.Errorf("--hostname is required")
+	}
+	if tlsExtractACMEJSON == "" {
+		return fmt.Errorf("--acme-json is required")
+	}
+	if tlsExtractOutDir == "" {
+		return fmt.Errorf("--out-dir is required")
+	}
+
+	logger := slog.New(slog.NewJSONHandler(cmd.OutOrStdout(), &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	opts := vectistls.ExtractOptions{
+		ACMEJSONPath:  tlsExtractACMEJSON,
+		Hostname:      tlsExtractHostname,
+		OutDir:        tlsExtractOutDir,
+		ReloadPostfix: tlsExtractReloadPost,
+		ReloadDovecot: tlsExtractReloadDove,
+		PollInterval:  tlsExtractPollInterval,
+		Logger:        logger,
+	}
+
+	if !tlsExtractWatch {
+		res, err := vectistls.Extract(opts)
+		if err != nil {
+			return err
+		}
+		if !res.Found {
+			fmt.Fprintln(cmd.ErrOrStderr(), "certificate not found in acme.json (traefik has not issued yet)")
+			os.Exit(1)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "extracted cert (resolver=%s, changed=%t)\n", res.Resolver, res.Changed)
+		return nil
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	return vectistls.Watch(ctx, opts)
+}
 
 func runTLSGenerateSelfSigned(cmd *cobra.Command, args []string) error {
 	if tlsHostname == "" {
@@ -137,8 +211,17 @@ func init() {
 	tlsGenerateInternalCmd.Flags().StringVar(&tlsInternalCertDir, "cert-dir", vectistls.InternalCertDir, "Directory to write internal mTLS certificates")
 	tlsStatusCmd.Flags().StringVar(&tlsCertDir, "cert-dir", "/etc/ssl/mail", "Directory containing certificates")
 
+	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractACMEJSON, "acme-json", "/var/traefik/acme/acme.json", "Path to Traefik's acme.json")
+	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractOutDir, "out-dir", "/etc/ssl/mail", "Directory to write fullchain.pem + privkey.pem")
+	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractHostname, "hostname", "", "Hostname (cert's main domain or SAN) to extract")
+	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractReloadPost, "reload-postfix", "", "Postfix container name to SIGHUP on cert change (empty = skip)")
+	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractReloadDove, "reload-dovecot", "", "Dovecot container name to SIGHUP on cert change (empty = skip)")
+	tlsExtractTraefikCmd.Flags().BoolVar(&tlsExtractWatch, "watch", false, "Run indefinitely, polling acme.json on an interval")
+	tlsExtractTraefikCmd.Flags().DurationVar(&tlsExtractPollInterval, "poll-interval", 30*time.Second, "Interval between acme.json polls in watch mode")
+
 	tlsCmd.AddCommand(tlsGenerateSelfSignedCmd)
 	tlsCmd.AddCommand(tlsGenerateInternalCmd)
 	tlsCmd.AddCommand(tlsStatusCmd)
+	tlsCmd.AddCommand(tlsExtractTraefikCmd)
 	RootCmd.AddCommand(tlsCmd)
 }

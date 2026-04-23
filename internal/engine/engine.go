@@ -39,10 +39,9 @@ type TemplateData struct {
 	RateLimits    config.RateLimitConfig
 
 	// From secrets.yaml
-	Database   config.DatabaseSecrets
-	Valkey     config.ValkeySecrets
-	API        config.APISecrets
-	Cloudflare *config.CloudflareSecrets
+	Database config.DatabaseSecrets
+	Valkey   config.ValkeySecrets
+	API      config.APISecrets
 
 	// Clustering
 	Cluster config.ClusterConfig
@@ -75,11 +74,10 @@ func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, do
 		Webmail:       cfg.Webmail,
 		Observability: cfg.Observability,
 		RateLimits:    rateLimits,
-		Database:   secrets.Database,
-		Valkey:     secrets.Valkey,
-		API:        secrets.API,
-		Cloudflare: secrets.Cloudflare,
-		Cluster:    cfg.Cluster,
+		Database: secrets.Database,
+		Valkey:   secrets.Valkey,
+		API:      secrets.API,
+		Cluster:  cfg.Cluster,
 		Domains:    domains,
 	}
 }
@@ -188,10 +186,6 @@ func WriteSecrets(secretsDir string, data *TemplateData) error {
 
 	secrets := map[string]string{
 		"valkey_password": data.Valkey.Password,
-	}
-
-	if data.Cloudflare != nil && data.Cloudflare.APIToken != "" {
-		secrets["cloudflare_token"] = data.Cloudflare.APIToken
 	}
 
 	if data.Observability.GrafanaEnabled && data.API.Secret != "" {

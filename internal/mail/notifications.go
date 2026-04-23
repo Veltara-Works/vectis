@@ -132,9 +132,11 @@ func (n *NotificationSender) SendCertExpiring(toEmail, domain string, daysLeft i
 Check certificate status:
   vectis tls status
 
-If using Let's Encrypt, renewal should happen automatically. If it
-has not, check the acme.sh logs:
-  docker logs vectis-acme
+If using Let's Encrypt, Traefik renews the cert automatically and the
+cert-extractor sidecar mirrors it into the mail-certs volume. If the
+cert has not rotated, check:
+  docker logs vectis-traefik
+  docker logs vectis-cert-extractor
 
 — Vectis Mail Server (%s)
 `, domain, daysLeft, n.hostname),

@@ -339,42 +339,48 @@ services:
         max-size: "{{ .Logging.MaxSizeMB }}m"
         max-file: "{{ .Logging.MaxFiles }}"
 {{ end }}
-  acme-sh:
-    image: neilpang/acme.sh:latest
-    container_name: vectis-acme
+{{ if eq .TLS.Provider "letsencrypt" }}
+  # Mail-cert extractor: mirrors the Let's Encrypt cert Traefik already
+  # holds for {{ .Hostname }} from traefik-acme/acme.json into the
+  # mail-certs volume, then SIGHUPs postfix + dovecot so they reload.
+  #
+  # Replaces the old acme.sh sidecar (broken on non-Cloudflare installs
+  # since it landed — see deferred-items.md §10 GA Blocker #6). Traefik
+  # already issues + renews the cert as a side-effect of serving the
+  # admin UI over HTTPS, so running a second ACME client was duplicative
+  # and created four distinct failure modes (no account email default,
+  # ZeroSSL-default CA, no /acme.sh home bootstrap, port-80 contention).
+  cert-extractor:
+    image: ghcr.io/veltara-works/vectis-cert-extractor:{{ .Version }}
+    container_name: vectis-cert-extractor
     restart: unless-stopped
     networks:
-      - vectis-frontend
-    environment:
-      DEPLOY_DOCKER_CONTAINER_LABEL: "vectis-mail-certs"
-      DEPLOY_DOCKER_CONTAINER_RELOAD_CMD: "true"
-{{ if .Cloudflare }}
-    secrets:
-      - cloudflare_token
-{{ end }}
+      - vectis-mail
     volumes:
-      - acme-data:/acme.sh
+      - traefik-acme:/var/traefik/acme:ro
       - mail-certs:/etc/ssl/mail
-    entrypoint: /bin/sh
+      # Docker socket gives the extractor the ability to `docker kill
+      # --signal=HUP` postfix/dovecot when the cert rotates. Scope is
+      # intentionally read-write (socket mounts don't honour :ro for
+      # write operations) — blast radius comparable to the old acme.sh
+      # sidecar which also had the socket for its deploy hook.
+      - /var/run/docker.sock:/var/run/docker.sock
     command:
-      - -c
-      - |
-{{ if .Cloudflare }}
-        export CF_Token="$(cat /run/secrets/cloudflare_token)"
-        acme.sh --issue --dns dns_cf -d {{ .Hostname }} --keylength 2048 || true
-{{ else }}
-        acme.sh --issue --standalone -d {{ .Hostname }} --keylength 2048 --httpport 80 || true
-{{ end }}
-        acme.sh --install-cert -d {{ .Hostname }} \
-          --cert-file /etc/ssl/mail/cert.pem \
-          --key-file /etc/ssl/mail/privkey.pem \
-          --fullchain-file /etc/ssl/mail/fullchain.pem || true
-        exec acme.sh --cron --home /acme.sh
+      - --acme-json=/var/traefik/acme/acme.json
+      - --hostname={{ .Hostname }}
+      - --out-dir=/etc/ssl/mail
+      - --reload-postfix=vectis-postfix
+      - --reload-dovecot=vectis-dovecot
+      - --watch
+    depends_on:
+      traefik:
+        condition: service_healthy
     logging:
       driver: {{ .Logging.Driver }}
       options:
         max-size: "{{ .Logging.MaxSizeMB }}m"
         max-file: "{{ .Logging.MaxFiles }}"
+{{ end }}
 
   postgres:
     image: postgres:17-alpine
@@ -487,7 +493,6 @@ volumes:
   dkim-keys:
   postfix-logs:
   traefik-acme:
-  acme-data:
   snapshots:
 {{ if .Cluster.PgBouncer.Enabled }}
   pgbouncer-config:
@@ -510,10 +515,6 @@ volumes:
 secrets:
   valkey_password:
     file: /var/vectis/generated/secrets/valkey_password
-{{ if .Cloudflare }}
-  cloudflare_token:
-    file: /var/vectis/generated/secrets/cloudflare_token
-{{ end }}
 {{ if .Observability.GrafanaEnabled }}
   grafana_admin_password:
     file: /var/vectis/generated/secrets/grafana_admin_password
