@@ -1,6 +1,8 @@
 package tls
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -297,6 +299,140 @@ func TestExtract_ScansAllResolvers(t *testing.T) {
 	}
 	if !res.Found {
 		t.Fatalf("cert in non-default resolver should still match")
+	}
+}
+
+// Returns a logger writing to a buffer so callers can assert log lines.
+func bufferedLogger() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	lg := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return lg, &buf
+}
+
+func TestRunOnce_FirstWarnAfterThresholdPolls(t *testing.T) {
+	tmp := t.TempDir()
+	acme := filepath.Join(tmp, "acme.json")
+	// Empty/not-yet-issued — Found=false every pass.
+	if err := os.WriteFile(acme, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lg, buf := bufferedLogger()
+	opts := ExtractOptions{
+		ACMEJSONPath: acme,
+		Hostname:     "mail.example.com",
+		OutDir:       tmp,
+		Logger:       lg,
+	}
+	state := &watchState{}
+
+	// Poll warnAfterPolls-1 times — no WARN expected yet.
+	for i := 0; i < warnAfterPolls-1; i++ {
+		runOnce(context.Background(), opts, lg, state)
+	}
+	if strings.Contains(buf.String(), `"level":"WARN"`) {
+		t.Fatalf("unexpected WARN before threshold: %s", buf.String())
+	}
+	// The warnAfterPolls-th poll triggers the first WARN.
+	runOnce(context.Background(), opts, lg, state)
+	if !strings.Contains(buf.String(), `"level":"WARN"`) {
+		t.Fatalf("expected WARN at poll %d; logs: %s", warnAfterPolls, buf.String())
+	}
+	if !strings.Contains(buf.String(), "no cert in acme.json yet") {
+		t.Fatalf("WARN missing expected message; logs: %s", buf.String())
+	}
+}
+
+func TestRunOnce_WarnRepeatsOnCadence(t *testing.T) {
+	tmp := t.TempDir()
+	acme := filepath.Join(tmp, "acme.json")
+	if err := os.WriteFile(acme, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lg, buf := bufferedLogger()
+	opts := ExtractOptions{
+		ACMEJSONPath: acme,
+		Hostname:     "mail.example.com",
+		OutDir:       tmp,
+		Logger:       lg,
+	}
+	state := &watchState{}
+
+	// Advance past first WARN + one full warnEveryPolls cycle; expect at least
+	// two WARN lines total.
+	total := warnAfterPolls + warnEveryPolls
+	for i := 0; i < total; i++ {
+		runOnce(context.Background(), opts, lg, state)
+	}
+	warns := strings.Count(buf.String(), `"level":"WARN"`)
+	if warns < 2 {
+		t.Fatalf("expected at least 2 WARN lines across %d polls; got %d. logs: %s", total, warns, buf.String())
+	}
+}
+
+func TestRunOnce_FoundResetsEmptyCounter(t *testing.T) {
+	tmp := t.TempDir()
+	acme := filepath.Join(tmp, "acme.json")
+	if err := os.WriteFile(acme, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lg, _ := bufferedLogger()
+	opts := ExtractOptions{
+		ACMEJSONPath: acme,
+		Hostname:     "mail.example.com",
+		OutDir:       tmp,
+		Logger:       lg,
+	}
+	state := &watchState{}
+
+	// Walk up to just-below first WARN threshold with empty acme.json.
+	for i := 0; i < warnAfterPolls-1; i++ {
+		runOnce(context.Background(), opts, lg, state)
+	}
+	if state.consecutiveEmpty != warnAfterPolls-1 {
+		t.Fatalf("consecutiveEmpty = %d, want %d", state.consecutiveEmpty, warnAfterPolls-1)
+	}
+
+	// Now populate acme.json with a real cert and poll again.
+	if err := os.WriteFile(acme, makeACMEFile("letsencrypt", "mail.example.com", nil, samplePEMCert, samplePEMKey), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runOnce(context.Background(), opts, lg, state)
+	if state.consecutiveEmpty != 0 {
+		t.Fatalf("consecutiveEmpty should reset to 0 after Found; got %d", state.consecutiveEmpty)
+	}
+	if !state.certEverSeen {
+		t.Fatalf("certEverSeen should flip to true after successful extract")
+	}
+}
+
+func TestRunOnce_CertAlreadyPresentLogsOnce(t *testing.T) {
+	tmp := t.TempDir()
+	acme := filepath.Join(tmp, "acme.json")
+	// Pre-populate acme.json AND the output dir (simulating a restart where
+	// the last run already wrote the cert; should log "already present" on
+	// the very first poll, then stay quiet on the next idempotent passes).
+	if err := os.WriteFile(acme, makeACMEFile("letsencrypt", "mail.example.com", nil, samplePEMCert, samplePEMKey), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lg, buf := bufferedLogger()
+	opts := ExtractOptions{
+		ACMEJSONPath: acme,
+		Hostname:     "mail.example.com",
+		OutDir:       tmp,
+		Logger:       lg,
+	}
+	state := &watchState{}
+
+	// First poll writes the cert (Changed=true → "cert written" INFO).
+	runOnce(context.Background(), opts, lg, state)
+	if !strings.Contains(buf.String(), "cert written") {
+		t.Fatalf("expected 'cert written' on first poll; logs: %s", buf.String())
+	}
+	buf.Reset()
+	// Second poll: Found=true, Changed=false, certEverSeen=true → DEBUG only.
+	runOnce(context.Background(), opts, lg, state)
+	if strings.Contains(buf.String(), `"level":"INFO"`) && strings.Contains(buf.String(), "already present") {
+		t.Fatalf("'already present' should fire only on first unchanged poll when !certEverSeen; logs: %s", buf.String())
 	}
 }
 

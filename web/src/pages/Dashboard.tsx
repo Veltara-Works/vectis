@@ -136,20 +136,25 @@ export default function DashboardPage() {
                 The api container has no Docker socket access (only the
                 orchestrator does), so container-level health for
                 postfix/dovecot/rspamd/traefik can't be queried here.
-                Render them as "pending" — but only if the health API
+                Render them as "unchecked" — but only if the health API
                 didn't already report on them, so we don't double-count
                 when the orchestrator eventually takes over these checks.
-                Docker's own restart policy + the api readiness probe
-                still catch hard failures today.
+
+                Important: do NOT render anything that implies "this
+                service is healthy" here — the api genuinely cannot tell.
+                Earlier versions rendered "pending" with a reassuring
+                tooltip, which looked affirmative even when the service
+                was crashlooping. "unchecked" + the honest tooltip below
+                is the rc29 correction.
               */}
               {['postfix', 'dovecot', 'rspamd', 'traefik']
                 .filter((name) => !(name in health.services))
                 .map((name) => (
-                  <tr key={`pending-${name}`}>
+                  <tr key={`unchecked-${name}`}>
                     <td>{name}</td>
                     <td>
-                      <span className="badge badge-muted" title="Monitored by Docker restart policy. Full health checks moving to the orchestrator in a future release.">
-                        pending
+                      <span className="badge badge-muted" title="This service's runtime health cannot be checked from the api container (no Docker socket access). Its status here reflects only whether the api knows about it — NOT whether it is actually running. Check 'docker ps' on the host, or wait for the orchestrator-driven health rollup in a future release.">
+                        unchecked
                       </span>
                     </td>
                   </tr>
