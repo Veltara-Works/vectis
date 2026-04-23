@@ -183,8 +183,15 @@ services:
     depends_on:
       valkey:
         condition: service_healthy
+    # Healthcheck hits the controller's /ping endpoint — auth-free, always
+    # returns 200 once the controller worker is up. Earlier rcs used
+    # `rspamadm control stat` which requires a controller password (we
+    # don't set one) and returned 403 → container stuck "unhealthy" for
+    # its entire lifetime even though rspamd was fully functional. Fixed
+    # rc29 after the rc28 walkthrough proved rspamd was actually running
+    # 4 workers + passing configtest; only the healthcheck was broken.
     healthcheck:
-      test: ["CMD", "rspamadm", "control", "stat"]
+      test: ["CMD", "curl", "-sf", "http://localhost:11334/ping"]
       interval: 30s
       timeout: 10s
       retries: 3
