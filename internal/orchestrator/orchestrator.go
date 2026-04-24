@@ -208,7 +208,7 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 	}
 
 	var changes []PlanChange
-	for _, svc := range ServiceStartOrder {
+	for _, svc := range VectisImageServices {
 		declared, ok := desired[svc]
 		if !ok {
 			continue // Not in compose — not orchestrator's concern.
@@ -444,8 +444,12 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 	// ===== PHASE 4: UPDATE CONTAINERS =====
 	o.logger.Info("phase 4: updating containers", "job_id", jobID)
 
-	// 4.1 Pull new images.
-	if err := o.docker.PullImages(applyCtx, ServiceStartOrder); err != nil {
+	// 4.1 Pull new images. Must cover every service whose tag may have been
+	// rewritten by Phase 3.5, not just dependency-ordered startup services —
+	// otherwise orchestrator + cert-extractor get bumped in compose but their
+	// new images are never pulled, so 4.3's `compose up -d` would either fail
+	// or silently keep the old containers alive.
+	if err := o.docker.PullImages(applyCtx, VectisImageServices); err != nil {
 		o.logger.Error("image pull failed, initiating rollback", "error", err)
 		rollbackErr := o.doRollback(applyCtx, snapshotPath)
 		if rollbackErr != nil {

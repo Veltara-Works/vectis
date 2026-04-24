@@ -58,7 +58,6 @@ var ServiceHealthTimeouts = map[string]time.Duration{
 	"rspamd":   60 * time.Second,
 	"clamav":   180 * time.Second,
 	"api":      30 * time.Second,
-	"admin-ui": 15 * time.Second,
 }
 
 // ServiceStartOrder defines the dependency-first startup order per Spec D.6.
@@ -70,7 +69,27 @@ var ServiceStartOrder = []string{
 	"rspamd",
 	"clamav",
 	"api",
-	"admin-ui",
+}
+
+// VectisImageServices enumerates the services whose image tag tracks the
+// Vectis release tag — i.e. the set that participates in Plan/Apply upgrades.
+// Must stay in sync with the `image: ghcr.io/veltara-works/vectis-*` lines in
+// templates/docker-compose.yml.tmpl; config_test enforces this invariant.
+//
+// Distinct from ServiceStartOrder on purpose: start order is about dependency
+// ordering (postgres → valkey → mail services → api), while this list is about
+// "which containers get their tags bumped when the user clicks Apply". Pre-rc33
+// the two were conflated, so `orchestrator` and `cert-extractor` — both in the
+// compose but not in the start list — silently fell out of Plan.Changes and
+// got stranded on the old version post-Apply.
+var VectisImageServices = []string{
+	"api",
+	"orchestrator",
+	"postfix",
+	"dovecot",
+	"rspamd",
+	"clamav",
+	"cert-extractor",
 }
 
 // ServiceStopOrder returns the reverse of ServiceStartOrder (dependents first).

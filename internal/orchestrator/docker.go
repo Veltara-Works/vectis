@@ -312,10 +312,21 @@ func (dm *DockerManager) containerHealthStatus(ctx context.Context, containerNam
 
 // GetContainerVersions returns the current image tags for all Vectis containers.
 // Keys are service names, values are full image references (e.g. "vectis/api:1.2.3").
+//
+// Iterates VectisImageServices (everything whose tag moves with releases) plus
+// the data services from ServiceStartOrder so Plan's baseline has running
+// versions for every upgradable service. Iterating only ServiceStartOrder
+// dropped orchestrator + cert-extractor, which made Plan report them as
+// "create" instead of "update" — see VectisImageServices doc.
 func (dm *DockerManager) GetContainerVersions(ctx context.Context) (map[string]string, error) {
 	versions := make(map[string]string)
 
-	for _, svc := range ServiceStartOrder {
+	seen := make(map[string]bool)
+	inspect := func(svc string) {
+		if seen[svc] {
+			return
+		}
+		seen[svc] = true
 		name := containerName(svc)
 		image, err := dm.getContainerImage(ctx, name)
 		if err != nil {
@@ -324,9 +335,15 @@ func (dm *DockerManager) GetContainerVersions(ctx context.Context) (map[string]s
 				"container", name,
 				"error", err,
 			)
-			continue // Container may not exist yet.
+			return // Container may not exist yet.
 		}
 		versions[svc] = image
+	}
+	for _, svc := range VectisImageServices {
+		inspect(svc)
+	}
+	for _, svc := range ServiceStartOrder {
+		inspect(svc)
 	}
 
 	return versions, nil
