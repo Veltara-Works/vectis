@@ -49,6 +49,10 @@ func run(logger *slog.Logger) error {
 	// end-to-end by the rc40→rc41 walkthrough on sysadmin1001 (2026-04-24).
 	// rc44 is the GA-gate walkthrough target — a clean rc43→rc44 Apply via
 	// the admin UI is the last checkbox before tagging v0.1.0.
+	// rc45 exists so a human operator can drive the rc44→rc45 Apply by hand
+	// in the admin UI (Updates page, Dashboard banner, Bad-Gateway window UX).
+	// The rc43→rc44 walkthrough was API-only; rc45 is the human-eyes pass
+	// before GA is cut from the same commit.
 	logger.Info("orchestrator starting", "version", version.Version)
 
 	// -----------------------------------------------------------------------
