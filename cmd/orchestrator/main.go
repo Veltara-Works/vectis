@@ -43,7 +43,8 @@ func run(logger *slog.Logger) error {
 	// Version log is the first useful signal in `docker logs vectis-orchestrator`
 	// — especially after an Apply-driven upgrade when the operator wants to
 	// confirm the orchestrator container was actually replaced by the rc36+
-	// helper (GA Blocker #9 fix).
+	// helper (GA Blocker #9 fix). Pair this with `docker inspect vectis-apply-helper*`
+	// if the replacement appears stuck.
 	logger.Info("orchestrator starting", "version", version.Version)
 
 	// -----------------------------------------------------------------------
