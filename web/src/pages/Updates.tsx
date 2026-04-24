@@ -89,7 +89,10 @@ export default function UpdatesPage() {
     try {
       const result = await api.orchestratorPlan()
       setPlan(result)
-      setSuccess('Plan generated successfully')
+      const noChanges = !result.changes || result.changes.length === 0
+      setSuccess(noChanges
+        ? 'Plan generated — no changes needed, all services are up to date.'
+        : 'Plan generated successfully. Review the changes below, then click Apply Update to proceed.')
       loadStatus()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to generate plan')

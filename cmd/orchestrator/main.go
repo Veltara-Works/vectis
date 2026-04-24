@@ -60,6 +60,12 @@ func run(logger *slog.Logger) error {
 	// "running" and no countdown banner ever appeared. rc46 broadens the
 	// poll to any non-terminal state, adds an in-progress banner with
 	// current_step, and renders plan_summary as a readable one-liner.
+	// rc47 is the human-UI test target for rc46's own fixes — an Apply
+	// driven from the rc46 bundle (already loaded in the browser) is the
+	// only way to see the new in-progress banner and auto-refreshing
+	// history row in action, since rc45→rc46 necessarily ran under the
+	// old rc45 UI. rc47 also ships a small copy tweak to the Plan success
+	// message so it tells the user what to do next.
 	logger.Info("orchestrator starting", "version", version.Version)
 
 	// -----------------------------------------------------------------------
