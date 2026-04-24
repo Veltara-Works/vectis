@@ -401,20 +401,45 @@ func (dm *DockerManager) ApplyComposeServices(ctx context.Context, services []st
 	if len(services) == 0 {
 		return fmt.Errorf("ApplyComposeServices called with empty service list")
 	}
+
+	// Filter to services actually present in the compose file. Optional
+	// services (clamav, webmail, etc.) may be absent depending on install
+	// config; listing them explicitly in `docker compose up -d` fails with
+	// "no such service" and aborts the whole command. Matches PullImages'
+	// existing defined-filter pattern.
+	defined, err := dm.composeServices(ctx)
+	if err != nil {
+		return fmt.Errorf("enumerate compose services: %w", err)
+	}
+
+	filtered := make([]string, 0, len(services))
+	for _, svc := range services {
+		if !defined[svc] {
+			dm.logger.Info("skipping compose up: service not defined in compose", "service", svc)
+			continue
+		}
+		filtered = append(filtered, svc)
+	}
+
+	if len(filtered) == 0 {
+		dm.logger.Info("ApplyComposeServices: nothing to apply after filtering (all requested services undefined in compose)")
+		return nil
+	}
+
 	dm.logger.Info("applying docker compose for specific services",
-		"paths", dm.cfg.ComposePaths, "services", services)
+		"paths", dm.cfg.ComposePaths, "services", filtered)
 
 	args := append([]string{"compose"}, dm.cfg.composeFileArgs()...)
 	args = append(args, "up", "-d")
-	args = append(args, services...)
+	args = append(args, filtered...)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("docker compose up %v: %w: %s", services, err, string(output))
+		return fmt.Errorf("docker compose up %v: %w: %s", filtered, err, string(output))
 	}
 
-	dm.logger.Info("docker compose applied for services", "services", services)
+	dm.logger.Info("docker compose applied for services", "services", filtered)
 	return nil
 }
 

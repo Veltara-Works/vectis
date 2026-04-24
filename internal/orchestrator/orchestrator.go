@@ -791,6 +791,15 @@ func (o *Orchestrator) doRollback(ctx context.Context, snapshotPath string) erro
 	// apply so containers revert to the old image tags. RestoreComposeBackup
 	// is a no-op if the backup file doesn't exist — covers both pre-rc30
 	// snapshots (no backup file) and the Apply-failed-before-rewrite case.
+	//
+	// Uses ApplyComposeServices with VectisImageServicesExcludingSelf() rather
+	// than ApplyCompose (which touches ALL services incl. orchestrator). Two
+	// reasons: (1) rollback never needs to recreate the orchestrator — it's
+	// still on its old image throughout any auto-rollback path, since the
+	// Phase 7 helper only spawns post-Phase-6-success. (2) ApplyCompose would
+	// re-trigger the GA Blocker #9 self-kill if docker chose to recreate the
+	// orchestrator for any reason (config drift, half-orphaned state from a
+	// failed prior attempt, etc.). The service-list approach sidesteps both.
 	o.logger.Info("rollback phase 3: restoring compose backup (if any) and applying")
 	if len(o.cfg.ComposePaths) > 0 {
 		composePath := o.cfg.ComposePaths[0]
@@ -799,7 +808,7 @@ func (o *Orchestrator) doRollback(ctx context.Context, snapshotPath string) erro
 			return recover(fmt.Errorf("rollback restore compose: %w", err))
 		}
 	}
-	if err := o.docker.ApplyCompose(ctx); err != nil {
+	if err := o.docker.ApplyComposeServices(ctx, VectisImageServicesExcludingSelf()); err != nil {
 		return recover(fmt.Errorf("rollback apply compose: %w", err))
 	}
 
