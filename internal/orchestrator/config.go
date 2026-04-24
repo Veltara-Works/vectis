@@ -50,11 +50,17 @@ func (c Config) composeFileArgs() []string {
 }
 
 // ServiceHealthTimeouts defines per-service health check timeouts per Spec D.5.
+//
+// Postfix and dovecot got bumped from 30s to 60s in rc43 after the rc41→rc42
+// sanity walkthrough on sysadmin1001 timed out on postfix at 30.1s — the mail
+// daemons run pgsql handshakes + config validation at startup that routinely
+// take 20–40s even on healthy infra, so a 30s ceiling is marginal and flakes
+// on ~10% of upgrades. 60s matches rspamd's existing allowance.
 var ServiceHealthTimeouts = map[string]time.Duration{
 	"postgres": 30 * time.Second,
 	"valkey":   15 * time.Second,
-	"postfix":  30 * time.Second,
-	"dovecot":  30 * time.Second,
+	"postfix":  60 * time.Second,
+	"dovecot":  60 * time.Second,
 	"rspamd":   60 * time.Second,
 	"clamav":   180 * time.Second,
 	"api":      30 * time.Second,
