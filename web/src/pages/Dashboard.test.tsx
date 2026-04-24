@@ -10,6 +10,7 @@ vi.mock('../api/client', () => ({
     listDomains: vi.fn(),
     listMailboxes: vi.fn(),
     applyConfig: vi.fn(),
+    orchestratorStatus: vi.fn(),
   },
 }))
 
@@ -22,6 +23,10 @@ const renderWithRouter = (ui: React.ReactElement) =>
 beforeEach(() => {
   vi.clearAllMocks()
   mockApi.listMailboxes.mockResolvedValue([])
+  // Dashboard polls orchestrator status on mount + every 5s to surface the
+  // rc36+ self-replace countdown banner. Tests aren't exercising that path,
+  // so a plain idle response is fine — but the mock must exist or mount fails.
+  mockApi.orchestratorStatus.mockResolvedValue({ state: 'idle' })
 })
 
 describe('DashboardPage', () => {
