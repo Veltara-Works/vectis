@@ -47,6 +47,8 @@ func run(logger *slog.Logger) error {
 	// if the replacement appears stuck. On rc40+ the helper also handles
 	// installs without clamav / other optional services cleanly. Validated
 	// end-to-end by the rc40→rc41 walkthrough on sysadmin1001 (2026-04-24).
+	// rc44 is the GA-gate walkthrough target — a clean rc43→rc44 Apply via
+	// the admin UI is the last checkbox before tagging v0.1.0.
 	logger.Info("orchestrator starting", "version", version.Version)
 
 	// -----------------------------------------------------------------------
