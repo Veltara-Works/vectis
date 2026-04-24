@@ -71,6 +71,11 @@ func run(logger *slog.Logger) error {
 	// tuple), drops the "Current step" line under the State badge for the
 	// same reason, and normalises user-facing language on "update" (not
 	// "upgrade"). The step field was the same value as state anyway.
+	// rc49 is the human-UI target for rc48's copy changes, same pattern
+	// as rc47 being the target for rc46's UX fixes — the rc48 bundle only
+	// starts being served after the api container swap during rc47→rc48,
+	// so the user won't see the new banner prose until they Apply again
+	// with the rc48 bundle already loaded. rc48→rc49 is that run.
 	logger.Info("orchestrator starting", "version", version.Version)
 
 	// -----------------------------------------------------------------------
