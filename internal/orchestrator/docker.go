@@ -218,10 +218,25 @@ func (dm *DockerManager) StopServices(ctx context.Context, order []string) error
 
 // StartServices starts containers in the given order (should be dependency order).
 // Uses docker compose up with the specific service names.
+//
+// Services listed in `order` but not present in the compose file are skipped
+// (e.g. `clamav` when the install doesn't have virus scanning enabled). Without
+// this filter, `docker compose up -d --no-deps clamav` fails with "no such
+// service: clamav" and aborts the whole rollout chain (Phase 5 health check
+// or rollback Phase 4 restart). Matches the existing filter behaviour in
+// PullImages + ApplyComposeServices.
 func (dm *DockerManager) StartServices(ctx context.Context, order []string) error {
+	defined, err := dm.composeServices(ctx)
+	if err != nil {
+		return fmt.Errorf("enumerate compose services: %w", err)
+	}
 	dm.logger.Info("starting services", "order", order)
 
 	for _, svc := range order {
+		if !defined[svc] {
+			dm.logger.Info("skipping start: service not defined in compose", "service", svc)
+			continue
+		}
 		dm.logger.Info("starting service", "service", svc)
 
 		args := append([]string{"compose"}, dm.cfg.composeFileArgs()...)
