@@ -135,7 +135,17 @@ export const api = {
 
   // Orchestrator
   orchestratorStatus: () =>
-    request<{ state: string; current_operation?: string; last_operation?: string }>('GET', '/orchestrator/status'),
+    request<{
+      state: string;
+      current_operation?: string;
+      last_operation?: string;
+      current_step?: string;
+      // Set during rc36+ orchestrator self-replace window — RFC3339 timestamp
+      // of when the helper container is expected to have finished recreating
+      // the orchestrator. UI renders a countdown banner while this is in the
+      // future. Absent/past = no banner.
+      self_upgrade_until?: string;
+    }>('GET', '/orchestrator/status'),
   orchestratorPlan: () =>
     request<{
       id: string;

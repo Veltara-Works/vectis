@@ -16,6 +16,21 @@ export default function DashboardPage() {
   const [configApplying, setConfigApplying] = useState(false)
   const [configMessage, setConfigMessage] = useState('')
   const [setup, setSetup] = useState<SetupProgress>({ hasDomain: false, domainVerified: false, hasMailbox: false, loading: true })
+  const [selfUpgradeUntilMs, setSelfUpgradeUntilMs] = useState(0)
+  const selfUpgradeActive = selfUpgradeUntilMs > Date.now()
+
+  useEffect(() => {
+    // Poll orchestrator status so the Dashboard shows the "finalising upgrade"
+    // banner too — users may land here after clicking Apply on Updates, and
+    // without this they'd see stale "healthy" rows with no hint that
+    // orchestrator is mid-restart (rc36+).
+    const loadOrchStatus = () => api.orchestratorStatus()
+      .then(s => setSelfUpgradeUntilMs(s.self_upgrade_until ? Date.parse(s.self_upgrade_until) : 0))
+      .catch(() => {})
+    loadOrchStatus()
+    const t = setInterval(loadOrchStatus, 5000)
+    return () => clearInterval(t)
+  }, [])
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setError('Failed to load health'))
@@ -56,6 +71,13 @@ export default function DashboardPage() {
       <h2 className="page-title">Dashboard</h2>
 
       {error && <div className="alert alert-error">{error}</div>}
+      {selfUpgradeActive && (
+        <div className="alert alert-warning" style={{ marginBottom: '0.75rem' }}>
+          <strong>Orchestrator is finalising its self-upgrade.</strong>{' '}
+          The orchestrator container will restart automatically in ~
+          {Math.max(0, Math.ceil((selfUpgradeUntilMs - Date.now()) / 1000))}s — no action needed.
+        </div>
+      )}
 
       <div className="stats">
         <div className="stat">

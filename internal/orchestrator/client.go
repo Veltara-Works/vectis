@@ -92,6 +92,12 @@ type StatusResult struct {
 	Steps       []ApplyStep  `json:"steps,omitempty"`
 	Error       string       `json:"error,omitempty"`
 	LastApply   *time.Time   `json:"last_apply,omitempty"`
+	// SelfUpgradeUntil is set during the rc36+ orchestrator self-replace
+	// window (the ~30s between Apply recording "completed" and the helper
+	// container actually firing `docker compose up -d orchestrator`). The UI
+	// uses this to render a countdown banner so the user doesn't think Apply
+	// has stalled. Nil when no self-replacement is pending.
+	SelfUpgradeUntil *time.Time `json:"self_upgrade_until,omitempty"`
 }
 
 // --- API methods ---
@@ -115,8 +121,9 @@ type jobEnvelope struct {
 }
 
 type statusEnvelope struct {
-	State string `json:"state"`
-	Data  struct {
+	State            string     `json:"state"`
+	SelfUpgradeUntil *time.Time `json:"self_upgrade_until,omitempty"`
+	Data             struct {
 		LastOperation *lastOperation `json:"last_operation,omitempty"`
 	} `json:"data"`
 }
@@ -177,7 +184,10 @@ func (c *Client) Status(ctx context.Context) (*StatusResult, error) {
 	if err := c.doJSON(ctx, http.MethodGet, "/internal/status", &env); err != nil {
 		return nil, fmt.Errorf("status: %w", err)
 	}
-	result := StatusResult{State: env.State}
+	result := StatusResult{
+		State:            env.State,
+		SelfUpgradeUntil: env.SelfUpgradeUntil,
+	}
 	if env.Data.LastOperation != nil {
 		result.CurrentStep = env.Data.LastOperation.Type
 		result.Error = env.Data.LastOperation.Error

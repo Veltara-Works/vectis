@@ -384,6 +384,120 @@ func (dm *DockerManager) ApplyCompose(ctx context.Context) error {
 	return nil
 }
 
+// ApplyComposeServices runs `docker compose up -d <s1> <s2> …` for exactly the
+// listed services, rather than the whole compose like ApplyCompose.
+//
+// Used by Apply's Phase 4.3 to recreate every vectis-* service EXCEPT the
+// orchestrator itself — the orchestrator's self-replacement is handled
+// asynchronously via a detached helper (SpawnSelfReplaceHelper). Without the
+// split, `docker compose up -d` issued from inside the orchestrator container
+// got SIGTERM'd mid-command when the daemon started swapping the orchestrator
+// — 0.35s was all Phase 4.3 got before dying (rc33→rc35 walkthrough 2026-04-24).
+//
+// --remove-orphans is intentionally NOT passed here — we're targeting specific
+// services, not reconciling the whole stack, and passing it would remove
+// containers we're deliberately leaving alone (orchestrator).
+func (dm *DockerManager) ApplyComposeServices(ctx context.Context, services []string) error {
+	if len(services) == 0 {
+		return fmt.Errorf("ApplyComposeServices called with empty service list")
+	}
+	dm.logger.Info("applying docker compose for specific services",
+		"paths", dm.cfg.ComposePaths, "services", services)
+
+	args := append([]string{"compose"}, dm.cfg.composeFileArgs()...)
+	args = append(args, "up", "-d")
+	args = append(args, services...)
+	cmd := exec.CommandContext(ctx, "docker", args...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker compose up %v: %w: %s", services, err, string(output))
+	}
+
+	dm.logger.Info("docker compose applied for services", "services", services)
+	return nil
+}
+
+// SpawnSelfReplaceHelper launches a short-lived detached container that, after
+// `delay` seconds, runs `docker compose up -d orchestrator` — triggering a
+// recreation of the orchestrator container with whatever image tag is in the
+// compose file (rewritten by Phase 3.5 to the target rc). The helper reuses
+// the currently-running orchestrator image (guaranteed-working docker CLI
+// that can talk to the mounted socket), runs with --rm so it self-cleans,
+// and has no network dependencies — just /var/run/docker.sock and /etc/vectis
+// bind-mounted in.
+//
+// Rationale: Phase 4.3's ordinary `docker compose up -d` gets SIGTERM'd
+// mid-command when the daemon starts swapping the orchestrator itself — see
+// the Apply's Phase 4.3 split comment above. Handing the orchestrator's own
+// recreation off to a helper breaks that race: the orchestrator records Apply
+// completion cleanly, the helper fires N seconds later, docker sends SIGTERM
+// to the orchestrator (which uses its normal graceful-shutdown path), new
+// orchestrator starts on the new image. User-visible flow is continuous.
+//
+// helperImage should be the CURRENT (pre-upgrade) orchestrator image — we
+// don't want to depend on the new image being healthy just to launch the
+// helper. Returns the helper container ID on success.
+func (dm *DockerManager) SpawnSelfReplaceHelper(ctx context.Context, helperImage string, delay time.Duration, helperNameSuffix string) (string, error) {
+	if helperImage == "" {
+		return "", fmt.Errorf("SpawnSelfReplaceHelper called with empty helperImage")
+	}
+	if delay < 0 {
+		return "", fmt.Errorf("SpawnSelfReplaceHelper called with negative delay %s", delay)
+	}
+	if helperNameSuffix == "" {
+		return "", fmt.Errorf("SpawnSelfReplaceHelper called with empty helperNameSuffix")
+	}
+
+	// Compose file inside the helper container is the first of the configured
+	// compose paths — the same one Phase 3.5 just rewrote. Helper runs outside
+	// the vectis compose project, so we pass -f explicitly.
+	composePath := "/etc/vectis/docker-compose.yml"
+	if len(dm.cfg.ComposePaths) > 0 {
+		composePath = dm.cfg.ComposePaths[0]
+	}
+
+	delaySeconds := int(delay.Seconds())
+	shCommand := fmt.Sprintf(
+		"sleep %d && docker compose -f %s up -d orchestrator",
+		delaySeconds, composePath,
+	)
+	helperName := "vectis-apply-helper-" + helperNameSuffix
+
+	args := []string{
+		"run", "-d", "--rm",
+		"--name", helperName,
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
+		"-v", "/etc/vectis:/etc/vectis:ro",
+		"--entrypoint", "sh",
+		helperImage,
+		"-c", shCommand,
+	}
+
+	dm.logger.Info("spawning orchestrator self-replace helper",
+		"helper_name", helperName,
+		"helper_image", helperImage,
+		"delay_seconds", delaySeconds,
+		"compose_path", composePath,
+	)
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("docker run helper: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+
+	containerID := strings.TrimSpace(stdout.String())
+	dm.logger.Info("self-replace helper spawned",
+		"helper_name", helperName,
+		"container_id", containerID,
+	)
+	return containerID, nil
+}
+
 // containerInfo holds the inspect output fields we care about.
 type containerInfo struct {
 	State struct {

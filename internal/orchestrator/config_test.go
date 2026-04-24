@@ -58,6 +58,41 @@ func TestRollbackAliases_MatchNonDataOrders(t *testing.T) {
 	}
 }
 
+// VectisImageServicesExcludingSelf must return VectisImageServices minus
+// "orchestrator", preserving the original order. Apply's Phase 4.3 uses this
+// list to call `docker compose up -d` without touching the orchestrator
+// container — necessary to dodge the rc36-fixed self-kill race where the
+// daemon SIGTERMs the CLI mid-command (GA blocker #9).
+func TestVectisImageServicesExcludingSelf_DropsOrchestrator(t *testing.T) {
+	got := VectisImageServicesExcludingSelf()
+
+	for _, s := range got {
+		if s == "orchestrator" {
+			t.Errorf("list must not contain orchestrator; got %v", got)
+		}
+	}
+
+	if len(got) != len(VectisImageServices)-1 {
+		t.Errorf("expected len %d, got %d (list=%v)", len(VectisImageServices)-1, len(got), got)
+	}
+
+	// Order preservation: Apply logs service-by-service progress, so the
+	// relative order must match VectisImageServices with orchestrator skipped.
+	idx := 0
+	for _, s := range VectisImageServices {
+		if s == "orchestrator" {
+			continue
+		}
+		if idx >= len(got) {
+			t.Fatalf("got list shorter than expected at idx %d", idx)
+		}
+		if got[idx] != s {
+			t.Errorf("order not preserved at idx %d: got %q, want %q", idx, got[idx], s)
+		}
+		idx++
+	}
+}
+
 // VectisImageServices must enumerate every service in the compose template
 // whose image references `ghcr.io/veltara-works/vectis-<service>`. Regression
 // test for rc33: pre-fix, orchestrator + cert-extractor were in compose but

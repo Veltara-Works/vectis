@@ -92,6 +92,25 @@ var VectisImageServices = []string{
 	"cert-extractor",
 }
 
+// VectisImageServicesExcludingSelf returns VectisImageServices minus
+// "orchestrator". Apply's Phase 4.3 uses this list to issue `compose up -d`
+// for every upgradable service EXCEPT the orchestrator itself. The
+// orchestrator's self-replacement is handed off to a detached helper
+// container in Phase 4.4 — the only way around the self-kill race where
+// `docker compose up -d` executed inside the orchestrator gets SIGTERM'd
+// when the daemon starts swapping the orchestrator container (GA blocker #9,
+// fixed rc36).
+func VectisImageServicesExcludingSelf() []string {
+	out := make([]string, 0, len(VectisImageServices)-1)
+	for _, s := range VectisImageServices {
+		if s == "orchestrator" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // ServiceStopOrder returns the reverse of ServiceStartOrder (dependents first).
 func ServiceStopOrder() []string {
 	n := len(ServiceStartOrder)

@@ -3,6 +3,10 @@ import { api } from '../api/client.ts'
 
 interface OrchestratorStatus {
   state: string; current_operation?: string; last_operation?: string;
+  // Set during the rc36+ orchestrator self-replace window (~30s between Apply
+  // recording "completed" and the helper container firing). Presence signals
+  // "don't worry, the orchestrator is about to restart on the new version".
+  self_upgrade_until?: string;
 }
 
 interface HistoryEntry {
@@ -51,6 +55,18 @@ export default function UpdatesPage() {
     loadStatus()
     loadHistory()
   }, [])
+
+  // During the orchestrator self-replace window, poll status every 2s so the
+  // countdown banner stays responsive and disappears promptly once the helper
+  // has fired. Falls back to a single initial load when no window is active.
+  const selfUpgradeUntilMs = status?.self_upgrade_until
+    ? Date.parse(status.self_upgrade_until) : 0
+  const selfUpgradeActive = selfUpgradeUntilMs > Date.now()
+  useEffect(() => {
+    if (!selfUpgradeActive) return
+    const timer = setInterval(loadStatus, 2000)
+    return () => clearInterval(timer)
+  }, [selfUpgradeActive])
 
   const handlePlan = async () => {
     setPlanning(true)
@@ -125,6 +141,9 @@ export default function UpdatesPage() {
 
       {error && <div className="alert alert-error">{error}</div>}
       {success && <div className="alert alert-success">{success}</div>}
+      {selfUpgradeActive && (
+        <SelfUpgradeBanner untilMs={selfUpgradeUntilMs} />
+      )}
 
       <div className="card">
         <h3 className="mb-1">Orchestrator Status</h3>
@@ -239,6 +258,28 @@ export default function UpdatesPage() {
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+// SelfUpgradeBanner renders a countdown banner while the orchestrator is in
+// its self-replace window (rc36+). Without this, the ~30s gap between Apply
+// recording "completed" and the helper container firing looks like a stalled
+// upgrade because orchestrator's own image tag still reads as the old version.
+// The banner auto-hides once the countdown passes (the status poll drops the
+// field, the effect unmounts the banner).
+function SelfUpgradeBanner({ untilMs }: { untilMs: number }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+  const remaining = Math.max(0, Math.ceil((untilMs - now) / 1000))
+  return (
+    <div className="alert alert-warning" style={{ marginBottom: '0.75rem' }}>
+      <strong>Orchestrator is finalising its self-upgrade.</strong>{' '}
+      The orchestrator container will restart automatically in ~{remaining}s — no action needed.
+      This page will refresh itself when the window closes.
     </div>
   )
 }

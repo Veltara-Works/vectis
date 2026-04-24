@@ -291,6 +291,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Surface the in-flight orchestrator self-replace window (rc36) so the UI
+	// can render a countdown banner during the ~30s helper-delay after Apply
+	// otherwise completes. Nil when no self-replacement is pending — most of
+	// the time this is a no-op Valkey GET.
+	if until := s.orch.SelfUpgradeUntil(r.Context()); until != nil {
+		data["self_upgrade_until"] = until.UTC().Format(time.RFC3339)
+	}
+
 	s.respondJSON(w, http.StatusOK, data)
 }
 

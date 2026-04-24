@@ -17,6 +17,31 @@ import (
 	"github.com/Veltara-Works/vectis/internal/types"
 )
 
+// Constants for the rc36 orchestrator self-replace flow (Phase 7 of Apply).
+//
+// selfUpgradeHelperDelay: how long the helper sleeps after spawn before
+// running `docker compose up -d orchestrator`. Gives this Apply goroutine
+// time to return and the client to render a "completed" state before the
+// orchestrator container is swapped.
+//
+// selfUpgradeCompletionSlack: extra seconds we add on top of the delay when
+// publishing the "expected completion" timestamp to valkey, covering the
+// time docker takes to actually stop + start the orchestrator container
+// (typically 5–10s) plus a small safety margin.
+//
+// selfUpgradeKeyTTLExtra: TTL buffer on top of delay so the key lingers
+// briefly for the UI to detect "we just finished" even if polling is slow.
+//
+// selfUpgradeUntilKey: Valkey key name surfaced to the UI via
+// GET /api/v1/orchestrator/status so the Updates page can render a
+// countdown banner instead of showing a seemingly-stalled upgrade.
+const (
+	selfUpgradeHelperDelay     = 30 * time.Second
+	selfUpgradeCompletionSlack = 30 * time.Second
+	selfUpgradeKeyTTLExtra     = 60 * time.Second
+	selfUpgradeUntilKey        = "orchestrator:self_upgrade_until"
+)
+
 // Orchestrator is the core state machine that manages system updates.
 // It is the only component with Docker socket access and enforces
 // serialised execution via Postgres advisory locks per Spec D.
@@ -80,6 +105,46 @@ func (o *Orchestrator) Status() StatusResponse {
 		State:         o.sm.State(),
 		LastOperation: o.lastOp,
 	}
+}
+
+// SelfUpgradeUntil returns the RFC3339 timestamp at which the currently
+// pending orchestrator self-replacement is expected to complete, or nil if
+// no self-replacement is in flight.
+//
+// Read from the Valkey key orchestrator:self_upgrade_until, which is written
+// by Apply's Phase 7 immediately after a self-replace helper is spawned. The
+// key has a TTL slightly longer than the helper's scheduled delay so it
+// auto-cleans without any explicit removal — even if the orchestrator itself
+// is replaced (the new orchestrator has no record of its prior life's
+// helper spawn, but the TTL keeps ticking down and Valkey will drop the key
+// at the right time regardless).
+//
+// Surfaced on GET /orchestrator/status so the UI can render a countdown
+// banner during the ~30s helper-delay window, preventing users from thinking
+// an Apply has stalled when it's actually in its final orchestrator-swap step.
+func (o *Orchestrator) SelfUpgradeUntil(ctx context.Context) *time.Time {
+	cmd := o.vk.B().Get().Key(selfUpgradeUntilKey).Build()
+	s, err := o.vk.Do(ctx, cmd).ToString()
+	if err != nil {
+		if !valkey.IsValkeyNil(err) {
+			o.logger.Warn("failed to read self_upgrade_until from valkey", "error", err)
+		}
+		return nil
+	}
+	if s == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		o.logger.Warn("self_upgrade_until valkey value is not RFC3339", "value", s, "error", err)
+		return nil
+	}
+	if time.Now().UTC().After(t) {
+		// Window has already passed; don't surface a stale timestamp. Valkey
+		// will drop the key via TTL shortly.
+		return nil
+	}
+	return &t
 }
 
 // Health returns a simple health check response (Spec D.10).
@@ -477,8 +542,13 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		return jobID, fmt.Errorf("stop services failed, rolled back: %w", err)
 	}
 
-	// 4.3 Apply new docker-compose.yml.
-	if err := o.docker.ApplyCompose(applyCtx); err != nil {
+	// 4.3 Apply new docker-compose.yml for every vectis-* service EXCEPT the
+	// orchestrator itself. Orchestrator's self-replacement is deferred to
+	// Phase 7 (a detached helper container). If we ran `compose up -d` with
+	// the full stack here, docker would SIGTERM the orchestrator mid-command
+	// and this goroutine would die with it — 0.35s was all we got before the
+	// kill on the rc33→rc35 walkthrough (GA blocker #9, fixed rc36).
+	if err := o.docker.ApplyComposeServices(applyCtx, VectisImageServicesExcludingSelf()); err != nil {
 		o.logger.Error("apply compose failed, initiating rollback", "error", err)
 		rollbackErr := o.doRollback(applyCtx, snapshotPath)
 		if rollbackErr != nil {
@@ -516,6 +586,20 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		return "", fmt.Errorf("transition to idle after apply: %w", err)
 	}
 
+	// Capture orchestrator's CURRENT image tag (still the pre-upgrade one —
+	// we excluded it from Phase 4.3) before we null out the plan. Used in
+	// Phase 7 as the helper's base image so the helper's docker CLI is
+	// guaranteed-working. Also captured: whether orchestrator was in the
+	// upgrade set at all — if not, Phase 7 is a no-op.
+	orchestratorOldImage := plan.BaselineVersions["orchestrator"]
+	orchestratorNeedsUpgrade := false
+	for _, c := range plan.Changes {
+		if c.Service == "orchestrator" {
+			orchestratorNeedsUpgrade = true
+			break
+		}
+	}
+
 	o.mu.Lock()
 	o.plan = nil // Plan consumed.
 	now := time.Now().UTC()
@@ -524,6 +608,56 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 	o.mu.Unlock()
 
 	o.logger.Info("apply complete", "job_id", jobID)
+
+	// ===== PHASE 7: SPAWN SELF-REPLACE HELPER =====
+	//
+	// If orchestrator's image tag was changed by Phase 3.5 (i.e. Plan had an
+	// orchestrator entry in Changes), we still need to recreate the
+	// orchestrator container — but we can't do it from inside ourselves
+	// (GA blocker #9 pre-rc36). Instead, spawn a detached helper container
+	// that runs `docker compose up -d orchestrator` after a short delay,
+	// giving this goroutine time to return and the UI a chance to render
+	// "apply complete".
+	//
+	// Failure to spawn is logged but does NOT fail the Apply — Phase 6 has
+	// already recorded success and the other 5 services are on the new tag.
+	// User recovers by running `docker compose up -d orchestrator` manually
+	// (same as pre-rc36 behaviour, but now the exception rather than the rule).
+	if orchestratorNeedsUpgrade && orchestratorOldImage != "" {
+		helperID, spawnErr := o.docker.SpawnSelfReplaceHelper(
+			applyCtx, orchestratorOldImage,
+			selfUpgradeHelperDelay, types.NewUUIDv7(),
+		)
+		if spawnErr != nil {
+			o.logger.Error("failed to spawn orchestrator self-replace helper — orchestrator will stay on old tag until manually recreated",
+				"error", spawnErr,
+				"recovery_hint", "run `docker compose up -d orchestrator` on the host",
+				"job_id", jobID,
+			)
+		} else {
+			o.logger.Info("helper container spawned for orchestrator self-replacement",
+				"helper_container_id", helperID,
+				"delay", selfUpgradeHelperDelay.String(),
+				"job_id", jobID,
+			)
+			// Publish self_upgrade_until for the API/UI so users see a
+			// progress banner rather than thinking Apply stalled. TTL-based
+			// Valkey key self-cleans without explicit removal, even across
+			// orchestrator restarts (the new orchestrator has no record of
+			// its prior life's helper spawn, which is exactly what we want —
+			// the key just expires).
+			expectedCompletion := time.Now().UTC().Add(selfUpgradeHelperDelay + selfUpgradeCompletionSlack)
+			ttl := selfUpgradeHelperDelay + selfUpgradeKeyTTLExtra
+			setCmd := o.vk.B().Set().Key(selfUpgradeUntilKey).
+				Value(expectedCompletion.Format(time.RFC3339)).
+				ExSeconds(int64(ttl.Seconds())).Build()
+			if vkErr := o.vk.Do(applyCtx, setCmd).Error(); vkErr != nil {
+				o.logger.Warn("failed to publish self_upgrade_until to valkey (UX banner will not show; upgrade itself is fine)",
+					"error", vkErr, "job_id", jobID)
+			}
+		}
+	}
+
 	return jobID, nil
 }
 
