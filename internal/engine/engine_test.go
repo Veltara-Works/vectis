@@ -251,6 +251,69 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 	}
 }
 
+// TestOrchestratorEtcVectisMountIsRW locks in the rc35 fix: the orchestrator
+// container needs WRITE access to /etc/vectis so Phase 3.5 of Apply can rewrite
+// docker-compose.yml with target image tags (atomic tmp-file-then-rename, which
+// requires write perm on the directory). Pre-rc35 both api and orchestrator had
+// :ro — Phase 3.5 failed with "read-only file system" and the follow-up
+// rollback failed identically. Caught during the 2026-04-24 sysadmin1001
+// walkthrough. The api service keeps :ro (it only reads config).
+func TestOrchestratorEtcVectisMountIsRW(t *testing.T) {
+	files, _ := Generate(testData())
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if compose == "" {
+		t.Fatal("docker-compose.yml not generated")
+	}
+
+	// Crudely extract the orchestrator service block: from "  orchestrator:"
+	// through the next top-level (2-space-indented) service.
+	orchIdx := strings.Index(compose, "\n  orchestrator:\n")
+	if orchIdx == -1 {
+		t.Fatal("orchestrator service block not found in compose")
+	}
+	// Advance past the "\n  orchestrator:\n" label and look for the next "\n  <name>:\n".
+	rest := compose[orchIdx+len("\n  orchestrator:\n"):]
+	end := len(rest)
+	for i := 0; i < len(rest)-4; i++ {
+		if rest[i] == '\n' && rest[i+1] == ' ' && rest[i+2] == ' ' && rest[i+3] != ' ' && rest[i+3] != '-' && rest[i+3] != '#' {
+			end = i
+			break
+		}
+	}
+	orchBlock := rest[:end]
+
+	if !strings.Contains(orchBlock, "/etc/vectis:/etc/vectis") {
+		t.Fatal("orchestrator block missing /etc/vectis mount entirely")
+	}
+	if strings.Contains(orchBlock, "/etc/vectis:/etc/vectis:ro") {
+		t.Error("orchestrator /etc/vectis mount is :ro — Phase 3.5 compose rewrite cannot write its tmp file; remove :ro from the orchestrator volume in docker-compose.yml.tmpl")
+	}
+
+	// api keeps :ro — it only reads config, doesn't write.
+	apiIdx := strings.Index(compose, "\n  api:\n")
+	if apiIdx == -1 {
+		t.Fatal("api service block not found in compose")
+	}
+	apiRest := compose[apiIdx+len("\n  api:\n"):]
+	apiEnd := len(apiRest)
+	for i := 0; i < len(apiRest)-4; i++ {
+		if apiRest[i] == '\n' && apiRest[i+1] == ' ' && apiRest[i+2] == ' ' && apiRest[i+3] != ' ' && apiRest[i+3] != '-' && apiRest[i+3] != '#' {
+			apiEnd = i
+			break
+		}
+	}
+	apiBlock := apiRest[:apiEnd]
+	if !strings.Contains(apiBlock, "/etc/vectis:/etc/vectis:ro") {
+		t.Error("api /etc/vectis mount lost :ro — api reads config only; only orchestrator needs RW")
+	}
+}
+
 func TestClamAVNoneOmitsContainer(t *testing.T) {
 	files, _ := Generate(testData()) // ClamAV profile is "none"
 	var compose string

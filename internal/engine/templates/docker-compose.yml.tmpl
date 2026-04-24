@@ -81,7 +81,17 @@ services:
       - vectis-data
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /etc/vectis:/etc/vectis:ro
+      # /etc/vectis must be read-WRITE here so Phase 3.5 of Apply can rewrite
+      # docker-compose.yml with the target image tags before Phase 4.3 pulls
+      # and recreates containers. Pre-rc35 this was :ro — Phase 3.5 failed
+      # silently with "read-only file system" trying to write its atomic
+      # tmp-file-then-rename, and the follow-up rollback also failed for the
+      # same reason. Caught during the 2026-04-24 sysadmin1001 walkthrough.
+      # Blast-radius note: the orchestrator already has Docker socket access
+      # (most trusted container in the stack), so incremental write access to
+      # /etc/vectis is consistent with its existing privilege level. The api
+      # service above keeps /etc/vectis mounted :ro — it only reads config.
+      - /etc/vectis:/etc/vectis
       - snapshots:/var/vectis/snapshots
     depends_on:
       postgres:
