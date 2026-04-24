@@ -44,7 +44,8 @@ func run(logger *slog.Logger) error {
 	// — especially after an Apply-driven upgrade when the operator wants to
 	// confirm the orchestrator container was actually replaced by the rc36+
 	// helper (GA Blocker #9 fix). Pair this with `docker inspect vectis-apply-helper*`
-	// if the replacement appears stuck.
+	// if the replacement appears stuck. On rc40+ the helper also handles
+	// installs without clamav / other optional services cleanly.
 	logger.Info("orchestrator starting", "version", version.Version)
 
 	// -----------------------------------------------------------------------
