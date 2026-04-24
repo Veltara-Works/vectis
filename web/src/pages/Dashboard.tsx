@@ -73,9 +73,10 @@ export default function DashboardPage() {
       {error && <div className="alert alert-error">{error}</div>}
       {selfUpgradeActive && (
         <div className="alert alert-warning" style={{ marginBottom: '0.75rem' }}>
-          <strong>Orchestrator is finalising its self-upgrade.</strong>{' '}
+          The orchestrator is <strong>finalising the update</strong>.
           The orchestrator container will restart automatically in ~
-          {Math.max(0, Math.ceil((selfUpgradeUntilMs - Date.now()) / 1000))}s — no action needed.
+          {Math.max(0, Math.ceil((selfUpgradeUntilMs - Date.now()) / 1000))}s.
+          No action is needed. This page will refresh itself when update is completed. Please wait.
         </div>
       )}
 

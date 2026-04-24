@@ -165,7 +165,7 @@ export default function UpdatesPage() {
       {error && <div className="alert alert-error">{error}</div>}
       {success && <div className="alert alert-success">{success}</div>}
       {inFlight && !selfUpgradeActive && (
-        <OperationInProgressBanner state={status?.state || ''} step={status?.current_step} />
+        <OperationInProgressBanner state={status?.state || ''} />
       )}
       {selfUpgradeActive && (
         <SelfUpgradeBanner untilMs={selfUpgradeUntilMs} />
@@ -178,9 +178,6 @@ export default function UpdatesPage() {
             <p>
               State: <span className={`badge ${stateColor(status.state)}`}>{status.state}</span>
             </p>
-            {status.current_step && (
-              <p className="text-muted">Current step: {status.current_step}</p>
-            )}
           </div>
         ) : (
           <p className="text-muted">Unable to reach orchestrator</p>
@@ -292,19 +289,50 @@ export default function UpdatesPage() {
 
 // OperationInProgressBanner fills the visual gap during the ~60s Apply window
 // before self_upgrade_until is written. Without it the user sees a stable
-// "running" row and nothing else — identical to a hang. The banner doesn't
-// claim a precise ETA (we don't know it) but it does name the current
-// backend step so the user can see forward motion. rc45 human-UI finding:
-// users will hit Rollback mid-Apply if they think it's stuck, so surfacing
-// "we're still working" here is a safety feature, not just polish.
-function OperationInProgressBanner({ state, step }: { state: string; step?: string }) {
-  const label = state === 'rolling_back' ? 'Rollback in progress' : 'Update in progress'
+// "running" row and nothing else — identical to a hang. rc45 human-UI
+// finding: users will hit Rollback mid-Apply if they think it's stuck, so
+// surfacing "we're still working" here is a safety feature, not just polish.
+//
+// rc48 reworded to state-aware prose. The earlier "Orchestrator is
+// applying — step: apply" dumped the raw state + a redundant step field
+// as tuples instead of English. The step field turned out to be the same
+// value as state anyway (internal/orchestrator/client.go sets CurrentStep
+// to lastOp.Type), so it added no signal — just awkward grammar.
+function OperationInProgressBanner({ state }: { state: string }) {
+  type Msg = { phrase: string; duration: string; safety: string }
+  const messages: Record<string, Msg> = {
+    validating: {
+      phrase: 'validating the update plan',
+      duration: 'a few seconds',
+      safety: 'Please wait — do not click Rollback.',
+    },
+    applying: {
+      phrase: 'applying the update',
+      duration: 'around 60 seconds',
+      safety: 'Please wait — the page will refresh itself; do not click Rollback.',
+    },
+    planning: {
+      phrase: 'preparing the update plan',
+      duration: 'a few seconds',
+      safety: 'Please wait.',
+    },
+    rolling_back: {
+      phrase: 'rolling back to the previous version',
+      duration: 'around 60 seconds',
+      safety: 'Please wait — do not click Apply Update.',
+    },
+  }
+  const m = messages[state]
+  if (!m) {
+    return (
+      <div className="alert alert-warning" style={{ marginBottom: '0.75rem' }}>
+        The orchestrator is <strong>{state}</strong>. Please wait.
+      </div>
+    )
+  }
   return (
     <div className="alert alert-warning" style={{ marginBottom: '0.75rem' }}>
-      <strong>{label}.</strong>{' '}
-      Orchestrator is <span className="mono">{state}</span>
-      {step && <> — step: <span className="mono">{step}</span></>}
-      . This usually takes ~60s. The page will refresh itself; do not click Rollback.
+      The orchestrator is <strong>{m.phrase}</strong>. This usually takes {m.duration}. {m.safety}
     </div>
   )
 }
@@ -365,9 +393,9 @@ function SelfUpgradeBanner({ untilMs }: { untilMs: number }) {
   const remaining = Math.max(0, Math.ceil((untilMs - now) / 1000))
   return (
     <div className="alert alert-warning" style={{ marginBottom: '0.75rem' }}>
-      <strong>Orchestrator is finalising its self-upgrade.</strong>{' '}
-      The orchestrator container will restart automatically in ~{remaining}s — no action needed.
-      This page will refresh itself when the window closes.
+      The orchestrator is <strong>finalising the update</strong>.
+      The orchestrator container will restart automatically in ~{remaining}s.
+      No action is needed. This page will refresh itself when update is completed. Please wait.
     </div>
   )
 }

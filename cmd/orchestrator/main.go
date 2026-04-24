@@ -66,6 +66,11 @@ func run(logger *slog.Logger) error {
 	// history row in action, since rc45→rc46 necessarily ran under the
 	// old rc45 UI. rc47 also ships a small copy tweak to the Plan success
 	// message so it tells the user what to do next.
+	// rc48 reworks the in-progress + self-upgrade banner copy to proper
+	// English prose (state-aware phrasing, no redundant "step: apply"
+	// tuple), drops the "Current step" line under the State badge for the
+	// same reason, and normalises user-facing language on "update" (not
+	// "upgrade"). The step field was the same value as state anyway.
 	logger.Info("orchestrator starting", "version", version.Version)
 
 	// -----------------------------------------------------------------------
