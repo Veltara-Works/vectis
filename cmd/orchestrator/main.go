@@ -16,6 +16,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
+	"github.com/Veltara-Works/vectis/internal/version"
 )
 
 const (
@@ -38,6 +39,8 @@ func main() {
 func run(logger *slog.Logger) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	logger.Info("orchestrator starting", "version", version.Version)
 
 	// -----------------------------------------------------------------------
 	// Load configuration
