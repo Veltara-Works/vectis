@@ -40,6 +40,10 @@ func run(logger *slog.Logger) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Version log is the first useful signal in `docker logs vectis-orchestrator`
+	// — especially after an Apply-driven upgrade when the operator wants to
+	// confirm the orchestrator container was actually replaced by the rc36+
+	// helper (GA Blocker #9 fix).
 	logger.Info("orchestrator starting", "version", version.Version)
 
 	// -----------------------------------------------------------------------
