@@ -2,12 +2,19 @@ import { useState, useEffect } from 'react'
 import { api } from '../api/client.ts'
 
 interface OrchestratorStatus {
-  state: string; current_operation?: string; last_operation?: string;
+  state: string; current_step?: string; last_operation?: string;
   // Set during the rc36+ orchestrator self-replace window (~30s between Apply
   // recording "completed" and the helper container firing). Presence signals
   // "don't worry, the orchestrator is about to restart on the new version".
   self_upgrade_until?: string;
 }
+
+// States during which the orchestrator is actively working. The UI polls
+// while in any of these so the History row flips running→completed on its
+// own, and so the in-progress banner surfaces `current_step` without waiting
+// for the user to refresh. Without this, the ~60s Apply window before
+// self_upgrade_until is written feels frozen (rc45 human-UI finding).
+const NON_TERMINAL_STATES = new Set(['validating', 'planning', 'applying', 'rolling_back'])
 
 interface HistoryEntry {
   id: string; action: string; status: string; plan_summary?: string;
@@ -56,17 +63,25 @@ export default function UpdatesPage() {
     loadHistory()
   }, [])
 
-  // During the orchestrator self-replace window, poll status every 2s so the
-  // countdown banner stays responsive and disappears promptly once the helper
-  // has fired. Falls back to a single initial load when no window is active.
+  // Poll status + history every 2s whenever the orchestrator is actively
+  // working OR we're inside the self-replace countdown window. Before rc46
+  // this only polled during self_upgrade — which meant the poll never
+  // started, because self_upgrade_until is only written ~60s into Apply
+  // and nothing was re-fetching status to see it. The row stayed at
+  // "running" indefinitely until the user hard-refreshed.
   const selfUpgradeUntilMs = status?.self_upgrade_until
     ? Date.parse(status.self_upgrade_until) : 0
   const selfUpgradeActive = selfUpgradeUntilMs > Date.now()
+  const inFlight = status ? NON_TERMINAL_STATES.has(status.state) : false
+  const shouldPoll = inFlight || selfUpgradeActive
   useEffect(() => {
-    if (!selfUpgradeActive) return
-    const timer = setInterval(loadStatus, 2000)
+    if (!shouldPoll) return
+    const timer = setInterval(() => {
+      loadStatus()
+      loadHistory()
+    }, 2000)
     return () => clearInterval(timer)
-  }, [selfUpgradeActive])
+  }, [shouldPoll])
 
   const handlePlan = async () => {
     setPlanning(true)
@@ -90,7 +105,12 @@ export default function UpdatesPage() {
     try {
       const result = await api.orchestratorApply()
       setApplyResult(result)
-      setSuccess(result.message || 'Update applied successfully')
+      // The API responds 202 once the orchestrator has *accepted* the apply —
+      // it hasn't finished yet. Say so honestly; the in-progress banner +
+      // auto-refreshing History row are the ongoing feedback. Showing
+      // "Update applied successfully" here (pre-rc46 behaviour) led users
+      // to believe the update was done when it was still ~60s away.
+      setSuccess('Update started — this page will refresh automatically as the orchestrator progresses.')
       setPlan(null)
       loadStatus()
       loadHistory()
@@ -141,6 +161,9 @@ export default function UpdatesPage() {
 
       {error && <div className="alert alert-error">{error}</div>}
       {success && <div className="alert alert-success">{success}</div>}
+      {inFlight && !selfUpgradeActive && (
+        <OperationInProgressBanner state={status?.state || ''} step={status?.current_step} />
+      )}
       {selfUpgradeActive && (
         <SelfUpgradeBanner untilMs={selfUpgradeUntilMs} />
       )}
@@ -152,8 +175,8 @@ export default function UpdatesPage() {
             <p>
               State: <span className={`badge ${stateColor(status.state)}`}>{status.state}</span>
             </p>
-            {status.current_operation && (
-              <p className="text-muted">Current operation: {status.current_operation}</p>
+            {status.current_step && (
+              <p className="text-muted">Current step: {status.current_step}</p>
             )}
           </div>
         ) : (
@@ -248,7 +271,9 @@ export default function UpdatesPage() {
                 <td className="mono" style={{ whiteSpace: 'nowrap' }}>{new Date(h.started_at).toLocaleString()}</td>
                 <td><span className="badge">{h.action}</span></td>
                 <td><span className={`badge ${statusColor(h.status)}`}>{h.status}</span></td>
-                <td className="text-muted">{h.plan_summary || h.error || '-'}</td>
+                <td className="text-muted" style={{ wordBreak: 'break-word', maxWidth: '32rem' }}>
+                  <HistorySummary entry={h} />
+                </td>
                 <td className="text-muted" style={{ whiteSpace: 'nowrap' }}>
                   {h.completed_at ? new Date(h.completed_at).toLocaleString() : '-'}
                 </td>
@@ -260,6 +285,66 @@ export default function UpdatesPage() {
       </div>
     </div>
   )
+}
+
+// OperationInProgressBanner fills the visual gap during the ~60s Apply window
+// before self_upgrade_until is written. Without it the user sees a stable
+// "running" row and nothing else — identical to a hang. The banner doesn't
+// claim a precise ETA (we don't know it) but it does name the current
+// backend step so the user can see forward motion. rc45 human-UI finding:
+// users will hit Rollback mid-Apply if they think it's stuck, so surfacing
+// "we're still working" here is a safety feature, not just polish.
+function OperationInProgressBanner({ state, step }: { state: string; step?: string }) {
+  const label = state === 'rolling_back' ? 'Rollback in progress' : 'Update in progress'
+  return (
+    <div className="alert alert-warning" style={{ marginBottom: '0.75rem' }}>
+      <strong>{label}.</strong>{' '}
+      Orchestrator is <span className="mono">{state}</span>
+      {step && <> — step: <span className="mono">{step}</span></>}
+      . This usually takes ~60s. The page will refresh itself; do not click Rollback.
+    </div>
+  )
+}
+
+// HistorySummary renders the plan_summary JSON blob (or error text) for a row
+// in the Operation History table. Before rc46 the raw JSON was dumped straight
+// into the cell, which overflowed on desktop and was unreadable on mobile.
+// Now: a human-readable one-liner with the raw JSON available behind a
+// <details> toggle for anyone who actually wants it.
+function HistorySummary({ entry }: { entry: HistoryEntry }) {
+  if (entry.error) return <span>{entry.error}</span>
+  if (!entry.plan_summary) return <span>-</span>
+
+  try {
+    const ps = JSON.parse(entry.plan_summary) as {
+      changes?: Array<{ service: string; type: string; old_image?: string; new_image?: string }>
+      migrations_up?: number
+    }
+    const changeCount = ps.changes?.length ?? 0
+    const migrations = ps.migrations_up ?? 0
+    // Best-effort target tag: grab the shared :tag suffix from the first change.
+    let targetTag = ''
+    const firstChange = ps.changes?.[0]
+    if (firstChange?.new_image) {
+      const m = firstChange.new_image.match(/:([^:/]+)$/)
+      if (m) targetTag = m[1]
+    }
+    const parts: string[] = []
+    parts.push(`${changeCount} service${changeCount === 1 ? '' : 's'}`)
+    if (targetTag) parts.push(`→ ${targetTag}`)
+    if (migrations > 0) parts.push(`${migrations} migration${migrations === 1 ? '' : 's'}`)
+    const oneLiner = parts.join(', ')
+    return (
+      <details>
+        <summary style={{ cursor: 'pointer' }}>{oneLiner}</summary>
+        <pre style={{ marginTop: '0.5rem', fontSize: '0.75rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+          {JSON.stringify(ps, null, 2)}
+        </pre>
+      </details>
+    )
+  } catch {
+    return <span style={{ wordBreak: 'break-all' }}>{entry.plan_summary}</span>
+  }
 }
 
 // SelfUpgradeBanner renders a countdown banner while the orchestrator is in

@@ -53,6 +53,13 @@ func run(logger *slog.Logger) error {
 	// in the admin UI (Updates page, Dashboard banner, Bad-Gateway window UX).
 	// The rc43→rc44 walkthrough was API-only; rc45 is the human-eyes pass
 	// before GA is cut from the same commit.
+	// rc46 fixes what the rc45 UI walkthrough surfaced: the Updates page
+	// polled only during the self_upgrade window — which never started,
+	// because self_upgrade_until is only written ~60s into Apply and
+	// nothing else re-fetched status. Result: History row stuck at
+	// "running" and no countdown banner ever appeared. rc46 broadens the
+	// poll to any non-terminal state, adds an in-progress banner with
+	// current_step, and renders plan_summary as a readable one-liner.
 	logger.Info("orchestrator starting", "version", version.Version)
 
 	// -----------------------------------------------------------------------
