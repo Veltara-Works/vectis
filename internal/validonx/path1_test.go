@@ -369,3 +369,127 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// TestCheckLicense_vs_CheckLicensePath1_DifferentEndpoints is the load-bearing
+// regression guard for the path-1 / path-2 split.
+//
+// Background: during v0.1.0-beta1, only ValidonX's path-1 endpoint
+// (/api/v1/integration/entitlements/check) is live. Path-2's
+// /v1/licensing/resolve is still being drafted. Anything that needs to talk to
+// ValidonX in this window MUST call CheckLicensePath1, never CheckLicense — or
+// it 404s on the unbuilt endpoint. The activation handler at
+// internal/api/handle_license.go:handleSetLicense is the most visible such
+// caller; it broke once already (rc57→rc58 fix) when this distinction wasn't
+// audited at the same time as the middleware refresh path.
+//
+// This test asserts the two methods route to genuinely different endpoint
+// sets. If a future refactor accidentally merges them (or makes one delegate
+// to the other), the assertion fails — flagging the maintainer to also revisit
+// the path-1 → path-2 migration plan in docs/notes/deferred-items.md §11.
+//
+// When path-2 ships and path1.go is deleted, this test goes with it; the
+// distinction it guards against will no longer be load-bearing.
+func TestCheckLicense_vs_CheckLicensePath1_DifferentEndpoints(t *testing.T) {
+	var pathsHit []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pathsHit = append(pathsHit, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/auth/login":
+			// Return a token good for an hour so CheckLicense's ensureAuth
+			// passes and the actual /v1/licensing/resolve call can proceed.
+			_ = json.NewEncoder(w).Encode(authResponse{
+				Token:     "fake-bearer-token",
+				ExpiresAt: time.Now().Add(1 * time.Hour),
+			})
+		case "/v1/licensing/resolve":
+			_ = json.NewEncoder(w).Encode(LicenseResponse{
+				Valid:           true,
+				Status:          "active",
+				AllowedFeatures: []string{FeatureBasicMail, FeatureAnalytics},
+			})
+		case path1EntitlementsPath:
+			// Mirror the path-1 success shape from TestCheckLicensePath1_Success.
+			_ = json.NewEncoder(w).Encode(path1Response{
+				Data: struct {
+					Entitlements struct {
+						Features map[string]path1FeatureGrant `json:"features"`
+						Limits   map[string]struct {
+							Limit float64 `json:"limit"`
+							Type  string  `json:"type"`
+						} `json:"limits,omitempty"`
+					} `json:"entitlements"`
+				}{
+					Entitlements: struct {
+						Features map[string]path1FeatureGrant `json:"features"`
+						Limits   map[string]struct {
+							Limit float64 `json:"limit"`
+							Type  string  `json:"type"`
+						} `json:"limits,omitempty"`
+					}{
+						Features: map[string]path1FeatureGrant{
+							FeatureBasicMail: {Granted: true, Value: true},
+							FeatureAnalytics: {Granted: true, Value: true},
+						},
+					},
+				},
+			})
+		default:
+			// Any unexpected path is a routing bug — fail loudly.
+			t.Errorf("unexpected mock-server path hit: %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewClient(&config.ValidonXSecrets{
+		BaseURL:        server.URL,
+		ServiceKey:     "test-service-key",
+		TenantID:       "test-tenant",
+		SubscriptionID: "test-sub",
+		LicenseKey:     "lk_test_regression",
+	}, testLogger())
+
+	// --- Capture path-1 routing ---
+	pathsHit = nil
+	if _, err := c.CheckLicensePath1(context.Background(), nil); err != nil {
+		t.Fatalf("CheckLicensePath1 unexpected error: %v", err)
+	}
+	path1Hits := append([]string(nil), pathsHit...)
+
+	// --- Capture path-2 (CheckLicense) routing ---
+	pathsHit = nil
+	if _, err := c.CheckLicense(context.Background(), nil); err != nil {
+		t.Fatalf("CheckLicense unexpected error: %v", err)
+	}
+	path2Hits := append([]string(nil), pathsHit...)
+
+	// Assert path-1 hits exactly one endpoint, the path-1 endpoint.
+	if len(path1Hits) != 1 || path1Hits[0] != path1EntitlementsPath {
+		t.Errorf("CheckLicensePath1 must hit exactly %q; got %v", path1EntitlementsPath, path1Hits)
+	}
+
+	// Assert path-2 reaches /v1/licensing/resolve (this is the endpoint that
+	// doesn't exist yet on the live ValidonX side — the whole reason path-1
+	// has to be used during v0.1.0-beta1).
+	if !contains(path2Hits, "/v1/licensing/resolve") {
+		t.Errorf("CheckLicense must hit /v1/licensing/resolve; got %v", path2Hits)
+	}
+
+	// Assert ZERO overlap. The two methods are not interchangeable. If this
+	// fails, someone has converged the routing — re-audit handle_license.go
+	// and middleware.go before changing this test.
+	for _, p := range path1Hits {
+		if contains(path2Hits, p) {
+			t.Errorf("path-1 and path-2 must hit DIFFERENT endpoints; %q appeared in BOTH (path1=%v path2=%v) — re-audit deferred-items.md §11 before suppressing this failure",
+				p, path1Hits, path2Hits)
+		}
+	}
+
+	// Belt-and-suspenders: assert the path-1 endpoint specifically did NOT
+	// appear in path-2's hits. (Equivalent to the loop above for the
+	// single-element path1Hits slice, but reads explicitly.)
+	if contains(path2Hits, path1EntitlementsPath) {
+		t.Errorf("CheckLicense unexpectedly hit the path-1 endpoint %q; got path2 hits %v",
+			path1EntitlementsPath, path2Hits)
+	}
+}

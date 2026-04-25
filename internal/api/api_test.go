@@ -511,3 +511,119 @@ func TestValidation(t *testing.T) {
 		t.Fatalf("not found: expected 404, got %d", resp.StatusCode)
 	}
 }
+
+// ── License activation routing (path-1 regression guard) ─────────
+
+// TestLicenseActivation_ProbeUsesPath1Endpoint is the direct regression test
+// for the rc57→rc58 activation bug.
+//
+// Background: during v0.1.0-beta1, only ValidonX's path-1 endpoint
+// (/api/v1/integration/entitlements/check) is live. The activation handler at
+// internal/api/handle_license.go:handleSetLicense MUST route its validation
+// probe through CheckLicensePath1 — not CheckLicense, which targets path-2's
+// /v1/licensing/resolve (not yet built on the ValidonX side).
+//
+// rc57 shipped with handle_license.go still calling CheckLicense; activation
+// against the live ValidonX would have failed with LICENSE_VALIDATION_FAILED.
+// rc58 fixed it to CheckLicensePath1. This test pins the contract by:
+//
+//  1. Standing up a mock ValidonX server that handles both endpoint paths.
+//     The path-1 handler returns Pro grants. The path-2 handler returns 500
+//     and records that it was hit (so any regression is detectable as both
+//     "test failed" and "wrong endpoint counter > 0").
+//  2. POSTing a valid set of credentials to /api/v1/license, pointing at the
+//     mock server's URL.
+//  3. Asserting the response is 200 + Pro tier (proving the right endpoint
+//     served the request).
+//  4. Asserting the path-2 endpoint counter is exactly 0.
+//
+// When path-2 ships (per docs/notes/deferred-items.md §11), this test gets
+// inverted along with the production code: probe should then hit path-2 and
+// path-1 should go to zero. Until then, this test is load-bearing.
+func TestLicenseActivation_ProbeUsesPath1Endpoint(t *testing.T) {
+	env := setupTestEnv(t)
+
+	var (
+		path1Hits int
+		path2Hits int
+	)
+	mockValidonX := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/integration/entitlements/check":
+			path1Hits++
+			// Mirror ValidonX's real path-1 success envelope so the
+			// adapter's synthesise step yields a Pro tier (granted=true
+			// on at least one non-basic feature).
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"data": {
+					"entitlements": {
+						"features": {
+							"basic_mail":       {"granted": true,  "value": true},
+							"analytics":        {"granted": true,  "value": true},
+							"oidc_sso":         {"granted": true,  "value": true},
+							"custom_branding":  {"granted": false, "value": false},
+							"advanced_spam":    {"granted": false, "value": false},
+							"priority_support": {"granted": false, "value": false}
+						},
+						"limits": []
+					}
+				},
+				"meta": {"request_id": "regression-test-rid", "api_version": "1"}
+			}`))
+		case "/v1/licensing/resolve", "/v1/auth/login":
+			// REGRESSION: any hit to a path-2 endpoint during activation
+			// means handle_license.go reverted to CheckLicense. Fail
+			// immediately and record the hit for the assertion below.
+			path2Hits++
+			t.Errorf("REGRESSION: activation probe hit path-2 endpoint %q — handle_license.go must call CheckLicensePath1 until path-2 ships (see docs/notes/deferred-items.md §11)", r.URL.Path)
+			http.Error(w, `{"error":"path-2 not built yet"}`, http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected mock-server path hit during activation: %q", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	defer mockValidonX.Close()
+
+	// Ensure validonx_config table is empty before the test (other tests
+	// might have left a row; this isolates state).
+	_, _ = env.doRequest(t, "DELETE", "/api/v1/license", "").Body.Read(nil)
+
+	// Activate via the public API exactly as the admin UI would.
+	body, _ := json.Marshal(map[string]string{
+		"base_url":        mockValidonX.URL,
+		"service_key":     "test-service-key",
+		"tenant_id":       "regression-tenant",
+		"subscription_id": "sub_regression_test_0001",
+	})
+	resp := env.doRequest(t, "POST", "/api/v1/license", string(body))
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("activation POST: expected 200, got %d (body: %s)", resp.StatusCode, raw)
+	}
+
+	parsed := parseBody(t, resp)
+	data, ok := parsed["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("activation response missing data envelope: %v", parsed)
+	}
+	if tier, _ := data["tier"].(string); tier != "pro" {
+		t.Errorf("expected tier=pro after activation; got %q (full response: %v)", tier, parsed)
+	}
+	if configured, _ := data["configured"].(bool); !configured {
+		t.Errorf("expected configured=true after activation; got %v", parsed)
+	}
+
+	// Routing assertions — the load-bearing part.
+	if path1Hits == 0 {
+		t.Errorf("path-1 endpoint was never hit; activation probe must route through CheckLicensePath1")
+	}
+	if path2Hits != 0 {
+		t.Errorf("path-2 endpoint hit %d time(s) during activation; expected 0 — re-audit handle_license.go and ensure it calls CheckLicensePath1, not CheckLicense", path2Hits)
+	}
+
+	// Cleanup so the next test starts clean.
+	env.doRequest(t, "DELETE", "/api/v1/license", "")
+}

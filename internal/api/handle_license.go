@@ -158,7 +158,11 @@ func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
 
 	probeCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	resp, err := probe.CheckLicense(probeCtx, nil)
+	// PATH-1 INTERIM (v0.1.0-beta1): activation probe must hit ValidonX's existing
+	// /api/v1/integration/entitlements/check endpoint, NOT path-2's /v1/licensing/resolve
+	// (which doesn't exist yet). When path-2 ships, swap to probe.CheckLicense — see
+	// docs/notes/deferred-items.md §11 for the full revert site list.
+	resp, err := probe.CheckLicensePath1(probeCtx, nil)
 	if err != nil {
 		s.logger.Warn("license validation failed", "error", err)
 		respondError(w, r, http.StatusUnprocessableEntity, "LICENSE_VALIDATION_FAILED",
