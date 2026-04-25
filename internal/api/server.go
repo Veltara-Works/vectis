@@ -200,13 +200,40 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		})
 	}
 
-	// Initialize ValidonX client + feature-gate service. Setup always returns
-	// a non-nil FeatureGateService (passthrough when ValidonX is unconfigured),
-	// so handlers and middleware can call s.featureGate.* unconditionally.
-	vxClient, vxGate := validonx.Setup(cfg.VectisSecrets, db, logger)
-	s.featureGate = vxGate
-	if vxClient.Configured() {
-		s.usageReporter = validonx.NewUsageReporter(vxClient, db, logger.With("component", "usage-reporter"))
+	// Initialize ValidonX licensing.
+	//
+	// Config precedence: validonx_config DB row > secrets.yaml > nil. The DB
+	// row is populated by the admin UI License page (rc54+); secrets.yaml is
+	// the install-time / scripted-deploy fallback. Either source must
+	// provide base_url + service_key for the client to be Configured.
+	//
+	// FeatureGateService is always non-nil. When unconfigured, FeatureGate
+	// passes every request through (free-tier mode), so handlers can call
+	// s.featureGate.* unconditionally.
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var vxSecrets *config.ValidonXSecrets
+		if cfg.VectisSecrets != nil {
+			vxSecrets = cfg.VectisSecrets.ValidonX
+		}
+		runtimeCfg, err := validonx.LoadRuntimeConfig(ctx, db, vxSecrets)
+		if err != nil {
+			logger.Warn("failed to load validonx runtime config from DB; using secrets.yaml only",
+				"error", err)
+		}
+		vxClient := validonx.NewClient(runtimeCfg.ToSecrets(), logger.With("component", "validonx"))
+		s.featureGate = validonx.NewFeatureGateService(vxClient, db, logger.With("component", "validonx.gate"))
+		if vxClient.Configured() {
+			s.usageReporter = validonx.NewUsageReporter(vxClient, db, logger.With("component", "usage-reporter"))
+			logger.Info("validonx licensing configured",
+				"from_db", runtimeCfg.FromDB,
+				"tenant_id", runtimeCfg.TenantID,
+				"server_id", runtimeCfg.ServerID,
+			)
+		} else {
+			logger.Info("validonx licensing not configured — running in free-tier mode")
+		}
 	}
 
 	// Initialize clustering if enabled.
@@ -633,6 +660,15 @@ func (s *Server) buildRouter() chi.Router {
 			// Cancelled/lapsed Pro license past 30-day grace: 403 LICENSE_EXPIRED.
 			r.With(s.featureGate.FeatureGate(validonx.FeatureAnalytics)).
 				Get("/analytics", s.handleDomainAnalytics)
+
+			// License management — super_admin only. The License page is
+			// where customers paste their ValidonX subscription_id post-checkout
+			// to activate Pro/Enterprise. POST validates against ValidonX,
+			// persists to validonx_config, and atomically swaps the running
+			// gate client (no api restart required).
+			r.With(requireSuperAdmin()).Get("/license", s.handleGetLicense)
+			r.With(requireSuperAdmin()).Post("/license", s.handleSetLicense)
+			r.With(requireSuperAdmin()).Delete("/license", s.handleDeleteLicense)
 
 			// Advanced deliverability — super_admin only.
 			r.With(requireSuperAdmin()).Get("/deliverability/warmup", s.handleListWarmup)

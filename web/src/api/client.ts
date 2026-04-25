@@ -173,6 +173,40 @@ export const api = {
       error?: string; started_at: string; completed_at?: string; admin_id?: string
     }>>('GET', '/orchestrator/history'),
 
+  // License (super_admin only). Customers paste their ValidonX subscription
+  // details on the License page; setLicense validates against the live
+  // ValidonX API and atomically swaps the running gate client (no api
+  // restart required). When unconfigured, the install runs in Free tier.
+  getLicense: () =>
+    request<{
+      configured: boolean;
+      from_db: boolean;
+      tier: 'free' | 'pro' | 'enterprise';
+      status?: string;
+      subscription_id_masked?: string;
+      tenant_id?: string;
+      server_id?: string;
+      base_url?: string;
+      last_check_at?: string;
+      expires_at?: string;
+      grace_remaining_days?: number;
+    }>('GET', '/license'),
+  setLicense: (body: {
+    subscription_id?: string;
+    tenant_id?: string;
+    service_key?: string;
+    base_url?: string;
+    server_id?: string;
+  }) =>
+    request<{
+      configured: boolean;
+      tier: 'free' | 'pro' | 'enterprise';
+      status?: string;
+      subscription_id_masked?: string;
+    }>('POST', '/license', body),
+  removeLicense: () =>
+    request<{ configured: boolean; tier: string }>('DELETE', '/license'),
+
   // Backups
   backupCreate: () =>
     request<{ job_id: string; message: string }>('POST', '/backup/create'),

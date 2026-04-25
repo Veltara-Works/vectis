@@ -12,6 +12,7 @@ import AdminsPage from './pages/Admins.tsx'
 import AuditLogPage from './pages/AuditLog.tsx'
 import UpdatesPage from './pages/Updates.tsx'
 import BackupsPage from './pages/Backups.tsx'
+import LicensePage from './pages/License.tsx'
 import SessionsPage from './pages/Sessions.tsx'
 import FilterRulesPage from './pages/FilterRules.tsx'
 import LogSearchPage from './pages/LogSearch.tsx'
@@ -61,6 +62,7 @@ export default function App() {
     { path: '/admin/logs', label: 'Log Search', show: isSuperAdmin },
     { path: '/admin/updates', label: 'Updates', show: isSuperAdmin },
     { path: '/admin/backups', label: 'Backups', show: isSuperAdmin },
+    { path: '/admin/license', label: 'License', show: isSuperAdmin },
     { path: '/admin/sessions', label: 'Sessions', show: true },
   ]
 
@@ -98,6 +100,7 @@ export default function App() {
             {isSuperAdmin && <Route path="/admin/logs" element={<LogSearchPage />} />}
             {isSuperAdmin && <Route path="/admin/updates" element={<UpdatesPage />} />}
             {isSuperAdmin && <Route path="/admin/backups" element={<BackupsPage />} />}
+            {isSuperAdmin && <Route path="/admin/license" element={<LicensePage />} />}
             <Route path="/admin/sessions" element={<SessionsPage />} />
             <Route path="*" element={<Navigate to="/admin" />} />
           </Routes>

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -81,8 +82,12 @@ func isFreeTierFeature(feature string) bool {
 // FeatureGateService provides HTTP middleware for feature-gating based on
 // ValidonX license entitlements. When ValidonX is not configured, all
 // requests are allowed (free-tier behaviour).
+//
+// The underlying Client is stored in an atomic pointer so the License admin
+// API can hot-swap it when an admin saves new credentials, without restarting
+// the api container. Read paths use currentClient() which returns nil-safely.
 type FeatureGateService struct {
-	client *Client
+	client atomic.Pointer[Client]
 	cache  *LicenseCache
 	logger *slog.Logger
 }
@@ -94,11 +99,38 @@ func NewFeatureGateService(client *Client, db *pgxpool.Pool, logger *slog.Logger
 	if db != nil {
 		cache = NewLicenseCache(db, logger)
 	}
-	return &FeatureGateService{
-		client: client,
+	fgs := &FeatureGateService{
 		cache:  cache,
 		logger: logger,
 	}
+	fgs.client.Store(client)
+	return fgs
+}
+
+// currentClient returns the active Client pointer (may be nil). Callers must
+// use Configured() to test usability before calling other methods.
+func (fgs *FeatureGateService) currentClient() *Client {
+	return fgs.client.Load()
+}
+
+// SwapClient atomically replaces the underlying Client. Used by the License
+// admin API when an admin saves new credentials. Pass nil to deactivate
+// (revert to free-tier behaviour).
+func (fgs *FeatureGateService) SwapClient(c *Client) {
+	fgs.client.Store(c)
+	if c.Configured() {
+		fgs.logger.Info("validonx client swapped — license activated",
+			"tenant_id", c.TenantID(), "server_id", c.ServerID())
+	} else {
+		fgs.logger.Info("validonx client swapped to free-tier (nil/unconfigured)")
+	}
+}
+
+// Cache exposes the underlying license cache for handlers that need to
+// invalidate or update entries (e.g. License DELETE clearing a tenant row).
+// May return nil if the gate was constructed without a DB pool.
+func (fgs *FeatureGateService) Cache() *LicenseCache {
+	return fgs.cache
 }
 
 // ResolveTier returns the licensing tier this install is currently entitled to,
@@ -117,11 +149,12 @@ func NewFeatureGateService(client *Client, db *pgxpool.Pool, logger *slog.Logger
 // for caps want a current view, not a 30-day-stale one. Use FeatureGate for
 // access enforcement; ResolveTier for tier-aware UX/limits.
 func (fgs *FeatureGateService) ResolveTier(ctx context.Context) (string, error) {
-	if !fgs.client.Configured() {
+	client := fgs.currentClient()
+	if !client.Configured() {
 		return TierFree, nil
 	}
 
-	tenantID := fgs.client.TenantID()
+	tenantID := client.TenantID()
 
 	// Try cache first.
 	if fgs.cache != nil {
@@ -181,8 +214,10 @@ func tierFromFeatures(features []string) string {
 func (fgs *FeatureGateService) FeatureGate(feature string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			client := fgs.currentClient()
+
 			// Step 1: ValidonX not configured — free tier, allow everything.
-			if !fgs.client.Configured() {
+			if !client.Configured() {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -195,7 +230,7 @@ func (fgs *FeatureGateService) FeatureGate(feature string) func(http.Handler) ht
 
 			// Step 3: Check cached license.
 			ctx := r.Context()
-			tenantID := fgs.client.TenantID()
+			tenantID := client.TenantID()
 
 			allowed, err := fgs.checkFeatureAccess(ctx, tenantID, feature)
 			if err != nil {
@@ -274,19 +309,20 @@ func (fgs *FeatureGateService) checkFeatureAccess(ctx context.Context, tenantID,
 
 // refreshLicense performs a live license check and updates the cache.
 func (fgs *FeatureGateService) refreshLicense(ctx context.Context, tenantID string) (*CachedLicense, error) {
-	if fgs.client == nil {
+	client := fgs.currentClient()
+	if client == nil {
 		return nil, errClientNotConfigured
 	}
 
-	resp, err := fgs.client.CheckLicense(ctx, nil) // check all features
+	resp, err := client.CheckLicense(ctx, nil) // check all features
 	if err != nil {
 		fgs.logger.Warn("live license check failed", "tenant_id", tenantID, "error", err)
 
 		// Log the failure as a billing event (best-effort).
-		_ = fgs.client.LogBillingEvent(ctx, BillingEvent{
+		_ = client.LogBillingEvent(ctx, BillingEvent{
 			Type:     "error",
 			TenantID: tenantID,
-			ServerID: fgs.client.ServerID(),
+			ServerID: client.ServerID(),
 			Details:  map[string]any{"error": err.Error(), "action": "license_refresh"},
 		})
 
@@ -295,16 +331,16 @@ func (fgs *FeatureGateService) refreshLicense(ctx context.Context, tenantID stri
 
 	// Update cache.
 	if fgs.cache != nil {
-		if cacheErr := fgs.cache.UpdateCache(ctx, tenantID, fgs.client.subscriptionID, resp); cacheErr != nil {
+		if cacheErr := fgs.cache.UpdateCache(ctx, tenantID, client.subscriptionID, resp); cacheErr != nil {
 			fgs.logger.Warn("failed to update license cache", "error", cacheErr)
 		}
 	}
 
 	// Log successful check.
-	_ = fgs.client.LogBillingEvent(ctx, BillingEvent{
+	_ = client.LogBillingEvent(ctx, BillingEvent{
 		Type:     "license.check",
 		TenantID: tenantID,
-		ServerID: fgs.client.ServerID(),
+		ServerID: client.ServerID(),
 		Details: map[string]any{
 			"status":   resp.Status,
 			"valid":    resp.Valid,
