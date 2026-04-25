@@ -48,10 +48,11 @@ Additional Use Grant in that file:
 - **Starter (Free):** up to 3 domains, up to 25 mailboxes per domain.
   No subscription required. Full webmail, sending API, monitoring,
   backups — see the pricing page for the complete list.
-- **Pro ($29 / server / month):** unlimited domains and mailboxes,
-  per-domain analytics, OIDC SSO, priority email support. Activate by
-  pasting your subscription ID on the admin UI License page after
-  purchase.
+- **Pro ($29 / tenant / month):** unlimited domains and mailboxes,
+  per-domain analytics, OIDC SSO, priority email support. One
+  subscription covers every Vectis installation operated by your
+  organisation. Activate by pasting your subscription ID on the
+  admin UI License page after purchase.
 
 Subscriptions are issued via [ValidonX](https://validonx.com),
 Veltara Works's billing platform.
