@@ -102,6 +102,9 @@ type Server struct {
 	auditPruner    *audit.Pruner
 	sessionCleaner *auth.SessionCleaner
 	usageReporter  *validonx.UsageReporter
+	// featureGate is always non-nil. When ValidonX is not configured, it
+	// passes through every FeatureGate(...) call (free-tier mode).
+	featureGate *validonx.FeatureGateService
 }
 
 // Config holds API server configuration.
@@ -197,9 +200,12 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		})
 	}
 
-	// Initialize ValidonX usage reporter if configured.
-	if cfg.VectisSecrets != nil && cfg.VectisSecrets.ValidonXConfigured() {
-		vxClient := validonx.NewClient(cfg.VectisSecrets.ValidonX, logger.With("component", "validonx"))
+	// Initialize ValidonX client + feature-gate service. Setup always returns
+	// a non-nil FeatureGateService (passthrough when ValidonX is unconfigured),
+	// so handlers and middleware can call s.featureGate.* unconditionally.
+	vxClient, vxGate := validonx.Setup(cfg.VectisSecrets, db, logger)
+	s.featureGate = vxGate
+	if vxClient.Configured() {
 		s.usageReporter = validonx.NewUsageReporter(vxClient, db, logger.With("component", "usage-reporter"))
 	}
 

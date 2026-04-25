@@ -25,13 +25,15 @@ const (
 
 // Feature constants for use with FeatureGate middleware.
 const (
-	FeatureBasicMail        = "basic_mail"        // domains, mailboxes, aliases
-	FeatureCustomBranding   = "custom_branding"    // Pro: custom branding
-	FeatureAdvancedSpam     = "advanced_spam"       // Pro: advanced spam config
-	FeaturePrioritySupport  = "priority_support"    // Pro: priority support
-	FeatureMultiTenant      = "multi_tenant"        // Enterprise: multi-tenant
+	FeatureBasicMail        = "basic_mail"             // domains, mailboxes, aliases
+	FeatureAnalytics        = "analytics"              // Pro: per-domain analytics dashboard
+	FeatureOIDCSSO          = "oidc_sso"               // Pro: OIDC single sign-on
+	FeatureCustomBranding   = "custom_branding"        // Pro: custom branding
+	FeatureAdvancedSpam     = "advanced_spam"          // Pro: advanced spam config
+	FeaturePrioritySupport  = "priority_support"       // Pro: priority support
+	FeatureMultiTenant      = "multi_tenant"           // Enterprise: multi-tenant
 	FeatureDeliverability   = "advanced_deliverability" // Enterprise: advanced deliverability
-	FeatureSLA              = "sla"                 // Enterprise: SLA guarantees
+	FeatureSLA              = "sla"                    // Enterprise: SLA guarantees
 )
 
 // FreeTierFeatures are always available without a license.
@@ -42,6 +44,8 @@ var FreeTierFeatures = []string{
 // ProFeatures require a Pro or higher license.
 var ProFeatures = []string{
 	FeatureBasicMail,
+	FeatureAnalytics,
+	FeatureOIDCSSO,
 	FeatureCustomBranding,
 	FeatureAdvancedSpam,
 	FeaturePrioritySupport,
@@ -50,6 +54,8 @@ var ProFeatures = []string{
 // EnterpriseFeatures require an Enterprise license.
 var EnterpriseFeatures = []string{
 	FeatureBasicMail,
+	FeatureAnalytics,
+	FeatureOIDCSSO,
 	FeatureCustomBranding,
 	FeatureAdvancedSpam,
 	FeaturePrioritySupport,
@@ -93,6 +99,72 @@ func NewFeatureGateService(client *Client, db *pgxpool.Pool, logger *slog.Logger
 		cache:  cache,
 		logger: logger,
 	}
+}
+
+// ResolveTier returns the licensing tier this install is currently entitled to,
+// based on the cached license features. Used by handlers that need to make
+// tier-aware decisions outside the request middleware (e.g. Free-tier resource
+// caps on domain/mailbox creation, or rendering tier badges).
+//
+// Returns:
+//   - TierFree: ValidonX not configured, or cached license has no Pro/Enterprise features
+//   - TierPro: cached license has any Pro feature (custom_branding, analytics, etc.)
+//   - TierEnterprise: cached license has any Enterprise feature (multi_tenant, etc.)
+//
+// On cache miss, performs a single live refresh to populate the cache. On any
+// hard failure (no cache, no live answer) returns TierFree as the safe default.
+// The grace period is intentionally NOT enforced here — handlers calling this
+// for caps want a current view, not a 30-day-stale one. Use FeatureGate for
+// access enforcement; ResolveTier for tier-aware UX/limits.
+func (fgs *FeatureGateService) ResolveTier(ctx context.Context) (string, error) {
+	if !fgs.client.Configured() {
+		return TierFree, nil
+	}
+
+	tenantID := fgs.client.TenantID()
+
+	// Try cache first.
+	if fgs.cache != nil {
+		cached, err := fgs.cache.GetCached(ctx, tenantID)
+		if err == nil && cached != nil {
+			return tierFromFeatures(cached.Features), nil
+		}
+	}
+
+	// Cache miss — try live refresh.
+	refreshed, err := fgs.refreshLicense(ctx, tenantID)
+	if err != nil {
+		return TierFree, err
+	}
+	if refreshed == nil {
+		return TierFree, nil
+	}
+	return tierFromFeatures(refreshed.Features), nil
+}
+
+// tierFromFeatures infers the license tier from an entitlement list.
+// The check order matters: Enterprise > Pro > Free. A license that has BOTH
+// Pro and Enterprise features (which Enterprise always does) resolves as
+// Enterprise.
+func tierFromFeatures(features []string) string {
+	hasEnterprise := false
+	hasPro := false
+	for _, f := range features {
+		switch f {
+		case FeatureMultiTenant, FeatureDeliverability, FeatureSLA:
+			hasEnterprise = true
+		case FeatureAnalytics, FeatureOIDCSSO, FeatureCustomBranding,
+			FeatureAdvancedSpam, FeaturePrioritySupport:
+			hasPro = true
+		}
+	}
+	if hasEnterprise {
+		return TierEnterprise
+	}
+	if hasPro {
+		return TierPro
+	}
+	return TierFree
 }
 
 // FeatureGate returns HTTP middleware that checks whether the current license
