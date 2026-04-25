@@ -121,6 +121,9 @@ type Client struct {
 	tenantID   string
 	subscriptionID string
 	serverID   string
+	// licenseKey is the path-1 cryptographic license string. Only used
+	// by CheckLicensePath1; goes away when path-2 ships.
+	licenseKey string
 	httpClient *http.Client
 	logger     *slog.Logger
 
@@ -141,6 +144,7 @@ func NewClient(secrets *config.ValidonXSecrets, logger *slog.Logger) *Client {
 		tenantID:       secrets.TenantID,
 		subscriptionID: secrets.SubscriptionID,
 		serverID:       secrets.ServerID,
+		licenseKey:     secrets.LicenseKey,
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},

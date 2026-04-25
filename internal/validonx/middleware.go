@@ -314,7 +314,11 @@ func (fgs *FeatureGateService) refreshLicense(ctx context.Context, tenantID stri
 		return nil, errClientNotConfigured
 	}
 
-	resp, err := client.CheckLicense(ctx, nil) // check all features
+	// During v0.1.0-beta1 we call ValidonX's existing /api/v1/integration/
+	// entitlements/check endpoint via the path1 adapter (see path1.go).
+	// Path-2's /v1/licensing/resolve will replace this with c.CheckLicense.
+	// Single-line revert when that ships.
+	resp, err := client.CheckLicensePath1(ctx, nil) // check all features
 	if err != nil {
 		fgs.logger.Warn("live license check failed", "tenant_id", tenantID, "error", err)
 

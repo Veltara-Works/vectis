@@ -301,10 +301,18 @@ type OIDCProviderConfig struct {
 // When nil, the system operates in free-tier mode with all basic features enabled.
 type ValidonXSecrets struct {
 	BaseURL        string `yaml:"base_url"`        // e.g. https://api.validonx.com
-	ServiceKey     string `yaml:"service_key"`      // service authentication key
+	ServiceKey     string `yaml:"service_key"`      // service authentication key (sent as X-API-Key)
 	TenantID       string `yaml:"tenant_id"`        // this server's tenant ID
 	SubscriptionID string `yaml:"subscription_id"`  // this server's subscription ID
 	ServerID       string `yaml:"server_id"`        // unique server identifier
+	// LicenseKey is the ValidonX-issued cryptographic license string for
+	// the path-1 /v1/integration/entitlements/check endpoint. Distinct
+	// from SubscriptionID in ValidonX's data model (1 subscription → N
+	// license_keys). Path-2's /v1/licensing/resolve will resolve this
+	// server-side from SubscriptionID + tenant context, at which point
+	// this field becomes obsolete and the path-1 adapter is removed.
+	// Beta1 only — not surfaced via admin UI.
+	LicenseKey     string `yaml:"license_key"`
 }
 
 // ValidonXConfigured returns true if ValidonX licensing secrets are present.

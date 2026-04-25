@@ -26,6 +26,11 @@ type RuntimeConfig struct {
 	TenantID       string
 	SubscriptionID string
 	ServerID       string
+	// LicenseKey carries the path-1 license string sourced from
+	// secrets.yaml only (intentionally NOT in the validonx_config DB
+	// row, since it's beta1-interim and never gets pasted via the
+	// admin UI). Removed when path-2's /v1/licensing/resolve ships.
+	LicenseKey     string
 	// FromDB indicates the config came from the validonx_config table (admin
 	// UI activation), not secrets.yaml. Used for telemetry/UX.
 	FromDB bool
@@ -49,6 +54,7 @@ func (c *RuntimeConfig) ToSecrets() *config.ValidonXSecrets {
 		TenantID:       c.TenantID,
 		SubscriptionID: c.SubscriptionID,
 		ServerID:       c.ServerID,
+		LicenseKey:     c.LicenseKey,
 	}
 }
 
@@ -70,6 +76,7 @@ func LoadRuntimeConfig(ctx context.Context, db *pgxpool.Pool, secrets *config.Va
 		cfg.TenantID = secrets.TenantID
 		cfg.SubscriptionID = secrets.SubscriptionID
 		cfg.ServerID = secrets.ServerID
+		cfg.LicenseKey = secrets.LicenseKey
 	}
 
 	if db != nil {
