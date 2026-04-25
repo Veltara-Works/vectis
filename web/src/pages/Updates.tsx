@@ -44,6 +44,13 @@ interface ApplyResult {
   message: string; steps?: Array<{ service: string; status: string }>;
 }
 
+// applyTracking advances awaiting → in-flight → idle so we can promote the
+// "Update started…" banner to "Update completed successfully." once polling
+// observes the apply has actually finished. Pre-rc50 the started-banner was
+// set on the 202 and never cleared by the auto-refresh loop, so it lingered
+// long after the History row had flipped to completed (rc49 walkthrough wart).
+type ApplyTracking = 'idle' | 'awaiting' | 'in-flight'
+
 export default function UpdatesPage() {
   const [status, setStatus] = useState<OrchestratorStatus | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
@@ -54,6 +61,7 @@ export default function UpdatesPage() {
   const [planning, setPlanning] = useState(false)
   const [applying, setApplying] = useState(false)
   const [rollingBack, setRollingBack] = useState(false)
+  const [applyTracking, setApplyTracking] = useState<ApplyTracking>('idle')
 
   const loadStatus = () => api.orchestratorStatus().then(setStatus).catch(() => {})
   const loadHistory = () => api.orchestratorHistory().then(d => setHistory(d || [])).catch(() => {})
@@ -82,6 +90,33 @@ export default function UpdatesPage() {
     }, 2000)
     return () => clearInterval(timer)
   }, [shouldPoll])
+
+  // Advance applyTracking through awaiting → in-flight → idle so we can
+  // honestly report "Update completed successfully." once the orchestrator
+  // settles back to idle with the self-upgrade window cleared. The two-phase
+  // tracker prevents an immediate false-completion fire on the first render
+  // after Apply (when status.state is still observed as idle from before the
+  // orchestrator picked up the request).
+  useEffect(() => {
+    if (applyTracking === 'idle' || !status) return
+    const inProgress = NON_TERMINAL_STATES.has(status.state) || selfUpgradeActive
+    if (applyTracking === 'awaiting') {
+      if (inProgress) setApplyTracking('in-flight')
+      return
+    }
+    if (applyTracking === 'in-flight' && !inProgress) {
+      const latest = history[0]
+      if (latest?.action === 'apply' && latest?.status === 'completed') {
+        setSuccess('Update completed successfully.')
+      } else if (latest?.action === 'apply' && latest?.status === 'failed') {
+        setSuccess('')
+        setError(latest.error || 'Update failed.')
+      } else {
+        setSuccess('')
+      }
+      setApplyTracking('idle')
+    }
+  }, [applyTracking, status, selfUpgradeActive, history])
 
   const handlePlan = async () => {
     setPlanning(true)
@@ -113,12 +148,16 @@ export default function UpdatesPage() {
       // auto-refreshing History row are the ongoing feedback. Showing
       // "Update applied successfully" here (pre-rc46 behaviour) led users
       // to believe the update was done when it was still ~60s away.
+      // rc50: arm applyTracking so the auto-refresh loop promotes this to
+      // "Update completed successfully." once the orchestrator settles.
       setSuccess('Update started — this page will refresh automatically as the orchestrator progresses.')
+      setApplyTracking('awaiting')
       setPlan(null)
       loadStatus()
       loadHistory()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to apply update')
+      setApplyTracking('idle')
     } finally {
       setApplying(false)
     }
