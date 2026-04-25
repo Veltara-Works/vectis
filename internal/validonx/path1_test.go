@@ -169,18 +169,10 @@ func TestCheckLicensePath1_Success(t *testing.T) {
 			Data: struct {
 				Entitlements struct {
 					Features map[string]path1FeatureGrant `json:"features"`
-					Limits   map[string]struct {
-						Limit float64 `json:"limit"`
-						Type  string  `json:"type"`
-					} `json:"limits,omitempty"`
 				} `json:"entitlements"`
 			}{
 				Entitlements: struct {
 					Features map[string]path1FeatureGrant `json:"features"`
-					Limits   map[string]struct {
-						Limit float64 `json:"limit"`
-						Type  string  `json:"type"`
-					} `json:"limits,omitempty"`
 				}{
 					Features: map[string]path1FeatureGrant{
 						FeatureBasicMail: {Granted: true, Value: true},
@@ -208,6 +200,80 @@ func TestCheckLicensePath1_Success(t *testing.T) {
 	}
 	if !contains(resp.AllowedFeatures, FeatureAnalytics) {
 		t.Errorf("analytics missing from allowed: %v", resp.AllowedFeatures)
+	}
+}
+
+// TestCheckLicensePath1_RealValidonXEnvelope_Limits is the regression guard
+// for the rc58→rc59 decode bug.
+//
+// rc57 introduced the path-1 adapter with a `Limits` field declared as
+// `map[string]struct{...}` based on a guess at the populated shape. rc58
+// shipped without exercising the decode path against ValidonX's actual
+// response envelope. The first live activation against the real ValidonX
+// sandbox failed with `cannot unmarshal array into Go struct field
+// .data.entitlements.limits of type map[...]` because the real wire format
+// returns `"limits": []` (an empty JSON array, not a map).
+//
+// rc59 dropped the field entirely (we don't use it; json.Unmarshal silently
+// skips unknown fields). This test pins the contract by feeding the decoder
+// the EXACT byte-for-byte envelope ValidonX returned in the live walkthrough
+// (captured from the real `curl https://api.validonx.com/...` smoke test on
+// 2026-04-25). If a future maintainer re-adds the limits field with a wrong
+// type, this test fails immediately rather than waiting for live activation.
+func TestCheckLicensePath1_RealValidonXEnvelope_Limits(t *testing.T) {
+	// Verbatim from the live ValidonX smoke test on 2026-04-25 (request_id
+	// e78e3b27-3e44-474b-ab1a-0569a028d0a9). The shape — including the
+	// `limits: []` array and the request_id/api_version meta keys — is what
+	// the real api.validonx.com endpoint returns today.
+	const realValidonXResponse = `{
+		"data": {
+			"entitlements": {
+				"features": {
+					"basic_mail":       {"granted": true, "value": true},
+					"analytics":        {"granted": true, "value": true},
+					"oidc_sso":         {"granted": true, "value": true},
+					"custom_branding":  {"granted": true, "value": true},
+					"advanced_spam":    {"granted": true, "value": true},
+					"priority_support": {"granted": true, "value": true}
+				},
+				"limits": []
+			}
+		},
+		"meta": {
+			"request_id": "e78e3b27-3e44-474b-ab1a-0569a028d0a9",
+			"api_version": "1"
+		}
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, realValidonXResponse)
+	}))
+	defer server.Close()
+
+	c := NewClient(&config.ValidonXSecrets{
+		BaseURL:    server.URL,
+		ServiceKey: "test-service-key",
+		LicenseKey: "VLDX-VECTIS-PRO-EDA8A9F2B488DC44",
+	}, testLogger())
+
+	resp, err := c.CheckLicensePath1(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("decoding ValidonX's real envelope must not error; got: %v", err)
+	}
+	if !resp.Valid || resp.Status != path1StatusActive {
+		t.Errorf("real Pro envelope should yield active+valid; got status=%q valid=%v", resp.Status, resp.Valid)
+	}
+	if len(resp.AllowedFeatures) != 6 {
+		t.Errorf("expected 6 granted features, got %d (%v)", len(resp.AllowedFeatures), resp.AllowedFeatures)
+	}
+	for _, f := range []string{
+		FeatureBasicMail, FeatureAnalytics, FeatureOIDCSSO,
+		FeatureCustomBranding, FeatureAdvancedSpam, FeaturePrioritySupport,
+	} {
+		if !contains(resp.AllowedFeatures, f) {
+			t.Errorf("expected %q in allowed features; got %v", f, resp.AllowedFeatures)
+		}
 	}
 }
 
@@ -308,18 +374,10 @@ func TestCheckLicensePath1_RateLimitedThenSuccess(t *testing.T) {
 			Data: struct {
 				Entitlements struct {
 					Features map[string]path1FeatureGrant `json:"features"`
-					Limits   map[string]struct {
-						Limit float64 `json:"limit"`
-						Type  string  `json:"type"`
-					} `json:"limits,omitempty"`
 				} `json:"entitlements"`
 			}{
 				Entitlements: struct {
 					Features map[string]path1FeatureGrant `json:"features"`
-					Limits   map[string]struct {
-						Limit float64 `json:"limit"`
-						Type  string  `json:"type"`
-					} `json:"limits,omitempty"`
 				}{
 					Features: map[string]path1FeatureGrant{
 						FeatureAnalytics: {Granted: true, Value: true},
@@ -413,18 +471,10 @@ func TestCheckLicense_vs_CheckLicensePath1_DifferentEndpoints(t *testing.T) {
 				Data: struct {
 					Entitlements struct {
 						Features map[string]path1FeatureGrant `json:"features"`
-						Limits   map[string]struct {
-							Limit float64 `json:"limit"`
-							Type  string  `json:"type"`
-						} `json:"limits,omitempty"`
 					} `json:"entitlements"`
 				}{
 					Entitlements: struct {
 						Features map[string]path1FeatureGrant `json:"features"`
-						Limits   map[string]struct {
-							Limit float64 `json:"limit"`
-							Type  string  `json:"type"`
-						} `json:"limits,omitempty"`
 					}{
 						Features: map[string]path1FeatureGrant{
 							FeatureBasicMail: {Granted: true, Value: true},

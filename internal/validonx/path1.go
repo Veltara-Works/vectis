@@ -64,14 +64,19 @@ type path1FeatureGrant struct {
 }
 
 // path1Response mirrors the path-1 endpoint envelope.
+//
+// The `limits` field is intentionally omitted: ValidonX returns it as an
+// empty JSON array (`"limits": []`) when no limits are configured for the
+// license, but its populated shape is undocumented as of the v0.1.0-beta1
+// integration. We don't use limits data anywhere in synthesiseLicenseResponse
+// or downstream, so leaving it out lets json.Unmarshal silently skip the
+// field rather than typo-fight ValidonX's shape. When limits become a
+// product feature (post-v0.1.x), re-add the field with a type that matches
+// a real populated sample.
 type path1Response struct {
 	Data struct {
 		Entitlements struct {
 			Features map[string]path1FeatureGrant `json:"features"`
-			Limits   map[string]struct {
-				Limit float64 `json:"limit"`
-				Type  string  `json:"type"`
-			} `json:"limits,omitempty"`
 		} `json:"entitlements"`
 	} `json:"data"`
 	Meta struct {
