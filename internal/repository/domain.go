@@ -311,6 +311,22 @@ func (r *DomainRepo) Delete(ctx context.Context, id string) (bool, error) {
 	return result.RowsAffected() > 0, nil
 }
 
+// Count returns the total number of domains, optionally filtered by active state.
+// Used for Free-tier resource cap enforcement (3 domains max).
+func (r *DomainRepo) Count(ctx context.Context, activeOnly *bool) (int, error) {
+	var count int
+	var err error
+	if activeOnly == nil {
+		err = r.db.QueryRow(ctx, `SELECT COUNT(*) FROM domains`).Scan(&count)
+	} else {
+		err = r.db.QueryRow(ctx, `SELECT COUNT(*) FROM domains WHERE active = $1`, *activeOnly).Scan(&count)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("count domains: %w", err)
+	}
+	return count, nil
+}
+
 // CountMailboxes returns the number of mailboxes in a domain.
 func (r *DomainRepo) CountMailboxes(ctx context.Context, domainID string) (int, error) {
 	var count int

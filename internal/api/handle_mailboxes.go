@@ -14,6 +14,7 @@ import (
 
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/repository"
+	"github.com/Veltara-Works/vectis/internal/validonx"
 )
 
 var validLocalPartRe = regexp.MustCompile(`^[a-zA-Z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+$`)
@@ -114,12 +115,32 @@ func (s *Server) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check max_mailboxes limit.
+	// Mailbox cap enforcement.
+	// Pro/Enterprise: respects domain.MaxMailboxes if set, else unlimited.
+	// Free: hard cap of 25 per domain regardless of domain.MaxMailboxes,
+	// to handle Pro→Free downgrades on domains created with unlimited quota.
+	// Existing 26+ mailboxes are not retroactively suspended; only NEW
+	// creations past the cap are blocked.
+	tier, _ := s.featureGate.ResolveTier(r.Context())
+	effectiveCap := -1 // -1 = unlimited
 	if domain.MaxMailboxes != nil {
+		effectiveCap = *domain.MaxMailboxes
+	}
+	if tier == validonx.TierFree {
+		if effectiveCap < 0 || effectiveCap > 25 {
+			effectiveCap = 25
+		}
+	}
+	if effectiveCap >= 0 {
 		count, _ := s.domains.CountMailboxes(r.Context(), req.DomainID)
-		if count >= *domain.MaxMailboxes {
-			respondError(w, r, http.StatusConflict, "MAILBOX_LIMIT_REACHED",
-				fmt.Sprintf("Domain has reached its mailbox limit of %d", *domain.MaxMailboxes))
+		if count >= effectiveCap {
+			code := "MAILBOX_LIMIT_REACHED"
+			msg := fmt.Sprintf("Domain has reached its mailbox limit of %d", effectiveCap)
+			if tier == validonx.TierFree {
+				code = "LIMIT_EXCEEDED"
+				msg = fmt.Sprintf("Starter plan allows up to %d mailboxes per domain. Upgrade to Pro for unlimited mailboxes.", effectiveCap)
+			}
+			respondError(w, r, http.StatusForbidden, code, msg)
 			return
 		}
 	}

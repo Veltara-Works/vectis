@@ -627,8 +627,12 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireAdminOrAbove()).Post("/mailboxes/{mailboxID}/impersonate", s.handleImpersonate)
 			r.With(requireAdminOrAbove()).Delete("/mailboxes/{mailboxID}/impersonate", s.handleRevokeImpersonation)
 
-			// Per-domain analytics — all roles (domain scoping in handler).
-			r.Get("/analytics", s.handleDomainAnalytics)
+			// Per-domain analytics — Pro feature; gated by FeatureGate.
+			// Free installs (ValidonX unconfigured) pass through. Authenticated
+			// users on a paying customer with active Pro license: 200.
+			// Cancelled/lapsed Pro license past 30-day grace: 403 LICENSE_EXPIRED.
+			r.With(s.featureGate.FeatureGate(validonx.FeatureAnalytics)).
+				Get("/analytics", s.handleDomainAnalytics)
 
 			// Advanced deliverability — super_admin only.
 			r.With(requireSuperAdmin()).Get("/deliverability/warmup", s.handleListWarmup)

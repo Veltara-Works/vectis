@@ -13,6 +13,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/dkim"
 	"github.com/Veltara-Works/vectis/internal/engine"
+	"github.com/Veltara-Works/vectis/internal/validonx"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
@@ -105,10 +106,35 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Free-tier resource cap: 3 domains max, 25 mailboxes per domain default.
+	// Per pricing.astro Starter promise. Pro/Enterprise are uncapped here.
+	// Existing domains on a customer who downgrades Pro→Free are NOT
+	// retroactively deleted; this only blocks NEW domain creation past 3.
+	tier, _ := s.featureGate.ResolveTier(r.Context())
+	maxMailboxes := req.MaxMailboxes
+	if tier == validonx.TierFree {
+		count, countErr := s.domains.Count(r.Context(), nil)
+		if countErr != nil {
+			s.logger.Error("count domains failed", "error", countErr)
+			respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to verify domain quota")
+			return
+		}
+		if count >= 3 {
+			respondError(w, r, http.StatusForbidden, "LIMIT_EXCEEDED",
+				"Starter plan allows up to 3 domains. Upgrade to Pro for unlimited domains.")
+			return
+		}
+		// Default mailbox cap to 25 for Free if caller didn't specify a tighter limit.
+		if maxMailboxes == nil {
+			defaultCap := 25
+			maxMailboxes = &defaultCap
+		}
+	}
+
 	domain, err := s.domains.Create(r.Context(), repository.DomainCreate{
 		Name:          req.Name,
 		SpamThreshold: req.SpamThreshold,
-		MaxMailboxes:  req.MaxMailboxes,
+		MaxMailboxes:  maxMailboxes,
 	})
 	if err != nil {
 		s.logger.Error("create domain failed", "error", err)
