@@ -76,6 +76,19 @@ func run(logger *slog.Logger) error {
 	// starts being served after the api container swap during rc47→rc48,
 	// so the user won't see the new banner prose until they Apply again
 	// with the rc48 bundle already loaded. rc48→rc49 is that run.
+	// rc50 fixes the last GA wart from the rc49 walkthrough: the green
+	// "Update started…" banner set on the Apply 202 was never cleared
+	// by the auto-refresh loop, so it lingered visibly stale long after
+	// the History row had flipped to completed. The fix wires a small
+	// applyTracking state machine (awaiting → in-flight → idle) into
+	// the existing poll, promoting the banner to "Update completed
+	// successfully." once the orchestrator settles back to idle with
+	// the self-upgrade window cleared.
+	// rc51 is the human-UI test target for rc50's banner-clear fix.
+	// rc50→rc51 is the only walkthrough that exercises the new logic
+	// against a real upgrade — rc49→rc50 necessarily ran under the
+	// rc49 bundle, which still has the stale banner bug. v0.1.0 is
+	// cut from this commit if the rc51 walkthrough lands clean.
 	logger.Info("orchestrator starting", "version", version.Version)
 
 	// -----------------------------------------------------------------------
