@@ -4,13 +4,23 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Veltara-Works/vectis/internal/validonx"
 	"github.com/go-chi/chi/v5"
 )
 
 // handleOIDCProviders returns the list of enabled OIDC providers.
 // Used by the frontend to render SSO login buttons.
+//
+// On Free-tier installs the list is suppressed to an empty array, so the
+// Login page silently omits SSO buttons rather than showing buttons that
+// would 402/403 on click. The /auth/oidc/login and /auth/oidc/callback
+// routes carry their own request-layer gate as defence in depth.
 func (s *Server) handleOIDCProviders(w http.ResponseWriter, r *http.Request) {
 	if s.oidcManager == nil || !s.oidcManager.HasProviders() {
+		respond(w, r, http.StatusOK, map[string]any{"providers": []string{}})
+		return
+	}
+	if !s.featureGate.HasFeature(r.Context(), validonx.FeatureOIDCSSO) {
 		respond(w, r, http.StatusOK, map[string]any{"providers": []string{}})
 		return
 	}

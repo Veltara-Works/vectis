@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -264,6 +265,98 @@ func (fgs *FeatureGateService) FeatureGate(feature string) func(http.Handler) ht
 	}
 }
 
+// HasFeature reports whether the current license includes the named feature.
+// Used by handlers that need a non-middleware check (e.g. filtering OIDC
+// providers out of the public list endpoint when the SSO feature is gated).
+//
+// Behaviour mirrors FeatureGate's allow path, without writing an HTTP error:
+//   - ValidonX unconfigured → all features available (free-tier mode)
+//   - Free-tier features (basic_mail) always available
+//   - Otherwise consult the cache, falling back to a live refresh on miss
+//
+// On any error path that would have caused FeatureGate to deny, returns false.
+// Callers that need to distinguish "not entitled" from "couldn't tell" should
+// use FeatureGate at the route boundary.
+func (fgs *FeatureGateService) HasFeature(ctx context.Context, feature string) bool {
+	client := fgs.currentClient()
+	if !client.Configured() {
+		return true
+	}
+	if isFreeTierFeature(feature) {
+		return true
+	}
+	allowed, err := fgs.checkFeatureAccess(ctx, client.TenantID(), feature)
+	if err != nil {
+		return false
+	}
+	return allowed
+}
+
+// FeatureGateBrowser is a request-layer gate for browser-facing endpoints
+// (OIDC login redirect, OIDC callback). Behaves identically to FeatureGate
+// on the allow path; on deny it content-negotiates so a browser sees a
+// friendly upgrade page instead of raw JSON, while API clients keep the
+// existing 403 JSON envelope.
+//
+// Negotiation rule:
+//   - Accept header contains "text/html"               → 402 + HTML
+//   - Accept is "application/json" (explicit)          → 403 + JSON envelope
+//   - Accept is "*/*", missing, or anything else       → 402 + HTML
+//
+// Browsers default to including text/html in Accept; curl defaults to "*/*";
+// XHR clients that care can opt into JSON by setting Accept: application/json.
+//
+// featureLabel is shown verbatim in the HTML page (e.g. "OIDC single sign-on").
+// upgradeURL is rendered as the "Upgrade" link target.
+func (fgs *FeatureGateService) FeatureGateBrowser(feature, featureLabel, upgradeURL string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			client := fgs.currentClient()
+
+			if !client.Configured() {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if isFreeTierFeature(feature) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			ctx := r.Context()
+			tenantID := client.TenantID()
+
+			allowed, err := fgs.checkFeatureAccess(ctx, tenantID, feature)
+			if err == nil && allowed {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			expired := false
+			if err != nil {
+				fgs.logger.Error("browser feature gate check failed",
+					"feature", feature, "tenant_id", tenantID, "error", err)
+				var expErr *licenseExpiredError
+				if errors.As(err, &expErr) {
+					expired = true
+				}
+			}
+
+			if wantsJSON(r) {
+				if expired {
+					writeFeatureError(w, http.StatusForbidden, ErrLicenseExpired,
+						"License grace period has expired — please renew your subscription")
+					return
+				}
+				writeFeatureError(w, http.StatusForbidden, ErrFeatureNotAvailable,
+					"Your current license does not include this feature: "+feature)
+				return
+			}
+
+			writeFeatureUpgradeHTML(w, featureLabel, upgradeURL, expired)
+		})
+	}
+}
+
 // checkFeatureAccess checks the cache and optionally the live API for feature access.
 func (fgs *FeatureGateService) checkFeatureAccess(ctx context.Context, tenantID, feature string) (bool, error) {
 	if fgs.cache == nil {
@@ -410,4 +503,96 @@ func writeFeatureErrorToLogger(logger *slog.Logger, tenantID, feature string) {
 		"tenant_id", tenantID,
 		"feature", feature,
 	)
+}
+
+// wantsJSON returns true when the request's Accept header explicitly prefers
+// JSON over HTML. Used by FeatureGateBrowser to choose between the JSON 403
+// envelope and the HTML upgrade page.
+//
+// Decision matrix:
+//   - Accept contains "text/html"     → false (HTML wins, even if "application/json" also present)
+//   - Accept is exactly "application/json" or "application/json, ..." with no html → true
+//   - Accept is "*/*", missing, empty → false (default to HTML for browser-friendliness)
+//
+// We do not parse q-values; in practice browsers either include text/html or
+// they don't, and API clients either send an explicit application/json or
+// don't care.
+func wantsJSON(r *http.Request) bool {
+	accept := r.Header.Get("Accept")
+	if accept == "" {
+		return false
+	}
+	lower := strings.ToLower(accept)
+	if strings.Contains(lower, "text/html") {
+		return false
+	}
+	if strings.Contains(lower, "application/json") {
+		return true
+	}
+	return false
+}
+
+// writeFeatureUpgradeHTML renders a small static HTML page explaining that
+// the feature requires a paid license, with a link to upgrade. Status is
+// 402 Payment Required (semantically accurate for "requires paid plan",
+// matches what GitHub/Stripe use for the same scenario).
+func writeFeatureUpgradeHTML(w http.ResponseWriter, featureLabel, upgradeURL string, expired bool) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusPaymentRequired)
+
+	heading := "Pro feature"
+	body := featureLabel + " requires a Pro license. Your current install is on the Free tier."
+	if expired {
+		heading = "License expired"
+		body = "Your license grace period has expired. Renew your subscription to continue using " + featureLabel + "."
+	}
+	if upgradeURL == "" {
+		upgradeURL = "https://vectismail.com/pricing"
+	}
+
+	page := `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>` + htmlEscape(heading) + ` — Vectis Mail</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         max-width: 32rem; margin: 4rem auto; padding: 0 1.5rem; color: #0f172a; line-height: 1.5; }
+  h1 { font-size: 1.5rem; margin: 0 0 1rem; }
+  p { margin: 0 0 1rem; }
+  .actions { margin-top: 1.5rem; display: flex; gap: 0.75rem; flex-wrap: wrap; }
+  a.btn { display: inline-block; padding: 0.6rem 1.1rem; border-radius: 0.375rem;
+          text-decoration: none; font-weight: 500; }
+  a.btn-primary { background: #2563eb; color: #fff; }
+  a.btn-secondary { background: #e2e8f0; color: #0f172a; }
+  .meta { color: #64748b; font-size: 0.85rem; margin-top: 2rem; }
+</style>
+</head>
+<body>
+<h1>` + htmlEscape(heading) + `</h1>
+<p>` + htmlEscape(body) + `</p>
+<div class="actions">
+  <a class="btn btn-primary" href="` + htmlEscape(upgradeURL) + `">View pricing</a>
+  <a class="btn btn-secondary" href="/admin">Back to sign-in</a>
+</div>
+<p class="meta">Vectis Mail Server</p>
+</body>
+</html>`
+	_, _ = w.Write([]byte(page))
+}
+
+// htmlEscape replaces characters that have special meaning in HTML context
+// with their entity equivalents. Used by writeFeatureUpgradeHTML to render
+// caller-supplied strings safely.
+func htmlEscape(s string) string {
+	r := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&#39;",
+	)
+	return r.Replace(s)
 }

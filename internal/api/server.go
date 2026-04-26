@@ -551,9 +551,18 @@ func (s *Server) buildRouter() chi.Router {
 		r.Get("/track/click/{token}", s.handleTrackClick)
 
 		// OIDC SSO (public — browser redirects).
+		// providers handler filters its own list against HasFeature(oidc_sso),
+		// so Free installs render no SSO buttons; login + callback carry the
+		// content-negotiated gate as defence in depth (handles direct hits
+		// and stale callbacks after a license downgrade).
 		r.Get("/auth/oidc/providers", s.handleOIDCProviders)
-		r.Get("/auth/oidc/login/{provider}", s.handleOIDCLogin)
-		r.Get("/auth/oidc/callback/{provider}", s.handleOIDCCallback)
+		oidcGate := s.featureGate.FeatureGateBrowser(
+			validonx.FeatureOIDCSSO,
+			"OIDC single sign-on",
+			"https://vectismail.com/pricing",
+		)
+		r.With(oidcGate).Get("/auth/oidc/login/{provider}", s.handleOIDCLogin)
+		r.With(oidcGate).Get("/auth/oidc/callback/{provider}", s.handleOIDCCallback)
 
 		// Authenticated endpoints.
 		r.Group(func(r chi.Router) {
