@@ -43,9 +43,24 @@ seeded an admin account and the generated password was lost — for
 example when running the installer inside a VPS-provider web terminal
 that truncates scrollback.
 
-Run the same way as 'admin init' — inside a one-shot vectis-api container:
-  docker compose -f /etc/vectis/docker-compose.yml run --rm \
-    --no-deps --entrypoint vectis api admin reset-password`,
+Run as a one-shot 'docker run' (NOT 'docker compose run' — see note below):
+  docker run --rm \
+    --network vectis_vectis-data \
+    -v /etc/vectis:/etc/vectis:ro \
+    --entrypoint vectis \
+    ghcr.io/veltara-works/vectis-api:latest \
+    admin reset-password <email>
+
+Why not 'docker compose run --rm api ...'? Compose's transient run
+container takes the service's network aliases, which forces compose to
+temporarily detach the live vectis-api container from the service's
+'internal: true' networks. If the transient container then fails to
+attach (which happens whenever the same alias is already in use, among
+other races), compose exits without re-attaching the live container —
+leaving vectis-api stranded off vectis_vectis-data and unable to reach
+postgres until 'docker network connect' runs by hand. Confirmed live
+on prod 2026-04-27 (deferred-items.md §11). The 'docker run' form
+above sidesteps the compose layer entirely and is safe to repeat.`,
 	RunE: runAdminResetPassword,
 }
 

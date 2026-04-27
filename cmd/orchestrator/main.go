@@ -231,6 +231,17 @@ func run(logger *slog.Logger) error {
 	}()
 
 	// -----------------------------------------------------------------------
+	// Background: network drift watchdog
+	// -----------------------------------------------------------------------
+	// Periodically reconciles each Vectis container's actual Docker network
+	// attachments against its compose declaration. Self-heals by reconnecting
+	// any missing internal network. Driven by the prod 2026-04-27 incident
+	// where `docker compose run` silently disconnected vectis-api from
+	// vectis_vectis-data and never re-attached. See deferred-items.md §11.
+	watchdogDocker := orchestrator.NewDockerManager(orchCfg, logger.With("component", "docker"))
+	go orchestrator.RunNetworkWatchdog(ctx, watchdogDocker, 60*time.Second, logger)
+
+	// -----------------------------------------------------------------------
 	// Graceful shutdown
 	// -----------------------------------------------------------------------
 	sigCh := make(chan os.Signal, 1)

@@ -336,8 +336,12 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "  Admin password: (admin already existed — this install left it unchanged)")
 		fmt.Fprintln(cmd.OutOrStdout())
 		fmt.Fprintln(cmd.OutOrStdout(), "  If you have lost it, generate a new one with:")
-		fmt.Fprintf(cmd.OutOrStdout(), "    docker compose -f %s run --rm \\\n", composeDst)
-		fmt.Fprintln(cmd.OutOrStdout(), "      --no-deps --entrypoint vectis api admin reset-password")
+		fmt.Fprintln(cmd.OutOrStdout(), "    docker run --rm \\")
+		fmt.Fprintln(cmd.OutOrStdout(), "      --network vectis_vectis-data \\")
+		fmt.Fprintln(cmd.OutOrStdout(), "      -v /etc/vectis:/etc/vectis:ro \\")
+		fmt.Fprintln(cmd.OutOrStdout(), "      --entrypoint vectis \\")
+		fmt.Fprintln(cmd.OutOrStdout(), "      ghcr.io/veltara-works/vectis-api:latest \\")
+		fmt.Fprintln(cmd.OutOrStdout(), "      admin reset-password <email>")
 	}
 	fmt.Fprintln(cmd.OutOrStdout())
 
@@ -611,6 +615,15 @@ func reverseDNSMatches(ip, hostname string) bool {
 // the given command inside a transient api container on the same networks
 // as the running stack. The api image's entrypoint is `vectis`, so args[0]
 // must be "vectis" or a sibling binary baked into the image.
+//
+// SAFE AT INSTALL TIME ONLY. Compose v5.x has a bug where `compose run`
+// against a service whose live container is already on an `internal: true`
+// network silently detaches that live container's network attachment and
+// fails to restore it. During install the api service container does not
+// exist yet (only postgres has been brought up at the call sites in steps
+// 9 and 10), so there is nothing to disconnect. Do NOT add a new caller
+// from any post-install path — use `docker run --network <net> --entrypoint
+// vectis <image> <args>` instead. See deferred-items.md §12.
 func composeRunAPI(composePath string, args ...string) []string {
 	return append([]string{
 		"docker", "compose", "-f", composePath,
