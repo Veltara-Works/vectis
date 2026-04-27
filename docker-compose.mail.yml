@@ -66,7 +66,7 @@ services:
       - ./var/generated/postfix/transport:/etc/postfix/transport:ro
       - ./var/generated/postfix/inbound-notify.sh:/etc/postfix/inbound-notify.sh:ro
       - mail-data:/var/vectis/mail
-      - ./var/certs:/etc/ssl/mail:ro
+      - mail-certs:/etc/ssl/mail:ro
       - postfix-logs:/var/log/postfix
     depends_on:
       postgres:
@@ -87,7 +87,7 @@ services:
       - ./var/generated/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro
       - ./var/generated/dovecot/dovecot-sql.conf.ext:/etc/dovecot/dovecot-sql.conf.ext:ro
       - mail-data:/var/vectis/mail
-      - ./var/certs:/etc/ssl/mail:ro
+      - mail-certs:/etc/ssl/mail:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -188,6 +188,36 @@ services:
       timeout: 5s
       retries: 3
 
+  cert-extractor:
+    image: ghcr.io/veltara-works/vectis-cert-extractor:v0.1.0-rc60
+    container_name: vectis-cert-extractor
+    restart: unless-stopped
+    networks:
+      - vectis-mail
+    volumes:
+      - traefik-acme:/var/traefik/acme:ro
+      - mail-certs:/etc/ssl/mail
+      # Docker socket gives the extractor the ability to `docker kill
+      # --signal=HUP` postfix/dovecot when the cert rotates. Scope is
+      # intentionally read-write (socket mounts don't honour :ro for
+      # write operations) — same trust as the legacy acme.sh sidecar.
+      - /var/run/docker.sock:/var/run/docker.sock
+    command:
+      - --acme-json=/var/traefik/acme/acme.json
+      - --hostname=mail.vectismail.com
+      - --out-dir=/etc/ssl/mail
+      - --reload-postfix=vectis-postfix
+      - --reload-dovecot=vectis-dovecot
+      - --watch
+    depends_on:
+      traefik:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
 networks:
   vectis-frontend:
     driver: bridge
@@ -203,6 +233,13 @@ volumes:
   pgdata:
   valkeydata:
   mail-data:
+  mail-certs:
+    # cert-extractor (rc27+) writes fullchain.pem + privkey.pem here from
+    # Traefik's acme.json. postfix + dovecot mount this volume RO at
+    # /etc/ssl/mail. Pre-populated 2026-04-27 from /opt/vectis/var/certs
+    # so the cutover from the old host bind-mount had no missing-cert window.
+    external: true
+    name: vectis_mail-certs
   traefik-acme:
   snapshots:
   backups:
