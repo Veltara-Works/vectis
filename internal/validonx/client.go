@@ -227,7 +227,7 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	}
 
 	var resp authResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/auth/login", payload, &resp, false); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/auth/login", payload, &resp, authNone); err != nil {
 		c.logger.Error("validonx authentication failed", "error", err)
 		return fmt.Errorf("%s: %w", ErrAuthFailed, err)
 	}
@@ -242,26 +242,34 @@ func (c *Client) Authenticate(ctx context.Context) error {
 }
 
 // ResolveTenant calls GET /v1/tenants/{id} and returns tenant information.
+//
+// NOT a path-2 endpoint — auth model and route are pre-PR-#14. Currently
+// has no caller in Vectis, but kept for parity with the Go client surface.
+// If a future caller is added, audit the auth model first; the bearer path
+// here will fail because /v1/auth/login was retired by ValidonX in PR #14.
 func (c *Client) ResolveTenant(ctx context.Context, tenantID string) (*TenantInfo, error) {
 	if c == nil {
 		return nil, fmt.Errorf("validonx client not configured")
 	}
 
 	var resp TenantInfo
-	if err := c.doJSON(ctx, http.MethodGet, "/v1/tenants/"+tenantID, nil, &resp, true); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/v1/tenants/"+tenantID, nil, &resp, authBearer); err != nil {
 		return nil, fmt.Errorf("resolve tenant %s: %w", tenantID, err)
 	}
 	return &resp, nil
 }
 
 // ResolveSubscription calls GET /v1/subscriptions/{id} and returns subscription information.
+//
+// Same caveat as ResolveTenant — no current caller; bearer auth path is
+// post-PR-#14 broken. Audit before adding callers.
 func (c *Client) ResolveSubscription(ctx context.Context, subscriptionID string) (*SubscriptionInfo, error) {
 	if c == nil {
 		return nil, fmt.Errorf("validonx client not configured")
 	}
 
 	var resp SubscriptionInfo
-	if err := c.doJSON(ctx, http.MethodGet, "/v1/subscriptions/"+subscriptionID, nil, &resp, true); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/v1/subscriptions/"+subscriptionID, nil, &resp, authBearer); err != nil {
 		return nil, fmt.Errorf("resolve subscription %s: %w", subscriptionID, err)
 	}
 	return &resp, nil
@@ -271,30 +279,39 @@ func (c *Client) ResolveSubscription(ctx context.Context, subscriptionID string)
 // license entitlements. The endpoint returns a `{data: {...}, meta: {...}}`
 // envelope; this method unwraps the envelope and returns the inner
 // LicenseResponse.
+//
+// Auth: X-API-Key (per ADR-041 §1). The endpoint is mounted under
+// ValidonX's `v1/integration` route group with `ResolveTenantFromApiKey`
+// middleware — the API key both authenticates the request and binds it
+// to a tenant, so no separate token-exchange step is needed.
 func (c *Client) ResolveLicense(ctx context.Context, req LicenseRequest) (*LicenseResponse, error) {
 	if c == nil {
 		return nil, fmt.Errorf("validonx client not configured")
 	}
 
 	var env licensingResolveEnvelope
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/integration/licensing/resolve", req, &env, true); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/integration/licensing/resolve", req, &env, authAPIKey); err != nil {
 		return nil, fmt.Errorf("%s: %w", ErrLicensingFailed, err)
 	}
 	return &env.Data, nil
 }
 
-// LogBillingEvent calls POST /v1/billing/events to record a billing event.
-// Errors are logged but not returned — billing event logging must not block
-// the mail server's operation.
+// LogBillingEvent records a billing event with ValidonX. As of path-2
+// (ValidonX PR #14, 2026-04-27) the path-1 endpoint /v1/billing/events
+// has been retired and no replacement under /v1/integration/* has been
+// defined yet. This method is a no-op until ValidonX confirms the new
+// endpoint shape; the call surface is preserved so callers don't need
+// to change.
+//
+// Existing callers (refreshLicense error path, usage.go telemetry) are
+// best-effort and ignore the return value — the no-op transition is
+// non-breaking.
 func (c *Client) LogBillingEvent(ctx context.Context, event BillingEvent) error {
 	if c == nil {
 		return nil
 	}
-
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/billing/events", event, nil, true); err != nil {
-		c.logger.Warn("failed to log billing event", "type", event.Type, "error", err)
-		return fmt.Errorf("log billing event: %w", err)
-	}
+	c.logger.Debug("billing event suppressed (path-2 endpoint pending)",
+		"type", event.Type, "tenant_id", event.TenantID)
 	return nil
 }
 
@@ -340,10 +357,32 @@ func (c *Client) getToken() string {
 	return c.token
 }
 
-// doJSON performs an HTTP request with JSON body/response handling.
-// If auth is true, it ensures a valid token and includes the Authorization header.
-func (c *Client) doJSON(ctx context.Context, method, path string, body any, dest any, auth bool) error {
-	if auth {
+// authMode selects how doJSON authenticates the outbound request.
+//
+//   - authNone: no auth header (used by the legacy /v1/auth/login probe,
+//     which itself was retired by ValidonX alongside path-2).
+//   - authBearer: legacy session-token flow. Triggers ensureAuth → Authenticate
+//     against /v1/auth/login. Retained on dead-code paths (ResolveTenant,
+//     ResolveSubscription, LogBillingEvent's old call site) so that future
+//     callers fail loudly instead of silently picking the wrong mode if those
+//     endpoints come back. Do NOT introduce new authBearer callers — the
+//     /v1/auth/login route was retired by ValidonX in PR #14.
+//   - authAPIKey: send X-API-Key header with the configured serviceKey. This
+//     is the path-2 model — ValidonX's ResolveTenantFromApiKey middleware
+//     authenticates the request and resolves the tenant from the key. Use
+//     this for every /api/v1/integration/* endpoint.
+type authMode int
+
+const (
+	authNone authMode = iota
+	authBearer
+	authAPIKey
+)
+
+// doJSON performs an HTTP request with JSON body/response handling and
+// authMode-driven auth header selection. See authMode docs for the modes.
+func (c *Client) doJSON(ctx context.Context, method, path string, body any, dest any, auth authMode) error {
+	if auth == authBearer {
 		if err := c.ensureAuth(ctx); err != nil {
 			return err
 		}
@@ -368,8 +407,11 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, dest
 	}
 	req.Header.Set("Accept", "application/json")
 
-	if auth {
+	switch auth {
+	case authBearer:
 		req.Header.Set("Authorization", "Bearer "+c.getToken())
+	case authAPIKey:
+		req.Header.Set("X-API-Key", c.serviceKey)
 	}
 
 	resp, err := c.httpClient.Do(req)
