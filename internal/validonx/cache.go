@@ -13,9 +13,18 @@ import (
 	"github.com/Veltara-Works/vectis/internal/types"
 )
 
-// GracePeriod is the maximum age of a cached license before the server
-// falls back to free-tier behaviour. Per architecture: 30 days.
-const GracePeriod = 30 * 24 * time.Hour
+// CacheTTL is how long a cached license entry is considered fresh before
+// the gate triggers a live refresh. Per ADR-041 §8 (path-2 caching guidance):
+// 5 minutes. A stale-but-not-deleted cache row is still consulted as a
+// fallback when ValidonX is unreachable — drop-to-Free is governed by the
+// per-customer LicenseResponse.GracePeriodEndsAt field, not by cache age.
+//
+// Pre-path-2 (v0.1.0-beta1) this constant was named GracePeriod and held
+// 30 days, conflating "how often to recheck" with "how long to keep working
+// when ValidonX is unreachable". Path-2 separates the two: 5-min cache TTL
+// for the recheck cadence, and `data.grace_period_ends_at` from the resolve
+// response for the offline-tolerance window.
+const CacheTTL = 5 * time.Minute
 
 // CachedLicense represents a row in the validonx_cache table.
 type CachedLicense struct {
@@ -84,7 +93,9 @@ func (lc *LicenseCache) GetCached(ctx context.Context, tenantID string) (*Cached
 }
 
 // UpdateCache stores or updates the cached license for the given tenant.
-// The grace-period expiry is set to 30 days from now.
+// The cached row's `expires_at` field marks when the row should be re-checked
+// against ValidonX (set to now + CacheTTL, currently 5 minutes). It is NOT
+// the per-customer grace boundary; that lives in resp.GracePeriodEndsAt.
 func (lc *LicenseCache) UpdateCache(ctx context.Context, tenantID string, subscriptionID string, resp *LicenseResponse) error {
 	licenseDataBytes, err := json.Marshal(resp)
 	if err != nil {
@@ -97,7 +108,7 @@ func (lc *LicenseCache) UpdateCache(ctx context.Context, tenantID string, subscr
 	}
 
 	now := time.Now().UTC()
-	expiresAt := now.Add(GracePeriod)
+	expiresAt := now.Add(CacheTTL)
 
 	_, err = lc.db.Exec(ctx,
 		`INSERT INTO validonx_cache

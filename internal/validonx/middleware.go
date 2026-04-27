@@ -357,47 +357,87 @@ func (fgs *FeatureGateService) FeatureGateBrowser(feature, featureLabel, upgrade
 	}
 }
 
-// checkFeatureAccess checks the cache and optionally the live API for feature access.
+// checkFeatureAccess decides feature entitlement for a tenant using the
+// path-2 (5-min cache TTL + grace_period_ends_at) model:
+//
+//  1. No cache row → live refresh; surface its decision.
+//  2. Cache fresh (within CacheTTL) → use cached entitlements; no network.
+//  3. Cache stale (past CacheTTL) → attempt live refresh.
+//     a. Refresh succeeds → use refreshed entitlements.
+//     b. Refresh fails → fall back to the stale cache UNLESS:
+//        - cached LicenseData.Valid is false (ValidonX previously said
+//          this customer is not entitled — don't undo that on a network
+//          blip), OR
+//        - cached LicenseData.GracePeriodEndsAt is set and in the past
+//          (the customer's per-subscription grace window has elapsed).
+//        Either condition surfaces as licenseExpiredError → drop to Free.
+//
+// This separates two concerns that path-1 conflated under a 30-day
+// constant: cache freshness (when to try ValidonX again) vs offline
+// tolerance (how long to keep working on stale data when ValidonX is
+// unreachable). The customer's grace boundary is server-authoritative
+// via the resolve response's grace_period_ends_at field.
 func (fgs *FeatureGateService) checkFeatureAccess(ctx context.Context, tenantID, feature string) (bool, error) {
 	if fgs.cache == nil {
 		return false, nil
 	}
 
-	// Try cache first.
 	cached, err := fgs.cache.GetCached(ctx, tenantID)
 	if err != nil {
 		fgs.logger.Warn("failed to read license cache", "error", err)
 		// Fall through to live check.
 	}
 
-	if cached != nil {
-		// Check grace period.
-		if cached.IsExpired() {
-			fgs.logger.Warn("cached license grace period expired",
-				"tenant_id", tenantID,
-				"expired_at", cached.ExpiresAt,
-			)
-			// Try a live refresh before giving up.
-			refreshed, refreshErr := fgs.refreshLicense(ctx, tenantID)
-			if refreshErr != nil {
-				// Grace period truly expired and can't reach ValidonX.
-				writeFeatureErrorToLogger(fgs.logger, tenantID, feature)
-				return false, &licenseExpiredError{tenantID: tenantID}
-			}
-			return refreshed.HasFeature(feature), nil
+	// No cache row at all — must live-refresh to know anything.
+	if cached == nil {
+		refreshed, refreshErr := fgs.refreshLicense(ctx, tenantID)
+		if refreshErr != nil {
+			return false, refreshErr
 		}
+		if refreshed == nil {
+			return false, nil
+		}
+		return refreshed.HasFeature(feature), nil
+	}
+
+	// Cache row present and fresh — happy path, no network call.
+	if !cached.IsExpired() {
 		return cached.HasFeature(feature), nil
 	}
 
-	// No cache — try live check.
-	refreshed, err := fgs.refreshLicense(ctx, tenantID)
-	if err != nil {
-		return false, err
+	// Cache row present but stale — try a live refresh.
+	refreshed, refreshErr := fgs.refreshLicense(ctx, tenantID)
+	if refreshErr == nil {
+		return refreshed.HasFeature(feature), nil
 	}
-	if refreshed == nil {
-		return false, nil
+
+	// Refresh failed (ValidonX unreachable, transient error, etc.). Fall
+	// back to the stale cache UNLESS the cache itself encodes a hard deny.
+	fgs.logger.Warn("license refresh failed, falling back to stale cache",
+		"tenant_id", tenantID, "error", refreshErr,
+		"cache_age_minutes", time.Since(cached.LastCheckAt).Minutes(),
+	)
+
+	if !cached.LicenseData.Valid {
+		// ValidonX previously told us this customer is not entitled.
+		// A network failure now does NOT re-grant access.
+		writeFeatureErrorToLogger(fgs.logger, tenantID, feature)
+		return false, &licenseExpiredError{tenantID: tenantID}
 	}
-	return refreshed.HasFeature(feature), nil
+	if cached.LicenseData.GracePeriodEndsAt != nil &&
+		time.Now().After(*cached.LicenseData.GracePeriodEndsAt) {
+		// Per-customer subscription grace window has elapsed.
+		fgs.logger.Warn("cached license past grace_period_ends_at",
+			"tenant_id", tenantID,
+			"grace_period_ends_at", cached.LicenseData.GracePeriodEndsAt,
+		)
+		writeFeatureErrorToLogger(fgs.logger, tenantID, feature)
+		return false, &licenseExpiredError{tenantID: tenantID}
+	}
+
+	// Stale cache, but the cache itself says the customer is fine. Serve
+	// from it.
+	return cached.HasFeature(feature), nil
 }
 
 // refreshLicense performs a live license check and updates the cache.
@@ -407,11 +447,9 @@ func (fgs *FeatureGateService) refreshLicense(ctx context.Context, tenantID stri
 		return nil, errClientNotConfigured
 	}
 
-	// During v0.1.0-beta1 we call ValidonX's existing /api/v1/integration/
-	// entitlements/check endpoint via the path1 adapter (see path1.go).
-	// Path-2's /v1/licensing/resolve will replace this with c.CheckLicense.
-	// Single-line revert when that ships.
-	resp, err := client.CheckLicensePath1(ctx, nil) // check all features
+	// Path-2: native /api/v1/integration/licensing/resolve endpoint. nil
+	// features → ValidonX returns the full entitlement set.
+	resp, err := client.CheckLicense(ctx, nil)
 	if err != nil {
 		fgs.logger.Warn("live license check failed", "tenant_id", tenantID, "error", err)
 
@@ -451,7 +489,7 @@ func (fgs *FeatureGateService) refreshLicense(ctx context.Context, tenantID stri
 		LicenseData: *resp,
 		Features:    resp.AllowedFeatures,
 		Status:      resp.Status,
-		ExpiresAt:   time.Now().Add(GracePeriod),
+		ExpiresAt:   time.Now().Add(CacheTTL),
 	}, nil
 }
 

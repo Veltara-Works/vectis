@@ -34,20 +34,32 @@ const (
 // Subscription statuses — mirrors Stripe lifecycle states
 // ---------------------------------------------------------------------------
 
+// SubscriptionStatus mirrors the values ValidonX emits in
+// licensing-resolve's `data.status` field. Six values; `suspended` (HTTP 403)
+// and `revoked` (HTTP 404) are status codes, not enum values, and never
+// appear here.
 type SubscriptionStatus string
 
 const (
-	StatusActive                    SubscriptionStatus = "active"
-	StatusTrialing                  SubscriptionStatus = "trialing"
-	StatusPaused                    SubscriptionStatus = "paused"
-	StatusScheduledForCancellation  SubscriptionStatus = "scheduled_for_cancellation"
-	StatusCanceled                  SubscriptionStatus = "canceled"
+	StatusActive   SubscriptionStatus = "active"
+	StatusTrialing SubscriptionStatus = "trialing"
+	StatusPastDue  SubscriptionStatus = "past_due"
+	StatusPaused   SubscriptionStatus = "paused"
+	StatusCanceled SubscriptionStatus = "canceled"
+	StatusExpired  SubscriptionStatus = "expired"
 )
 
 // IsUsable returns true for statuses that should allow continued service.
+//
+// `past_due` is usable: ValidonX is still serving the customer through
+// the dunning grace window (default 21 days per ADR-041 §3); `data.valid`
+// is the authoritative gate, not status alone.
+//
+// `paused`, `canceled`, `expired` all surface in `data.status` with
+// `data.valid = false` once their grace window (if any) has elapsed.
 func (s SubscriptionStatus) IsUsable() bool {
 	switch s {
-	case StatusActive, StatusTrialing, StatusScheduledForCancellation:
+	case StatusActive, StatusTrialing, StatusPastDue:
 		return true
 	default:
 		return false
@@ -58,20 +70,44 @@ func (s SubscriptionStatus) IsUsable() bool {
 // Request / response types
 // ---------------------------------------------------------------------------
 
-// LicenseRequest is the payload sent to POST /v1/licensing/resolve.
+// LicenseRequest is the payload sent to
+// POST /api/v1/integration/licensing/resolve. Per ADR-041, the tenant is
+// resolved by ValidonX's `ResolveTenantFromApiKey` middleware (X-API-Key
+// header) — only `license_key` and the optional `features` filter are on
+// the wire. `features` is omitted when nil/empty so ValidonX returns the
+// full entitlement set per the 2026-04-26 sign-off.
 type LicenseRequest struct {
-	TenantID       string   `json:"tenant_id"`
-	SubscriptionID string   `json:"subscription_id"`
-	ServerID       string   `json:"server_id"`
-	Features       []string `json:"features"`
+	LicenseKey string   `json:"license_key"`
+	Features   []string `json:"features,omitempty"`
 }
 
-// LicenseResponse is the reply from POST /v1/licensing/resolve.
+// LicenseResponse is the inner `data` object returned by ValidonX's
+// licensing-resolve endpoint. The transport envelope ({data, meta}) is
+// unwrapped by ResolveLicense via licensingResolveEnvelope.
+//
+// Two distinct timeout fields per ADR-041 §2:
+//   - GracePeriodEndsAt: when the customer drops to Free if they take no
+//     action. Set only inside grace; nil otherwise.
+//   - ExpiresAt: when the current paid period ends. For subscriptions,
+//     mirrors `current_period_end`; for perpetual licenses, mirrors
+//     `license.expires_at` (often nil).
 type LicenseResponse struct {
-	AllowedFeatures []string  `json:"allowed_features"`
-	Status          string    `json:"status"` // active, trialing, paused, canceled
-	Valid           bool      `json:"valid"`
-	ExpiresAt       time.Time `json:"expires_at,omitempty"`
+	Valid              bool       `json:"valid"`
+	Status             string     `json:"status"` // active, trialing, past_due, paused, canceled, expired
+	AllowedFeatures    []string   `json:"allowed_features"`
+	GracePeriodEndsAt  *time.Time `json:"grace_period_ends_at"` // nullable
+	ExpiresAt          *time.Time `json:"expires_at"`           // nullable for perpetual licenses
+}
+
+// licensingResolveEnvelope wraps LicenseResponse for decoding. ValidonX
+// returns `{data: {...}, meta: {request_id, api_version}}`; we discard
+// meta and surface data as the caller-facing LicenseResponse.
+type licensingResolveEnvelope struct {
+	Data LicenseResponse `json:"data"`
+	Meta struct {
+		RequestID  string `json:"request_id"`
+		APIVersion string `json:"api_version"`
+	} `json:"meta"`
 }
 
 // BillingEvent is the payload sent to POST /v1/billing/events.
@@ -116,13 +152,15 @@ type apiErrorResponse struct {
 
 // Client communicates with the ValidonX licensing API.
 type Client struct {
-	baseURL    string
-	serviceKey string
-	tenantID   string
+	baseURL        string
+	serviceKey     string
+	tenantID       string
 	subscriptionID string
-	serverID   string
-	// licenseKey is the path-1 cryptographic license string. Only used
-	// by CheckLicensePath1; goes away when path-2 ships.
+	serverID       string
+	// licenseKey is the ValidonX-issued license string for this install.
+	// Sent on the wire as `data.license_key` to the resolve endpoint;
+	// ValidonX uses it to locate the license row within the tenant
+	// resolved from the API key.
 	licenseKey string
 	httpClient *http.Client
 	logger     *slog.Logger
@@ -229,17 +267,20 @@ func (c *Client) ResolveSubscription(ctx context.Context, subscriptionID string)
 	return &resp, nil
 }
 
-// ResolveLicense calls POST /v1/licensing/resolve to check license entitlements.
+// ResolveLicense calls POST /api/v1/integration/licensing/resolve to check
+// license entitlements. The endpoint returns a `{data: {...}, meta: {...}}`
+// envelope; this method unwraps the envelope and returns the inner
+// LicenseResponse.
 func (c *Client) ResolveLicense(ctx context.Context, req LicenseRequest) (*LicenseResponse, error) {
 	if c == nil {
 		return nil, fmt.Errorf("validonx client not configured")
 	}
 
-	var resp LicenseResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/licensing/resolve", req, &resp, true); err != nil {
+	var env licensingResolveEnvelope
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/integration/licensing/resolve", req, &env, true); err != nil {
 		return nil, fmt.Errorf("%s: %w", ErrLicensingFailed, err)
 	}
-	return &resp, nil
+	return &env.Data, nil
 }
 
 // LogBillingEvent calls POST /v1/billing/events to record a billing event.
@@ -258,17 +299,21 @@ func (c *Client) LogBillingEvent(ctx context.Context, event BillingEvent) error 
 }
 
 // CheckLicense is a convenience method that builds a LicenseRequest from the
-// client's configured identifiers and resolves the license.
+// client's configured license_key and resolves it. Pass nil/empty features to
+// request the full entitlement set (the recommended call for the gate's
+// refresh path — gating decisions are made client-side off the cached
+// AllowedFeatures list rather than asking per-feature on every check).
 func (c *Client) CheckLicense(ctx context.Context, features []string) (*LicenseResponse, error) {
 	if c == nil {
 		return nil, fmt.Errorf("validonx client not configured")
 	}
+	if c.licenseKey == "" {
+		return nil, fmt.Errorf("validonx: license_key is empty (set validonx.license_key in secrets.yaml)")
+	}
 
 	return c.ResolveLicense(ctx, LicenseRequest{
-		TenantID:       c.tenantID,
-		SubscriptionID: c.subscriptionID,
-		ServerID:       c.serverID,
-		Features:       features,
+		LicenseKey: c.licenseKey,
+		Features:   features,
 	})
 }
 

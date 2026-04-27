@@ -21,9 +21,9 @@ func TestCachedLicenseIsExpired(t *testing.T) {
 		want      bool
 	}{
 		{"expired by 1 second", now.Add(-1 * time.Second), true},
-		{"expired by full grace period", now.Add(-GracePeriod), true},
+		{"expired by full grace period", now.Add(-CacheTTL), true},
 		{"valid for 1 second more", now.Add(1 * time.Second), false},
-		{"valid for full grace period", now.Add(GracePeriod), false},
+		{"valid for full grace period", now.Add(CacheTTL), false},
 	}
 
 	for _, tt := range tests {
@@ -67,11 +67,13 @@ func TestCachedLicenseHasFeature(t *testing.T) {
 	}
 }
 
-// TestGracePeriodConstant guards against accidental change to the user-facing
-// "30-day offline grace period" promise on the pricing page.
-func TestGracePeriodConstant(t *testing.T) {
-	want := 30 * 24 * time.Hour
-	if GracePeriod != want {
-		t.Errorf("GracePeriod = %v, want %v (advertised on pricing page)", GracePeriod, want)
+// TestCacheTTLConstant pins the path-2 cache freshness window. Per
+// ADR-041 §8 (path-2 caching guidance) this is 5 minutes — distinct from
+// the per-customer "drop to Free" boundary, which now lives in
+// LicenseResponse.GracePeriodEndsAt and is server-authoritative.
+func TestCacheTTLConstant(t *testing.T) {
+	want := 5 * time.Minute
+	if CacheTTL != want {
+		t.Errorf("CacheTTL = %v, want %v (path-2 cache freshness window)", CacheTTL, want)
 	}
 }

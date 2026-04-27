@@ -26,11 +26,11 @@ type RuntimeConfig struct {
 	TenantID       string
 	SubscriptionID string
 	ServerID       string
-	// LicenseKey carries the path-1 license string sourced from
-	// secrets.yaml only (intentionally NOT in the validonx_config DB
-	// row, since it's beta1-interim and never gets pasted via the
-	// admin UI). Removed when path-2's /v1/licensing/resolve ships.
-	LicenseKey     string
+	// LicenseKey is the ValidonX-issued license string sourced from
+	// secrets.yaml. Intentionally NOT in the validonx_config DB row —
+	// it's operator-only, pasted once at install time, never via admin
+	// UI. Sent on the wire to ValidonX's licensing-resolve endpoint.
+	LicenseKey string
 	// FromDB indicates the config came from the validonx_config table (admin
 	// UI activation), not secrets.yaml. Used for telemetry/UX.
 	FromDB bool
