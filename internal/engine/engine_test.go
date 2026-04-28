@@ -14,7 +14,7 @@ func testData() *TemplateData {
 	return &TemplateData{
 		Hostname: "mail.example.com",
 		TLS:      config.TLSConfig{Provider: "letsencrypt", Email: "admin@example.com"},
-		ClamAV:   config.ClamAVConfig{Profile: "none"},
+		ClamAV:   resolveClamAVKnobs("none"),
 		Rspamd:   config.RspamdConfig{SpamThreshold: 15.0, RejectThreshold: 999, GreylistEnabled: false},
 		Postfix:  config.PostfixConfig{MessageSizeLimit: 52428800, SmtpBanner: "$myhostname ESMTP"},
 		Dovecot:  config.DovecotConfig{MailLocation: "maildir:/var/vectis/mail/%d/%n/Maildir", QuotaDefaultMB: 1024},
@@ -316,15 +316,86 @@ func TestOrchestratorEtcVectisMountIsRW(t *testing.T) {
 
 func TestClamAVNoneOmitsContainer(t *testing.T) {
 	files, _ := Generate(testData()) // ClamAV profile is "none"
-	var compose string
+	var compose, antivirusConf string
 	for _, f := range files {
-		if f.RelPath == "docker-compose.yml" {
+		switch f.RelPath {
+		case "docker-compose.yml":
 			compose = string(f.Content)
-			break
+		case "rspamd/antivirus.conf":
+			antivirusConf = string(f.Content)
 		}
 	}
 	if strings.Contains(compose, "vectis-clamav") {
 		t.Error("docker-compose.yml should NOT contain clamav when profile is 'none'")
+	}
+	// Volume should also not be declared when profile is "none".
+	if strings.Contains(compose, "clamav-data:") {
+		t.Error("docker-compose.yml should NOT declare clamav-data volume when profile is 'none'")
+	}
+	// rspamd/antivirus.conf is always rendered (to keep the bind mount
+	// path stable), but must contain no live clamav rules in profile=none.
+	if strings.Contains(antivirusConf, "type = \"clamav\"") {
+		t.Error("rspamd/antivirus.conf should be empty/disabled when profile is 'none'")
+	}
+}
+
+// TestClamAVProfileRenders covers the inverse: when profile is set, the
+// compose block, bind mount, named volume, healthcheck, and rspamd
+// antivirus rule must all be present. Locks in the v0.1.0 GA fix where
+// every prior rc shipped without a buildable clamav image.
+func TestClamAVProfileRenders(t *testing.T) {
+	d := testData()
+	d.ClamAV = resolveClamAVKnobs("small")
+	files, _ := Generate(d)
+
+	var compose, clamdConf, antivirusConf string
+	for _, f := range files {
+		switch f.RelPath {
+		case "docker-compose.yml":
+			compose = string(f.Content)
+		case "clamav/clamd.conf":
+			clamdConf = string(f.Content)
+		case "rspamd/antivirus.conf":
+			antivirusConf = string(f.Content)
+		}
+	}
+
+	// Compose block + per-profile mem_limit + healthcheck + bind mounts.
+	for _, want := range []string{
+		"vectis-clamav",
+		"image: ghcr.io/veltara-works/vectis-clamav:",
+		"mem_limit: 1500m", // small profile
+		"clamdscan --ping=1",
+		"/var/vectis/generated/clamav/clamd.conf:/etc/clamav/clamd.conf:ro",
+		"clamav-data:/var/lib/clamav",
+		"/var/vectis/generated/rspamd/antivirus.conf:/etc/rspamd/local.d/antivirus.conf:ro",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("docker-compose.yml missing: %q", want)
+		}
+	}
+
+	// clamd.conf knobs derived from profile.
+	for _, want := range []string{
+		"MaxThreads 4",
+		"StreamMaxLength 25M",
+		"TCPSocket 3310",
+		"User clamav",
+	} {
+		if !strings.Contains(clamdConf, want) {
+			t.Errorf("clamav/clamd.conf missing: %q", want)
+		}
+	}
+
+	// rspamd antivirus rule wired to the sidecar.
+	for _, want := range []string{
+		`type = "clamav"`,
+		`servers = "vectis-clamav:3310"`,
+		`symbol = "CLAM_VIRUS"`,
+	} {
+		if !strings.Contains(antivirusConf, want) {
+			t.Errorf("rspamd/antivirus.conf missing: %q", want)
+		}
 	}
 }
 

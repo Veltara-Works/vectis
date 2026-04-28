@@ -104,7 +104,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, orchestrator, postfix, dovecot, rspamd, cert-extractor]
+        service: [api, orchestrator, postfix, dovecot, rspamd, clamav, cert-extractor]
     steps:
       - uses: actions/checkout@v4
 
@@ -164,7 +164,7 @@ jobs:
             echo ""
             echo "- Binary: \`https://dl.vectismail.com/${GITHUB_REF_NAME}/vectis-linux-amd64\`"
             echo "- SHA256: \`${{ needs.build-binary.outputs.sha256 }}\`"
-            echo "- Images: \`ghcr.io/veltara-works/vectis-{api,orchestrator,postfix,dovecot,rspamd,cert-extractor}:${GITHUB_REF_NAME}\`"
+            echo "- Images: \`ghcr.io/veltara-works/vectis-{api,orchestrator,postfix,dovecot,rspamd,clamav,cert-extractor}:${GITHUB_REF_NAME}\`"
             echo ""
             echo "## Changes"
             echo ""

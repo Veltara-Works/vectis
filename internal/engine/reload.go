@@ -38,7 +38,12 @@ var reloadMatrix = map[string]struct {
 	"rspamd/actions.conf":            {service: "rspamd", action: "reload"},
 	"rspamd/dkim_signing.conf":       {service: "rspamd", action: "reload"},
 	"rspamd/classifier-bayes.conf":   {service: "rspamd", action: "reload"},
+	"rspamd/antivirus.conf":          {service: "rspamd", action: "reload"},
 	"rspamd/worker-proxy.inc":        {service: "rspamd", action: "restart"},
+
+	// clamd reads its config at startup only — a profile change
+	// (MaxThreads, StreamMaxLength, etc.) requires a full restart.
+	"clamav/clamd.conf":              {service: "clamav", action: "restart"},
 
 	"traefik/traefik.yml":            {service: "traefik", action: "restart"},
 	"traefik/dynamic.yml":            {service: "traefik", action: "none"}, // Traefik watches file changes
@@ -69,7 +74,7 @@ func DetermineActions(diffs []FileDiff) []ServiceAction {
 	}
 
 	// Build output for all known services.
-	allServices := []string{"postfix", "dovecot", "rspamd", "traefik"}
+	allServices := []string{"postfix", "dovecot", "rspamd", "clamav", "traefik"}
 	var actions []ServiceAction
 	for _, svc := range allServices {
 		action := serviceActions[svc]

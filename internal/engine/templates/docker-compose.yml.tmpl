@@ -188,6 +188,7 @@ services:
       - /var/vectis/generated/rspamd/actions.conf:/etc/rspamd/local.d/actions.conf:ro
       - /var/vectis/generated/rspamd/classifier-bayes.conf:/etc/rspamd/local.d/classifier-bayes.conf:ro
       - /var/vectis/generated/rspamd/dkim_signing.conf:/etc/rspamd/local.d/dkim_signing.conf:ro
+      - /var/vectis/generated/rspamd/antivirus.conf:/etc/rspamd/local.d/antivirus.conf:ro
       - /var/vectis/generated/rspamd/worker-proxy.inc:/etc/rspamd/local.d/worker-proxy.inc:ro
       - dkim-keys:/var/vectis/dkim:ro
     depends_on:
@@ -344,12 +345,33 @@ services:
     restart: unless-stopped
     networks:
       - vectis-mail
+    # Per-profile RAM ceiling (ADR-007). Compose `mem_limit` translates to
+    # the container's memory cgroup; clamd's MaxThreads in clamd.conf is
+    # tuned to fit inside this. A profile bump rewrites both numbers
+    # together so they don't drift.
+    mem_limit: {{ .ClamAV.MemLimit }}
+    volumes:
+      - /var/vectis/generated/clamav/clamd.conf:/etc/clamav/clamd.conf:ro
+      # Signature database persistence — without this, every `docker
+      # restart` triggers a ~1.5 GB freshclam re-download and the
+      # container is unusable for ~5 minutes after each cycle. The named
+      # volume is seeded from the image's pre-baked DB on first create
+      # (see docker/clamav/Dockerfile) and refreshed in-place by the
+      # entrypoint's freshclam --daemon.
+      - clamav-data:/var/lib/clamav
     healthcheck:
-      test: ["CMD", "clamdcheck"]
+      # `clamdscan --ping=N` exits 0 when clamd PONGs within N seconds.
+      # Real binary; replaces the rc60-and-earlier `clamdcheck` which
+      # never existed in any clamav package and silently kept the
+      # container "starting" forever.
+      test: ["CMD-SHELL", "clamdscan --ping=1 || exit 1"]
       interval: 60s
-      timeout: 30s
+      timeout: 15s
       retries: 3
-      start_period: 120s
+      # Generous start_period: a fresh clamav-data volume must complete
+      # an initial freshclam (~1.5 GB) before clamd can answer. Once
+      # warm, subsequent restarts pong in <1s.
+      start_period: 300s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -523,6 +545,9 @@ volumes:
   postfix-logs:
   traefik-acme:
   snapshots:
+{{ if ne .ClamAV.Profile "none" }}
+  clamav-data:
+{{ end }}
 {{ if .Cluster.PgBouncer.Enabled }}
   pgbouncer-config:
 {{ end }}

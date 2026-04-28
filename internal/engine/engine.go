@@ -28,7 +28,7 @@ type TemplateData struct {
 	// From config.yaml
 	Hostname   string
 	TLS        config.TLSConfig
-	ClamAV     config.ClamAVConfig
+	ClamAV     ClamAVKnobs
 	Rspamd     config.RspamdConfig
 	Postfix    config.PostfixConfig
 	Dovecot    config.DovecotConfig
@@ -50,6 +50,73 @@ type TemplateData struct {
 	Domains []repository.Domain
 }
 
+// ClamAVKnobs holds the resolved per-profile knobs for the ClamAV sidecar.
+// The raw config.yaml exposes only `clamav.profile`; this struct turns that
+// single string into the concrete numbers needed by clamd.conf and the
+// compose mem_limit. Resolved once at render time via NewTemplateData so
+// templates can reference `.ClamAV.MaxThreads` etc. without re-deriving.
+//
+// Profile semantics per ADR-007:
+//   none       — container omitted entirely (knobs unused)
+//   dev        — laptop / single-developer; minimal RAM
+//   small      — 1-domain VPS; balanced
+//   production — multi-domain; default for typical installs
+//   enterprise — high-volume; tuned for throughput
+type ClamAVKnobs struct {
+	Profile         string // "none" | "dev" | "small" | "production" | "enterprise"
+	MaxThreads      int    // clamd.conf MaxThreads
+	StreamMaxLength string // clamd.conf StreamMaxLength, e.g. "25M"
+	MaxScanSize     string // clamd.conf MaxScanSize
+	MaxFileSize     string // clamd.conf MaxFileSize
+	MemLimit        string // compose mem_limit, e.g. "1500m"
+}
+
+// resolveClamAVKnobs maps a clamav.profile string to concrete clamd.conf
+// settings + compose mem_limit. The "none" profile returns zero-value knobs
+// (template gates already skip rendering when profile == "none").
+func resolveClamAVKnobs(profile string) ClamAVKnobs {
+	switch profile {
+	case "dev":
+		return ClamAVKnobs{
+			Profile:         "dev",
+			MaxThreads:      2,
+			StreamMaxLength: "20M",
+			MaxScanSize:     "50M",
+			MaxFileSize:     "20M",
+			MemLimit:        "1g",
+		}
+	case "small":
+		return ClamAVKnobs{
+			Profile:         "small",
+			MaxThreads:      4,
+			StreamMaxLength: "25M",
+			MaxScanSize:     "100M",
+			MaxFileSize:     "25M",
+			MemLimit:        "1500m",
+		}
+	case "production":
+		return ClamAVKnobs{
+			Profile:         "production",
+			MaxThreads:      8,
+			StreamMaxLength: "50M",
+			MaxScanSize:     "150M",
+			MaxFileSize:     "50M",
+			MemLimit:        "2g",
+		}
+	case "enterprise":
+		return ClamAVKnobs{
+			Profile:         "enterprise",
+			MaxThreads:      16,
+			StreamMaxLength: "100M",
+			MaxScanSize:     "300M",
+			MaxFileSize:     "100M",
+			MemLimit:        "3g",
+		}
+	default: // "none" or anything else
+		return ClamAVKnobs{Profile: "none"}
+	}
+}
+
 // NewTemplateData builds TemplateData from config, secrets, and domain list.
 func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, domains []repository.Domain) *TemplateData {
 	rateLimits := cfg.RateLimits
@@ -65,7 +132,7 @@ func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, do
 		Version:    version.Version,
 		Hostname:   cfg.Hostname,
 		TLS:        cfg.TLS,
-		ClamAV:     cfg.ClamAV,
+		ClamAV:     resolveClamAVKnobs(cfg.ClamAV.Profile),
 		Rspamd:     cfg.Rspamd,
 		Postfix:    cfg.Postfix,
 		Dovecot:    dovecot,
