@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -504,15 +505,35 @@ func (dm *DockerManager) SpawnSelfReplaceHelper(ctx context.Context, helperImage
 	)
 	helperName := "vectis-apply-helper-" + helperNameSuffix
 
+	// Bind mounts:
+	//   - docker socket so the helper can talk to the daemon
+	//   - the directory containing composePath, so `docker compose -f <path>`
+	//     can actually read the file. Prod points VECTIS_ORCH_COMPOSE_PATHS
+	//     at /opt/vectis/docker-compose.yml, NOT /etc/vectis/...; without
+	//     this mount the helper failed silently with "no configuration file
+	//     provided: not found" and left orchestrator on the old image
+	//     (2026-04-28 prod cutover; project_self_replace_helper_rc60_bug).
+	//   - /etc/vectis as a fallback (some installs may keep config there).
+	composeDir := filepath.Dir(composePath)
 	args := []string{
-		"run", "-d", "--rm",
+		"run", "-d",
 		"--name", helperName,
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
-		"-v", "/etc/vectis:/etc/vectis:ro",
+		"-v", composeDir + ":" + composeDir + ":ro",
+	}
+	if composeDir != "/etc/vectis" {
+		args = append(args, "-v", "/etc/vectis:/etc/vectis:ro")
+	}
+	args = append(args,
 		"--entrypoint", "sh",
 		helperImage,
 		"-c", shCommand,
-	}
+	)
+	// --rm intentionally omitted: when the helper fails, --rm wipes its
+	// logs along with the container. Keeping the exited container lets
+	// `docker logs vectis-apply-helper-<suffix>` surface the failure.
+	// Stale containers can be pruned with
+	// `docker rm $(docker ps -aq --filter name=vectis-apply-helper-)`.
 
 	dm.logger.Info("spawning orchestrator self-replace helper",
 		"helper_name", helperName,
