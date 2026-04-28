@@ -1,6 +1,7 @@
-# Vectis Mail Server — Bootstrap Docker Compose
-# This minimal compose file starts only the services needed for development.
-# The config engine will generate the full production compose file.
+# Vectis Mail Server — Production Compose
+# Vectis service images pinned to a released version on ghcr.io/veltara-works/.
+# To deploy a new version: bump all five vectis-* image tags below, then
+# `docker compose pull && docker compose up -d`.
 
 services:
   postgres:
@@ -10,10 +11,10 @@ services:
     environment:
       POSTGRES_DB: vectis
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:-vectis_dev_super}
-      VECTIS_API_PASSWORD: ${VECTIS_API_PASSWORD:-vectis_dev_api}
-      VECTIS_POSTFIX_PASSWORD: ${VECTIS_POSTFIX_PASSWORD:-vectis_dev_postfix}
-      VECTIS_DOVECOT_PASSWORD: ${VECTIS_DOVECOT_PASSWORD:-vectis_dev_dovecot}
+      POSTGRES_PASSWORD: vectis_dev_super
+      VECTIS_API_PASSWORD: vectis_dev_api
+      VECTIS_POSTFIX_PASSWORD: vectis_dev_postfix
+      VECTIS_DOVECOT_PASSWORD: vectis_dev_dovecot
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -24,22 +25,222 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - vectis-data
 
   valkey:
     image: valkey/valkey:8-alpine
     container_name: vectis-valkey
     restart: unless-stopped
-    command: valkey-server --requirepass ${VALKEY_PASSWORD:-vectis_dev_valkey}
+    command: valkey-server --requirepass vectis_dev_valkey
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - valkeydata:/data
     healthcheck:
-      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD:-vectis_dev_valkey}", "ping"]
+      test: ["CMD", "valkey-cli", "-a", "vectis_dev_valkey", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - vectis-data
+
+  postfix:
+    image: ghcr.io/veltara-works/vectis-postfix:v0.1.0
+    container_name: vectis-postfix
+    hostname: mail.vectismail.com
+    restart: unless-stopped
+    ports:
+      - "25:25"
+      - "465:465"
+      - "587:587"
+    volumes:
+      # Mount generated Postfix configs
+      - ./var/generated/postfix/main.cf:/etc/postfix/main.cf:ro
+      - ./var/generated/postfix/master.cf:/etc/postfix/master.cf:ro
+      - ./var/generated/postfix/pgsql_virtual_domains.cf:/etc/postfix/pgsql_virtual_domains.cf:ro
+      - ./var/generated/postfix/pgsql_virtual_mailboxes.cf:/etc/postfix/pgsql_virtual_mailboxes.cf:ro
+      - ./var/generated/postfix/pgsql_virtual_aliases.cf:/etc/postfix/pgsql_virtual_aliases.cf:ro
+      - ./var/generated/postfix/pgsql_virtual_catchall.cf:/etc/postfix/pgsql_virtual_catchall.cf:ro
+      - ./var/generated/postfix/pgsql_virtual_bcc.cf:/etc/postfix/pgsql_virtual_bcc.cf:ro
+      - ./var/generated/postfix/transport:/etc/postfix/transport:ro
+      - ./var/generated/postfix/inbound-notify.sh:/etc/postfix/inbound-notify.sh:ro
+      - mail-data:/var/vectis/mail
+      - mail-certs:/etc/ssl/mail:ro
+      - postfix-logs:/var/log/postfix
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - vectis-mail
+      - vectis-data
+
+  dovecot:
+    image: ghcr.io/veltara-works/vectis-dovecot:v0.1.0
+    container_name: vectis-dovecot
+    restart: unless-stopped
+    ports:
+      - "993:993"
+      - "995:995"
+    volumes:
+      # Mount generated Dovecot configs
+      - ./var/generated/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro
+      - ./var/generated/dovecot/dovecot-sql.conf.ext:/etc/dovecot/dovecot-sql.conf.ext:ro
+      - mail-data:/var/vectis/mail
+      - mail-certs:/etc/ssl/mail:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - vectis-mail
+      - vectis-data
+
+  rspamd:
+    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.0
+    container_name: vectis-rspamd
+    restart: unless-stopped
+    volumes:
+      - ./var/generated/rspamd/actions.conf:/etc/rspamd/local.d/actions.conf:ro
+      - ./var/generated/rspamd/classifier-bayes.conf:/etc/rspamd/local.d/classifier-bayes.conf:ro
+      - ./var/generated/rspamd/worker-proxy.inc:/etc/rspamd/local.d/worker-proxy.inc:ro
+    depends_on:
+      valkey:
+        condition: service_healthy
+    networks:
+      - vectis-mail
+      - vectis-data
+
+  api:
+    image: ghcr.io/veltara-works/vectis-api:v0.1.0
+    container_name: vectis-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /etc/vectis:/etc/vectis:ro
+      - mail-data:/var/vectis/mail
+      - /var/vectis/dkim:/var/vectis/dkim
+      - backups:/var/vectis/backups
+      - postfix-logs:/var/log/postfix:ro
+      - ./web/dist:/app/web/dist:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    command: ["serve", "--web-dir", "/app/web/dist"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - vectis-frontend
+      - vectis-data
+      - vectis-orchestrator
+
+  orchestrator:
+    image: ghcr.io/veltara-works/vectis-orchestrator:v0.1.0
+    container_name: vectis-orchestrator
+    restart: unless-stopped
+    environment:
+      # Point orchestrator at the actually-deployed compose files, not the
+      # config-engine-generated /etc/vectis/docker-compose.yml which references
+      # unpushed ghcr images. See project_phase3_e2e_findings.md.
+      VECTIS_ORCH_COMPOSE_PATHS: /opt/vectis/docker-compose.yml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # /etc/vectis must be RW for orchestrator Phase 3.5 compose rewrite (rc35+).
+      # See docs/notes/deferred-items.md and project_phase3_e2e_findings memory.
+      - /etc/vectis:/etc/vectis
+      - /opt/vectis:/opt/vectis
+      - snapshots:/var/vectis/snapshots
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8081/internal/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - vectis-orchestrator
+      - vectis-data
+
+  traefik:
+    image: traefik:v3.3
+    container_name: vectis-traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./var/generated/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./var/generated/traefik/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
+      - traefik-acme:/var/traefik/acme
+    networks:
+      - vectis-frontend
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  cert-extractor:
+    image: ghcr.io/veltara-works/vectis-cert-extractor:v0.1.0
+    container_name: vectis-cert-extractor
+    restart: unless-stopped
+    networks:
+      - vectis-mail
+    volumes:
+      - traefik-acme:/var/traefik/acme:ro
+      - mail-certs:/etc/ssl/mail
+      # Docker socket gives the extractor the ability to `docker kill
+      # --signal=HUP` postfix/dovecot when the cert rotates. Scope is
+      # intentionally read-write (socket mounts don't honour :ro for
+      # write operations) — same trust as the legacy acme.sh sidecar.
+      - /var/run/docker.sock:/var/run/docker.sock
+    command:
+      - --acme-json=/var/traefik/acme/acme.json
+      - --hostname=mail.vectismail.com
+      - --out-dir=/etc/ssl/mail
+      - --reload-postfix=vectis-postfix
+      - --reload-dovecot=vectis-dovecot
+      - --watch
+    depends_on:
+      traefik:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+networks:
+  vectis-frontend:
+    driver: bridge
+  vectis-mail:
+    driver: bridge
+  vectis-data:
+    driver: bridge
+  vectis-orchestrator:
+    driver: bridge
+    internal: true
 
 volumes:
   pgdata:
   valkeydata:
+  mail-data:
+  mail-certs:
+    # cert-extractor (rc27+) writes fullchain.pem + privkey.pem here from
+    # Traefik's acme.json. postfix + dovecot mount this volume RO at
+    # /etc/ssl/mail. Pre-populated 2026-04-27 from /opt/vectis/var/certs
+    # so the cutover from the old host bind-mount had no missing-cert window.
+    external: true
+    name: vectis_mail-certs
+  traefik-acme:
+  snapshots:
+  backups:
+  postfix-logs:
