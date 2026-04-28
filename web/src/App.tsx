@@ -23,6 +23,8 @@ interface AdminProfile {
   email: string
   role: string
   totp_enabled: boolean
+  tier: 'free' | 'pro' | 'enterprise'
+  features: string[]
 }
 
 export default function App() {
@@ -82,6 +84,8 @@ export default function App() {
           <AccountMenu
             email={admin?.email ?? ''}
             role={admin?.role ?? ''}
+            tier={admin?.tier ?? 'free'}
+            features={admin?.features ?? []}
             onLogout={() => api.logout().then(() => { setLoggedIn(false); setAdmin(null) })}
           />
         </header>
@@ -110,7 +114,7 @@ export default function App() {
   )
 }
 
-function AccountMenu({ email, role, onLogout }: { email: string; role: string; onLogout: () => void }) {
+function AccountMenu({ email, role, tier, features, onLogout }: { email: string; role: string; tier: 'free' | 'pro' | 'enterprise'; features: string[]; onLogout: () => void }) {
   const [open, setOpen] = useState(false)
   useEffect(() => {
     if (!open) return
@@ -118,6 +122,12 @@ function AccountMenu({ email, role, onLogout }: { email: string; role: string; o
     document.addEventListener('click', close)
     return () => document.removeEventListener('click', close)
   }, [open])
+  // Priority Support is gated by the priority_support feature flag on the
+  // active license (Pro+ only). Free tier sees a community-support link
+  // pointing to the public docs + GitHub Discussions instead — never a dead
+  // end. Server is the source of truth: it sends the features array via
+  // /auth/me, the UI just renders accordingly.
+  const hasPrioritySupport = features.includes('priority_support')
   return (
     <div className="account-menu" onClick={e => e.stopPropagation()}>
       <button className="account-menu-trigger" onClick={() => setOpen(o => !o)} aria-haspopup="menu" aria-expanded={open}>
@@ -130,7 +140,17 @@ function AccountMenu({ email, role, onLogout }: { email: string; role: string; o
             <div className="account-menu-label">Signed in as</div>
             <div className="account-menu-email">{email}</div>
             {role && <div className="account-menu-role">{role}</div>}
+            {tier && <div className="account-menu-tier">{tier.toUpperCase()} tier</div>}
           </div>
+          {hasPrioritySupport ? (
+            <a className="account-menu-item" role="menuitem" href="mailto:support@vectismail.com?subject=Vectis%20Pro%20support%20request" onClick={() => setOpen(false)}>
+              Priority support →
+            </a>
+          ) : (
+            <a className="account-menu-item" role="menuitem" href="https://vectismail.com/docs" target="_blank" rel="noopener noreferrer" onClick={() => setOpen(false)}>
+              Community support →
+            </a>
+          )}
           <button className="account-menu-item" role="menuitem" onClick={() => { setOpen(false); onLogout() }}>
             Logout
           </button>

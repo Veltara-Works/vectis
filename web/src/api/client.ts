@@ -28,7 +28,7 @@ export const api = {
       'POST', '/auth/login',
       totp_session ? { totp_session, totp_code } : { email, password }
     ),
-  me: () => request<{ id: string; email: string; role: string; totp_enabled: boolean; oidc_provider?: string }>('GET', '/auth/me'),
+  me: () => request<{ id: string; email: string; role: string; totp_enabled: boolean; oidc_provider?: string; tier: 'free' | 'pro' | 'enterprise'; features: string[] }>('GET', '/auth/me'),
   oidcProviders: () => request<{ providers: string[] }>('GET', '/auth/oidc/providers').then(r => r.providers),
   oidcDisconnect: () => request<{ message: string }>('DELETE', '/auth/oidc/disconnect'),
   logout: () => request<void>('POST', '/auth/logout'),

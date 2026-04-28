@@ -17,7 +17,7 @@ const mockApi = vi.mocked(api)
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockApi.me.mockResolvedValue({ id: 'self', email: 'me@test.com', role: 'super_admin', totp_enabled: false })
+  mockApi.me.mockResolvedValue({ id: 'self', email: 'me@test.com', role: 'super_admin', totp_enabled: false, tier: 'free', features: [] })
 })
 
 describe('AdminsPage', () => {
@@ -134,7 +134,7 @@ describe('AdminsPage', () => {
   })
 
   it('requires TOTP code when acting admin has TOTP enabled', async () => {
-    mockApi.me.mockResolvedValue({ id: 'self', email: 'me@test.com', role: 'super_admin', totp_enabled: true })
+    mockApi.me.mockResolvedValue({ id: 'self', email: 'me@test.com', role: 'super_admin', totp_enabled: true, tier: 'free', features: [] })
     mockApi.listAdmins.mockResolvedValue([
       { id: '42', email: 'other@test.com', role: 'admin', totp_enabled: false, created_at: '2026-01-01' },
     ])

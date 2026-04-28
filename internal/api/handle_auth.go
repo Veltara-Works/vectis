@@ -39,6 +39,12 @@ type adminProfile struct {
 	TOTPEnabled  bool       `json:"totp_enabled"`
 	OIDCProvider *string    `json:"oidc_provider,omitempty"`
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+	// Tier + Features expose just enough license state for the admin UI to
+	// render tier-aware affordances (e.g. priority-support link in the
+	// account menu). The full /api/v1/license endpoint stays super_admin-
+	// only because it returns sensitive subscription identifiers.
+	Tier     string   `json:"tier"`
+	Features []string `json:"features"`
 }
 
 type totpSetupResponse struct {
@@ -352,6 +358,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get admin profile")
 		return
 	}
+	tier, features := s.currentTierAndFeatures(r.Context())
 	respond(w, r, http.StatusOK, adminProfile{
 		ID:           admin.ID,
 		Email:        admin.Email,
@@ -359,6 +366,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		TOTPEnabled:  admin.TOTPEnabled,
 		OIDCProvider: admin.OIDCProvider,
 		LastLoginAt:  admin.LastLoginAt,
+		Tier:         tier,
+		Features:     features,
 	})
 }
 

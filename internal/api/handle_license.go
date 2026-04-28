@@ -85,6 +85,28 @@ func (s *Server) buildLicenseStateResponse(ctx context.Context) licenseStateResp
 	return resp
 }
 
+// currentTierAndFeatures returns the active tier ("free"/"pro"/"enterprise")
+// and the cached allowed-features list for the current install. Returns
+// TierFree + empty slice when ValidonX isn't configured, the runtime config
+// has no tenant_id, or the cache hasn't been populated yet. Used by /auth/me
+// to give the admin UI just enough state to render tier-aware affordances
+// without exposing the sensitive identifiers that /api/v1/license carries.
+func (s *Server) currentTierAndFeatures(ctx context.Context) (string, []string) {
+	runtimeCfg, _ := validonx.LoadRuntimeConfig(ctx, s.db, s.secretsValidonX())
+	if runtimeCfg == nil || runtimeCfg.TenantID == "" {
+		return validonx.TierFree, []string{}
+	}
+	cache := s.featureGate.Cache()
+	if cache == nil {
+		return validonx.TierFree, []string{}
+	}
+	cached, err := cache.GetCached(ctx, runtimeCfg.TenantID)
+	if err != nil || cached == nil {
+		return validonx.TierFree, []string{}
+	}
+	return tierFromCachedFeatures(cached.Features), cached.Features
+}
+
 // tierFromCachedFeatures mirrors validonx.tierFromFeatures (which is package-
 // internal). Kept here so the API doesn't need to expose the helper.
 func tierFromCachedFeatures(features []string) string {
