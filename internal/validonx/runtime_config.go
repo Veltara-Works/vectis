@@ -26,10 +26,10 @@ type RuntimeConfig struct {
 	TenantID       string
 	SubscriptionID string
 	ServerID       string
-	// LicenseKey is the ValidonX-issued license string sourced from
-	// secrets.yaml. Intentionally NOT in the validonx_config DB row —
-	// it's operator-only, pasted once at install time, never via admin
-	// UI. Sent on the wire to ValidonX's licensing-resolve endpoint.
+	// LicenseKey is the ValidonX-issued license string. Sent on the wire
+	// to ValidonX's licensing-resolve endpoint. Sourced from the
+	// validonx_config DB row when set via admin UI; falls back to
+	// secrets.yaml at install time.
 	LicenseKey string
 	// FromDB indicates the config came from the validonx_config table (admin
 	// UI activation), not secrets.yaml. Used for telemetry/UX.
@@ -80,11 +80,11 @@ func LoadRuntimeConfig(ctx context.Context, db *pgxpool.Pool, secrets *config.Va
 	}
 
 	if db != nil {
-		var dbBase, dbKey, dbTenant, dbSub, dbServer string
+		var dbBase, dbKey, dbTenant, dbSub, dbServer, dbLicense string
 		err := db.QueryRow(ctx,
-			`SELECT base_url, service_key, tenant_id, subscription_id, server_id
+			`SELECT base_url, service_key, tenant_id, subscription_id, server_id, license_key
 			 FROM validonx_config WHERE singleton = TRUE`,
-		).Scan(&dbBase, &dbKey, &dbTenant, &dbSub, &dbServer)
+		).Scan(&dbBase, &dbKey, &dbTenant, &dbSub, &dbServer, &dbLicense)
 
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return cfg, fmt.Errorf("read validonx_config: %w", err)
@@ -105,6 +105,9 @@ func LoadRuntimeConfig(ctx context.Context, db *pgxpool.Pool, secrets *config.Va
 			}
 			if dbServer != "" {
 				cfg.ServerID = dbServer
+			}
+			if dbLicense != "" {
+				cfg.LicenseKey = dbLicense
 			}
 		}
 	}
@@ -133,17 +136,18 @@ func SaveRuntimeConfig(ctx context.Context, db *pgxpool.Pool, logger *slog.Logge
 
 	_, err := db.Exec(ctx,
 		`INSERT INTO validonx_config
-		    (singleton, base_url, service_key, tenant_id, subscription_id, server_id, configured_at, configured_by_admin_id)
-		 VALUES (TRUE, $1, $2, $3, $4, $5, NOW(), $6)
+		    (singleton, base_url, service_key, tenant_id, subscription_id, server_id, license_key, configured_at, configured_by_admin_id)
+		 VALUES (TRUE, $1, $2, $3, $4, $5, $6, NOW(), $7)
 		 ON CONFLICT (singleton) DO UPDATE SET
 		    base_url               = EXCLUDED.base_url,
 		    service_key            = EXCLUDED.service_key,
 		    tenant_id              = EXCLUDED.tenant_id,
 		    subscription_id        = EXCLUDED.subscription_id,
 		    server_id              = EXCLUDED.server_id,
+		    license_key            = EXCLUDED.license_key,
 		    configured_at          = NOW(),
 		    configured_by_admin_id = EXCLUDED.configured_by_admin_id`,
-		cfg.BaseURL, cfg.ServiceKey, cfg.TenantID, cfg.SubscriptionID, cfg.ServerID, adminID,
+		cfg.BaseURL, cfg.ServiceKey, cfg.TenantID, cfg.SubscriptionID, cfg.ServerID, cfg.LicenseKey, adminID,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert validonx_config: %w", err)

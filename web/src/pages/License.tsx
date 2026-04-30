@@ -27,14 +27,16 @@ export default function LicensePage() {
   const [removing, setRemoving] = useState(false)
   const [showForm, setShowForm] = useState(false)
 
-  // Form fields. We accept all five so that customers without secrets.yaml
-  // pre-population can paste everything from the ValidonX checkout receipt.
-  // Subsequent edits only need the fields they want to change — backend
-  // merges with current runtime config.
+  // Form fields. license_key + service_key are the two values customers
+  // paste from their ValidonX dashboard. tenant_id is recommended but
+  // can be auto-resolved server-side from the API key. Subscription ID,
+  // base URL, and server ID are optional. Subsequent edits only need the
+  // fields they want to change — backend merges with current runtime config.
   const [form, setForm] = useState({
-    subscription_id: '',
-    tenant_id: '',
+    license_key: '',
     service_key: '',
+    tenant_id: '',
+    subscription_id: '',
     base_url: '',
     server_id: '',
   })
@@ -62,7 +64,7 @@ export default function LicensePage() {
       await api.setLicense(form)
       setSuccess('License activated. Pro features are now unlocked.')
       setShowForm(false)
-      setForm({ subscription_id: '', tenant_id: '', service_key: '', base_url: '', server_id: '' })
+      setForm({ license_key: '', service_key: '', tenant_id: '', subscription_id: '', base_url: '', server_id: '' })
       await load()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to activate license')
@@ -171,13 +173,13 @@ export default function LicensePage() {
               priority support) are not available.
             </p>
             <p className="text-muted">
-              To activate Pro,{' '}
-              <a href="https://validonx.com/checkout/vectis-pro" target="_blank" rel="noopener noreferrer">
-                purchase a subscription on ValidonX
+              To activate Pro, sign into your{' '}
+              <a href="https://validonx.com/" target="_blank" rel="noopener noreferrer">
+                ValidonX dashboard
               </a>
-              {' '}and paste your subscription details below. The server
-              validates against ValidonX before activating, then features
-              unlock immediately — no restart required.
+              {' '}and paste your License Key and Service Key below. The
+              server validates against ValidonX before activating, then
+              features unlock immediately — no restart required.
             </p>
             {!showForm && (
               <button className="btn" onClick={() => setShowForm(true)}>
@@ -192,15 +194,47 @@ export default function LicensePage() {
         <div className="card">
           <h3 className="mb-1">Activate license</h3>
           <p className="text-muted mb-1">
-            Paste your subscription details from the ValidonX dashboard.
-            Empty fields use values from <span className="mono">secrets.yaml</span>{' '}
-            if present, else are required.
+            Paste your License Key and Service Key from the ValidonX
+            dashboard. Empty fields use values from{' '}
+            <span className="mono">secrets.yaml</span> if present.
           </p>
-          <form onSubmit={handleActivate}>
+          <form onSubmit={handleActivate} autoComplete="off">
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               <label>
-                <div>Subscription ID</div>
+                <div>License Key <span className="text-muted">(from ValidonX → Licenses tab; the "Subscription License" string)</span></div>
                 <input
+                  name="vectis_license_key"
+                  value={form.license_key}
+                  onChange={e => setForm({ ...form, license_key: e.target.value })}
+                  placeholder="VLDX-..."
+                  autoComplete="off"
+                />
+              </label>
+              <label>
+                <div>Service Key <span className="text-muted">(from ValidonX → API Keys tab)</span></div>
+                <input
+                  name="vectis_service_key"
+                  value={form.service_key}
+                  onChange={e => setForm({ ...form, service_key: e.target.value })}
+                  placeholder="vx_..."
+                  autoComplete="off"
+                  type="password"
+                />
+              </label>
+              <label>
+                <div>Tenant ID <span className="text-muted">(from ValidonX → Overview tab; tenant code)</span></div>
+                <input
+                  name="vectis_tenant_id"
+                  value={form.tenant_id}
+                  onChange={e => setForm({ ...form, tenant_id: e.target.value })}
+                  placeholder="your-tenant-code"
+                  autoComplete="off"
+                />
+              </label>
+              <label>
+                <div>Subscription ID <span className="text-muted">(optional, audit/display only)</span></div>
+                <input
+                  name="vectis_subscription_id"
                   value={form.subscription_id}
                   onChange={e => setForm({ ...form, subscription_id: e.target.value })}
                   placeholder="sub_..."
@@ -208,27 +242,9 @@ export default function LicensePage() {
                 />
               </label>
               <label>
-                <div>Tenant ID</div>
-                <input
-                  value={form.tenant_id}
-                  onChange={e => setForm({ ...form, tenant_id: e.target.value })}
-                  placeholder="tenant_..."
-                  autoComplete="off"
-                />
-              </label>
-              <label>
-                <div>Service key</div>
-                <input
-                  value={form.service_key}
-                  onChange={e => setForm({ ...form, service_key: e.target.value })}
-                  placeholder="key_..."
-                  autoComplete="off"
-                  type="password"
-                />
-              </label>
-              <label>
                 <div>Base URL <span className="text-muted">(optional, defaults to https://api.validonx.com)</span></div>
                 <input
+                  name="vectis_base_url"
                   value={form.base_url}
                   onChange={e => setForm({ ...form, base_url: e.target.value })}
                   placeholder="https://api.validonx.com"
@@ -238,6 +254,7 @@ export default function LicensePage() {
               <label>
                 <div>Server ID <span className="text-muted">(optional)</span></div>
                 <input
+                  name="vectis_server_id"
                   value={form.server_id}
                   onChange={e => setForm({ ...form, server_id: e.target.value })}
                   placeholder="server-name"

@@ -192,6 +192,7 @@ export const api = {
       grace_remaining_days?: number;
     }>('GET', '/license'),
   setLicense: (body: {
+    license_key?: string;
     subscription_id?: string;
     tenant_id?: string;
     service_key?: string;

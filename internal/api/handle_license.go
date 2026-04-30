@@ -31,6 +31,7 @@ type setLicenseRequest struct {
 	ServiceKey     string `json:"service_key"`
 	BaseURL        string `json:"base_url"`
 	ServerID       string `json:"server_id"`
+	LicenseKey     string `json:"license_key"`
 }
 
 // maskSubscriptionID returns "sub_****<last6>" for non-empty input, else "".
@@ -161,6 +162,9 @@ func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
 	if req.ServerID != "" {
 		merged.ServerID = req.ServerID
 	}
+	if req.LicenseKey != "" {
+		merged.LicenseKey = req.LicenseKey
+	}
 	if merged.BaseURL == "" {
 		merged.BaseURL = validonx.DefaultBaseURL
 	}
@@ -168,6 +172,11 @@ func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
 	if !merged.IsConfigured() {
 		respondError(w, r, http.StatusBadRequest, "INCOMPLETE_LICENSE",
 			"License requires at least base_url + service_key. Paste both from your ValidonX subscription details.")
+		return
+	}
+	if merged.LicenseKey == "" {
+		respondError(w, r, http.StatusBadRequest, "MISSING_LICENSE_KEY",
+			"License key is required. Paste the 'Subscription License' string (VLDX-...) from your ValidonX dashboard.")
 		return
 	}
 

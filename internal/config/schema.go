@@ -308,9 +308,9 @@ type ValidonXSecrets struct {
 	// LicenseKey is the ValidonX-issued license string for this install.
 	// Sent on the wire as `data.license_key` to the licensing-resolve
 	// endpoint. Distinct from SubscriptionID in ValidonX's data model
-	// (one subscription → many license_keys). Operator-only — not
-	// surfaced via admin UI; paste once into secrets.yaml at install
-	// time or post-checkout.
+	// (one subscription → many license_keys). Bootstrap install can
+	// pre-seed via secrets.yaml; admin UI License page also accepts it
+	// and persists to validonx_config (DB takes precedence over yaml).
 	LicenseKey string `yaml:"license_key"`
 }
 
