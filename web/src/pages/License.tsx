@@ -169,8 +169,7 @@ export default function LicensePage() {
           <>
             <p className="text-muted">
               This server is running in Free tier. Pro features (per-domain
-              analytics, OIDC SSO, custom branding, advanced spam config,
-              priority support) are not available.
+              analytics, OIDC SSO, priority support) are not available.
             </p>
             <p className="text-muted">
               To activate Pro, sign into your{' '}
