@@ -181,18 +181,27 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           set -euo pipefail
-          # releases.json at the bucket root is consumed by every running
-          # orchestrator during Plan (see internal/orchestrator/releases.go).
-          # Publishing it last — after the binary + all 6 images are live —
-          # avoids a window where the orchestrator advertises a tag whose
-          # images haven't been pushed yet.
+          # Release-channel manifests consumed by running orchestrators
+          # during Plan (see internal/orchestrator/releases.go).
+          #
+          # - releases-stable.json is updated ONLY on stable tags.
+          # - releases-rc.json is updated ONLY on rc/beta tags.
+          # - releases.json (legacy alias) mirrors stable; rc tags MUST NOT
+          #   touch it. This is what existing orchestrators read by default,
+          #   so an rc tag must never demote the stable pointer.
+          #
+          # Published last — after the binary + all images are live — to
+          # avoid a window where a tag is advertised before its images
+          # exist on ghcr.
           if [[ "$VERSION" == *-rc* || "$VERSION" == *-beta* ]]; then
             CHANNEL=rc
+            CHANNEL_FILE=releases-rc.json
           else
             CHANNEL=stable
+            CHANNEL_FILE=releases-stable.json
           fi
           RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          cat > releases.json <<JSON
+          cat > "$CHANNEL_FILE" <<JSON
           {
             "latest": "${VERSION}",
             "released_at": "${RELEASED_AT}",
@@ -200,9 +209,18 @@ jobs:
           }
           JSON
           aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
-            releases.json "s3://$R2_BUCKET/releases.json" \
+            "$CHANNEL_FILE" "s3://$R2_BUCKET/$CHANNEL_FILE" \
             --content-type application/json \
             --cache-control "max-age=300"
+
+          # On stable tags ONLY, also publish releases.json (legacy alias)
+          # so existing orchestrators continue to receive stable updates.
+          if [[ "$CHANNEL" == "stable" ]]; then
+            aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+              "$CHANNEL_FILE" "s3://$R2_BUCKET/releases.json" \
+              --content-type application/json \
+              --cache-control "max-age=300"
+          fi
 
       - uses: softprops/action-gh-release@v2
         with:
