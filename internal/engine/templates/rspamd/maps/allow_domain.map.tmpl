@@ -1,0 +1,3 @@
+# Vectis per-domain allow list (sender domain scope) — generated, do not edit
+{{ range .SpamListEntries }}{{ if and (eq .Kind "allow") (eq .Scope "domain") }}{{ .DomainName }}:{{ .Pattern }}
+{{ end }}{{ end }}

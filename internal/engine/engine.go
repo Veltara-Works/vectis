@@ -48,6 +48,26 @@ type TemplateData struct {
 
 	// From Postgres (queried at generation time)
 	Domains []repository.Domain
+
+	// SpamListEntries is the flat union of every per-domain allow/block
+	// list entry across all domains. Optional — when empty (e.g. fresh
+	// install, Free tier with no Pro license, no entries created yet) the
+	// rspamd multimap files render empty and the prefilter is a no-op.
+	// Populated by callers after NewTemplateData; the engine package does
+	// not query Postgres directly.
+	SpamListEntries []SpamListInfo
+}
+
+// SpamListInfo is a denormalized view of a domain_spam_lists row used by
+// rspamd templates. DomainName is included so the template can build
+// per-recipient-domain composite keys without a join. Kept in the engine
+// package to avoid an import cycle on internal/repository for the embed
+// templates.
+type SpamListInfo struct {
+	DomainName string
+	Kind       string // "allow" | "block"
+	Scope      string // "email" | "domain"
+	Pattern    string
 }
 
 // ClamAVKnobs holds the resolved per-profile knobs for the ClamAV sidecar.
@@ -165,6 +185,20 @@ type GeneratedFile struct {
 var funcMap = template.FuncMap{
 	"upper": strings.ToUpper,
 	"lower": strings.ToLower,
+	"hasFloat": func(p *float64) bool { return p != nil },
+	"hasBool":  func(p *bool) bool { return p != nil },
+	"derefFloat": func(p *float64) float64 {
+		if p == nil {
+			return 0
+		}
+		return *p
+	},
+	"derefBool": func(p *bool) bool {
+		if p == nil {
+			return false
+		}
+		return *p
+	},
 }
 
 // Generate renders all templates and returns the generated files.

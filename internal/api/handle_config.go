@@ -215,6 +215,7 @@ func (s *Server) handleConfigDiff(w http.ResponseWriter, r *http.Request) {
 
 	// Generate expected configs.
 	data := engine.NewTemplateData(s.cfg, s.secrets, domains)
+	data.SpamListEntries = s.loadSpamListInfos(r.Context())
 	files, err := engine.Generate(data)
 	if err != nil {
 		s.logger.Error("config diff: generate failed", "error", err)
@@ -259,6 +260,7 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 
 	// Generate expected configs.
 	data := engine.NewTemplateData(s.cfg, s.secrets, domains)
+	data.SpamListEntries = s.loadSpamListInfos(r.Context())
 	files, err := engine.Generate(data)
 	if err != nil {
 		s.logger.Error("config apply: generate failed", "error", err)

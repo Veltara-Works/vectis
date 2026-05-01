@@ -48,11 +48,26 @@ export const api = {
   listDomains: () => request<Array<{
     id: string; name: string; active: boolean; dkim_enabled: boolean;
     dkim_selector: string; dkim_key_path?: string; spam_threshold: number;
+    reject_threshold?: number; greylist_enabled?: boolean;
     max_mailboxes?: number; verification_status?: string; verification_token?: string; created_at: string
   }>>('GET', '/domains'),
-  createDomain: (name: string) =>
-    request<{ domain: { id: string; name: string }; dkim?: { dns_name: string; dns_value: string } }>('POST', '/domains', { name }),
+  createDomain: (name: string, advanced?: { reject_threshold?: number | null; greylist_enabled?: boolean | null }) =>
+    request<{ domain: { id: string; name: string }; dkim?: { dns_name: string; dns_value: string } }>('POST', '/domains', { name, ...(advanced || {}) }),
+  updateDomain: (id: string, patch: { active?: boolean; spam_threshold?: number | null; reject_threshold?: number | null; greylist_enabled?: boolean | null }) =>
+    request<{ id: string; name: string; spam_threshold: number; reject_threshold?: number; greylist_enabled?: boolean }>('PATCH', `/domains/${id}`, patch),
   deleteDomain: (id: string) => request<void>('DELETE', `/domains/${id}`),
+
+  // Spam lists (Pro — advanced_spam feature)
+  listSpamListEntries: (domainId: string, kind?: 'allow' | 'block') =>
+    request<Array<{ id: string; domain_id: string; kind: 'allow' | 'block'; scope: 'email' | 'domain'; pattern: string; created_at: string }>>(
+      'GET', `/domains/${domainId}/spam-lists${kind ? `?kind=${kind}` : ''}`
+    ),
+  createSpamListEntry: (domainId: string, kind: 'allow' | 'block', scope: 'email' | 'domain', pattern: string) =>
+    request<{ entry: { id: string; domain_id: string; kind: 'allow' | 'block'; scope: 'email' | 'domain'; pattern: string; created_at: string } }>(
+      'POST', `/domains/${domainId}/spam-lists`, { kind, scope, pattern }
+    ),
+  deleteSpamListEntry: (domainId: string, entryId: string) =>
+    request<void>('DELETE', `/domains/${domainId}/spam-lists/${entryId}`),
   getDKIM: (id: string) =>
     request<{ dns_name: string; dns_value: string; selector: string }>('GET', `/domains/${id}/dkim`),
   generateDKIM: (id: string) =>

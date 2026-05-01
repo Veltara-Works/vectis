@@ -17,6 +17,7 @@ import SessionsPage from './pages/Sessions.tsx'
 import FilterRulesPage from './pages/FilterRules.tsx'
 import LogSearchPage from './pages/LogSearch.tsx'
 import SetupWizardPage from './pages/SetupWizard.tsx'
+import SpamListsPage from './pages/SpamLists.tsx'
 
 interface AdminProfile {
   id: string
@@ -93,7 +94,8 @@ export default function App() {
           <Routes>
             <Route path="/admin" element={<DashboardPage />} />
             <Route path="/admin/setup" element={<SetupWizardPage />} />
-            <Route path="/admin/domains" element={<DomainsPage />} />
+            <Route path="/admin/domains" element={<DomainsPage features={admin?.features ?? []} />} />
+            <Route path="/admin/domains/:domainID/spam-lists" element={<SpamListsPage features={admin?.features ?? []} />} />
             <Route path="/admin/mailboxes" element={<MailboxesPage />} />
             <Route path="/admin/aliases" element={<AliasesPage />} />
             <Route path="/admin/messages" element={<MessagesPage />} />

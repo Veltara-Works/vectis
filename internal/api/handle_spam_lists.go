@@ -111,6 +111,10 @@ func (s *Server) handleCreateSpamListEntry(w http.ResponseWriter, r *http.Reques
 	s.audit.Log(r.Context(), &adminID, "spam_list.create", "domain", &domain.ID,
 		map[string]string{"kind": kind, "scope": scope, "pattern": pattern}, &ip)
 
+	if s.cfg != nil && s.secrets != nil && s.genDir != "" {
+		s.regenerateRspamdSpamConfig()
+	}
+
 	respond(w, r, http.StatusCreated, spamListResponse{Entry: entry})
 }
 
@@ -189,6 +193,10 @@ func (s *Server) handleDeleteSpamListEntry(w http.ResponseWriter, r *http.Reques
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "spam_list.delete", "domain", &domainID,
 		map[string]string{"entry_id": entryID, "kind": entry.Kind, "scope": entry.Scope, "pattern": entry.Pattern}, &ip)
+
+	if s.cfg != nil && s.secrets != nil && s.genDir != "" {
+		s.regenerateRspamdSpamConfig()
+	}
 
 	respond(w, r, http.StatusOK, map[string]string{"message": "Spam list entry deleted"})
 }

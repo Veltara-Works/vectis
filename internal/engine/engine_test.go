@@ -126,6 +126,103 @@ func TestDovecotSQL(t *testing.T) {
 	}
 }
 
+// TestAdvancedSpamConfig verifies the Pro per-domain advanced spam pipeline
+// (settings.conf overrides + Lua extension + four allow/block map files)
+// renders end-to-end from TemplateData. Empty-state coverage lives in
+// TestAdvancedSpamConfig_EmptyEntriesProducesEmptyMaps below.
+func TestAdvancedSpamConfig(t *testing.T) {
+	data := testData()
+	greylistOff := false
+	rejectAt := 12.5
+	data.Domains[0].RejectThreshold = &rejectAt
+	data.Domains[0].GreylistEnabled = &greylistOff
+	data.SpamListEntries = []SpamListInfo{
+		{DomainName: "example.com", Kind: "block", Scope: "domain", Pattern: "spam.example"},
+		{DomainName: "example.com", Kind: "block", Scope: "email", Pattern: "phisher@evil.example"},
+		{DomainName: "example.com", Kind: "allow", Scope: "domain", Pattern: "trusted.example"},
+		{DomainName: "example.com", Kind: "allow", Scope: "email", Pattern: "vip@partner.example"},
+	}
+
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	want := map[string]string{
+		"rspamd/settings.conf":         "domain_example.com",
+		"rspamd/rspamd.local.lua":      "VECTIS_SPAM_LISTS",
+		"rspamd/maps/block_domain.map": "example.com:spam.example",
+		"rspamd/maps/block_email.map":  "example.com:phisher@evil.example",
+		"rspamd/maps/allow_domain.map": "example.com:trusted.example",
+		"rspamd/maps/allow_email.map":  "example.com:vip@partner.example",
+	}
+	for path, mustContain := range want {
+		var content string
+		for _, f := range files {
+			if f.RelPath == path {
+				content = string(f.Content)
+				break
+			}
+		}
+		if content == "" {
+			t.Errorf("%s not generated", path)
+			continue
+		}
+		if !strings.Contains(content, mustContain) {
+			t.Errorf("%s missing %q; got:\n%s", path, mustContain, content)
+		}
+	}
+
+	// The settings.conf must apply BOTH overrides (reject + disable greylist)
+	// for the example.com domain block.
+	var settings string
+	for _, f := range files {
+		if f.RelPath == "rspamd/settings.conf" {
+			settings = string(f.Content)
+			break
+		}
+	}
+	if !strings.Contains(settings, "reject = 12.5") {
+		t.Errorf("settings.conf should override reject threshold to 12.5; got:\n%s", settings)
+	}
+	if !strings.Contains(settings, `plugins_disabled = ["greylist"]`) {
+		t.Errorf("settings.conf should disable greylist plugin when GreylistEnabled=false; got:\n%s", settings)
+	}
+}
+
+// TestAdvancedSpamConfig_EmptyEntriesProducesEmptyMaps locks in the
+// invariant that the four map files always render — even on Free with no
+// entries — so the docker-compose bind mounts are always valid. Without
+// this, a fresh install would have a missing /var/vectis/generated/rspamd/
+// maps/*.map source and rspamd would refuse to start.
+func TestAdvancedSpamConfig_EmptyEntriesProducesEmptyMaps(t *testing.T) {
+	data := testData()
+	data.SpamListEntries = nil // explicit empty / Free tier
+
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	required := []string{
+		"rspamd/settings.conf",
+		"rspamd/rspamd.local.lua",
+		"rspamd/maps/allow_email.map",
+		"rspamd/maps/allow_domain.map",
+		"rspamd/maps/block_email.map",
+		"rspamd/maps/block_domain.map",
+	}
+	got := make(map[string]bool, len(required))
+	for _, f := range files {
+		got[f.RelPath] = true
+	}
+	for _, p := range required {
+		if !got[p] {
+			t.Errorf("missing %s in empty-entries render", p)
+		}
+	}
+}
+
 func TestDKIMSigningConf(t *testing.T) {
 	files, _ := Generate(testData())
 	var dkimConf string

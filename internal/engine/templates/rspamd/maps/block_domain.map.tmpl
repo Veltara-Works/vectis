@@ -1,0 +1,3 @@
+# Vectis per-domain block list (sender domain scope) — generated, do not edit
+{{ range .SpamListEntries }}{{ if and (eq .Kind "block") (eq .Scope "domain") }}{{ .DomainName }}:{{ .Pattern }}
+{{ end }}{{ end }}

@@ -410,6 +410,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 
 	// Generate expected configs.
 	data := engine.NewTemplateData(cfg, secrets, domains)
+	data.SpamListEntries = fetchSpamListEntries(cmd)
 	files, err := engine.Generate(data)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: template generation failed: %s\n", err)
@@ -522,6 +523,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 
 	// Generate expected configs.
 	data := engine.NewTemplateData(cfg, secrets, domains)
+	data.SpamListEntries = fetchSpamListEntries(cmd)
 	files, err := engine.Generate(data)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: template generation failed: %s\n", err)
@@ -648,6 +650,36 @@ func fetchDomains(cmd *cobra.Command) ([]repository.Domain, error) {
 		os.Exit(1)
 	}
 	return domains, nil
+}
+
+// fetchSpamListEntries connects to the database and retrieves all per-domain
+// allow/block entries for rspamd map generation. Best-effort: when the
+// table does not yet exist (pre-migration 000016) the error is logged and
+// an empty slice returned, so `vectis config diff/apply` still works on
+// older schemas.
+func fetchSpamListEntries(cmd *cobra.Command) []engine.SpamListInfo {
+	pool, _, cleanup := connectDB(cmd)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	repo := repository.NewSpamListRepo(pool)
+	entries, err := repo.ListAll(ctx)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load spam list entries (advanced spam config will be empty): %s\n", err)
+		return nil
+	}
+	out := make([]engine.SpamListInfo, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, engine.SpamListInfo{
+			DomainName: e.DomainName,
+			Kind:       e.Kind,
+			Scope:      e.Scope,
+			Pattern:    e.Pattern,
+		})
+	}
+	return out
 }
 
 func init() {

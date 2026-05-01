@@ -209,6 +209,12 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 	// ADR-023: Regenerate Rspamd DKIM signing config and reload Rspamd.
 	if s.cfg != nil && s.secrets != nil && s.genDir != "" {
 		s.regenerateRspamdDKIMConfig()
+		// If the create touched per-domain spam knobs, also rewrite the
+		// rspamd settings.conf so the override takes effect immediately
+		// without waiting for the next config apply.
+		if req.usesAdvancedSpamFields() {
+			s.regenerateRspamdSpamConfig()
+		}
 	}
 
 	adminID := getAdminID(r.Context())
@@ -302,6 +308,10 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "domain.update", "domain", &domainID, req, &ip)
 
+	if req.usesAdvancedSpamFields() && s.cfg != nil && s.secrets != nil && s.genDir != "" {
+		s.regenerateRspamdSpamConfig()
+	}
+
 	respond(w, r, http.StatusOK, domain)
 }
 
@@ -348,8 +358,12 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ADR-023: Regenerate Rspamd DKIM config after domain removal.
+	// Also rewrite spam-list/settings config so any cascade-deleted spam
+	// list rows (FK ON DELETE CASCADE on domain_spam_lists) and the now-
+	// gone per-domain settings block stop being referenced.
 	if s.cfg != nil && s.secrets != nil && s.genDir != "" {
 		s.regenerateRspamdDKIMConfig()
+		s.regenerateRspamdSpamConfig()
 	}
 
 	adminID := getAdminID(r.Context())
@@ -396,6 +410,100 @@ func (s *Server) regenerateRspamdDKIMConfig() {
 			s.logger.Warn("rspamd reload failed after DKIM config update", "error", r.Error)
 		} else {
 			s.logger.Info("rspamd reloaded after DKIM config update")
+		}
+	}
+}
+
+// loadSpamListInfos returns every per-domain allow/block entry mapped into
+// the engine.SpamListInfo shape. Errors are logged and treated as empty —
+// pre-migration installs (no domain_spam_lists table) and Free-tier installs
+// with no entries both produce the same empty-list outcome, which is the
+// correct rspamd config (no-op prefilter, empty maps).
+func (s *Server) loadSpamListInfos(ctx context.Context) []engine.SpamListInfo {
+	entries, err := s.spamLists.ListAll(ctx)
+	if err != nil {
+		s.logger.Warn("failed to load spam list entries (advanced spam config will be empty)", "error", err)
+		return nil
+	}
+	out := make([]engine.SpamListInfo, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, engine.SpamListInfo{
+			DomainName: e.DomainName,
+			Kind:       e.Kind,
+			Scope:      e.Scope,
+			Pattern:    e.Pattern,
+		})
+	}
+	return out
+}
+
+// regenerateRspamdSpamConfig rewrites the four per-recipient-domain
+// allow/block map files, the Lua extension, and the per-domain
+// settings.conf, then reloads Rspamd. Called from the spam-list CRUD
+// handlers and from domain create/update/delete whenever the request
+// touched reject_threshold or greylist_enabled.
+//
+// The Lua extension and map files are static-shaped — they exist with
+// empty content even when no Pro entries are present — so the bind
+// mounts in docker-compose are always valid.
+func (s *Server) regenerateRspamdSpamConfig() {
+	ctx := context.Background()
+	domains, err := s.domains.List(ctx, nil)
+	if err != nil {
+		s.logger.Warn("failed to list domains for spam config regeneration", "error", err)
+		return
+	}
+
+	entries, err := s.spamLists.ListAll(ctx)
+	if err != nil {
+		s.logger.Warn("failed to list spam list entries for regeneration", "error", err)
+		return
+	}
+
+	data := engine.NewTemplateData(s.cfg, s.secrets, domains)
+	data.SpamListEntries = make([]engine.SpamListInfo, 0, len(entries))
+	for _, e := range entries {
+		data.SpamListEntries = append(data.SpamListEntries, engine.SpamListInfo{
+			DomainName: e.DomainName,
+			Kind:       e.Kind,
+			Scope:      e.Scope,
+			Pattern:    e.Pattern,
+		})
+	}
+
+	files, err := engine.Generate(data)
+	if err != nil {
+		s.logger.Warn("failed to generate spam config", "error", err)
+		return
+	}
+
+	wanted := map[string]bool{
+		"rspamd/settings.conf":         true,
+		"rspamd/rspamd.local.lua":      true,
+		"rspamd/maps/allow_email.map":  true,
+		"rspamd/maps/allow_domain.map": true,
+		"rspamd/maps/block_email.map":  true,
+		"rspamd/maps/block_domain.map": true,
+	}
+	subset := make([]engine.GeneratedFile, 0, len(wanted))
+	for _, f := range files {
+		if wanted[f.RelPath] {
+			subset = append(subset, f)
+		}
+	}
+	if err := engine.WriteFiles(s.genDir, subset); err != nil {
+		s.logger.Warn("failed to write spam config files", "error", err)
+		return
+	}
+
+	results := engine.ExecuteActions([]engine.ServiceAction{
+		{Service: "rspamd", Action: "reload", Reason: "spam list / per-domain spam config updated"},
+	})
+	for _, r := range results {
+		if !r.Success {
+			s.logger.Warn("rspamd reload failed after spam config update", "error", r.Error)
+		} else {
+			s.logger.Info("rspamd reloaded after spam config update")
 		}
 	}
 }

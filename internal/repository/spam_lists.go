@@ -113,6 +113,44 @@ func (r *SpamListRepo) ListByDomain(ctx context.Context, domainID string, kindFi
 	return out, nil
 }
 
+// ListAll returns every spam-list entry with the recipient domain name
+// joined in. Used by the rspamd config regenerator to render the four
+// per-recipient-domain allow/block map files in a single pass.
+func (r *SpamListRepo) ListAll(ctx context.Context) ([]SpamListJoined, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT s.id, s.domain_id, d.name, s.kind, s.scope, s.pattern, s.created_at
+		   FROM domain_spam_lists s
+		   JOIN domains d ON d.id = s.domain_id
+		  ORDER BY d.name, s.kind, s.scope, s.pattern`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list all spam list entries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SpamListJoined
+	for rows.Next() {
+		var e SpamListJoined
+		if err := rows.Scan(&e.ID, &e.DomainID, &e.DomainName, &e.Kind, &e.Scope, &e.Pattern, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan spam list join: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// SpamListJoined is a SpamListEntry annotated with the recipient domain
+// name. Returned by ListAll for downstream multimap-file generation.
+type SpamListJoined struct {
+	ID         string
+	DomainID   string
+	DomainName string
+	Kind       string
+	Scope      string
+	Pattern    string
+	CreatedAt  time.Time
+}
+
 // Delete removes a single spam-list entry. Returns false if not found.
 func (r *SpamListRepo) Delete(ctx context.Context, id string) (bool, error) {
 	result, err := r.db.Exec(ctx, `DELETE FROM domain_spam_lists WHERE id = $1`, id)

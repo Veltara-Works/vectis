@@ -86,7 +86,27 @@ func loadTemplateData(cmd *cobra.Command) (*engine.TemplateData, error) {
 		os.Exit(1)
 	}
 
-	return engine.NewTemplateData(cfg, secrets, domains), nil
+	data := engine.NewTemplateData(cfg, secrets, domains)
+	// Per-domain spam list entries (Pro: advanced_spam). Loaded best-effort —
+	// the table only exists post-migration 000016, so a "relation does not
+	// exist" failure during a pre-migration generate is logged and ignored,
+	// not fatal. The map files render empty; the rspamd Lua extension stays
+	// a no-op until entries are added.
+	spamRepo := repository.NewSpamListRepo(pool)
+	if entries, err := spamRepo.ListAll(ctx); err == nil {
+		data.SpamListEntries = make([]engine.SpamListInfo, 0, len(entries))
+		for _, e := range entries {
+			data.SpamListEntries = append(data.SpamListEntries, engine.SpamListInfo{
+				DomainName: e.DomainName,
+				Kind:       e.Kind,
+				Scope:      e.Scope,
+				Pattern:    e.Pattern,
+			})
+		}
+	} else {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load spam list entries (skipping advanced spam config): %s\n", err)
+	}
+	return data, nil
 }
 
 func init() {

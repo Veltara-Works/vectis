@@ -190,6 +190,12 @@ services:
       - /var/vectis/generated/rspamd/dkim_signing.conf:/etc/rspamd/local.d/dkim_signing.conf:ro
       - /var/vectis/generated/rspamd/antivirus.conf:/etc/rspamd/local.d/antivirus.conf:ro
       - /var/vectis/generated/rspamd/worker-proxy.inc:/etc/rspamd/local.d/worker-proxy.inc:ro
+      # Advanced Spam (Pro): per-domain settings overrides + Lua extension
+      # that consults four allow/block map files keyed by recipient domain.
+      # Files always exist (even on Free); empty files = no-op prefilter.
+      - /var/vectis/generated/rspamd/settings.conf:/etc/rspamd/local.d/settings.conf:ro
+      - /var/vectis/generated/rspamd/rspamd.local.lua:/etc/rspamd/rspamd.local.lua:ro
+      - /var/vectis/generated/rspamd/maps:/etc/rspamd/local.d/maps:ro
       - dkim-keys:/var/vectis/dkim:ro
     depends_on:
       valkey:
