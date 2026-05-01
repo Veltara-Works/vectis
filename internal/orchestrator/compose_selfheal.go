@@ -26,8 +26,7 @@ type selfHealAction int
 
 const (
 	selfHealSkip      selfHealAction = iota // do nothing (dev build, missing wiring, steady-state)
-	selfHealBaseline                        // first-ever boot — record version, no heal
-	selfHealReconcile                       // version transition — regen + apply
+	selfHealReconcile                       // empty prev OR transition — regen + apply (no-op if no drift)
 )
 
 // decideSelfHealAction returns what SelfHealComposeOnVersionTransition
@@ -37,15 +36,21 @@ const (
 // prev is the value read from Valkey (empty when key absent). current is
 // the running binary's version.Version. The remaining flags capture the
 // "is the orchestrator wired enough to do anything" preconditions.
+//
+// Empty prev is treated as reconcile (not "fresh install — skip"), because
+// the upgrade path that motivated self-heal in the first place produces
+// exactly this state: the OLD orchestrator (v0.1.0) never wrote the
+// last-seen-version key, so the NEW orchestrator (v0.1.3) sees prev=""
+// after Phase 7's swap. RegenerateCompose is no-op-on-match, so a
+// genuinely fresh install (where on-disk compose was just rendered from
+// current templates) safely round-trips through reconcile without
+// recreating any containers.
 func decideSelfHealAction(prev, current string, hasComposeGen, hasComposePath bool) selfHealAction {
 	if current == "" || current == "dev" {
 		return selfHealSkip
 	}
 	if !hasComposeGen || !hasComposePath {
 		return selfHealSkip
-	}
-	if prev == "" {
-		return selfHealBaseline
 	}
 	if prev == current {
 		return selfHealSkip
@@ -111,16 +116,14 @@ func (o *Orchestrator) SelfHealComposeOnVersionTransition(
 	case selfHealSkip:
 		// Steady state — same version as last boot.
 		return
-	case selfHealBaseline:
-		o.logger.Info("self-heal: no prior version recorded, baselining without heal",
-			"version", binaryVersion)
-		if writeErr := o.writeLastSeenVersion(ctx, binaryVersion); writeErr != nil {
-			o.logger.Warn("self-heal: failed to write baseline version", "error", writeErr)
-		}
-		return
 	case selfHealReconcile:
-		o.logger.Info("self-heal: version transition detected, checking compose drift",
-			"prev", prev, "current", binaryVersion)
+		if prev == "" {
+			o.logger.Info("self-heal: no prior version recorded, checking compose drift (covers upgrade path where old orchestrator never wrote the key)",
+				"current", binaryVersion)
+		} else {
+			o.logger.Info("self-heal: version transition detected, checking compose drift",
+				"prev", prev, "current", binaryVersion)
+		}
 		// Fall through to reconcile path below.
 	}
 

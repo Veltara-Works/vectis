@@ -33,9 +33,9 @@ func TestDecideSelfHealAction(t *testing.T) {
 			want: selfHealSkip, wantReason: "no path means nothing to write to",
 		},
 		{
-			name: "fresh install (empty prev) baselines",
+			name: "empty prev triggers reconcile (covers upgrade-from-pre-self-heal-version path)",
 			prev: "", current: "v0.1.3", hasGen: true, hasPath: true,
-			want: selfHealBaseline, wantReason: "first boot — record version but don't heal; on-disk compose is authoritative on install",
+			want: selfHealReconcile, wantReason: "old orchestrator (v0.1.0/v0.1.1/v0.1.2) never wrote last-seen-version; new orchestrator must reconcile. Genuinely-fresh installs are safe because RegenerateCompose is no-op when on-disk == templates.",
 		},
 		{
 			name: "same-version reboot is steady state",
