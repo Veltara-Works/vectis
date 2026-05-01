@@ -42,6 +42,17 @@ const (
 	selfUpgradeUntilKey        = "orchestrator:self_upgrade_until"
 )
 
+// ComposeGenerator returns the rendered docker-compose.yml content for the
+// given release tag. Empty releaseTag means "use whatever Version is baked
+// into the orchestrator binary" (i.e. don't override the template's default
+// — useful for offline plans where release-channel discovery failed).
+//
+// Injected via Orchestrator.SetComposeGenerator so the orchestrator package
+// stays decoupled from internal/engine, internal/config, and
+// internal/repository (which would otherwise create import cycles via
+// shared transitive deps).
+type ComposeGenerator func(ctx context.Context, releaseTag string) ([]byte, error)
+
 // Orchestrator is the core state machine that manages system updates.
 // It is the only component with Docker socket access and enforces
 // serialised execution via Postgres advisory locks per Spec D.
@@ -50,13 +61,14 @@ type Orchestrator struct {
 	plan   *Plan
 	lastOp *Operation
 
-	sm      *StateMachine
-	cfg     Config
-	db      *pgxpool.Pool
-	vk      valkey.Client
-	docker  *DockerManager
-	snap    *SnapshotManager
-	logger  *slog.Logger
+	sm         *StateMachine
+	cfg        Config
+	db         *pgxpool.Pool
+	vk         valkey.Client
+	docker     *DockerManager
+	snap       *SnapshotManager
+	logger     *slog.Logger
+	composeGen ComposeGenerator // set by main.go; nil = legacy tag-rewrite path
 }
 
 // New creates and initialises a new Orchestrator.
@@ -76,6 +88,16 @@ func New(ctx context.Context, db *pgxpool.Pool, vk valkey.Client, cfg Config, lo
 		snap:   NewSnapshotManager(cfg, logger.With("component", "snapshot")),
 		logger: logger,
 	}, nil
+}
+
+// SetComposeGenerator wires up the callback that Phase 3.5 of Apply uses to
+// regenerate /etc/vectis/docker-compose.yml from the embedded templates.
+// Must be called once at startup, before the first Apply. If nil (or never
+// set), Phase 3.5 falls back to the legacy tag-only rewrite path which only
+// patches `image:` lines and cannot pick up structural template changes
+// (new bind mounts, new services, env tweaks).
+func (o *Orchestrator) SetComposeGenerator(gen ComposeGenerator) {
+	o.composeGen = gen
 }
 
 // State returns the current orchestrator state.
@@ -463,19 +485,30 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		}
 	}
 
-	// ===== PHASE 3.5: REWRITE COMPOSE TAGS =====
+	// ===== PHASE 3.5: REGENERATE / REWRITE COMPOSE =====
 	//
 	// The on-disk compose file was written at install time with whatever
-	// release tag was current *then*. Plan's Changes[] carry the target tags
-	// from the release channel. If we skipped this step, `docker compose
-	// pull` at 4.1 would just re-pull whatever's already in the file — so
-	// "Apply v0.1.0-rc29" after a Plan that says "rc28 → rc29" would be a
-	// no-op on a box that was installed at rc28. Surfaced end-to-end
-	// post-rc27 on sysadmin1001.
+	// release tag was current *then*. Plan's Changes[] + plan.ReleaseTag
+	// carry the target tags from the release channel. If we skipped this
+	// step, `docker compose pull` at 4.1 would just re-pull whatever's
+	// already in the file — so "Apply v0.1.0-rc29" after a Plan that says
+	// "rc28 → rc29" would be a no-op on a box that was installed at rc28.
+	// Surfaced end-to-end post-rc27 on sysadmin1001.
 	//
-	// Any failure here rolls back (DB + compose), same as every other Apply
-	// phase. The backup path is derived from snapshotPath so rollback can
-	// find it without needing a new persisted field.
+	// Two paths:
+	//   - composeGen set + plan.ReleaseTag non-empty → full regen from
+	//     the orchestrator's embedded templates (RegenerateCompose).
+	//     Picks up structural template changes (new bind mounts, new
+	//     services, env tweaks) on top of the tag bump. Required for
+	//     v0.1.2's per-domain spam mounts to land on upgrade without
+	//     manual host-side compose patching (deferred-items.md §10).
+	//   - composeGen unset OR plan.ReleaseTag empty → legacy tag-only
+	//     rewrite (RewriteComposeTags). Preserves behaviour for
+	//     release-channel-disabled installs and offline plans.
+	//
+	// Any failure here rolls back (DB + compose), same as every other
+	// Apply phase. The backup path is derived from snapshotPath so
+	// rollback can find it without a new persisted field.
 	o.logger.Info("phase 3.5: rewriting compose with target tags", "job_id", jobID)
 
 	composePath := ""
@@ -484,25 +517,38 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 	}
 	if composePath != "" {
 		backupPath := composeBackupPathFor(snapshotPath)
-		rewritten, rewriteErr := RewriteComposeTags(composePath, plan.Changes, backupPath)
+		var rewritten bool
+		var rewriteErr error
+		var mode string
+
+		if o.composeGen != nil && plan.ReleaseTag != "" {
+			mode = "regenerate"
+			rewritten, rewriteErr = RegenerateCompose(applyCtx, composePath, backupPath, plan.ReleaseTag, o.composeGen)
+		} else {
+			mode = "tag-rewrite"
+			rewritten, rewriteErr = RewriteComposeTags(composePath, plan.Changes, backupPath)
+		}
+
 		if rewriteErr != nil {
-			o.logger.Error("compose rewrite failed, initiating rollback", "error", rewriteErr)
+			o.logger.Error("compose rewrite failed, initiating rollback", "mode", mode, "error", rewriteErr)
 			rollbackErr := o.doRollback(applyCtx, snapshotPath)
 			if rollbackErr != nil {
-				o.failApply(applyCtx, opID, jobID, fmt.Sprintf("compose rewrite failed and rollback also failed: rewrite=%v, rollback=%v", rewriteErr, rollbackErr))
+				o.failApply(applyCtx, opID, jobID, fmt.Sprintf("compose rewrite failed and rollback also failed: mode=%s rewrite=%v, rollback=%v", mode, rewriteErr, rollbackErr))
 				return "", fmt.Errorf("compose rewrite and rollback both failed: %w", rollbackErr)
 			}
-			_ = o.sm.CompleteOperation(applyCtx, opID, "rolled_back", snapshotPath, fmt.Sprintf("compose rewrite failed: %v", rewriteErr))
+			_ = o.sm.CompleteOperation(applyCtx, opID, "rolled_back", snapshotPath, fmt.Sprintf("compose rewrite failed (%s): %v", mode, rewriteErr))
 			return jobID, fmt.Errorf("compose rewrite failed, rolled back: %w", rewriteErr)
 		}
 		if rewritten {
-			o.logger.Info("compose rewritten with target tags",
+			o.logger.Info("compose rewritten",
+				"mode", mode,
 				"job_id", jobID,
 				"backup", backupPath,
+				"release_tag", plan.ReleaseTag,
 				"change_count", len(plan.Changes),
 			)
 		} else {
-			o.logger.Info("compose needed no rewrite (tags already match plan)", "job_id", jobID)
+			o.logger.Info("compose needed no rewrite (already matches target)", "mode", mode, "job_id", jobID)
 		}
 	}
 

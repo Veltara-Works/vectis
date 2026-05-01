@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,6 +71,74 @@ func RewriteComposeTags(composePath string, changes []PlanChange, backupPath str
 
 	if err := writeAtomicFile(composePath, []byte(rewritten), 0o644); err != nil {
 		return false, fmt.Errorf("write rewritten compose: %w", err)
+	}
+	return true, nil
+}
+
+// RegenerateCompose re-renders the docker-compose.yml from the embedded
+// templates via the supplied ComposeGenerator and atomically writes the
+// result to composePath, after first backing up the current on-disk content
+// to backupPath so rollback can restore the exact pre-Apply bytes.
+//
+// Unlike RewriteComposeTags, this picks up structural template changes
+// (new bind mounts, new services, env tweaks, etc.) — not just `image:`
+// tag bumps. Required for v0.1.2's per-domain spam mounts to land on
+// upgrade without manual host-side compose patching.
+//
+// Returns:
+//   - (true, nil)  = generated content differed from on-disk; backup is at
+//     backupPath, compose has been rewritten.
+//   - (false, nil) = generated content matched on-disk byte-for-byte;
+//     backup deleted (no rollback restore needed).
+//   - (_, err)     = compose left untouched if read/gen failed; partial
+//     state possible only if the atomic-rename itself failed mid-flight,
+//     in which case the backup is on disk and rollback can restore it.
+//
+// CROSS-VERSION CAVEAT: This regenerates against the orchestrator binary's
+// embedded templates. On an Apply that bumps the orchestrator itself, the
+// regen runs under the OLD orchestrator process — so any template changes
+// shipped in the NEW release won't land until the FOLLOWING Apply. To pick
+// up new structural changes on a multi-version jump, walk the upgrade in
+// two steps (vN → vN+1, then vN+1 → vN+2).
+func RegenerateCompose(
+	ctx context.Context,
+	composePath, backupPath, releaseTag string,
+	gen ComposeGenerator,
+) (bool, error) {
+	if gen == nil {
+		return false, fmt.Errorf("compose generator not configured")
+	}
+
+	current, err := os.ReadFile(composePath)
+	if err != nil {
+		return false, fmt.Errorf("read compose: %w", err)
+	}
+
+	// Always write the backup first so rollback has a restoration target
+	// even if the rewrite fails midway through atomic-rename.
+	if err := writeAtomicFile(backupPath, current, 0o644); err != nil {
+		return false, fmt.Errorf("backup compose: %w", err)
+	}
+
+	generated, err := gen(ctx, releaseTag)
+	if err != nil {
+		_ = os.Remove(backupPath)
+		return false, fmt.Errorf("generate compose: %w", err)
+	}
+	if len(generated) == 0 {
+		_ = os.Remove(backupPath)
+		return false, fmt.Errorf("generated compose is empty")
+	}
+
+	if bytes.Equal(current, generated) {
+		// No-op: content matches. Drop the backup so a later rollback
+		// doesn't pointlessly restore an identical file.
+		_ = os.Remove(backupPath)
+		return false, nil
+	}
+
+	if err := writeAtomicFile(composePath, generated, 0o644); err != nil {
+		return false, fmt.Errorf("write regenerated compose: %w", err)
 	}
 	return true, nil
 }

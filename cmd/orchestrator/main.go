@@ -14,7 +14,9 @@ import (
 	"github.com/valkey-io/valkey-go"
 
 	"github.com/Veltara-Works/vectis/internal/config"
+	"github.com/Veltara-Works/vectis/internal/engine"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
+	"github.com/Veltara-Works/vectis/internal/repository"
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
 	"github.com/Veltara-Works/vectis/internal/version"
 )
@@ -202,6 +204,33 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("init orchestrator: %w", err)
 	}
 	logger.Info("orchestrator initialised", "state", orch.State())
+
+	// Wire up the compose generator that Phase 3.5 of Apply uses to
+	// regenerate /etc/vectis/docker-compose.yml from the embedded templates.
+	// Closes over cfg/secrets/dbPool so the orchestrator package itself
+	// stays decoupled from internal/engine + internal/repository (deferred-
+	// items.md §10).
+	domainRepo := repository.NewDomainRepo(dbPool)
+	orch.SetComposeGenerator(func(ctx context.Context, releaseTag string) ([]byte, error) {
+		domains, err := domainRepo.List(ctx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("list domains: %w", err)
+		}
+		data := engine.NewTemplateData(cfg, secrets, domains)
+		if releaseTag != "" {
+			data.Version = releaseTag
+		}
+		files, err := engine.Generate(data)
+		if err != nil {
+			return nil, fmt.Errorf("render templates: %w", err)
+		}
+		for _, f := range files {
+			if f.RelPath == "docker-compose.yml" {
+				return f.Content, nil
+			}
+		}
+		return nil, fmt.Errorf("docker-compose.yml not present in rendered templates")
+	})
 
 	// -----------------------------------------------------------------------
 	// Start HTTP server
