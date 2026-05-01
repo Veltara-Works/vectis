@@ -55,6 +55,7 @@ type Server struct {
 	domains      *repository.DomainRepo
 	mailboxes    *repository.MailboxRepo
 	aliases      *repository.AliasRepo
+	spamLists    *repository.SpamListRepo
 	admins       *repository.AdminRepo
 	adminDomains *repository.AdminDomainRepo
 	apiKeys      *repository.APIKeyRepo
@@ -143,6 +144,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		domains:      repository.NewDomainRepo(db),
 		mailboxes:    repository.NewMailboxRepo(db),
 		aliases:      repository.NewAliasRepo(db),
+		spamLists:    repository.NewSpamListRepo(db),
 		admins:       repository.NewAdminRepo(db),
 		adminDomains: repository.NewAdminDomainRepo(db),
 		apiKeys:      repository.NewAPIKeyRepo(db),
@@ -669,6 +671,16 @@ func (s *Server) buildRouter() chi.Router {
 			// Cancelled/lapsed Pro license past 30-day grace: 403 LICENSE_EXPIRED.
 			r.With(s.featureGate.FeatureGate(validonx.FeatureAnalytics)).
 				Get("/analytics", s.handleDomainAnalytics)
+
+			// Per-domain allow/block lists — Pro feature (Advanced Spam).
+			// Whole subtree gated; the field-level extensions to PATCH
+			// /domains/{id} (reject_threshold, greylist_enabled) live in
+			// handle_domains.go since the domain CRUD route itself must
+			// stay open to Free for ungated fields like spam_threshold.
+			advancedSpamGate := s.featureGate.FeatureGate(validonx.FeatureAdvancedSpam)
+			r.With(advancedSpamGate, requireAdminOrAbove()).Get("/domains/{domainID}/spam-lists", s.handleListSpamListEntries)
+			r.With(advancedSpamGate, requireAdminOrAbove()).Post("/domains/{domainID}/spam-lists", s.handleCreateSpamListEntry)
+			r.With(advancedSpamGate, requireAdminOrAbove()).Delete("/domains/{domainID}/spam-lists/{entryID}", s.handleDeleteSpamListEntry)
 
 			// License management — super_admin only. The License page is
 			// where customers paste their ValidonX subscription_id post-checkout

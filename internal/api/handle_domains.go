@@ -20,17 +20,35 @@ import (
 var validDomainRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$`)
 
 type createDomainRequest struct {
-	Name          string   `json:"name"`
-	SpamThreshold *float64 `json:"spam_threshold,omitempty"`
-	MaxMailboxes  *int     `json:"max_mailboxes,omitempty"`
+	Name            string   `json:"name"`
+	SpamThreshold   *float64 `json:"spam_threshold,omitempty"`
+	RejectThreshold *float64 `json:"reject_threshold,omitempty"`
+	GreylistEnabled *bool    `json:"greylist_enabled,omitempty"`
+	MaxMailboxes    *int     `json:"max_mailboxes,omitempty"`
 }
 
 type updateDomainRequest struct {
-	Active        *bool    `json:"active,omitempty"`
-	DKIMEnabled   *bool    `json:"dkim_enabled,omitempty"`
-	DKIMSelector  *string  `json:"dkim_selector,omitempty"`
-	SpamThreshold *float64 `json:"spam_threshold,omitempty"`
-	MaxMailboxes  *int     `json:"max_mailboxes,omitempty"`
+	Active          *bool    `json:"active,omitempty"`
+	DKIMEnabled     *bool    `json:"dkim_enabled,omitempty"`
+	DKIMSelector    *string  `json:"dkim_selector,omitempty"`
+	SpamThreshold   *float64 `json:"spam_threshold,omitempty"`
+	RejectThreshold *float64 `json:"reject_threshold,omitempty"`
+	GreylistEnabled *bool    `json:"greylist_enabled,omitempty"`
+	MaxMailboxes    *int     `json:"max_mailboxes,omitempty"`
+}
+
+// usesAdvancedSpamFields reports whether the request payload touches any
+// Pro-gated per-domain spam knobs. Used for the field-level FeatureGate
+// check in create/update handlers — if any of these are non-nil we must
+// reject the whole request on Free tier (decision D2 in plan
+// proceed-with-advanced-spam-splendid-creek). spam_threshold is NOT in this
+// set: it has been free + ungated since v0.1.0 and stays that way.
+func (req *createDomainRequest) usesAdvancedSpamFields() bool {
+	return req.RejectThreshold != nil || req.GreylistEnabled != nil
+}
+
+func (req *updateDomainRequest) usesAdvancedSpamFields() bool {
+	return req.RejectThreshold != nil || req.GreylistEnabled != nil
 }
 
 func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +129,11 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 	// Existing domains on a customer who downgrades Pro→Free are NOT
 	// retroactively deleted; this only blocks NEW domain creation past 3.
 	tier, _ := s.featureGate.ResolveTier(r.Context())
+	if tier == validonx.TierFree && req.usesAdvancedSpamFields() {
+		respondError(w, r, http.StatusForbidden, "FEATURE_NOT_AVAILABLE",
+			"reject_threshold and greylist_enabled require a Pro license (advanced_spam)")
+		return
+	}
 	maxMailboxes := req.MaxMailboxes
 	if tier == validonx.TierFree {
 		count, countErr := s.domains.Count(r.Context(), nil)
@@ -132,9 +155,11 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	domain, err := s.domains.Create(r.Context(), repository.DomainCreate{
-		Name:          req.Name,
-		SpamThreshold: req.SpamThreshold,
-		MaxMailboxes:  maxMailboxes,
+		Name:            req.Name,
+		SpamThreshold:   req.SpamThreshold,
+		RejectThreshold: req.RejectThreshold,
+		GreylistEnabled: req.GreylistEnabled,
+		MaxMailboxes:    maxMailboxes,
 	})
 	if err != nil {
 		s.logger.Error("create domain failed", "error", err)
@@ -241,12 +266,27 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Field-level Pro gate: reject the whole PATCH if a Free-tier caller
+	// tries to set reject_threshold or greylist_enabled. spam_threshold
+	// remains ungated (existed since v0.1.0). Decision D1+D2 in plan
+	// proceed-with-advanced-spam-splendid-creek.
+	if req.usesAdvancedSpamFields() {
+		tier, _ := s.featureGate.ResolveTier(r.Context())
+		if tier == validonx.TierFree {
+			respondError(w, r, http.StatusForbidden, "FEATURE_NOT_AVAILABLE",
+				"reject_threshold and greylist_enabled require a Pro license (advanced_spam)")
+			return
+		}
+	}
+
 	domain, err := s.domains.Update(r.Context(), domainID, repository.DomainUpdate{
-		Active:        req.Active,
-		DKIMEnabled:   req.DKIMEnabled,
-		DKIMSelector:  req.DKIMSelector,
-		SpamThreshold: req.SpamThreshold,
-		MaxMailboxes:  req.MaxMailboxes,
+		Active:          req.Active,
+		DKIMEnabled:     req.DKIMEnabled,
+		DKIMSelector:    req.DKIMSelector,
+		SpamThreshold:   req.SpamThreshold,
+		RejectThreshold: req.RejectThreshold,
+		GreylistEnabled: req.GreylistEnabled,
+		MaxMailboxes:    req.MaxMailboxes,
 	})
 	if err != nil {
 		s.logger.Error("update domain failed", "error", err)

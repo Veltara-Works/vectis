@@ -58,12 +58,19 @@ func setupTestEnv(t *testing.T) *testEnv {
 		DKIMBasePath: t.TempDir(),
 	}, logger)
 
-	// Seed an admin for tests.
+	// Seed a super_admin for tests. The default admin role lacks access to
+	// license / config / orchestrator routes (they require super_admin via
+	// requireSuperAdmin()), so any test that touches those endpoints —
+	// including TestLicenseActivation_ProbeUsesPath2Endpoint and the
+	// Advanced-Spam tier-gate tests — would 403 with the default role.
+	// super_admin is a strict superset of admin's permissions, so existing
+	// tests are unaffected.
 	adminRepo := repository.NewAdminRepo(pool)
 	hash, _ := auth.HashPassword("test-password")
 	admin, err := adminRepo.Create(ctx, repository.AdminCreate{
 		Email:        fmt.Sprintf("test-%d@example.com", time.Now().UnixNano()),
 		PasswordHash: hash,
+		Role:         "super_admin",
 	})
 	if err != nil {
 		t.Fatalf("create admin: %v", err)
@@ -602,4 +609,442 @@ func TestLicenseActivation_ProbeUsesPath2Endpoint(t *testing.T) {
 
 	// Cleanup.
 	env.doRequest(t, "DELETE", "/api/v1/license", "")
+}
+
+// ── Tier-gate test helper (Advanced Spam) ────────────────────────
+//
+// activateLicenseWithFeatures spins up a mock ValidonX server that returns
+// the supplied feature set, then activates the license through the public
+// /api/v1/license POST. After this call the feature gate is operating
+// against the mock with exactly `features` granted.
+//
+// This is the first true tier-injection helper in the suite. Use it (with
+// `defer mock.Close()` and `defer deactivateLicense(...)`) to drive
+// Free-vs-Pro behaviour in handler tests. Activating with only
+// "basic_mail" yields TierFree; including any Pro feature
+// (advanced_spam, analytics, etc.) yields TierPro.
+//
+// IMPORTANT: simply NOT activating is not the same as "Free tier" — when
+// no client is configured the gate passes everything through. Pass an
+// explicitly-configured-but-feature-poor mock to exercise Free deny paths.
+func activateLicenseWithFeatures(t *testing.T, env *testEnv, features ...string) *httptest.Server {
+	t.Helper()
+
+	featuresJSON, _ := json.Marshal(features)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/integration/licensing/resolve" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{
+			"data": {
+				"valid": true,
+				"status": "active",
+				"allowed_features": %s,
+				"grace_period_ends_at": null,
+				"expires_at": "2099-01-01T00:00:00+00:00",
+				"license": {"id": "00000000-0000-0000-0000-000000000001", "key": "VLDX-TIER-TEST-001", "type": "subscription"}
+			},
+			"meta": {"request_id": "tier-test-rid", "api_version": "1"}
+		}`, string(featuresJSON))
+	}))
+
+	body, _ := json.Marshal(map[string]string{
+		"base_url":        mock.URL,
+		"service_key":     "test-service-key",
+		"tenant_id":       fmt.Sprintf("tier-test-%d", time.Now().UnixNano()),
+		"subscription_id": "sub_tier_test",
+		"license_key":     "VLDX-TIER-TEST-001",
+	})
+	resp := env.doRequest(t, "POST", "/api/v1/license", string(body))
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		mock.Close()
+		t.Fatalf("activate license: expected 200, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	return mock
+}
+
+// deactivateLicense reverts the install to unconfigured state. Note that
+// once unconfigured the gate passes ALL requests through — useful for
+// teardown but NOT a substitute for activating with a feature-poor mock
+// when you need to assert Free-tier deny behaviour.
+func deactivateLicense(t *testing.T, env *testEnv) {
+	t.Helper()
+	resp := env.doRequest(t, "DELETE", "/api/v1/license", "")
+	resp.Body.Close()
+}
+
+// createDomainForTest is a small convenience for spam-list tests that need
+// an existing domain to scope entries to. Returns the domain ID.
+//
+// The helper activates a Pro license for the duration of the create so it
+// is not subject to Free's 3-domain cap (which would otherwise leak prior
+// test state between runs on a shared dev DB). The license is deactivated
+// before the helper returns; the calling test is responsible for setting
+// the license state it actually wants to assert against.
+func createDomainForTest(t *testing.T, env *testEnv, prefix string) string {
+	t.Helper()
+	mock := activateLicenseWithFeatures(t, env, "basic_mail", "advanced_spam")
+	defer mock.Close()
+	defer deactivateLicense(t, env)
+
+	name := fmt.Sprintf("%s-%d.example.com", prefix, time.Now().UnixNano())
+	resp := env.doRequest(t, "POST", "/api/v1/domains", fmt.Sprintf(`{"name":%q}`, name))
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create domain %q: expected 201, got %d (body: %s)", name, resp.StatusCode, body)
+	}
+	body := parseBody(t, resp)
+	return body["data"].(map[string]any)["domain"].(map[string]any)["id"].(string)
+}
+
+// ── Advanced Spam: per-domain reject_threshold + greylist_enabled ─
+
+func TestDomainCreate_AdvancedSpamFields_FreeReturns403(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+	mock := activateLicenseWithFeatures(t, env, "basic_mail") // configured Free
+	defer mock.Close()
+	defer deactivateLicense(t, env)
+
+	domainName := fmt.Sprintf("spam-free-%d.example.com", time.Now().UnixNano())
+	body := fmt.Sprintf(`{"name":%q,"reject_threshold":12.0}`, domainName)
+	resp := env.doRequest(t, "POST", "/api/v1/domains", body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 403 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403 on Free POST with reject_threshold, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	parsed := parseBody(t, resp)
+	if errObj, _ := parsed["error"].(map[string]any); errObj == nil || errObj["code"] != "FEATURE_NOT_AVAILABLE" {
+		t.Errorf("expected error.code FEATURE_NOT_AVAILABLE, got %v", parsed["error"])
+	}
+}
+
+func TestDomainUpdate_AdvancedSpamFields_FreeReturns403(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+
+	// Create the domain BEFORE we lock the gate to feature-poor Free —
+	// otherwise the create itself would also pass Free's 3-domain cap
+	// requirement even with a clean DB. The create path here is the
+	// existing ungated route, no advanced fields → 201.
+	domainID := createDomainForTest(t, env, "spam-update-free")
+
+	mock := activateLicenseWithFeatures(t, env, "basic_mail")
+	defer mock.Close()
+	defer deactivateLicense(t, env)
+
+	resp := env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, `{"greylist_enabled":true}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 403 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403 on Free PATCH with greylist_enabled, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	parsed := parseBody(t, resp)
+	if errObj, _ := parsed["error"].(map[string]any); errObj == nil || errObj["code"] != "FEATURE_NOT_AVAILABLE" {
+		t.Errorf("expected error.code FEATURE_NOT_AVAILABLE, got %v", parsed["error"])
+	}
+
+	// Cleanup: deactivate first so we can delete on Free, then re-init.
+	deactivateLicense(t, env)
+	env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
+}
+
+// TestDomainUpdate_SpamThresholdStillUngated_Free200 is the regression
+// guard: spam_threshold (existing per-domain knob since v0.1.0) MUST keep
+// working on Free tier after the field-level Pro gate landed for
+// reject_threshold + greylist_enabled. If this test goes red, the gate is
+// over-broad and breaks an existing capability.
+func TestDomainUpdate_SpamThresholdStillUngated_Free200(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+	domainID := createDomainForTest(t, env, "spam-thr-free")
+
+	mock := activateLicenseWithFeatures(t, env, "basic_mail")
+	defer mock.Close()
+	defer deactivateLicense(t, env)
+
+	resp := env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, `{"spam_threshold":10.0}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Free-tier spam_threshold PATCH must remain 200; got %d (body: %s)", resp.StatusCode, raw)
+	}
+
+	// Verify the value persisted.
+	resp = env.doRequest(t, "GET", "/api/v1/domains/"+domainID, "")
+	defer resp.Body.Close()
+	body := parseBody(t, resp)
+	got := body["data"].(map[string]any)["spam_threshold"].(float64)
+	if got != 10.0 {
+		t.Errorf("spam_threshold not persisted: expected 10.0, got %v", got)
+	}
+
+	// Cleanup.
+	deactivateLicense(t, env)
+	env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
+}
+
+func TestDomainUpdate_AdvancedSpamFields_ProReturns200(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+	domainID := createDomainForTest(t, env, "spam-update-pro")
+
+	mock := activateLicenseWithFeatures(t, env, "basic_mail", "advanced_spam")
+	defer mock.Close()
+	defer deactivateLicense(t, env)
+
+	resp := env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID,
+		`{"reject_threshold":14.5,"greylist_enabled":true}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Pro PATCH with advanced spam fields: expected 200, got %d (body: %s)", resp.StatusCode, raw)
+	}
+
+	// Verify persisted.
+	resp = env.doRequest(t, "GET", "/api/v1/domains/"+domainID, "")
+	defer resp.Body.Close()
+	body := parseBody(t, resp)
+	d := body["data"].(map[string]any)
+	if got, _ := d["reject_threshold"].(float64); got != 14.5 {
+		t.Errorf("reject_threshold not persisted: expected 14.5, got %v", d["reject_threshold"])
+	}
+	if got, _ := d["greylist_enabled"].(bool); !got {
+		t.Errorf("greylist_enabled not persisted: expected true, got %v", d["greylist_enabled"])
+	}
+
+	// Cleanup.
+	deactivateLicense(t, env)
+	env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
+}
+
+// ── Advanced Spam: per-domain spam-lists CRUD ────────────────────
+
+func TestSpamListsCRUD_Pro(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+	domainID := createDomainForTest(t, env, "spamlist-pro")
+
+	mock := activateLicenseWithFeatures(t, env, "basic_mail", "advanced_spam")
+	defer mock.Close()
+	defer deactivateLicense(t, env)
+
+	// Create — block, scope=domain.
+	resp := env.doRequest(t, "POST", "/api/v1/domains/"+domainID+"/spam-lists",
+		`{"kind":"block","scope":"domain","pattern":"spam.example"}`)
+	if resp.StatusCode != 201 {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create spam list (block/domain): expected 201, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	body := parseBody(t, resp)
+	entryID := body["data"].(map[string]any)["entry"].(map[string]any)["id"].(string)
+
+	// Create — allow, scope=email.
+	resp = env.doRequest(t, "POST", "/api/v1/domains/"+domainID+"/spam-lists",
+		`{"kind":"allow","scope":"email","pattern":"vip@friendly.example"}`)
+	if resp.StatusCode != 201 {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create spam list (allow/email): expected 201, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	resp.Body.Close()
+
+	// Duplicate — same domain, kind, scope, pattern → 409.
+	resp = env.doRequest(t, "POST", "/api/v1/domains/"+domainID+"/spam-lists",
+		`{"kind":"block","scope":"domain","pattern":"spam.example"}`)
+	if resp.StatusCode != 409 {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("duplicate spam list entry: expected 409, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	resp.Body.Close()
+
+	// List — no filter, expect 2.
+	resp = env.doRequest(t, "GET", "/api/v1/domains/"+domainID+"/spam-lists", "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("list spam lists: expected 200, got %d", resp.StatusCode)
+	}
+	list := parseBody(t, resp)["data"].([]any)
+	if len(list) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(list))
+	}
+
+	// List — filter kind=block.
+	resp = env.doRequest(t, "GET", "/api/v1/domains/"+domainID+"/spam-lists?kind=block", "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("list spam lists (kind=block): expected 200, got %d", resp.StatusCode)
+	}
+	filtered := parseBody(t, resp)["data"].([]any)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 block entry, got %d", len(filtered))
+	}
+
+	// Delete one entry.
+	resp = env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID+"/spam-lists/"+entryID, "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("delete spam list entry: expected 200, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Confirm deletion via list.
+	resp = env.doRequest(t, "GET", "/api/v1/domains/"+domainID+"/spam-lists", "")
+	list = parseBody(t, resp)["data"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("expected 1 remaining entry, got %d", len(list))
+	}
+
+	// Cleanup. Domain delete cascades to remaining spam-list entries
+	// via the FK ON DELETE CASCADE — that's covered separately by
+	// TestDomainDelete_CascadesSpamLists.
+	deactivateLicense(t, env)
+	env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
+}
+
+func TestSpamListsCRUD_FreeReturns403(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+	domainID := createDomainForTest(t, env, "spamlist-free")
+
+	mock := activateLicenseWithFeatures(t, env, "basic_mail")
+	defer mock.Close()
+	defer deactivateLicense(t, env)
+
+	// POST — Free → 403.
+	resp := env.doRequest(t, "POST", "/api/v1/domains/"+domainID+"/spam-lists",
+		`{"kind":"block","scope":"domain","pattern":"spam.example"}`)
+	if resp.StatusCode != 403 {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("Free POST spam-lists: expected 403, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	resp.Body.Close()
+
+	// GET — Free → 403.
+	resp = env.doRequest(t, "GET", "/api/v1/domains/"+domainID+"/spam-lists", "")
+	if resp.StatusCode != 403 {
+		t.Fatalf("Free GET spam-lists: expected 403, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// DELETE — Free → 403 (entry doesn't exist but the gate fires before lookup).
+	resp = env.doRequest(t, "DELETE",
+		"/api/v1/domains/"+domainID+"/spam-lists/00000000-0000-0000-0000-000000000000", "")
+	if resp.StatusCode != 403 {
+		t.Fatalf("Free DELETE spam-lists: expected 403, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Cleanup.
+	deactivateLicense(t, env)
+	env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
+}
+
+func TestSpamListsValidation(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+	domainID := createDomainForTest(t, env, "spamlist-val")
+
+	mock := activateLicenseWithFeatures(t, env, "basic_mail", "advanced_spam")
+	defer mock.Close()
+	defer deactivateLicense(t, env)
+
+	cases := []struct {
+		name string
+		body string
+		code string
+	}{
+		{"empty pattern", `{"kind":"block","scope":"domain","pattern":""}`, "MISSING_FIELDS"},
+		{"missing pattern", `{"kind":"block","scope":"domain"}`, "MISSING_FIELDS"},
+		{"invalid kind", `{"kind":"deny","scope":"domain","pattern":"spam.example"}`, "INVALID_KIND"},
+		{"invalid scope", `{"kind":"block","scope":"sender","pattern":"spam.example"}`, "INVALID_SCOPE"},
+		{"email scope without @", `{"kind":"block","scope":"email","pattern":"spam.example"}`, "INVALID_PATTERN"},
+		{"domain scope with @", `{"kind":"block","scope":"domain","pattern":"x@spam.example"}`, "INVALID_PATTERN"},
+		{"email scope empty local part", `{"kind":"block","scope":"email","pattern":"@spam.example"}`, "INVALID_PATTERN"},
+	}
+	for _, tc := range cases {
+		resp := env.doRequest(t, "POST", "/api/v1/domains/"+domainID+"/spam-lists", tc.body)
+		if resp.StatusCode != 400 {
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Errorf("%s: expected 400, got %d (body: %s)", tc.name, resp.StatusCode, raw)
+			continue
+		}
+		body := parseBody(t, resp)
+		if errObj, _ := body["error"].(map[string]any); errObj == nil || errObj["code"] != tc.code {
+			t.Errorf("%s: expected error.code %q, got %v", tc.name, tc.code, body["error"])
+		}
+	}
+
+	// Cleanup.
+	deactivateLicense(t, env)
+	env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
+}
+
+// TestDomainDelete_CascadesSpamLists proves the FK ON DELETE CASCADE on
+// domain_spam_lists.domain_id works through the actual delete path —
+// the orchestrator regen path in session 2 assumes the table never
+// contains entries pointing at a deleted domain.
+func TestDomainDelete_CascadesSpamLists(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+	domainID := createDomainForTest(t, env, "spamlist-cascade")
+
+	mock := activateLicenseWithFeatures(t, env, "basic_mail", "advanced_spam")
+	defer mock.Close()
+	defer deactivateLicense(t, env)
+
+	// Add two entries.
+	for _, b := range []string{
+		`{"kind":"block","scope":"domain","pattern":"spam-a.example"}`,
+		`{"kind":"allow","scope":"email","pattern":"vip@b.example"}`,
+	} {
+		resp := env.doRequest(t, "POST", "/api/v1/domains/"+domainID+"/spam-lists", b)
+		if resp.StatusCode != 201 {
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("seed entry: expected 201, got %d (body: %s)", resp.StatusCode, raw)
+		}
+		resp.Body.Close()
+	}
+
+	// Confirm 2 present.
+	resp := env.doRequest(t, "GET", "/api/v1/domains/"+domainID+"/spam-lists", "")
+	if entries := parseBody(t, resp)["data"].([]any); len(entries) != 2 {
+		t.Fatalf("seed expected 2 entries, got %d", len(entries))
+	}
+
+	// Drop the license so the spam-list endpoint is no longer gated for the
+	// post-delete probe (we want to read 0 entries through the API after
+	// the cascade fires; with the gate active that probe would 403).
+	deactivateLicense(t, env)
+
+	// Delete the domain.
+	resp = env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("delete domain: expected 200, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	resp.Body.Close()
+
+	// Probe through the API after re-activating Pro: the gate-protected
+	// list endpoint must respond, and the domain must be gone (404 from
+	// the per-domain handler's GetByID precheck).
+	mock2 := activateLicenseWithFeatures(t, env, "basic_mail", "advanced_spam")
+	defer mock2.Close()
+	resp = env.doRequest(t, "GET", "/api/v1/domains/"+domainID+"/spam-lists", "")
+	if resp.StatusCode != 404 {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("list after domain delete: expected 404 (domain gone), got %d (body: %s)", resp.StatusCode, raw)
+	}
+	resp.Body.Close()
 }
