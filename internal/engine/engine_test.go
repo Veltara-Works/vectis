@@ -223,6 +223,88 @@ func TestAdvancedSpamConfig_EmptyEntriesProducesEmptyMaps(t *testing.T) {
 	}
 }
 
+// TestAdvancedSpamLua_LookupUsesEqTrue locks the membership check at
+// `== true`. rspamd's `set` map type returns boolean (true / false), not
+// (something / nil) — using `~= nil` matches every key (false ~= nil is
+// true) and the prefilter rejects every message regardless of map content.
+// Caught live on rspamd 3.10.2 during v0.1.1 → v0.1.2 fix walk.
+func TestAdvancedSpamLua_LookupUsesEqTrue(t *testing.T) {
+	data := testData()
+	data.SpamListEntries = nil
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var lua string
+	for _, f := range files {
+		if f.RelPath == "rspamd/rspamd.local.lua" {
+			lua = string(f.Content)
+			break
+		}
+	}
+	if lua == "" {
+		t.Fatal("rspamd.local.lua not generated")
+	}
+	if !strings.Contains(lua, "== true") {
+		t.Errorf("rspamd.local.lua must check `== true` (set map returns false on miss, not nil); got:\n%s", lua)
+	}
+	if strings.Contains(lua, "~= nil") {
+		t.Errorf("rspamd.local.lua must NOT use `~= nil` for set membership — false ~= nil is true and matches every key")
+	}
+}
+
+// TestAdvancedSpamCompose_APIBindMount locks in the api → host bind mount
+// for /var/vectis/generated/rspamd. Without this, regenerateRspamdSpamConfig
+// writes the spam maps to the api container's overlay filesystem; rspamd
+// (which reads from the host path) never sees them and the feature silently
+// no-ops on every install. Caught on sysadmin1001 during v0.1.1 E2E.
+func TestAdvancedSpamCompose_APIBindMount(t *testing.T) {
+	files, _ := Generate(testData())
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if compose == "" {
+		t.Fatal("docker-compose.yml not generated")
+	}
+	apiBlock := serviceBlock(compose, "api")
+	if apiBlock == "" {
+		t.Fatal("api service block not found in compose")
+	}
+	if !strings.Contains(apiBlock, "/var/vectis/generated/rspamd:/var/vectis/generated/rspamd") {
+		t.Errorf("api service must bind-mount /var/vectis/generated/rspamd so spam-list regen reaches rspamd; got:\n%s", apiBlock)
+	}
+}
+
+// serviceBlock returns the compose service block for `name`, ending at the
+// next top-level `  <name>:` line (or end of file). A service header is
+// exactly `  ` + word + `:` at the start of a line; continuation lines for
+// the current service all have at least 4 leading spaces or are blank.
+func serviceBlock(compose, name string) string {
+	header := "\n  " + name + ":\n"
+	start := strings.Index(compose, header)
+	if start < 0 {
+		return ""
+	}
+	rest := compose[start+1:]
+	lines := strings.SplitAfter(rest, "\n")
+	var b strings.Builder
+	for i, ln := range lines {
+		trimmed := strings.TrimRight(ln, "\n")
+		if i > 0 &&
+			strings.HasPrefix(trimmed, "  ") &&
+			!strings.HasPrefix(trimmed, "   ") &&
+			strings.HasSuffix(trimmed, ":") {
+			break
+		}
+		b.WriteString(ln)
+	}
+	return b.String()
+}
+
 func TestDKIMSigningConf(t *testing.T) {
 	files, _ := Generate(testData())
 	var dkimConf string

@@ -47,6 +47,10 @@ services:
       - mail-data:/var/vectis/mail
       - dkim-keys:/var/vectis/dkim
       - postfix-logs:/var/log/postfix:ro
+      # Advanced Spam (Pro): api writes per-domain rspamd settings + spam-list
+      # map files here; rspamd reads them via its own bind mounts on the same
+      # path. RW for api so regenerateRspamdSpamConfig can rewrite atomically.
+      - /var/vectis/generated/rspamd:/var/vectis/generated/rspamd
     depends_on:
       postgres:
         condition: service_healthy

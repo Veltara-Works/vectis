@@ -20,8 +20,11 @@ maps.allow_domain = rspamd_config:add_map{ url = '/etc/rspamd/local.d/maps/allow
 
 local function lookup(map, key)
   if not map then return false end
-  local v = map:get_key(key)
-  return v ~= nil
+  -- rspamd `set` map: get_key returns boolean true on hit, false on miss.
+  -- A non-strict truthiness check would also match every miss because
+  -- `false` is not nil — so we compare for explicit `true`.
+  -- Verified live on rspamd 3.10.2 during v0.1.1 → v0.1.2 fix walk.
+  return map:get_key(key) == true
 end
 
 local function principal_rcpt_domain(task)
