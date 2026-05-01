@@ -232,6 +232,41 @@ func run(logger *slog.Logger) error {
 		return nil, fmt.Errorf("docker-compose.yml not present in rendered templates")
 	})
 
+	// Wire up the per-service config generator that startup self-heal uses
+	// to reconcile structural drift across all rendered service configs
+	// (postfix/dovecot/rspamd/traefik/...) under
+	// cfg.GeneratedConfigDir. v0.1.5 onward — closes the prod-drift gap
+	// where install-time configs (named-volume layouts, legacy traefik-acme
+	// path, missing rspamd files) survive multiple Apply walks because
+	// Apply only ever rewrote docker-compose.yml.
+	orch.SetConfigGenerator(func(ctx context.Context, releaseTag string) ([]orchestrator.ConfigFile, error) {
+		domains, err := domainRepo.List(ctx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("list domains: %w", err)
+		}
+		data := engine.NewTemplateData(cfg, secrets, domains)
+		if releaseTag != "" {
+			data.Version = releaseTag
+		}
+		files, err := engine.Generate(data)
+		if err != nil {
+			return nil, fmt.Errorf("render templates: %w", err)
+		}
+		out := make([]orchestrator.ConfigFile, 0, len(files))
+		for _, f := range files {
+			// Compose lives at /etc/vectis and is owned by ComposeGenerator.
+			if f.RelPath == "docker-compose.yml" {
+				continue
+			}
+			out = append(out, orchestrator.ConfigFile{
+				RelPath: f.RelPath,
+				Content: f.Content,
+				Mode:    f.Mode,
+			})
+		}
+		return out, nil
+	})
+
 	// -----------------------------------------------------------------------
 	// Start HTTP server
 	// -----------------------------------------------------------------------

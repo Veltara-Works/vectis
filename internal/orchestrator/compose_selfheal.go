@@ -70,12 +70,14 @@ func decideSelfHealAction(prev, current string, hasComposeGen, hasComposePath bo
 // On its first startup post-Apply (i.e. when the binary version differs
 // from the last-seen version), this method:
 //  1. Renders the docker-compose.yml from the running binary's templates.
-//  2. Compares to on-disk; if drift is detected, backs up the current
-//     compose and atomically writes the regenerated content.
-//  3. Calls `docker compose up -d` on non-data services (excluding self)
-//     so the new mounts/services come live without requiring another
-//     manual Apply.
-//  4. Records the binary version to lastSeenVersionKey so subsequent
+//  2. Renders the per-service config set (postfix/dovecot/rspamd/traefik/...)
+//     under cfg.GeneratedConfigDir (when configGen is wired).
+//  3. Compares both to on-disk; if drift is detected, backs up the current
+//     content and atomically writes the regenerated content.
+//  4. If anything changed, calls `docker compose up -d` on non-data services
+//     (excluding self) so the new mounts/services come live without
+//     requiring another manual Apply.
+//  5. Records the binary version to lastSeenVersionKey so subsequent
 //     restarts at the same version are no-ops.
 //
 // Failures are logged but never propagated — the orchestrator must come
@@ -86,7 +88,9 @@ func decideSelfHealAction(prev, current string, hasComposeGen, hasComposePath bo
 //   - Does nothing for "dev" or "" binary versions (avoids surprising
 //     local development workflows).
 //   - Does nothing when composeGen is nil (test rigs, partial wiring).
-//   - Does nothing when a previous version key isn't set (fresh install).
+//   - Config regen is best-effort additive: when configGen is nil we still
+//     run compose regen (covers v0.1.3-style transitions where this layer
+//     wasn't yet wired).
 //   - Does nothing when the version hasn't changed since last boot.
 func (o *Orchestrator) SelfHealComposeOnVersionTransition(
 	ctx context.Context,
@@ -118,61 +122,109 @@ func (o *Orchestrator) SelfHealComposeOnVersionTransition(
 		return
 	case selfHealReconcile:
 		if prev == "" {
-			o.logger.Info("self-heal: no prior version recorded, checking compose drift (covers upgrade path where old orchestrator never wrote the key)",
+			o.logger.Info("self-heal: no prior version recorded, checking compose+config drift (covers upgrade path where old orchestrator never wrote the key)",
 				"current", binaryVersion)
 		} else {
-			o.logger.Info("self-heal: version transition detected, checking compose drift",
+			o.logger.Info("self-heal: version transition detected, checking compose+config drift",
 				"prev", prev, "current", binaryVersion)
 		}
 		// Fall through to reconcile path below.
 	}
 
-	// Use a colocated backup path so it lives next to other apply backups.
-	// Timestamped to avoid clobbering an in-flight Apply's backup (paranoid;
-	// self-heal runs at startup so no Apply should be running).
-	backupPath := filepath.Join(
+	// Shared timestamp keeps the per-stage backups colocated and easy to
+	// pair up during forensics.
+	ts := time.Now().UTC().Format("2006-01-02T15-04-05")
+	composeBackupPath := filepath.Join(
 		o.cfg.SnapshotDir,
-		fmt.Sprintf("self-heal-%s-compose.yml", time.Now().UTC().Format("2006-01-02T15-04-05")),
+		fmt.Sprintf("self-heal-%s-compose.yml", ts),
+	)
+	configsBackupDir := filepath.Join(
+		o.cfg.SnapshotDir,
+		fmt.Sprintf("self-heal-%s-configs", ts),
 	)
 
-	rewritten, err := RegenerateCompose(
+	composeRewritten, err := RegenerateCompose(
 		ctx,
 		o.cfg.ComposePaths[0],
-		backupPath,
+		composeBackupPath,
 		binaryVersion,
 		o.composeGen,
 	)
 	if err != nil {
-		o.logger.Error("self-heal: regenerate failed (continuing startup)",
+		o.logger.Error("self-heal: compose regenerate failed (continuing startup)",
 			"error", err)
 		// Don't update last-seen-version — let next boot retry.
 		return
 	}
-	if !rewritten {
-		o.logger.Info("self-heal: on-disk compose already matches templates, no action needed")
+
+	configsRewritten := false
+	var configsChanged []string
+	if o.configGen != nil && o.cfg.GeneratedConfigDir != "" {
+		configsRewritten, configsChanged, err = RegenerateConfigs(
+			ctx,
+			o.cfg.GeneratedConfigDir,
+			configsBackupDir,
+			binaryVersion,
+			o.configGen,
+		)
+		if err != nil {
+			o.logger.Error("self-heal: config regenerate failed — restoring any partial changes",
+				"error", err,
+				"changed_so_far", configsChanged)
+			if restoreErr := RestoreConfigsBackup(o.cfg.GeneratedConfigDir, configsBackupDir, configsChanged); restoreErr != nil {
+				o.logger.Error("self-heal: CRITICAL — config restore failed",
+					"backup", configsBackupDir, "restore_error", restoreErr)
+			}
+			if composeRewritten {
+				if restoreErr := RestoreComposeBackup(o.cfg.ComposePaths[0], composeBackupPath); restoreErr != nil {
+					o.logger.Error("self-heal: CRITICAL — compose restore failed too",
+						"backup", composeBackupPath, "restore_error", restoreErr)
+				}
+			}
+			// Don't update last-seen-version — let next boot retry.
+			return
+		}
+	} else if o.configGen == nil {
+		o.logger.Info("self-heal: config generator not wired — skipping per-service config regen",
+			"version", binaryVersion)
+	}
+
+	if !composeRewritten && !configsRewritten {
+		o.logger.Info("self-heal: on-disk compose+configs already match templates, no action needed")
 		if writeErr := o.writeLastSeenVersion(ctx, binaryVersion); writeErr != nil {
 			o.logger.Warn("self-heal: failed to update last-seen version", "error", writeErr)
 		}
 		return
 	}
 
-	o.logger.Info("self-heal: compose regenerated, recreating non-data services to pick up changes",
-		"backup", backupPath, "services", VectisImageServicesExcludingSelf())
+	o.logger.Info("self-heal: drift fixed, recreating non-data services to pick up changes",
+		"compose_rewritten", composeRewritten,
+		"configs_rewritten", configsRewritten,
+		"configs_changed", configsChanged,
+		"compose_backup", composeBackupPath,
+		"configs_backup", configsBackupDir,
+		"services", VectisImageServicesExcludingSelf())
 
 	if err := o.docker.ApplyComposeServices(ctx, VectisImageServicesExcludingSelf()); err != nil {
-		o.logger.Error("self-heal: compose apply failed — rolling compose back",
+		o.logger.Error("self-heal: compose apply failed — rolling everything back",
 			"error", err)
-		if restoreErr := RestoreComposeBackup(o.cfg.ComposePaths[0], backupPath); restoreErr != nil {
-			o.logger.Error("self-heal: CRITICAL — restore failed too, manual recovery may be needed",
-				"backup", backupPath,
-				"restore_error", restoreErr,
-			)
+		if composeRewritten {
+			if restoreErr := RestoreComposeBackup(o.cfg.ComposePaths[0], composeBackupPath); restoreErr != nil {
+				o.logger.Error("self-heal: CRITICAL — compose restore failed, manual recovery may be needed",
+					"backup", composeBackupPath, "restore_error", restoreErr)
+			}
+		}
+		if configsRewritten {
+			if restoreErr := RestoreConfigsBackup(o.cfg.GeneratedConfigDir, configsBackupDir, configsChanged); restoreErr != nil {
+				o.logger.Error("self-heal: CRITICAL — configs restore failed, manual recovery may be needed",
+					"backup", configsBackupDir, "restore_error", restoreErr)
+			}
 		}
 		// Don't update last-seen-version — let next boot retry.
 		return
 	}
 
-	o.logger.Info("self-heal: complete — non-data services running on regenerated compose",
+	o.logger.Info("self-heal: complete — non-data services running on regenerated compose+configs",
 		"version", binaryVersion)
 	if writeErr := o.writeLastSeenVersion(ctx, binaryVersion); writeErr != nil {
 		o.logger.Warn("self-heal: succeeded but failed to update last-seen version (will re-trigger next boot, expected to be a no-op)",

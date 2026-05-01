@@ -11,6 +11,7 @@ type Config struct {
 	ApplyTimeout       time.Duration // Overall apply cycle timeout (default 600s)
 	RollbackTimeout    time.Duration // Total rollback timeout (default 300s)
 	SnapshotDir        string        // Directory for pg_dump snapshots (default /var/vectis/snapshots)
+	GeneratedConfigDir string        // Root for per-service rendered configs (default /var/vectis/generated); self-heal writes here
 	ComposePaths       []string      // Ordered list of docker-compose files; multiple are merged via -f flags
 	ReleaseChannelURL  string        // URL of the release manifest (versions.json) consulted during Plan; empty disables lookup
 	DBHost             string        // Postgres host (for pg_dump/psql)
@@ -29,6 +30,7 @@ func DefaultConfig() Config {
 		ApplyTimeout:       600 * time.Second,
 		RollbackTimeout:    300 * time.Second,
 		SnapshotDir:        "/var/vectis/snapshots",
+		GeneratedConfigDir: "/var/vectis/generated",
 		ComposePaths:       []string{"/etc/vectis/docker-compose.yml"},
 		ReleaseChannelURL:  DefaultReleaseChannelURL,
 		DBHost:             "postgres",

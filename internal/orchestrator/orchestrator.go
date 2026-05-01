@@ -69,6 +69,7 @@ type Orchestrator struct {
 	snap       *SnapshotManager
 	logger     *slog.Logger
 	composeGen ComposeGenerator // set by main.go; nil = legacy tag-rewrite path
+	configGen  ConfigGenerator  // set by main.go; nil = self-heal skips per-service config regen
 }
 
 // New creates and initialises a new Orchestrator.
@@ -98,6 +99,15 @@ func New(ctx context.Context, db *pgxpool.Pool, vk valkey.Client, cfg Config, lo
 // (new bind mounts, new services, env tweaks).
 func (o *Orchestrator) SetComposeGenerator(gen ComposeGenerator) {
 	o.composeGen = gen
+}
+
+// SetConfigGenerator wires up the callback that self-heal uses to regenerate
+// per-service config files (postfix/dovecot/rspamd/traefik/...) under
+// cfg.GeneratedConfigDir. When nil, self-heal still regenerates compose but
+// leaves on-disk service configs alone — so v0.1.5's prod-drift fixes only
+// apply when this is wired by main.go.
+func (o *Orchestrator) SetConfigGenerator(gen ConfigGenerator) {
+	o.configGen = gen
 }
 
 // State returns the current orchestrator state.
