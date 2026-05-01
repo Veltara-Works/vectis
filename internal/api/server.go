@@ -403,6 +403,25 @@ func (s *Server) StartUsageReporter() {
 	}
 }
 
+// EnsureRspamdConfigFresh re-runs the per-domain rspamd config render on
+// startup so the on-disk Lua extension + four allow/block map files +
+// settings.conf reflect this binary's templates and the live database
+// state. Closes the upgrade-staleness gap surfaced on the v0.1.1 →
+// v0.1.3 sysadmin1001 walk: the old api wrote the rspamd files at
+// install/CRUD time and they were never refreshed by the upgrade —
+// leaving the previous-version Lua (with the v ~= nil bug) on disk
+// even after the api container moved to v0.1.3.
+//
+// Async to avoid blocking startup; rspamd reload is best-effort and
+// only matters for an immediate behaviour change. If reload fails
+// because rspamd hasn't started yet (race during stack-up), rspamd
+// will pick up the new content on its own first read of the maps.
+func (s *Server) EnsureRspamdConfigFresh() {
+	go func() {
+		s.regenerateRspamdSpamConfig()
+	}()
+}
+
 // StopUsageReporter stops the ValidonX usage metrics reporter.
 func (s *Server) StopUsageReporter() {
 	if s.usageReporter != nil {

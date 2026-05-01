@@ -117,6 +117,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	srv.StartWebhookDispatcher()
 	srv.StartPostfixLogTailer()
 	srv.StartUsageReporter()
+	srv.EnsureRspamdConfigFresh()
 
 	// Graceful shutdown.
 	errCh := make(chan error, 1)
