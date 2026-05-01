@@ -253,6 +253,18 @@ func run(logger *slog.Logger) error {
 
 	srv := orchestrator.NewServer(orch, srvCfg, logger.With("component", "http"))
 
+	// Self-heal compose on a detected version transition. Closes the
+	// cross-version gap left by §10's Phase-3.5 regen design: if the
+	// previous boot was on an older orchestrator binary, the on-disk
+	// compose may be missing structural template additions that ship in
+	// this version (new bind mounts, new services, etc.). Best-effort —
+	// failures are logged but never block startup. Called BEFORE server
+	// start so a fresh-replaced orchestrator is fully reconciled before
+	// it accepts API requests.
+	healCtx, healCancel := context.WithTimeout(ctx, 120*time.Second)
+	orch.SelfHealComposeOnVersionTransition(healCtx, version.Version)
+	healCancel()
+
 	// Start server in a goroutine.
 	errCh := make(chan error, 1)
 	go func() {
