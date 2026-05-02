@@ -103,8 +103,10 @@ type Server struct {
 	auditPruner    *audit.Pruner
 	sessionCleaner *auth.SessionCleaner
 	usageReporter  *validonx.UsageReporter
-	// featureGate is always non-nil. When ValidonX is not configured, it
-	// passes through every FeatureGate(...) call (free-tier mode).
+	// featureGate is always non-nil. When ValidonX is not configured the
+	// install runs as Free tier — only free-tier features pass; Pro/Enterprise
+	// gates deny with 403 / 402. Pre-v0.1.6 the unconfigured branch was an
+	// "allow everything" bypass; see feedback_featuregate_unconfigured_bypass.md.
 	featureGate *validonx.FeatureGateService
 }
 
@@ -209,9 +211,9 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	// the install-time / scripted-deploy fallback. Either source must
 	// provide base_url + service_key for the client to be Configured.
 	//
-	// FeatureGateService is always non-nil. When unconfigured, FeatureGate
-	// passes every request through (free-tier mode), so handlers can call
-	// s.featureGate.* unconditionally.
+	// FeatureGateService is always non-nil. When unconfigured the install runs
+	// as Free tier — only free-tier features (basic_mail) pass; Pro/Enterprise
+	// gates deny. Handlers can still call s.featureGate.* unconditionally.
 	{
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -685,9 +687,10 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireAdminOrAbove()).Delete("/mailboxes/{mailboxID}/impersonate", s.handleRevokeImpersonation)
 
 			// Per-domain analytics — Pro feature; gated by FeatureGate.
-			// Free installs (ValidonX unconfigured) pass through. Authenticated
-			// users on a paying customer with active Pro license: 200.
-			// Cancelled/lapsed Pro license past 30-day grace: 403 LICENSE_EXPIRED.
+			// Free installs (ValidonX unconfigured): 403 FEATURE_NOT_AVAILABLE
+			// since v0.1.6. Authenticated users on a paying customer with
+			// active Pro license: 200. Cancelled/lapsed Pro license past
+			// 30-day grace: 403 LICENSE_EXPIRED.
 			r.With(s.featureGate.FeatureGate(validonx.FeatureAnalytics)).
 				Get("/analytics", s.handleDomainAnalytics)
 

@@ -11,10 +11,12 @@ import (
 // handleOIDCProviders returns the list of enabled OIDC providers.
 // Used by the frontend to render SSO login buttons.
 //
-// On Free-tier installs the list is suppressed to an empty array, so the
-// Login page silently omits SSO buttons rather than showing buttons that
-// would 402/403 on click. The /auth/oidc/login and /auth/oidc/callback
-// routes carry their own request-layer gate as defence in depth.
+// On Free-tier installs (ValidonX unconfigured OR licensed but not entitled
+// to oidc_sso) the list is suppressed to an empty array, so the Login page
+// silently omits SSO buttons rather than showing buttons that would 402/403
+// on click. The /auth/oidc/login and /auth/oidc/callback routes carry their
+// own FeatureGateBrowser as defence in depth — both surfaces deny on Free
+// tier since v0.1.6 (pre-v0.1.6 the unconfigured branch passed through).
 func (s *Server) handleOIDCProviders(w http.ResponseWriter, r *http.Request) {
 	if s.oidcManager == nil || !s.oidcManager.HasProviders() {
 		respond(w, r, http.StatusOK, map[string]any{"providers": []string{}})

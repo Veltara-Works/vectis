@@ -81,8 +81,13 @@ func isFreeTierFeature(feature string) bool {
 // ---------------------------------------------------------------------------
 
 // FeatureGateService provides HTTP middleware for feature-gating based on
-// ValidonX license entitlements. When ValidonX is not configured, all
-// requests are allowed (free-tier behaviour).
+// ValidonX license entitlements. When ValidonX is not configured, the install
+// is treated as Free tier — only free-tier features (basic_mail) pass; any
+// Pro/Enterprise feature is denied with 403 / 402 + upgrade page.
+//
+// Pre-v0.1.6 the unconfigured path was an "allow everything" bypass; that
+// silently exposed every Pro/Enterprise endpoint on Free installs. See
+// feedback_featuregate_unconfigured_bypass.md.
 //
 // The underlying Client is stored in an atomic pointer so the License admin
 // API can hot-swap it when an admin saves new credentials, without restarting
@@ -205,9 +210,10 @@ func tierFromFeatures(features []string) string {
 // allows access to the specified feature.
 //
 // Behaviour:
-//  1. If ValidonX is not configured (client is nil), allow all requests (free tier).
-//  2. Free-tier features (basic_mail) are always allowed regardless of license.
-//  3. Check the Postgres-cached license for the tenant.
+//  1. Free-tier features (basic_mail) are always allowed.
+//  2. If ValidonX is not configured, the install is Free tier; non-free
+//     features are denied with 403 FEATURE_NOT_AVAILABLE.
+//  3. Otherwise check the Postgres-cached license for the tenant.
 //  4. If the cache is present and not expired, check for the feature.
 //  5. If the cache is expired (grace period exceeded), return 403 LICENSE_EXPIRED.
 //  6. If no cache exists, attempt a live license check and cache the result.
@@ -215,17 +221,21 @@ func tierFromFeatures(features []string) string {
 func (fgs *FeatureGateService) FeatureGate(feature string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			client := fgs.currentClient()
-
-			// Step 1: ValidonX not configured — free tier, allow everything.
-			if !client.Configured() {
+			// Step 1: Free-tier features are always allowed, regardless of
+			// licensing state.
+			if isFreeTierFeature(feature) {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// Step 2: Free-tier features are always allowed.
-			if isFreeTierFeature(feature) {
-				next.ServeHTTP(w, r)
+			// Step 2: ValidonX not configured → Free tier → deny non-free
+			// features. Pre-v0.1.6 this branch allowed everything; that silently
+			// exposed every Pro/Enterprise endpoint on Free installs (see
+			// feedback_featuregate_unconfigured_bypass.md).
+			client := fgs.currentClient()
+			if !client.Configured() {
+				writeFeatureError(w, http.StatusForbidden, ErrFeatureNotAvailable,
+					"This feature requires a Pro or Enterprise license: "+feature)
 				return
 			}
 
@@ -270,20 +280,22 @@ func (fgs *FeatureGateService) FeatureGate(feature string) func(http.Handler) ht
 // providers out of the public list endpoint when the SSO feature is gated).
 //
 // Behaviour mirrors FeatureGate's allow path, without writing an HTTP error:
-//   - ValidonX unconfigured → all features available (free-tier mode)
 //   - Free-tier features (basic_mail) always available
+//   - ValidonX unconfigured → Free tier → only free-tier features available
 //   - Otherwise consult the cache, falling back to a live refresh on miss
 //
 // On any error path that would have caused FeatureGate to deny, returns false.
 // Callers that need to distinguish "not entitled" from "couldn't tell" should
 // use FeatureGate at the route boundary.
 func (fgs *FeatureGateService) HasFeature(ctx context.Context, feature string) bool {
-	client := fgs.currentClient()
-	if !client.Configured() {
-		return true
-	}
 	if isFreeTierFeature(feature) {
 		return true
+	}
+	client := fgs.currentClient()
+	if !client.Configured() {
+		// Free tier — non-free features are not available. Pre-v0.1.6 this
+		// returned true; see feedback_featuregate_unconfigured_bypass.md.
+		return false
 	}
 	allowed, err := fgs.checkFeatureAccess(ctx, client.TenantID(), feature)
 	if err != nil {
@@ -311,14 +323,21 @@ func (fgs *FeatureGateService) HasFeature(ctx context.Context, feature string) b
 func (fgs *FeatureGateService) FeatureGateBrowser(feature, featureLabel, upgradeURL string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			client := fgs.currentClient()
-
-			if !client.Configured() {
+			if isFreeTierFeature(feature) {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if isFreeTierFeature(feature) {
-				next.ServeHTTP(w, r)
+
+			client := fgs.currentClient()
+			if !client.Configured() {
+				// Free tier — non-free feature denied. Pre-v0.1.6 this branch
+				// passed through; see feedback_featuregate_unconfigured_bypass.md.
+				if wantsJSON(r) {
+					writeFeatureError(w, http.StatusForbidden, ErrFeatureNotAvailable,
+						"This feature requires a Pro or Enterprise license: "+feature)
+					return
+				}
+				writeFeatureUpgradeHTML(w, featureLabel, upgradeURL, false)
 				return
 			}
 

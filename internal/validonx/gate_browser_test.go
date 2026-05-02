@@ -53,15 +53,22 @@ func TestWantsJSON(t *testing.T) {
 func TestHasFeature_Unconfigured(t *testing.T) {
 	gate := NewFeatureGateService(nil, nil, testLogger())
 
-	// Unconfigured installs are free-tier-with-everything-allowed at the
-	// middleware level, which means HasFeature must return true so the
-	// providers handler doesn't suppress OIDC buttons on a Vectis install
-	// that's running without ValidonX (e.g. the GA self-host build).
-	if !gate.HasFeature(context.Background(), FeatureOIDCSSO) {
-		t.Error("unconfigured gate must report features as available")
-	}
+	// Unconfigured = Free tier (since v0.1.6). Free-tier features remain
+	// available; Pro/Enterprise features must report unavailable so the
+	// OIDC providers list is suppressed and other handlers behave as if
+	// the customer holds no Pro entitlement. See
+	// feedback_featuregate_unconfigured_bypass.md.
 	if !gate.HasFeature(context.Background(), FeatureBasicMail) {
 		t.Error("unconfigured gate must report basic_mail as available")
+	}
+	if gate.HasFeature(context.Background(), FeatureOIDCSSO) {
+		t.Error("unconfigured gate must NOT report oidc_sso as available — Free tier has no Pro features")
+	}
+	if gate.HasFeature(context.Background(), FeatureAnalytics) {
+		t.Error("unconfigured gate must NOT report analytics as available — Free tier has no Pro features")
+	}
+	if gate.HasFeature(context.Background(), FeatureMultiTenant) {
+		t.Error("unconfigured gate must NOT report multi_tenant as available — Free tier has no Enterprise features")
 	}
 }
 
@@ -93,7 +100,11 @@ func (h *allowingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func TestFeatureGateBrowser_Unconfigured_Allows(t *testing.T) {
+// TestFeatureGateBrowser_Unconfigured_NonFree_Denies pins the v0.1.6 fix:
+// an unconfigured install is Free tier, and Pro/Enterprise features must
+// render the upgrade page (or 403 JSON) rather than passing through.
+// See feedback_featuregate_unconfigured_bypass.md.
+func TestFeatureGateBrowser_Unconfigured_NonFree_Denies(t *testing.T) {
 	gate := NewFeatureGateService(nil, nil, testLogger())
 
 	next := &allowingHandler{}
@@ -104,8 +115,50 @@ func TestFeatureGateBrowser_Unconfigured_Allows(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mw.ServeHTTP(rec, req)
 
+	if next.called != 0 {
+		t.Errorf("unconfigured gate must NOT pass through Pro features; next called %d times", next.called)
+	}
+	if rec.Code != http.StatusPaymentRequired {
+		t.Errorf("status = %d, want 402 (HTML upgrade page)", rec.Code)
+	}
+}
+
+// TestFeatureGateBrowser_Unconfigured_NonFree_DeniesJSON checks the JSON
+// content-negotiation branch of the same fix: API clients that explicitly
+// ask for JSON get the 403 envelope rather than HTML.
+func TestFeatureGateBrowser_Unconfigured_NonFree_DeniesJSON(t *testing.T) {
+	gate := NewFeatureGateService(nil, nil, testLogger())
+
+	next := &allowingHandler{}
+	mw := gate.FeatureGateBrowser(FeatureOIDCSSO, "OIDC single sign-on", "")(next)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/oidc/login/google", nil)
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	mw.ServeHTTP(rec, req)
+
+	if next.called != 0 {
+		t.Errorf("unconfigured gate must NOT pass through Pro features; next called %d times", next.called)
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (JSON envelope)", rec.Code)
+	}
+}
+
+// TestFeatureGateBrowser_Unconfigured_FreeTier_Allows pins the partial-allow
+// path: free-tier features (basic_mail) still pass on an unconfigured gate.
+func TestFeatureGateBrowser_Unconfigured_FreeTier_Allows(t *testing.T) {
+	gate := NewFeatureGateService(nil, nil, testLogger())
+
+	next := &allowingHandler{}
+	mw := gate.FeatureGateBrowser(FeatureBasicMail, "basic mail", "")(next)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	mw.ServeHTTP(rec, req)
+
 	if next.called != 1 {
-		t.Errorf("unconfigured gate must pass through; next called %d times", next.called)
+		t.Errorf("free-tier feature must pass through on unconfigured gate; next called %d times", next.called)
 	}
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", rec.Code)
