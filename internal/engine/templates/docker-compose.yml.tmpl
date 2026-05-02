@@ -96,6 +96,12 @@ services:
       # /etc/vectis is consistent with its existing privilege level. The api
       # service above keeps /etc/vectis mounted :ro — it only reads config.
       - /etc/vectis:/etc/vectis
+      # /var/vectis/generated holds the per-service rendered configs
+      # (postfix/dovecot/rspamd/...). Self-heal's RegenerateConfigs writes
+      # here on cross-version startup; without this mount the orchestrator
+      # silently fails to reconcile config drift on legacy installs.
+      # See feedback_v0.1.5_selfheal_legacy_install_broken.md (v0.1.6).
+      - /var/vectis/generated:/var/vectis/generated
       - snapshots:/var/vectis/snapshots
     depends_on:
       postgres:
@@ -247,8 +253,13 @@ services:
         condition: service_healthy
       postfix:
         condition: service_healthy
+    # roundcubemail:fpm-alpine doesn't ship php-fpm-healthcheck. The earlier
+    # template assumed it did and every fresh install reported the webmail
+    # container as "unhealthy" forever. Instead probe the FPM master process
+    # via busybox `ps` (always present in alpine images) — `[p]hp-fpm`
+    # excludes the grep itself from the match.
     healthcheck:
-      test: ["CMD-SHELL", "php-fpm-healthcheck || exit 1"]
+      test: ["CMD-SHELL", "ps -ef 2>/dev/null | grep -q '[p]hp-fpm: master' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

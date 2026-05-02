@@ -275,6 +275,23 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 		return nil, fmt.Errorf("read compose images: %w", err)
 	}
 
+	// Reject floating `:latest` tags on Vectis services. release.yml only
+	// updates `:latest` on stable releases (see feedback_latest_tag_unbumped),
+	// so an rc fix-forward can leave `:latest` pointing at an older release
+	// than the running stack. Diffing against a floating tag is meaningless
+	// — Apply would crash-loop api/orchestrator on migration mismatch when
+	// `:latest` silently rewinds.
+	for _, svc := range VectisImageServices {
+		img, ok := desired[svc]
+		if !ok {
+			continue
+		}
+		if imageHasFloatingTag(img) {
+			o.sm.Transition(ctx, StateFailed) //nolint:errcheck
+			return nil, fmt.Errorf("plan refused: service %q is pinned to floating tag %q in compose; pin to an explicit release tag (e.g. v0.1.6) so Plan can compare against a stable target", svc, img)
+		}
+	}
+
 	// Fetch the release-channel manifest and, on success, rewrite every
 	// vectis-* image in `desired` to the lockstep tag. Diff then reports
 	// "you're on rc21, released channel says rc24" — the actual point of
@@ -398,6 +415,19 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 
 	if plan == nil {
 		return "", fmt.Errorf("no plan available; run Plan first")
+	}
+
+	// Mount-config precondition. Apply MUST be able to write through
+	// /etc/vectis (Phase 3.5 atomic compose rewrite) and /var/vectis/generated
+	// (per-service config regen). Pre-v0.1.5 templates created the orchestrator
+	// container without these mounts; carrying through to Phase 3.5 produces
+	// a "read-only file system" error mid-Apply, which leaves the system
+	// half-upgraded with no clean rollback.
+	// See feedback_v0.1.5_selfheal_legacy_install_broken.md.
+	if len(o.cfg.ComposePaths) > 0 {
+		if issues := CheckOrchestratorMounts(o.cfg.ComposePaths[0], o.cfg.GeneratedConfigDir); len(issues) > 0 {
+			return "", fmt.Errorf("apply refused: %s", MountIssuesRemediation(issues))
+		}
 	}
 
 	// Apply timeout for the entire operation.

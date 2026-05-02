@@ -493,6 +493,79 @@ func TestOrchestratorEtcVectisMountIsRW(t *testing.T) {
 	}
 }
 
+// TestOrchestratorMountsGeneratedConfigDir locks in the v0.1.6 fix: the
+// orchestrator container needs a /var/vectis/generated bind mount so
+// RegenerateConfigs (called by self-heal on cross-version startup) can
+// write per-service config files. Pre-v0.1.5 templates omitted this mount
+// entirely; legacy installs hit "no such file or directory" on every
+// boot's reconcile attempt. See feedback_v0.1.5_selfheal_legacy_install_broken.md.
+func TestOrchestratorMountsGeneratedConfigDir(t *testing.T) {
+	files, _ := Generate(testData())
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if compose == "" {
+		t.Fatal("docker-compose.yml not generated")
+	}
+
+	orchIdx := strings.Index(compose, "\n  orchestrator:\n")
+	if orchIdx == -1 {
+		t.Fatal("orchestrator service block not found in compose")
+	}
+	rest := compose[orchIdx+len("\n  orchestrator:\n"):]
+	end := len(rest)
+	for i := 0; i < len(rest)-4; i++ {
+		if rest[i] == '\n' && rest[i+1] == ' ' && rest[i+2] == ' ' && rest[i+3] != ' ' && rest[i+3] != '-' && rest[i+3] != '#' {
+			end = i
+			break
+		}
+	}
+	orchBlock := rest[:end]
+	if !strings.Contains(orchBlock, "/var/vectis/generated:/var/vectis/generated") {
+		t.Error("orchestrator block missing /var/vectis/generated bind mount — self-heal RegenerateConfigs will fail on legacy installs")
+	}
+	if strings.Contains(orchBlock, "/var/vectis/generated:/var/vectis/generated:ro") {
+		t.Error("orchestrator /var/vectis/generated mount is :ro — RegenerateConfigs cannot atomic-write through it")
+	}
+}
+
+// TestWebmailHealthcheckIsNotPhpFpmHealthcheck guards against the v0.1.5
+// regression where the webmail block used `php-fpm-healthcheck` — a binary
+// that isn't in the upstream roundcubemail:fpm-alpine image. Containers
+// stayed marked unhealthy on every fresh install. v0.1.6 replaces it with
+// a busybox-ps probe of the FPM master process.
+func TestWebmailHealthcheckIsNotPhpFpmHealthcheck(t *testing.T) {
+	data := testData()
+	data.Webmail.Enabled = true
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if compose == "" {
+		t.Fatal("docker-compose.yml not generated")
+	}
+	if !strings.Contains(compose, "vectis-webmail") {
+		t.Fatal("webmail block not rendered despite Webmail.Enabled = true")
+	}
+	// Match only the test command line (the comment block above the
+	// healthcheck mentions php-fpm-healthcheck for context, so a naive
+	// substring search would false-positive).
+	if strings.Contains(compose, `"php-fpm-healthcheck`) {
+		t.Error("webmail healthcheck still uses php-fpm-healthcheck (not in roundcubemail:fpm-alpine image); replace with a probe that exists in the image")
+	}
+}
+
 func TestClamAVNoneOmitsContainer(t *testing.T) {
 	files, _ := Generate(testData()) // ClamAV profile is "none"
 	var compose, antivirusConf string

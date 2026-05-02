@@ -131,6 +131,42 @@ func (o *Orchestrator) SelfHealComposeOnVersionTransition(
 		// Fall through to reconcile path below.
 	}
 
+	// Mount-config precondition. Legacy installs (v0.1.0/v0.1.1/v0.1.2/v0.1.3
+	// templates) created the orchestrator container with /etc/vectis:ro and no
+	// /var/vectis/generated mount at all. Self-heal can't write through those
+	// mounts — RegenerateCompose / RegenerateConfigs both fail "read-only file
+	// system". v0.1.6 detects the situation up-front and skips cleanly with a
+	// loud, actionable log message rather than partial-failing on every boot.
+	// Don't update lastSeenVersion here so the next orchestrator restart
+	// retries (after the operator recreates the container against the v0.1.6
+	// template).
+	if issues := CheckOrchestratorMounts(o.cfg.ComposePaths[0], o.cfg.GeneratedConfigDir); len(issues) > 0 {
+		o.logger.Error("self-heal: skipping — orchestrator container is missing required bind mounts (legacy install detected)",
+			"version", binaryVersion,
+			"issues", issues,
+			"remediation", MountIssuesRemediation(issues))
+		return
+	}
+
+	// Phantom-container pre-check. Containers running outside the configured
+	// compose project (or under a different compose file) hold the project's
+	// network endpoints open. `compose up -d` fed into that state turns into
+	// a partial-stop cascade: the new endpoint can't bind, services restart
+	// in degraded order, and recovery becomes a manual job. Refuse-and-skip
+	// is safer — operator inspects + cleans up phantoms, then next boot
+	// re-runs self-heal.
+	// See feedback_phantom_containers_block_self_heal.md.
+	if phantoms, err := o.docker.listPhantomContainers(ctx); err != nil {
+		o.logger.Warn("self-heal: phantom-container probe failed (continuing — non-fatal)",
+			"error", err)
+	} else if len(phantoms) > 0 {
+		o.logger.Error("self-heal: skipping — phantom containers attached to vectis networks (will block compose up -d)",
+			"version", binaryVersion,
+			"phantoms", phantoms,
+			"remediation", "inspect each container with `docker inspect <name>`; if it's a stale or external attachment, `docker rm -f <name>` and restart the orchestrator. The next boot will retry self-heal.")
+		return
+	}
+
 	// Shared timestamp keeps the per-stage backups colocated and easy to
 	// pair up during forensics.
 	ts := time.Now().UTC().Format("2006-01-02T15-04-05")

@@ -116,6 +116,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # `:latest` must move only on stable tags. rc/beta tags publish only
+      # the version-pinned image so they can never demote `:latest` below
+      # the most recent stable release. See feedback_latest_tag_unbumped.md.
+      - name: Compute image tags
+        id: tags
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAMESPACE: ${{ env.IMAGE_NAMESPACE }}
+          VERSION: ${{ needs.build-binary.outputs.version }}
+          SVC: ${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          IMAGE="${REGISTRY}/${IMAGE_NAMESPACE}/vectis-${SVC}"
+          TAGS="${IMAGE}:${VERSION}"
+          if [[ "$VERSION" != *-rc* && "$VERSION" != *-beta* ]]; then
+            TAGS="${TAGS}"$'\n'"${IMAGE}:latest"
+          fi
+          {
+            echo 'tags<<EOF'
+            echo "$TAGS"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build & push
         uses: docker/build-push-action@v6
         with:
@@ -123,9 +146,7 @@ jobs:
           file: docker/${{ matrix.service }}/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/vectis-${{ matrix.service }}:${{ needs.build-binary.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/vectis-${{ matrix.service }}:latest
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             VERSION=${{ needs.build-binary.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.service }}

@@ -365,6 +365,115 @@ func (dm *DockerManager) GetContainerVersions(ctx context.Context) (map[string]s
 	return versions, nil
 }
 
+// listPhantomContainers returns the names of containers attached to any
+// vectis_* docker network but NOT defined by the configured compose project.
+// These are typically containers that were started outside the project (e.g.
+// `docker run` against a vectis-* image) or under a different compose file —
+// either way, they hold the network endpoint open and break compose-up's
+// recreate path with "active endpoints" errors. Catching them up-front lets
+// self-heal refuse-and-skip rather than partial-stopping the live stack.
+//
+// Detection logic:
+//   - Enumerate networks whose name has the project's compose-derived prefix
+//     ("vectis_") OR a vectis-* shape (covers networks created via `docker
+//     network create vectis_xxx` outside compose).
+//   - For each network, list attached containers via `docker network inspect`.
+//   - Filter out any container whose name is `vectis-<svc>` for an svc
+//     defined in the compose file — those are legitimate, project-managed
+//     services.
+//
+// Returns the deduplicated list of phantom container names. A non-nil error
+// means the probe itself failed (e.g. docker daemon unreachable), in which
+// case the caller should treat the result as inconclusive — neither
+// "phantoms exist" nor "no phantoms".
+func (dm *DockerManager) listPhantomContainers(ctx context.Context) ([]string, error) {
+	composeServices, err := dm.composeServices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("enumerate compose services: %w", err)
+	}
+	expected := make(map[string]bool, len(composeServices))
+	for svc := range composeServices {
+		expected[containerName(svc)] = true
+	}
+
+	networks, err := dm.listVectisNetworks(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list vectis networks: %w", err)
+	}
+
+	seen := make(map[string]bool)
+	var phantoms []string
+	for _, net := range networks {
+		names, err := dm.containersOnNetwork(ctx, net)
+		if err != nil {
+			dm.logger.Debug("network inspect failed (skipping)", "network", net, "error", err)
+			continue
+		}
+		for _, name := range names {
+			if expected[name] || seen[name] {
+				continue
+			}
+			seen[name] = true
+			phantoms = append(phantoms, name)
+		}
+	}
+	return phantoms, nil
+}
+
+// listVectisNetworks returns docker network names that look like they belong
+// to the Vectis compose project. Matches the prefix "vectis_" (compose's
+// default project-network naming) and "vectis-" (alternate styles seen on
+// older installs).
+func (dm *DockerManager) listVectisNetworks(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "network", "ls", "--format", "{{.Name}}")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("docker network ls: %w", err)
+	}
+	var out []string
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		if strings.HasPrefix(name, "vectis_") || strings.HasPrefix(name, "vectis-") {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+// containersOnNetwork lists the names of containers attached to a docker
+// network. Uses `docker network inspect` JSON output rather than the format
+// template so multi-container networks parse reliably.
+func (dm *DockerManager) containersOnNetwork(ctx context.Context, network string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "network", "inspect", network)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("docker network inspect %s: %w", network, err)
+	}
+	var parsed []struct {
+		Containers map[string]struct {
+			Name string `json:"Name"`
+		} `json:"Containers"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &parsed); err != nil {
+		return nil, fmt.Errorf("parse network inspect: %w", err)
+	}
+	if len(parsed) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(parsed[0].Containers))
+	for _, c := range parsed[0].Containers {
+		if c.Name != "" {
+			out = append(out, c.Name)
+		}
+	}
+	return out, nil
+}
+
 // getContainerImage returns the image reference for a running container.
 func (dm *DockerManager) getContainerImage(ctx context.Context, name string) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", "inspect",

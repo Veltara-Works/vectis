@@ -1,6 +1,9 @@
 package orchestrator
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Plan describes the diff between the current and desired system state.
 // Computed by Plan() and consumed by Apply(). Becomes stale if the system
@@ -36,6 +39,38 @@ type PlanChange struct {
 // IsEmpty reports whether the plan contains no changes.
 func (p *Plan) IsEmpty() bool {
 	return len(p.Changes) == 0 && p.MigrationsUp == 0
+}
+
+// imageHasFloatingTag reports whether a docker image reference uses the
+// `:latest` tag (explicit or implicit). Plan rejects compose files that
+// pin Vectis services to floating tags because:
+//   - release.yml's `:latest` is published only on stable tags. An rc bump
+//     followed by a release.yml fix-forward can leave `:latest` pointing at
+//     an older release than the running stack, which on `docker compose pull`
+//     would silently downgrade api/orchestrator and crash-loop on migration
+//     mismatch (see feedback_latest_tag_unbumped.md).
+//   - Apply diffs running-vs-declared images to compute Plan.Changes; with
+//     a floating tag, "running == declared" is meaningless because the
+//     declared tag is whatever happens to be live in ghcr at the moment.
+//
+// The check ignores image references with no tag (no Vectis ghcr image is
+// shipped without a version tag) and any registry-host portion of the ref.
+func imageHasFloatingTag(image string) bool {
+	if image == "" {
+		return false
+	}
+	// Strip everything before the last "/" so we only look at the
+	// "name:tag" segment. ghcr.io/owner/repo:tag → repo:tag.
+	name := image
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	idx := strings.LastIndex(name, ":")
+	if idx < 0 {
+		// No tag at all means docker defaults to :latest. Reject.
+		return true
+	}
+	return name[idx+1:] == "latest"
 }
 
 // IsStale checks whether the plan's baseline still matches the current system
