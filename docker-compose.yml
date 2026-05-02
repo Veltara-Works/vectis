@@ -46,7 +46,7 @@ services:
       - vectis-data
 
   postfix:
-    image: ghcr.io/veltara-works/vectis-postfix:v0.1.0
+    image: ghcr.io/veltara-works/vectis-postfix:v0.1.5
     container_name: vectis-postfix
     hostname: mail.vectismail.com
     restart: unless-stopped
@@ -76,7 +76,7 @@ services:
       - vectis-data
 
   dovecot:
-    image: ghcr.io/veltara-works/vectis-dovecot:v0.1.0
+    image: ghcr.io/veltara-works/vectis-dovecot:v0.1.5
     container_name: vectis-dovecot
     restart: unless-stopped
     ports:
@@ -96,7 +96,7 @@ services:
       - vectis-data
 
   rspamd:
-    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.0
+    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.5
     container_name: vectis-rspamd
     restart: unless-stopped
     volumes:
@@ -111,7 +111,7 @@ services:
       - vectis-data
 
   api:
-    image: ghcr.io/veltara-works/vectis-api:v0.1.0
+    image: ghcr.io/veltara-works/vectis-api:v0.1.5
     container_name: vectis-api
     restart: unless-stopped
     ports:
@@ -140,7 +140,7 @@ services:
       - vectis-orchestrator
 
   orchestrator:
-    image: ghcr.io/veltara-works/vectis-orchestrator:v0.1.0
+    image: ghcr.io/veltara-works/vectis-orchestrator:v0.1.5
     container_name: vectis-orchestrator
     restart: unless-stopped
     environment:
@@ -189,7 +189,7 @@ services:
       retries: 3
 
   cert-extractor:
-    image: ghcr.io/veltara-works/vectis-cert-extractor:v0.1.0
+    image: ghcr.io/veltara-works/vectis-cert-extractor:v0.1.5
     container_name: vectis-cert-extractor
     restart: unless-stopped
     networks:
