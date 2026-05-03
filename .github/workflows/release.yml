@@ -21,16 +21,16 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       sha256: ${{ steps.checksum.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: version
         run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -89,7 +89,7 @@ jobs:
           done
 
       - name: Upload binary to GitHub Release
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: vectis-linux-amd64
           path: |
@@ -106,7 +106,7 @@ jobs:
       matrix:
         service: [api, orchestrator, postfix, dovecot, rspamd, clamav, cert-extractor]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: docker/setup-buildx-action@v3
 
@@ -157,11 +157,11 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [build-binary, build-images]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: vectis-linux-amd64
 
