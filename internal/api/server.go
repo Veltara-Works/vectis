@@ -22,6 +22,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/backup"
 	"github.com/Veltara-Works/vectis/internal/cluster"
 	"github.com/Veltara-Works/vectis/internal/config"
+	"github.com/Veltara-Works/vectis/internal/dkim"
 	"github.com/Veltara-Works/vectis/internal/mail"
 	"github.com/Veltara-Works/vectis/internal/mail/postfixlog"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
@@ -131,6 +132,16 @@ type Config struct {
 
 // New creates a new API server with all routes registered.
 func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *Server {
+	// Self-heal DKIM key permissions on every startup. Pre-v0.1.6 keys were
+	// written 0600 root, invisible to the rspamd worker (uid 100). Without
+	// this pass, upgrading installs would still have outbound DKIM signing
+	// silently broken even after the GenerateKey perm fix landed.
+	if cfg.DKIMBasePath != "" {
+		if err := dkim.RepairPerms(cfg.DKIMBasePath); err != nil {
+			logger.Warn("dkim RepairPerms failed (non-fatal)", "error", err, "base_path", cfg.DKIMBasePath)
+		}
+	}
+
 	s := &Server{
 		logger:       logger,
 		db:           db,

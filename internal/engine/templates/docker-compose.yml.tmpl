@@ -168,6 +168,11 @@ services:
     ports:
       - "993:993"
       - "995:995"
+      # ManageSieve protocol (RFC 5804) — clients use this to upload server-side
+      # filter scripts. Dovecot listens on 4190 inside the container; the host
+      # port mapping was missing pre-v0.1.6, so external sieve clients
+      # (Roundcube, Thunderbird, etc.) could not reach it. Phase 2 E2E gap.
+      - "4190:4190"
     volumes:
       - /var/vectis/generated/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro
       - /var/vectis/generated/dovecot/dovecot-sql.conf.ext:/etc/dovecot/dovecot-sql.conf.ext:ro
