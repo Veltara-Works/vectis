@@ -28,8 +28,10 @@ $config['x_frame_options'] = 'sameorigin';
 // SQLite database for Roundcube metadata (contacts, identities, cache).
 $config['db_dsnw'] = 'sqlite:////var/roundcube/db/roundcube.db?mode=0640';
 
-// Skin — use Elastic (responsive) as base.
-$config['skin'] = 'elastic';
+// Skin — Vectis skin extends Elastic via skins/vectis/meta.json.
+// Skin assets are rendered by the config engine and bind-mounted at
+// /var/www/html/skins/vectis (see docker-compose.yml webmail volumes).
+$config['skin'] = 'vectis';
 
 // Plugins.
 $config['plugins'] = [

@@ -58,6 +58,8 @@ func TestGenerate(t *testing.T) {
 		"traefik/traefik.yml":              false,
 		"traefik/dynamic.yml":              false,
 		"docker-compose.yml":               false,
+		"webmail/skin/meta.json":           false,
+		"webmail/skin/styles.css":          false,
 	}
 	for _, f := range files {
 		if _, ok := expected[f.RelPath]; ok {

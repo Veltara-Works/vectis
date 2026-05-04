@@ -243,7 +243,12 @@ services:
     volumes:
       - webmail-config:/var/roundcube/config:ro
       - webmail-data:/var/roundcube/db
-      - webmail-skin:/var/roundcube/skins/vectis:ro
+      # Vectis skin is rendered by the config engine to /var/vectis/generated
+      # and bind-mounted into the path Roundcube actually reads
+      # (/var/www/html/skins/<skin>). Pre-v0.1.8 this was a named volume at
+      # /var/roundcube/skins/vectis — wrong path, never loaded; see
+      # docs/notes/deferred-items.md §13.
+      - /var/vectis/generated/webmail/skin:/var/www/html/skins/vectis:ro
     environment:
       ROUNDCUBEMAIL_DEFAULT_HOST: "ssl://vectis-dovecot"
       ROUNDCUBEMAIL_DEFAULT_PORT: "993"
@@ -251,7 +256,7 @@ services:
       ROUNDCUBEMAIL_SMTP_PORT: "587"
       ROUNDCUBEMAIL_DB_TYPE: "sqlite"
       ROUNDCUBEMAIL_UPLOAD_MAX_FILESIZE: "{{ if .Webmail.UploadMaxMB }}{{ .Webmail.UploadMaxMB }}{{ else }}25{{ end }}M"
-      ROUNDCUBEMAIL_SKIN: "elastic"
+      ROUNDCUBEMAIL_SKIN: "vectis"
       ROUNDCUBEMAIL_PLUGINS: "archive,managesieve,zipdownload"
     depends_on:
       dovecot:
@@ -583,7 +588,6 @@ volumes:
 {{ if .Webmail.Enabled }}
   webmail-config:
   webmail-data:
-  webmail-skin:
   webmail-nginx-config:
 {{ end }}
 {{ if .Observability.LokiEnabled }}
