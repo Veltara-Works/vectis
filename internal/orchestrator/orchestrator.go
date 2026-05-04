@@ -325,7 +325,7 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 	for _, svc := range VectisImageServices {
 		declared, ok := desired[svc]
 		if !ok {
-			continue // Not in compose — not orchestrator's concern.
+			continue // Not in compose — picked up by structural diff below.
 		}
 		running := versions[svc]
 		if running == declared {
@@ -342,6 +342,15 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 			NewImage: declared,
 		})
 	}
+
+	// Structural diff: catches profile-gated services that appear/disappear
+	// under config.yaml control (e.g. clamav.profile flips). Without this,
+	// Plan returns changes:null for config-only changes and Apply short-
+	// circuits before Phase 3.5 — the operator's config.yaml edit never
+	// lands on disk.
+	structural, structuralWarnings := o.detectStructuralChanges(ctx, releaseTag, desired)
+	changes = append(changes, structural...)
+	warnings = append(warnings, structuralWarnings...)
 
 	plan := &Plan{
 		ID:               types.NewUUIDv7(),
