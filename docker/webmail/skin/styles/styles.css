@@ -29,6 +29,57 @@
   --btn-primary-background:    #3b82f6;
 }
 
+/* Elastic compiles its LESS to hardcoded #37beff (the elastic blue) for
+ * Bootstrap-class buttons + accent elements. The :root vars above only
+ * affect rules that explicitly use var(...). Need explicit selector
+ * overrides for the Bootstrap classes + accent colors. */
+
+.btn-primary,
+.btn-primary:focus,
+.btn-primary:active,
+.btn-primary:not(:disabled):not(.disabled):active,
+.btn-primary:not(:disabled):not(.disabled).active,
+.show > .btn-primary.dropdown-toggle {
+  background-color: #3b82f6;
+  border-color: #3b82f6;
+}
+.btn-primary:hover {
+  background-color: #2563eb;
+  border-color: #2563eb;
+}
+
+a,
+a:not([class]) {
+  color: #3b82f6;
+}
+a:hover,
+a:not([class]):hover {
+  color: #2563eb;
+}
+
+/* Active mail folder, selected row, focused input border. */
+.form-control:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 0.2rem rgba(59, 130, 246, 0.25);
+}
+
+/* Toolbar accent. */
+.toolbar a.button.selected:not(:disabled),
+.toolbar button:not(.btn).selected:not(:disabled),
+.menu li.menu-divider + li.selected > a,
+.menu li.selected > a {
+  color: #3b82f6;
+}
+
+/* Side navigation active item. */
+#layout-sidebar .listing li.selected,
+#layout-sidebar .listing > .footer .button.selected,
+#layout-sidebar nav li > a.active {
+  background-color: rgba(59, 130, 246, 0.12);
+  border-left-color: #3b82f6;
+  color: #3b82f6;
+}
+
 #login-form h1,
 .login-title {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
