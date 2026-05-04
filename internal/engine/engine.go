@@ -237,7 +237,14 @@ func Generate(data *TemplateData) ([]GeneratedFile, error) {
 
 		// Shell scripts must be readable + executable inside their container
 		// (e.g. postgres `/docker-entrypoint-initdb.d/01-init-users.sh`).
-		var mode os.FileMode
+		// Everything else is 0644 — the files are bind-mounted into containers
+		// owned by various non-root users (rspamd, www-data, ...), so 0600
+		// would silently break readability inside the container. Caught by
+		// the v0.1.7-rc2 webmail-skin walkthrough where Roundcube's skin
+		// loader silently failed to read meta.json (mode 0600, root-only),
+		// causing `extends: elastic` to never register and templates to
+		// 404 with no clear error.
+		mode := os.FileMode(0644)
 		if strings.HasSuffix(relPath, ".sh") {
 			mode = 0755
 		}

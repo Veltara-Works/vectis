@@ -47,6 +47,10 @@ func TestGenerate(t *testing.T) {
 	}
 
 	// Check expected files exist.
+	//
+	// Note: webmail skin (meta.json + styles.css) is no longer engine-rendered
+	// — it's baked into the vectis-webmail Docker image at /usr/src/roundcubemail/skins/vectis/.
+	// See docs/notes/deferred-items.md §13 closure for the rationale.
 	expected := map[string]bool{
 		"postfix/main.cf":                  false,
 		"postfix/master.cf":                false,
@@ -58,8 +62,7 @@ func TestGenerate(t *testing.T) {
 		"traefik/traefik.yml":              false,
 		"traefik/dynamic.yml":              false,
 		"docker-compose.yml":               false,
-		"webmail/skin/meta.json":           false,
-		"webmail/skin/styles.css":          false,
+		"webmail/roundcube.config.php":     false,
 	}
 	for _, f := range files {
 		if _, ok := expected[f.RelPath]; ok {
@@ -532,6 +535,43 @@ func TestOrchestratorMountsGeneratedConfigDir(t *testing.T) {
 	}
 	if strings.Contains(orchBlock, "/var/vectis/generated:/var/vectis/generated:ro") {
 		t.Error("orchestrator /var/vectis/generated mount is :ro — RegenerateConfigs cannot atomic-write through it")
+	}
+}
+
+// TestWebmailUsesVectisImageNotUpstream guards the v0.1.7-rc3 §13 fix.
+// Pre-rc3 the compose used roundcube/roundcubemail:latest-fpm-alpine fronted
+// by a separate vectis-webmail-nginx; the split required a shared docroot
+// volume between the two for static-asset serving that we never set up,
+// so /webmail/skins/elastic/styles.min.css 404'd to /index.php and the
+// login page rendered fully unstyled since install.
+func TestWebmailUsesVectisImageNotUpstream(t *testing.T) {
+	data := testData()
+	data.Webmail.Enabled = true
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if !strings.Contains(compose, "ghcr.io/veltara-works/vectis-webmail:") {
+		t.Error("webmail must use the Vectis-built image (ghcr.io/veltara-works/vectis-webmail) so the baked-in skin + entrypoint task land")
+	}
+	if strings.Contains(compose, "roundcube/roundcubemail:latest-fpm-alpine") {
+		t.Error("webmail must NOT use upstream fpm-alpine (requires separate nginx + shared docroot we never set up)")
+	}
+	if strings.Contains(compose, "container_name: vectis-webmail-nginx") {
+		t.Error("vectis-webmail-nginx service must be removed — apache image serves PHP + static in one container")
+	}
+	if strings.Contains(compose, "webmail-skin:") || strings.Contains(compose, "webmail-config:") || strings.Contains(compose, "webmail-nginx-config:") {
+		t.Error("the three named volumes (webmail-skin, webmail-config, webmail-nginx-config) must be removed — none of them were ever engine-seeded")
+	}
+	if !strings.Contains(compose, "/var/www/html/config/config.vectis.inc.php:ro") {
+		t.Error("Vectis config override must bind-mount to config.vectis.inc.php (not config.docker.inc.php; that fights the upstream entrypoint)")
 	}
 }
 

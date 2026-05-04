@@ -100,5 +100,6 @@ http:
     vectis-webmail:
       loadBalancer:
         servers:
-          - url: "http://vectis-webmail-nginx:8080"
+          # apache image — single container, no separate nginx fronting it
+          - url: "http://vectis-webmail:80"
 {{ end }}

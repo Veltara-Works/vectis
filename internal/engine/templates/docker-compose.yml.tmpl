@@ -233,22 +233,37 @@ services:
         max-size: "{{ .Logging.MaxSizeMB }}m"
         max-file: "{{ .Logging.MaxFiles }}"
 {{ if .Webmail.Enabled }}
+  # Vectis webmail — thin layer on roundcube/roundcubemail:latest-apache
+  # that bakes in the Vectis skin (extends elastic) and an entrypoint
+  # task wiring config.docker.inc.php → config.vectis.inc.php.
+  #
+  # Pre-v0.1.8 this was the upstream fpm-alpine image fronted by a
+  # separate vectis-webmail-nginx container; that split needed a
+  # shared docroot volume between the two for static-asset serving,
+  # which the template never set up — so /webmail/skins/elastic/styles.min.css
+  # 404'd to /index.php and the login page rendered fully unstyled
+  # since install. See docs/notes/deferred-items.md §13. The apache
+  # image serves PHP + static files in one container, eliminating the chain.
   webmail:
-    image: roundcube/roundcubemail:latest-fpm-alpine
+    image: ghcr.io/veltara-works/vectis-webmail:{{ .Version }}
     container_name: vectis-webmail
     restart: unless-stopped
     networks:
       - vectis-frontend
       - vectis-mail
     volumes:
-      - webmail-config:/var/roundcube/config:ro
       - webmail-data:/var/roundcube/db
-      # Vectis skin is rendered by the config engine to /var/vectis/generated
-      # and bind-mounted into the path Roundcube actually reads
-      # (/var/www/html/skins/<skin>). Pre-v0.1.8 this was a named volume at
-      # /var/roundcube/skins/vectis — wrong path, never loaded; see
-      # docs/notes/deferred-items.md §13.
-      - /var/vectis/generated/webmail/skin:/var/www/html/skins/vectis:ro
+      # Vectis-specific Roundcube config overrides. The baked-in
+      # /entrypoint-tasks/post-setup/99_vectis_include.sh appends an
+      # `include config.vectis.inc.php` line to the upstream-generated
+      # config.docker.inc.php so this file's $config statements override
+      # the env-var-driven defaults.
+      #
+      # Pre-v0.1.8: webmail-config was a named volume that nothing
+      # ever populated — it carried install-time Roundcube auto-config,
+      # and any engine-rendered roundcube.config.php update never
+      # reached the running container.
+      - /var/vectis/generated/webmail/roundcube.config.php:/var/www/html/config/config.vectis.inc.php:ro
     environment:
       ROUNDCUBEMAIL_DEFAULT_HOST: "ssl://vectis-dovecot"
       ROUNDCUBEMAIL_DEFAULT_PORT: "993"
@@ -263,32 +278,13 @@ services:
         condition: service_healthy
       postfix:
         condition: service_healthy
-    # roundcubemail:fpm-alpine doesn't ship php-fpm-healthcheck. The earlier
-    # template assumed it did and every fresh install reported the webmail
-    # container as "unhealthy" forever. Instead probe the FPM master process
-    # via busybox `ps` (always present in alpine images) — `[p]hp-fpm`
-    # excludes the grep itself from the match.
+    # Apache's default mod_status isn't enabled, but httpd serves on :80.
+    # busybox wget probe is portable across the apache image's debian base.
     healthcheck:
-      test: ["CMD-SHELL", "ps -ef 2>/dev/null | grep -q '[p]hp-fpm: master' || exit 1"]
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-    logging:
-      driver: {{ .Logging.Driver }}
-      options:
-        max-size: "{{ .Logging.MaxSizeMB }}m"
-        max-file: "{{ .Logging.MaxFiles }}"
-
-  webmail-nginx:
-    image: nginx:alpine
-    container_name: vectis-webmail-nginx
-    restart: unless-stopped
-    networks:
-      - vectis-frontend
-    volumes:
-      - webmail-nginx-config:/etc/nginx/conf.d:ro
-    depends_on:
-      - webmail
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -586,9 +582,7 @@ volumes:
   grafana-data:
 {{ end }}
 {{ if .Webmail.Enabled }}
-  webmail-config:
   webmail-data:
-  webmail-nginx-config:
 {{ end }}
 {{ if .Observability.LokiEnabled }}
   loki-config:

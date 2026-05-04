@@ -98,6 +98,7 @@ var VectisImageServices = []string{
 	"rspamd",
 	"clamav",
 	"cert-extractor",
+	"webmail",
 }
 
 // VectisImageServicesExcludingSelf returns VectisImageServices minus
