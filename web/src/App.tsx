@@ -29,6 +29,15 @@ interface AdminProfile {
   features: string[]
 }
 
+const defaultFaviconDataURI =
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+    '<rect width="32" height="32" rx="4" fill="#3b82f6"/>' +
+    '<text x="16" y="22" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="700" fill="white">V</text>' +
+    '</svg>'
+  )
+
 export default function App() {
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null)
   const [admin, setAdmin] = useState<AdminProfile | null>(null)
@@ -50,6 +59,24 @@ export default function App() {
       .then(setBranding)
       .catch(() => { /* defaults render fine without it */ })
   }, [loggedIn])
+
+  useEffect(() => {
+    const eff = branding?.effective ?? { product_name: 'Vectis Mail', logo_url: '' }
+    document.title = `${eff.product_name || 'Vectis Mail'} Admin`
+    let link = document.querySelector("link[rel='icon']") as HTMLLinkElement | null
+    if (!link) {
+      link = document.createElement('link')
+      link.rel = 'icon'
+      document.head.appendChild(link)
+    }
+    if (eff.logo_url) {
+      link.href = eff.logo_url
+      link.removeAttribute('type')
+    } else {
+      link.href = defaultFaviconDataURI
+      link.type = 'image/svg+xml'
+    }
+  }, [branding])
 
   if (loggedIn === null) return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#94a3b8' }}>Loading...</div>
 
