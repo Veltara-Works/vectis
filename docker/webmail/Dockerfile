@@ -6,7 +6,7 @@ FROM roundcube/roundcubemail:latest-apache
 # lands at /var/www/html/skins/vectis/ without needing a runtime mount.
 # Skin is `extends: elastic` — the loader walks the inheritance chain so
 # any template vectis doesn't define falls through to elastic.
-COPY skin/ /usr/src/roundcubemail/skins/vectis/
+COPY docker/webmail/skin/ /usr/src/roundcubemail/skins/vectis/
 RUN chmod -R a+rX /usr/src/roundcubemail/skins/vectis
 
 # Entrypoint task: append a one-liner to the upstream-generated
@@ -14,5 +14,5 @@ RUN chmod -R a+rX /usr/src/roundcubemail/skins/vectis
 # from config.vectis.inc.php (bind-mounted by the compose template).
 # Runs after upstream's `*_create_docker_config.sh` thanks to the 99_
 # numeric prefix → alphabetic ordering in /entrypoint-tasks/post-setup/.
-COPY 99_vectis_include.sh /entrypoint-tasks/post-setup/99_vectis_include.sh
+COPY docker/webmail/99_vectis_include.sh /entrypoint-tasks/post-setup/99_vectis_include.sh
 RUN chmod 0755 /entrypoint-tasks/post-setup/99_vectis_include.sh
