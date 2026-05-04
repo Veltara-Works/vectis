@@ -263,3 +263,35 @@ func TestComposeBackupPathFor_DerivedFromSnapshotPath(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigBackupDirFor_DerivedFromSnapshotPath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/var/vectis/snapshots/pre-update-2026-04-23T10-00.sql", "/var/vectis/snapshots/pre-update-2026-04-23T10-00-configs"},
+		{"/tmp/a.sql", "/tmp/a-configs"},
+		{"/no-extension", "/no-extension-configs"},
+	}
+	for _, tc := range cases {
+		got := configBackupDirFor(tc.in)
+		if got != tc.want {
+			t.Errorf("configBackupDirFor(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestConfigBackupDirFor_ColocatedWithComposeBackup(t *testing.T) {
+	// The two backups must share a directory + base name so a single
+	// rollback path can find them together.
+	snap := "/var/vectis/snapshots/pre-update-XYZ.sql"
+	composeBak := composeBackupPathFor(snap)
+	configBak := configBackupDirFor(snap)
+
+	if filepath.Dir(composeBak) != filepath.Dir(configBak) {
+		t.Errorf("compose backup and config backup must live in the same directory: compose=%q config=%q",
+			filepath.Dir(composeBak), filepath.Dir(configBak))
+	}
+	composeBase := strings.TrimSuffix(filepath.Base(composeBak), "-compose.yml")
+	configBase := strings.TrimSuffix(filepath.Base(configBak), "-configs")
+	if composeBase != configBase {
+		t.Errorf("compose backup and config backup must share base name: compose=%q config=%q", composeBase, configBase)
+	}
+}

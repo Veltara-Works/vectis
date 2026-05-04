@@ -171,6 +171,19 @@ func composeBackupPathFor(snapshotPath string) string {
 	return base + "-compose.yml"
 }
 
+// configBackupDirFor derives a per-snapshot configs-backup directory path
+// colocated with the snapshot + compose backup so rollback finds them all
+// together. RegenerateConfigs writes per-service config backups under this
+// dir during Apply Phase 3.6; doRollback restores from it on Apply failure.
+//
+// For snapshot /var/vectis/snapshots/pre-update-XYZ.sql this returns
+// /var/vectis/snapshots/pre-update-XYZ-configs/.
+func configBackupDirFor(snapshotPath string) string {
+	ext := filepath.Ext(snapshotPath)
+	base := strings.TrimSuffix(snapshotPath, ext)
+	return base + "-configs"
+}
+
 // writeAtomicFile writes data to path via a tmp file + rename so readers
 // never observe a partial file. Shared with the compose rewriter.
 func writeAtomicFile(path string, data []byte, mode os.FileMode) error {

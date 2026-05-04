@@ -601,6 +601,67 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		}
 	}
 
+	// ===== PHASE 3.6: REGENERATE PER-SERVICE CONFIGS =====
+	//
+	// Phase 3.5 rewrote docker-compose.yml — but the bind-mounts inside that
+	// compose point at per-service config files under cfg.GeneratedConfigDir
+	// (postfix/main.cf, dovecot/dovecot.conf, rspamd/*.conf, clamav/clamd.conf
+	// when the profile is non-none, ...). Those files are only written by:
+	//   - first-time install (`vectis install`),
+	//   - the Updates UI's `vectis config apply` invocation, and
+	//   - cross-version startup self-heal (compose_selfheal.RegenerateConfigs).
+	//
+	// None of those fire during a normal Apply, so a config-driven structural
+	// change (e.g. clamav.profile flipping from "none" to "production",
+	// detected by Plan's structural-drift loop) lands a compose entry whose
+	// bind-mount source either doesn't exist (Docker silently creates an
+	// empty dir) or carries stale content from when the service was last
+	// rendered. Either way the new container fails to start, the healthcheck
+	// fires, and the whole Apply rolls back. Reproduced on prod 2026-05-04
+	// during the v0.1.7 → v0.1.8-rc1 walk: clamav rendered with
+	// `Profile: none`, MaxThreads=0, empty knob values; clamd refused to
+	// parse and never reached healthy.
+	//
+	// Fix: regenerate per-service configs alongside the compose rewrite,
+	// before Phase 4 pulls images and starts containers. Backups go into a
+	// per-snapshot configs/ subdir so doRollback can restore them on Apply
+	// failure (paired with the existing compose backup restore).
+	//
+	// Skip path: configGen unset (legacy installs whose main.go didn't wire
+	// SetConfigGenerator) — same fallback as Phase 3.5's compose path. The
+	// regen is best-effort additive; configs simply stay where they are.
+	if o.configGen != nil && len(o.cfg.GeneratedConfigDir) > 0 {
+		o.logger.Info("phase 3.6: regenerating per-service configs", "job_id", jobID)
+		configBackupDir := configBackupDirFor(snapshotPath)
+		_, configsChanged, regenErr := RegenerateConfigs(
+			applyCtx,
+			o.cfg.GeneratedConfigDir,
+			configBackupDir,
+			plan.ReleaseTag,
+			o.configGen,
+		)
+		if regenErr != nil {
+			o.logger.Error("config regen failed, initiating rollback", "error", regenErr)
+			rollbackErr := o.doRollback(applyCtx, snapshotPath)
+			if rollbackErr != nil {
+				o.failApply(applyCtx, opID, jobID, fmt.Sprintf("config regen failed and rollback also failed: regen=%v, rollback=%v", regenErr, rollbackErr))
+				return "", fmt.Errorf("config regen and rollback both failed: %w", rollbackErr)
+			}
+			_ = o.sm.CompleteOperation(applyCtx, opID, "rolled_back", snapshotPath, fmt.Sprintf("config regen failed: %v", regenErr))
+			return jobID, fmt.Errorf("config regen failed, rolled back: %w", regenErr)
+		}
+		if len(configsChanged) > 0 {
+			o.logger.Info("per-service configs regenerated",
+				"job_id", jobID,
+				"backup_dir", configBackupDir,
+				"release_tag", plan.ReleaseTag,
+				"file_count", len(configsChanged),
+			)
+		} else {
+			o.logger.Info("per-service configs needed no regen (already match templates)", "job_id", jobID)
+		}
+	}
+
 	// ===== PHASE 4: UPDATE CONTAINERS =====
 	o.logger.Info("phase 4: updating containers", "job_id", jobID)
 
@@ -901,6 +962,20 @@ func (o *Orchestrator) doRollback(ctx context.Context, snapshotPath string) erro
 		backupPath := composeBackupPathFor(snapshotPath)
 		if err := RestoreComposeBackup(composePath, backupPath); err != nil {
 			return recover(fmt.Errorf("rollback restore compose: %w", err))
+		}
+	}
+	// Restore per-service configs that Phase 3.6 may have rewritten. The
+	// backup dir is a no-op if Phase 3.6 didn't run (legacy install or
+	// no-drift detected) — RestoreConfigsBackup handles missing-dir as
+	// success. createdNewFiles is left empty: the rollback path doesn't
+	// know which files were brand-new vs replaced, and the safer default
+	// is to leave any extra files in place rather than risk deleting a
+	// file the operator has since edited. Worst case the next Apply
+	// re-evaluates them.
+	if len(o.cfg.GeneratedConfigDir) > 0 {
+		configBackupDir := configBackupDirFor(snapshotPath)
+		if err := RestoreConfigsBackup(o.cfg.GeneratedConfigDir, configBackupDir, nil); err != nil {
+			return recover(fmt.Errorf("rollback restore configs: %w", err))
 		}
 	}
 	if err := o.docker.ApplyComposeServices(ctx, VectisImageServicesExcludingSelf()); err != nil {
