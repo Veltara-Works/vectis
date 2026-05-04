@@ -6,6 +6,18 @@ interface ApiResponse<T> {
   meta: { request_id: string; timestamp: string }
 }
 
+export interface BrandingResponse {
+  product_name: string
+  primary_color: string
+  logo_url: string
+  from_db: boolean
+  effective: {
+    product_name: string
+    primary_color: string
+    logo_url: string
+  }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const opts: RequestInit = {
     method,
@@ -222,6 +234,20 @@ export const api = {
     }>('POST', '/license', body),
   removeLicense: () =>
     request<{ configured: boolean; tier: string }>('DELETE', '/license'),
+
+  // Branding (Pro feature: custom_branding). GET is always callable;
+  // PUT/DELETE require the Pro feature gate at the API layer (the page
+  // hides the form when `tier !== 'pro' && tier !== 'enterprise'`).
+  getBranding: () =>
+    request<BrandingResponse>('GET', '/branding'),
+  setBranding: (body: {
+    product_name: string;
+    primary_color: string;
+    logo_url: string;
+  }) =>
+    request<BrandingResponse>('PUT', '/branding', body),
+  removeBranding: () =>
+    request<BrandingResponse>('DELETE', '/branding'),
 
   // Backups
   backupCreate: () =>

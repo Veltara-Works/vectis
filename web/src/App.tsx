@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Routes, Route, Navigate, Link, useLocation } from 'react-router-dom'
-import { api } from './api/client.ts'
+import { api, type BrandingResponse } from './api/client.ts'
 import LoginPage from './pages/Login.tsx'
 import DashboardPage from './pages/Dashboard.tsx'
 import DomainsPage from './pages/Domains.tsx'
@@ -13,6 +13,7 @@ import AuditLogPage from './pages/AuditLog.tsx'
 import UpdatesPage from './pages/Updates.tsx'
 import BackupsPage from './pages/Backups.tsx'
 import LicensePage from './pages/License.tsx'
+import BrandingPage from './pages/Branding.tsx'
 import SessionsPage from './pages/Sessions.tsx'
 import FilterRulesPage from './pages/FilterRules.tsx'
 import LogSearchPage from './pages/LogSearch.tsx'
@@ -31,6 +32,7 @@ interface AdminProfile {
 export default function App() {
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null)
   const [admin, setAdmin] = useState<AdminProfile | null>(null)
+  const [branding, setBranding] = useState<BrandingResponse | null>(null)
   const location = useLocation()
 
   useEffect(() => {
@@ -38,6 +40,16 @@ export default function App() {
       .then(profile => { setAdmin(profile); setLoggedIn(true) })
       .catch(() => setLoggedIn(false))
   }, [])
+
+  // Branding is independent of /me — every authenticated load fetches it.
+  // Free installs get the built-in defaults; the chrome renders them
+  // identically to a Pro install with no overrides set.
+  useEffect(() => {
+    if (loggedIn !== true) return
+    api.getBranding()
+      .then(setBranding)
+      .catch(() => { /* defaults render fine without it */ })
+  }, [loggedIn])
 
   if (loggedIn === null) return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#94a3b8' }}>Loading...</div>
 
@@ -66,13 +78,21 @@ export default function App() {
     { path: '/admin/updates', label: 'Updates', show: isSuperAdmin },
     { path: '/admin/backups', label: 'Backups', show: isSuperAdmin },
     { path: '/admin/license', label: 'License', show: isSuperAdmin },
+    { path: '/admin/branding', label: 'Branding', show: isSuperAdmin },
     { path: '/admin/sessions', label: 'Sessions', show: true },
   ]
 
+  const brand = branding?.effective ?? { product_name: 'Vectis Mail', primary_color: '#3b82f6', logo_url: '' }
+
   return (
-    <div className="app">
+    <div className="app" style={{ ['--brand-primary' as string]: brand.primary_color } as React.CSSProperties}>
       <nav className="sidebar">
-        <h1>Vectis Mail</h1>
+        <h1 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          {brand.logo_url
+            ? <img src={brand.logo_url} alt="" style={{ height: '24px', width: 'auto' }} />
+            : null}
+          <span>{brand.product_name}</span>
+        </h1>
         {nav.filter(n => n.show).map(n => (
           <Link key={n.path} to={n.path}
             className={location.pathname === n.path ? 'active' : ''}>
@@ -107,6 +127,7 @@ export default function App() {
             {isSuperAdmin && <Route path="/admin/updates" element={<UpdatesPage />} />}
             {isSuperAdmin && <Route path="/admin/backups" element={<BackupsPage />} />}
             {isSuperAdmin && <Route path="/admin/license" element={<LicensePage />} />}
+            {isSuperAdmin && <Route path="/admin/branding" element={<BrandingPage features={admin?.features ?? []} onBrandingChanged={setBranding} />} />}
             <Route path="/admin/sessions" element={<SessionsPage />} />
             <Route path="*" element={<Navigate to="/admin" />} />
           </Routes>

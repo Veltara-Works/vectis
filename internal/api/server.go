@@ -724,6 +724,14 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Post("/license", s.handleSetLicense)
 			r.With(requireSuperAdmin()).Delete("/license", s.handleDeleteLicense)
 
+			// Branding — super_admin only. GET is unauthenticated-feature-wise
+			// (Free installs hit it on every page load to render defaults);
+			// PUT/DELETE require the custom_branding Pro feature.
+			brandingGate := s.featureGate.FeatureGate(validonx.FeatureCustomBranding)
+			r.With(requireSuperAdmin()).Get("/branding", s.handleGetBranding)
+			r.With(requireSuperAdmin(), brandingGate).Put("/branding", s.handleSetBranding)
+			r.With(requireSuperAdmin(), brandingGate).Delete("/branding", s.handleDeleteBranding)
+
 			// Advanced deliverability — super_admin only.
 			r.With(requireSuperAdmin()).Get("/deliverability/warmup", s.handleListWarmup)
 			r.With(requireSuperAdmin()).Post("/deliverability/warmup", s.handleCreateWarmup)

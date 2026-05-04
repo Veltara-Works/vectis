@@ -170,8 +170,8 @@ export default function LicensePage() {
             <p className="text-muted">
               This server is running in Free tier. Pro features (per-domain
               analytics, advanced spam filtering — per-domain reject thresholds,
-              greylisting, allow/block lists — OIDC SSO, priority support) are
-              not available.
+              greylisting, allow/block lists — OIDC SSO, custom branding,
+              priority support) are not available.
             </p>
             <p className="text-muted">
               To activate Pro, sign into your{' '}
