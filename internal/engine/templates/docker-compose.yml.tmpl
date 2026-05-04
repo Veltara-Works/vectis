@@ -278,10 +278,11 @@ services:
         condition: service_healthy
       postfix:
         condition: service_healthy
-    # Apache's default mod_status isn't enabled, but httpd serves on :80.
-    # busybox wget probe is portable across the apache image's debian base.
+    # roundcubemail:apache (debian base) ships curl but NOT wget — caught
+    # on prod 2026-05-04 rc5 walkthrough: wget healthcheck fired 9 times
+    # in a row "wget: not found" and marked the container unhealthy.
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost/ || exit 1"]
+      test: ["CMD-SHELL", "curl -sfo /dev/null http://localhost/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
