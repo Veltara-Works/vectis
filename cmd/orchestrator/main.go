@@ -207,16 +207,27 @@ func run(logger *slog.Logger) error {
 
 	// Wire up the compose generator that Phase 3.5 of Apply uses to
 	// regenerate /etc/vectis/docker-compose.yml from the embedded templates.
-	// Closes over cfg/secrets/dbPool so the orchestrator package itself
-	// stays decoupled from internal/engine + internal/repository (deferred-
+	// Closes over configDir/dbPool so the orchestrator package itself stays
+	// decoupled from internal/engine + internal/repository (deferred-
 	// items.md §10).
+	//
+	// IMPORTANT: cfg + secrets are reloaded from disk on every invocation,
+	// not captured at startup. The operator's edits to config.yaml (e.g.
+	// flipping clamav.profile) must take effect on the next Plan/Apply
+	// without an orchestrator restart. Caught on prod 2026-05-05: a stale
+	// captured cfg made Phase 3.5 render compose with the previous-startup
+	// profile value, so config-driven structural changes silently no-op'd.
 	domainRepo := repository.NewDomainRepo(dbPool)
 	orch.SetComposeGenerator(func(ctx context.Context, releaseTag string) ([]byte, error) {
+		freshCfg, freshSecrets, err := config.LoadAll(configDir)
+		if err != nil {
+			return nil, fmt.Errorf("reload config: %w", err)
+		}
 		domains, err := domainRepo.List(ctx, nil)
 		if err != nil {
 			return nil, fmt.Errorf("list domains: %w", err)
 		}
-		data := engine.NewTemplateData(cfg, secrets, domains)
+		data := engine.NewTemplateData(freshCfg, freshSecrets, domains)
 		if releaseTag != "" {
 			data.Version = releaseTag
 		}
@@ -232,19 +243,21 @@ func run(logger *slog.Logger) error {
 		return nil, fmt.Errorf("docker-compose.yml not present in rendered templates")
 	})
 
-	// Wire up the per-service config generator that startup self-heal uses
-	// to reconcile structural drift across all rendered service configs
-	// (postfix/dovecot/rspamd/traefik/...) under
-	// cfg.GeneratedConfigDir. v0.1.5 onward — closes the prod-drift gap
-	// where install-time configs (named-volume layouts, legacy traefik-acme
-	// path, missing rspamd files) survive multiple Apply walks because
-	// Apply only ever rewrote docker-compose.yml.
+	// Wire up the per-service config generator that Apply Phase 3.6 and
+	// startup self-heal both use to reconcile structural drift across all
+	// rendered service configs (postfix/dovecot/rspamd/traefik/clamav/...)
+	// under cfg.GeneratedConfigDir. Same fresh-load semantics as compose
+	// generator above — config.yaml edits land on the next call.
 	orch.SetConfigGenerator(func(ctx context.Context, releaseTag string) ([]orchestrator.ConfigFile, error) {
+		freshCfg, freshSecrets, err := config.LoadAll(configDir)
+		if err != nil {
+			return nil, fmt.Errorf("reload config: %w", err)
+		}
 		domains, err := domainRepo.List(ctx, nil)
 		if err != nil {
 			return nil, fmt.Errorf("list domains: %w", err)
 		}
-		data := engine.NewTemplateData(cfg, secrets, domains)
+		data := engine.NewTemplateData(freshCfg, freshSecrets, domains)
 		if releaseTag != "" {
 			data.Version = releaseTag
 		}
