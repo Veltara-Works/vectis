@@ -2,10 +2,16 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -13,6 +19,7 @@ import (
 
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
+	"github.com/Veltara-Works/vectis/internal/version"
 )
 
 var updateCmd = &cobra.Command{
@@ -43,9 +50,26 @@ var updateRollbackCmd = &cobra.Command{
 
 var updateSelfCmd = &cobra.Command{
 	Use:   "self",
-	Short: "Update the orchestrator and API containers",
-	Long:  "Self-update bypasses the orchestrator. It pulls new orchestrator and API images from GHCR, restarts those containers, and verifies health.",
-	RunE:  runUpdateSelf,
+	Short: "Refresh CLI binary and force-recreate the orchestrator and API containers at their currently pinned tags",
+	Long: `Self-update is a recovery tool, not an upgrade path.
+
+It does two things:
+  1. Refreshes /usr/local/bin/vectis from the latest published stable release on
+     dl.vectismail.com (best-effort; warns and continues on failure).
+  2. Force-recreates the vectis-orchestrator and vectis-api containers using
+     whatever image tag is currently pinned in /etc/vectis/docker-compose.yml.
+     It does NOT change those tags. To bump orchestrator/api to a new version,
+     use 'vectis update apply' (the orchestrator-driven path that rewrites
+     compose tags atomically before recreating).
+
+Use 'vectis update self' when:
+  - The host CLI binary is stale (older releases of secrets.yaml's schema may
+    refuse to parse on an old binary, which blocks 'vectis update plan/apply').
+  - The orchestrator-driven Apply has wedged and you need to force-cycle the
+    orchestrator and API at their current versions to recover.
+
+Use 'vectis update apply' for actual version bumps.`,
+	RunE: runUpdateSelf,
 }
 
 var (
@@ -346,9 +370,9 @@ func runUpdateRollback(cmd *cobra.Command, args []string) error {
 // --- vectis update self ---
 
 const (
-	ghcrOrchestrator = "ghcr.io/veltara-works/vectis-orchestrator"
-	ghcrAPI          = "ghcr.io/veltara-works/vectis-api"
-	composePath      = "/etc/vectis/docker-compose.yml"
+	composePath        = "/etc/vectis/docker-compose.yml"
+	vectisDownloadBase = "https://dl.vectismail.com"
+	expectedBinaryPath = "/usr/local/bin/vectis"
 )
 
 func runUpdateSelf(cmd *cobra.Command, args []string) error {
@@ -368,26 +392,31 @@ func runUpdateSelf(cmd *cobra.Command, args []string) error {
 	}
 
 	if !jsonOutput {
-		fmt.Fprintln(cmd.OutOrStdout(), "Self-updating orchestrator and API containers...")
+		fmt.Fprintln(cmd.OutOrStdout(), "Self-updating CLI binary and force-recreating orchestrator + API containers...")
 	}
 
-	// Step 1: Pull latest images.
+	// Step 1: Refresh the host-side CLI binary from the latest stable
+	// release. Best-effort — warns and continues on failure rather than
+	// blocking the container recreate, since stale-binary problems only
+	// surface on the NEXT invocation. Skips when:
+	//   - The running binary isn't at /usr/local/bin/vectis (custom install).
+	//   - The release manifest is unreachable (offline / DNS / dl outage).
+	//   - The running binary is already at the published stable version.
+	// Hit during the 2026-05-08 sa1001 walkthrough — the host binary was
+	// rc28 while containers were v0.1.8, and `vectis update plan` failed
+	// instantly because the rc28 binary couldn't parse modern secrets.yaml.
 	if !jsonOutput {
-		fmt.Fprint(cmd.OutOrStdout(), "  [1/5] Pulling new images... ")
+		fmt.Fprint(cmd.OutOrStdout(), "  [1/5] Refreshing CLI binary... ")
 	}
-	for _, image := range []string{ghcrOrchestrator + ":latest", ghcrAPI + ":latest"} {
-		if out, err := exec.Command("docker", "pull", image).CombinedOutput(); err != nil {
-			msg := fmt.Sprintf("failed to pull %s: %s", image, strings.TrimSpace(string(out)))
-			if !jsonOutput {
-				fmt.Fprintln(cmd.OutOrStdout(), "FAILED")
-				fmt.Fprintf(cmd.ErrOrStderr(), "  Error: %s\n", msg)
-			}
-			emitResult(selfUpdateResult{Status: "failed", Error: msg})
-			os.Exit(1)
+	if msg, err := refreshCLIBinary(); err != nil {
+		if !jsonOutput {
+			fmt.Fprintln(cmd.OutOrStdout(), "skipped")
+			fmt.Fprintf(cmd.OutOrStdout(), "    ! %s\n", err.Error())
 		}
-	}
-	if !jsonOutput {
-		fmt.Fprintln(cmd.OutOrStdout(), "done")
+	} else {
+		if !jsonOutput {
+			fmt.Fprintln(cmd.OutOrStdout(), msg)
+		}
 	}
 
 	// Step 2: Record current image IDs for rollback.
@@ -538,6 +567,132 @@ func revertSelf(cmd *cobra.Command, orchImage, apiImage string, jsonOutput bool)
 		fmt.Fprintln(cmd.OutOrStdout(), "done")
 		fmt.Fprintln(cmd.OutOrStdout(), "  Self-update rolled back successfully.")
 	}
+}
+
+// refreshCLIBinary downloads the latest stable vectis binary from
+// dl.vectismail.com and atomically replaces /usr/local/bin/vectis when its
+// version differs from the running process's version. Returns a short
+// human-readable status message on success ("updated v0.1.6 -> v0.1.8" /
+// "already at v0.1.8") and a non-nil error explaining why the refresh
+// was skipped on any failure (best-effort: callers must not treat the
+// error as fatal).
+func refreshCLIBinary() (string, error) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		return "", fmt.Errorf("only linux/amd64 binaries are published; running on %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("locate running binary: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(exePath)
+	if err != nil {
+		resolved = exePath
+	}
+	if resolved != expectedBinaryPath {
+		return "", fmt.Errorf("running binary is at %s; only %s is auto-refreshed", resolved, expectedBinaryPath)
+	}
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+
+	// 1. Discover the latest stable tag.
+	resp, err := httpClient.Get(vectisDownloadBase + "/releases-stable.json")
+	if err != nil {
+		return "", fmt.Errorf("fetch releases-stable.json: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("releases-stable.json returned HTTP %d", resp.StatusCode)
+	}
+	var manifest struct {
+		Latest string `json:"latest"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+		return "", fmt.Errorf("decode releases-stable.json: %w", err)
+	}
+	if manifest.Latest == "" {
+		return "", fmt.Errorf("releases-stable.json missing 'latest' field")
+	}
+
+	if manifest.Latest == version.Version {
+		return fmt.Sprintf("already at %s", manifest.Latest), nil
+	}
+
+	// 2. Download binary + checksum.
+	binURL := fmt.Sprintf("%s/%s/vectis-linux-amd64", vectisDownloadBase, manifest.Latest)
+	shaURL := binURL + ".sha256"
+
+	tmpDir, err := os.MkdirTemp("", "vectis-update-")
+	if err != nil {
+		return "", fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	tmpBin := filepath.Join(tmpDir, "vectis.new")
+
+	if err := downloadFile(httpClient, binURL, tmpBin); err != nil {
+		return "", fmt.Errorf("download %s: %w", binURL, err)
+	}
+
+	shaResp, err := httpClient.Get(shaURL)
+	if err != nil {
+		return "", fmt.Errorf("download %s: %w", shaURL, err)
+	}
+	shaBytes, err := io.ReadAll(shaResp.Body)
+	shaResp.Body.Close()
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", shaURL, err)
+	}
+	if shaResp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("%s returned HTTP %d", shaURL, shaResp.StatusCode)
+	}
+	expectedSHA := strings.TrimSpace(strings.Fields(string(shaBytes))[0])
+
+	// 3. Verify checksum.
+	binBytes, err := os.ReadFile(tmpBin)
+	if err != nil {
+		return "", fmt.Errorf("read downloaded binary: %w", err)
+	}
+	actualSHA := hex.EncodeToString(sha256Sum(binBytes))
+	if actualSHA != expectedSHA {
+		return "", fmt.Errorf("checksum mismatch (expected %s, got %s)", expectedSHA, actualSHA)
+	}
+
+	// 4. Make executable and atomic-rename into place. Linux allows
+	// renaming a file over a running binary's path — the kernel keeps the
+	// old inode mapped for the running process; subsequent invocations
+	// pick up the new binary.
+	if err := os.Chmod(tmpBin, 0o755); err != nil {
+		return "", fmt.Errorf("chmod downloaded binary: %w", err)
+	}
+	if err := os.Rename(tmpBin, expectedBinaryPath); err != nil {
+		return "", fmt.Errorf("install binary at %s: %w", expectedBinaryPath, err)
+	}
+
+	return fmt.Sprintf("updated %s -> %s (takes effect on next vectis invocation)", version.Version, manifest.Latest), nil
+}
+
+func downloadFile(client *http.Client, url, dest string) error {
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, resp.Body)
+	return err
+}
+
+func sha256Sum(b []byte) []byte {
+	h := sha256.New()
+	h.Write(b)
+	return h.Sum(nil)
 }
 
 func init() {

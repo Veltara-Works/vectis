@@ -83,6 +83,16 @@ services:
       - vectis-frontend
       - vectis-orchestrator
       - vectis-data
+    # Bind to 127.0.0.1 only — exposes the orchestrator API to the host so
+    # the `vectis update {plan,apply}` CLI can reach it at its default
+    # http://localhost:8081 without an env-var workaround. Localhost-only
+    # binding means the port is NOT reachable from outside the host; any
+    # remote access still has to go through Traefik on a higher-level path.
+    # Found during the 2026-05-08 sa1001 walkthrough — the CLI was
+    # unusable on prod-shaped installs because orchestrator's port was
+    # only reachable on its dynamic internal-network IP.
+    ports:
+      - "127.0.0.1:8081:8081"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # /etc/vectis must be read-WRITE here so Phase 3.5 of Apply can rewrite

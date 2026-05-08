@@ -498,6 +498,50 @@ func TestOrchestratorEtcVectisMountIsRW(t *testing.T) {
 	}
 }
 
+// TestOrchestratorPortBoundToLocalhost locks in the 2026-05-08 fix: the
+// orchestrator must publish 8081 to 127.0.0.1 so the host-side
+// `vectis update {plan,apply}` CLI can reach its default localhost:8081
+// without an env-var workaround. Bound to 127.0.0.1 only — never expose
+// the orchestrator API publicly. Surfaced during the sa1001 walkthrough
+// when the CLI failed with "connection refused" on a prod-shaped install
+// because compose had no host-side port binding for orchestrator.
+func TestOrchestratorPortBoundToLocalhost(t *testing.T) {
+	files, _ := Generate(testData())
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if compose == "" {
+		t.Fatal("docker-compose.yml not generated")
+	}
+
+	orchIdx := strings.Index(compose, "\n  orchestrator:\n")
+	if orchIdx == -1 {
+		t.Fatal("orchestrator service block not found in compose")
+	}
+	rest := compose[orchIdx+len("\n  orchestrator:\n"):]
+	end := len(rest)
+	for i := 0; i < len(rest)-4; i++ {
+		if rest[i] == '\n' && rest[i+1] == ' ' && rest[i+2] == ' ' && rest[i+3] != ' ' && rest[i+3] != '-' && rest[i+3] != '#' {
+			end = i
+			break
+		}
+	}
+	orchBlock := rest[:end]
+
+	if !strings.Contains(orchBlock, "127.0.0.1:8081:8081") {
+		t.Error("orchestrator block missing localhost-bound port 8081 — `vectis update plan/apply` CLI will fail with 'connection refused' on prod-shaped installs")
+	}
+	// Defensive: the binding must be localhost-only, never a bare 8081:8081
+	// (which would expose orchestrator API publicly on every interface).
+	if strings.Contains(orchBlock, "\n      - \"8081:8081\"") || strings.Contains(orchBlock, "\n      - 8081:8081\n") {
+		t.Error("orchestrator port 8081 is bound to all interfaces — must be 127.0.0.1:8081:8081 to avoid exposing the orchestrator API publicly")
+	}
+}
+
 // TestOrchestratorMountsGeneratedConfigDir locks in the v0.1.6 fix: the
 // orchestrator container needs a /var/vectis/generated bind mount so
 // RegenerateConfigs (called by self-heal on cross-version startup) can
