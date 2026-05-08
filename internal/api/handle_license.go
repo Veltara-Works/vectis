@@ -179,6 +179,18 @@ func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
 			"License key is required. Paste the 'Subscription License' string (VLDX-...) from your ValidonX dashboard.")
 		return
 	}
+	// tenant_id is required because ValidonX never returns it on the wire
+	// (path-2 ADR-041: tenant is bound to the API key on their side and
+	// never surfaces in resolve responses). Without it, FeatureGate.Cache
+	// primes against an empty key while subsequent reads use the populated
+	// key from cache lookups elsewhere — yielding a half-broken state where
+	// the gate allows Pro endpoints but /auth/me and /api/v1/license still
+	// report tier=free. See project_license_first_time_from_free.md.
+	if merged.TenantID == "" {
+		respondError(w, r, http.StatusBadRequest, "MISSING_TENANT_ID",
+			"Tenant ID is required. Paste the tenant_id from your ValidonX Overview tab.")
+		return
+	}
 
 	probe := validonx.NewClient(merged.ToSecrets(), s.logger.With("component", "validonx.activate"))
 	if probe == nil || !probe.Configured() {

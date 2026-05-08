@@ -27,11 +27,13 @@ export default function LicensePage() {
   const [removing, setRemoving] = useState(false)
   const [showForm, setShowForm] = useState(false)
 
-  // Form fields. license_key + service_key are the two values customers
-  // paste from their ValidonX dashboard. tenant_id is recommended but
-  // can be auto-resolved server-side from the API key. Subscription ID,
-  // base URL, and server ID are optional. Subsequent edits only need the
-  // fields they want to change — backend merges with current runtime config.
+  // Form fields. license_key + service_key + tenant_id are the three
+  // required values customers paste from their ValidonX dashboard.
+  // tenant_id is required because ValidonX never returns it on the wire
+  // (path-2 ADR-041 — tenant is bound to the API key on their side); the
+  // server cannot derive it. Subscription ID, base URL, and server ID
+  // are optional. Subsequent edits only need the fields they want to
+  // change — backend merges with current runtime config.
   const [form, setForm] = useState({
     license_key: '',
     service_key: '',
@@ -202,17 +204,18 @@ export default function LicensePage() {
           <form onSubmit={handleActivate} autoComplete="off">
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               <label>
-                <div>License Key <span className="text-muted">(from ValidonX → Licenses tab; the "Subscription License" string)</span></div>
+                <div>License Key <span className="text-muted">(required, from ValidonX → Licenses tab; the "Subscription License" string)</span></div>
                 <input
                   name="vectis_license_key"
                   value={form.license_key}
                   onChange={e => setForm({ ...form, license_key: e.target.value })}
                   placeholder="VLDX-..."
                   autoComplete="off"
+                  required
                 />
               </label>
               <label>
-                <div>Service Key <span className="text-muted">(from ValidonX → API Keys tab)</span></div>
+                <div>Service Key <span className="text-muted">(required, from ValidonX → API Keys tab)</span></div>
                 <input
                   name="vectis_service_key"
                   value={form.service_key}
@@ -220,16 +223,18 @@ export default function LicensePage() {
                   placeholder="vx_..."
                   autoComplete="off"
                   type="password"
+                  required
                 />
               </label>
               <label>
-                <div>Tenant ID <span className="text-muted">(from ValidonX → Overview tab; tenant code)</span></div>
+                <div>Tenant ID <span className="text-muted">(required, from ValidonX → Overview tab; tenant code)</span></div>
                 <input
                   name="vectis_tenant_id"
                   value={form.tenant_id}
                   onChange={e => setForm({ ...form, tenant_id: e.target.value })}
                   placeholder="your-tenant-code"
                   autoComplete="off"
+                  required
                 />
               </label>
               <label>

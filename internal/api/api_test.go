@@ -611,6 +611,45 @@ func TestLicenseActivation_ProbeUsesPath2Endpoint(t *testing.T) {
 	env.doRequest(t, "DELETE", "/api/v1/license", "")
 }
 
+// TestLicenseActivation_RejectsMissingTenantID pins the cold-boot guardrail:
+// a POST without tenant_id must 400 with MISSING_TENANT_ID, not silently
+// produce a half-broken activated state. ValidonX never returns tenant_id
+// on the wire (path-2 ADR-041), so the server cannot derive it from the
+// probe response — the user must provide it. Without this guard, the
+// FeatureGate cache primes against an empty key while reads use the
+// populated key, leaving /auth/me + /api/v1/license stuck on tier=free
+// even though Pro endpoints allow. See project_license_first_time_from_free.md.
+func TestLicenseActivation_RejectsMissingTenantID(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// Activate via the public API with no tenant_id. base_url + service_key
+	// pass IsConfigured(), license_key passes the LicenseKey check — without
+	// the tenant_id guardrail this would reach probe.CheckLicense and the
+	// half-broken state would be persisted.
+	body, _ := json.Marshal(map[string]string{
+		"base_url":    "https://example.invalid",
+		"service_key": "test-service-key",
+		"license_key": "VLDX-VECTIS-PRO-TEST-001",
+		// tenant_id deliberately absent
+	})
+	resp := env.doRequest(t, "POST", "/api/v1/license", string(body))
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("activation POST without tenant_id: expected 400, got %d (body: %s)", resp.StatusCode, raw)
+	}
+
+	parsed := parseBody(t, resp)
+	errObj, ok := parsed["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error envelope, got %v", parsed)
+	}
+	if code, _ := errObj["code"].(string); code != "MISSING_TENANT_ID" {
+		t.Errorf("expected error code MISSING_TENANT_ID, got %q (full response: %v)", code, parsed)
+	}
+}
+
 // ── Tier-gate test helper (Advanced Spam) ────────────────────────
 //
 // activateLicenseWithFeatures spins up a mock ValidonX server that returns
