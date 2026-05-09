@@ -11,10 +11,11 @@ import (
 )
 
 // billingPortalSessionRequest is the inbound shape for
-// POST /api/v1/account/billing-portal-session. `return_url` is optional —
-// the admin UI passes the full origin (e.g. "https://mail.example.com")
-// so Stripe sends the customer back to the install they came from rather
-// than a ValidonX-side default.
+// POST /api/v1/account/billing-portal-session. `return_url` is optional
+// on the wire — when omitted, the handler defaults it to the install's
+// own /admin/license page so Stripe sends the customer back where they
+// came from rather than to a ValidonX-side default. ValidonX itself
+// 422-requires the field, so we always populate it before forwarding.
 type billingPortalSessionRequest struct {
 	ReturnURL string `json:"return_url,omitempty"`
 }
@@ -64,6 +65,18 @@ func (s *Server) handleBillingPortalSession(w http.ResponseWriter, r *http.Reque
 			respondError(w, r, http.StatusBadRequest, "INVALID_RETURN_URL", err.Error())
 			return
 		}
+	} else {
+		// Default to the License page on this install. ValidonX requires a
+		// non-empty return_url; without this default, direct API callers
+		// who omit return_url get a confusing BILLING_PORTAL_FAILED that
+		// surfaces ValidonX's 422 "field is required" message. The React
+		// /account/billing page always passes one, so this is a safety net
+		// for non-UI callers.
+		scheme := "https"
+		if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
+			scheme = "http"
+		}
+		returnURL = scheme + "://" + r.Host + "/admin/license"
 	}
 
 	client := validonx.NewClient(runtimeCfg.ToSecrets(), s.logger.With("component", "validonx.billing"))
