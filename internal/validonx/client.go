@@ -133,6 +133,34 @@ type SubscriptionInfo struct {
 	PlanID   string             `json:"plan_id"`
 }
 
+// BillingPortalRequest is the payload sent to
+// POST /api/v1/integration/billing/portal-session. ValidonX mints a Stripe
+// Billing Portal session for the tenant resolved from the X-API-Key header
+// and returns the URL the customer should be redirected to. `return_url`
+// tells Stripe where to bring the customer back after they finish; if empty
+// ValidonX picks a sensible default (likely vectismail.com).
+type BillingPortalRequest struct {
+	ReturnURL string `json:"return_url,omitempty"`
+}
+
+// BillingPortalResponse is the inner `data` object returned by ValidonX's
+// portal-session endpoint. The transport envelope ({data, meta}) is unwrapped
+// by BillingPortalSession via billingPortalEnvelope.
+type BillingPortalResponse struct {
+	URL       string    `json:"url"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+}
+
+// billingPortalEnvelope wraps BillingPortalResponse for decoding. Mirrors
+// the envelope shape used by licensing-resolve.
+type billingPortalEnvelope struct {
+	Data BillingPortalResponse `json:"data"`
+	Meta struct {
+		RequestID  string `json:"request_id"`
+		APIVersion string `json:"api_version"`
+	} `json:"meta"`
+}
+
 // authResponse is returned by POST /v1/auth/login.
 type authResponse struct {
 	Token     string    `json:"token"`
@@ -313,6 +341,36 @@ func (c *Client) LogBillingEvent(ctx context.Context, event BillingEvent) error 
 	c.logger.Debug("billing event suppressed (path-2 endpoint pending)",
 		"type", event.Type, "tenant_id", event.TenantID)
 	return nil
+}
+
+// BillingPortalSession calls POST /api/v1/integration/billing/portal-session
+// to mint a Stripe Customer Portal session for the tenant resolved from
+// the X-API-Key header. The customer is redirected to the returned URL to
+// manage payment methods, view invoices, cancel, or upgrade their
+// subscription. After they finish, Stripe redirects them back to
+// `return_url` (or a ValidonX-side default if return_url is empty).
+//
+// Auth: X-API-Key (path-2). The caller (Vectis admin API) gates on
+// super_admin + ValidonX-configured before invoking; ValidonX additionally
+// re-validates the tenant has an active Stripe customer record.
+//
+// Endpoint shape was agreed in the 2026-05-08 ValidonX welcome-email
+// coordination thread; ValidonX is building the endpoint in parallel
+// with this Vectis-side caller. Until they ship, this method will return
+// an error from the doJSON layer (most likely HTTP 404).
+func (c *Client) BillingPortalSession(ctx context.Context, req BillingPortalRequest) (*BillingPortalResponse, error) {
+	if c == nil {
+		return nil, fmt.Errorf("validonx client not configured")
+	}
+
+	var env billingPortalEnvelope
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/integration/billing/portal-session", req, &env, authAPIKey); err != nil {
+		return nil, fmt.Errorf("mint billing-portal session: %w", err)
+	}
+	if env.Data.URL == "" {
+		return nil, fmt.Errorf("validonx returned empty portal-session URL")
+	}
+	return &env.Data, nil
 }
 
 // CheckLicense is a convenience method that builds a LicenseRequest from the

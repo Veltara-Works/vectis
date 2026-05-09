@@ -724,6 +724,15 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Post("/license", s.handleSetLicense)
 			r.With(requireSuperAdmin()).Delete("/license", s.handleDeleteLicense)
 
+			// Customer account / billing portal — super_admin only.
+			// Mints a Stripe Customer Portal session via ValidonX and
+			// returns the URL the admin UI should redirect to. Used by
+			// the /account/billing page so the customer never sees the
+			// ValidonX brand. Unlike the License gate, this does NOT
+			// require an active license — past_due / cancelled customers
+			// must be able to reach the portal to reactivate.
+			r.With(requireSuperAdmin()).Post("/account/billing-portal-session", s.handleBillingPortalSession)
+
 			// Branding — super_admin only. GET is unauthenticated-feature-wise
 			// (Free installs hit it on every page load to render defaults);
 			// PUT/DELETE require the custom_branding Pro feature.

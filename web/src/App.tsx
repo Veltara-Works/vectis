@@ -13,6 +13,7 @@ import AuditLogPage from './pages/AuditLog.tsx'
 import UpdatesPage from './pages/Updates.tsx'
 import BackupsPage from './pages/Backups.tsx'
 import LicensePage from './pages/License.tsx'
+import BillingPage from './pages/Billing.tsx'
 import BrandingPage from './pages/Branding.tsx'
 import SessionsPage from './pages/Sessions.tsx'
 import FilterRulesPage from './pages/FilterRules.tsx'
@@ -156,6 +157,9 @@ export default function App() {
             {isSuperAdmin && <Route path="/admin/license" element={<LicensePage />} />}
             {isSuperAdmin && <Route path="/admin/branding" element={<BrandingPage features={admin?.features ?? []} onBrandingChanged={setBranding} />} />}
             <Route path="/admin/sessions" element={<SessionsPage />} />
+            {/* Customer billing portal — auto-redirects to Stripe via ValidonX. */}
+            {/* super_admin only on the API; gated here to match. */}
+            {isSuperAdmin && <Route path="/account/billing" element={<BillingPage />} />}
             <Route path="*" element={<Navigate to="/admin" />} />
           </Routes>
         </main>

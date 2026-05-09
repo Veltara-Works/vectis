@@ -235,6 +235,18 @@ export const api = {
   removeLicense: () =>
     request<{ configured: boolean; tier: string }>('DELETE', '/license'),
 
+  // Customer billing portal (super_admin only). Mints a Stripe Customer
+  // Portal session via ValidonX and returns the URL to navigate to. The
+  // /account/billing page calls this, then window.location.assign(url) so
+  // the customer never sees the ValidonX brand in their URL bar.
+  // return_url is optional but recommended; it is validated server-side
+  // to be same-host (open-redirect guard).
+  createBillingPortalSession: (return_url?: string) =>
+    request<{ url: string; expires_at?: string }>(
+      'POST', '/account/billing-portal-session',
+      return_url ? { return_url } : {}
+    ),
+
   // Branding (Pro feature: custom_branding). GET is always callable;
   // PUT/DELETE require the Pro feature gate at the API layer (the page
   // hides the form when `tier !== 'pro' && tier !== 'enterprise'`).

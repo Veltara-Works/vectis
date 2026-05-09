@@ -650,6 +650,151 @@ func TestLicenseActivation_RejectsMissingTenantID(t *testing.T) {
 	}
 }
 
+// ── Billing portal session ───────────────────────────────────────
+//
+// /account/billing-portal-session is the proxy that lets paying customers
+// reach the Stripe Customer Portal without ever seeing the ValidonX brand
+// in their URL bar. Tests cover (a) the unconfigured guard, (b) the happy
+// path against a mock ValidonX, (c) cross-origin return_url rejection.
+
+func TestBillingPortalSession_RejectsUnconfiguredInstall(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// No license configured. The route should refuse the call up-front rather
+	// than letting it sail through to a nil ValidonX client.
+	defer deactivateLicense(t, env) // belt-and-braces in case a prior test left state
+
+	resp := env.doRequest(t, "POST", "/api/v1/account/billing-portal-session", `{}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 403 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403 on unconfigured install, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	parsed := parseBody(t, resp)
+	errObj, _ := parsed["error"].(map[string]any)
+	if errObj == nil {
+		t.Fatalf("expected error envelope, got %v", parsed)
+	}
+	if code, _ := errObj["code"].(string); code != "INSTALL_NOT_LICENSED" {
+		t.Errorf("expected INSTALL_NOT_LICENSED, got %q (full response: %v)", code, parsed)
+	}
+}
+
+func TestBillingPortalSession_HappyPath(t *testing.T) {
+	env := setupTestEnv(t)
+
+	var billingHits int
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/integration/licensing/resolve":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"data": {"valid": true, "status": "active", "allowed_features": ["basic_mail","analytics"], "grace_period_ends_at": null, "expires_at": "2099-01-01T00:00:00+00:00"},
+				"meta": {"request_id": "billing-test-rid", "api_version": "1"}
+			}`))
+		case "/api/v1/integration/billing/portal-session":
+			billingHits++
+			// Verify the X-API-Key header is present — path-2 auth contract.
+			if r.Header.Get("X-API-Key") == "" {
+				t.Errorf("billing portal request missing X-API-Key header")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"data": {"url": "https://billing.stripe.com/p/session/test_session_abc", "expires_at": "2026-12-31T23:59:59Z"},
+				"meta": {"request_id": "portal-test-rid", "api_version": "1"}
+			}`))
+		default:
+			t.Errorf("unexpected mock path: %q", r.URL.Path)
+			http.Error(w, "unexpected", http.StatusNotFound)
+		}
+	}))
+	defer mock.Close()
+
+	// Activate so handleBillingPortalSession passes the IsConfigured guard.
+	body, _ := json.Marshal(map[string]string{
+		"base_url":        mock.URL,
+		"service_key":     "test-service-key",
+		"tenant_id":       fmt.Sprintf("billing-test-%d", time.Now().UnixNano()),
+		"subscription_id": "sub_billing_test",
+		"license_key":     "VLDX-VECTIS-PRO-BILLING-001",
+	})
+	if r := env.doRequest(t, "POST", "/api/v1/license", string(body)); r.StatusCode != 200 {
+		raw, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		t.Fatalf("license activation prereq failed: %d (body: %s)", r.StatusCode, raw)
+	}
+	defer deactivateLicense(t, env)
+
+	resp := env.doRequest(t, "POST", "/api/v1/account/billing-portal-session", `{"return_url":"http://example.com/admin/license"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	parsed := parseBody(t, resp)
+	data, _ := parsed["data"].(map[string]any)
+	if data == nil {
+		t.Fatalf("expected data envelope, got %v", parsed)
+	}
+	if got, _ := data["url"].(string); got != "https://billing.stripe.com/p/session/test_session_abc" {
+		t.Errorf("expected ValidonX-minted URL, got %q (full response: %v)", got, parsed)
+	}
+	if billingHits != 1 {
+		t.Errorf("expected exactly 1 hit on portal-session endpoint, got %d", billingHits)
+	}
+}
+
+func TestBillingPortalSession_RejectsCrossOriginReturnURL(t *testing.T) {
+	env := setupTestEnv(t)
+
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/integration/licensing/resolve" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"data": {"valid": true, "status": "active", "allowed_features": ["basic_mail","analytics"], "grace_period_ends_at": null, "expires_at": "2099-01-01T00:00:00+00:00"},
+				"meta": {"request_id": "rid", "api_version": "1"}
+			}`))
+			return
+		}
+		// portal-session must NOT be hit if return_url is rejected up-front
+		t.Errorf("unexpected mock path %q — portal-session should not have been called", r.URL.Path)
+		http.Error(w, "unexpected", http.StatusBadRequest)
+	}))
+	defer mock.Close()
+
+	body, _ := json.Marshal(map[string]string{
+		"base_url":        mock.URL,
+		"service_key":     "test-service-key",
+		"tenant_id":       fmt.Sprintf("billing-host-test-%d", time.Now().UnixNano()),
+		"subscription_id": "sub_billing_host_test",
+		"license_key":     "VLDX-VECTIS-PRO-BILLING-002",
+	})
+	if r := env.doRequest(t, "POST", "/api/v1/license", string(body)); r.StatusCode != 200 {
+		raw, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		t.Fatalf("license activation prereq failed: %d (body: %s)", r.StatusCode, raw)
+	}
+	defer deactivateLicense(t, env)
+
+	// Default request host in the test env is "example.com" via httptest;
+	// pointing return_url at evil.com must reject before any ValidonX call.
+	resp := env.doRequest(t, "POST", "/api/v1/account/billing-portal-session", `{"return_url":"https://evil.com/landing"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 on cross-origin return_url, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	parsed := parseBody(t, resp)
+	errObj, _ := parsed["error"].(map[string]any)
+	if errObj == nil {
+		t.Fatalf("expected error envelope, got %v", parsed)
+	}
+	if code, _ := errObj["code"].(string); code != "INVALID_RETURN_URL" {
+		t.Errorf("expected INVALID_RETURN_URL, got %q (full response: %v)", code, parsed)
+	}
+}
+
 // ── Tier-gate test helper (Advanced Spam) ────────────────────────
 //
 // activateLicenseWithFeatures spins up a mock ValidonX server that returns
