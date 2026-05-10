@@ -206,17 +206,41 @@ func hashExistingFiles(paths ...string) (string, error) {
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
-// reloadMailServices sends SIGHUP via `docker kill` to the configured
-// postfix/dovecot containers. Called only when Changed=true. Failures are
-// logged, not fatal — a stale in-memory cert is better than crashing the
-// extractor and losing the watch loop entirely.
+// reloadMailServices brings the configured postfix/dovecot containers to a
+// running state with the freshly-written cert loaded. Called only when
+// Changed=true. Failures are logged, not fatal — a stale in-memory cert is
+// better than crashing the extractor and losing the watch loop entirely.
+//
+// Order matters: `docker container start` first (idempotent — silent no-op
+// on a running container, restart on an Exited one), THEN SIGHUP. Why:
+// during a fresh `vectis install` on a `letsencrypt` provider, dovecot
+// crashloops 5-7× before Traefik issues + cert-extractor populates the
+// fullchain. Docker's restart-policy backoff can leave it in state=Exited
+// at the moment we write the cert, and `docker kill --signal=HUP` against
+// an Exited container fails silently — the operator is left with a stack
+// where IMAPS/POP3S never come up. The start guarantees the container is
+// running; the SIGHUP then triggers a config reload for the *already*
+// running case (where startup happened before the cert rotated).
+// (Found by 2026-05-10 fresh-VPS §10 walkthrough — see
+// docs/notes/2026-05-10-fresh-vps-walkthrough-v0.1.10.md FINDING #1.)
 func reloadMailServices(ctx context.Context, opts ExtractOptions) {
 	for _, name := range []string{opts.ReloadPostfix, opts.ReloadDovecot} {
 		if name == "" {
 			continue
 		}
-		cmd := exec.CommandContext(ctx, "docker", "kill", "--signal=HUP", name)
-		out, err := cmd.CombinedOutput()
+		startCmd := exec.CommandContext(ctx, "docker", "container", "start", name)
+		if out, err := startCmd.CombinedOutput(); err != nil {
+			opts.Logger.Warn("docker container start failed",
+				"container", name,
+				"error", err,
+				"output", strings.TrimSpace(string(out)),
+			)
+			// Do not skip the SIGHUP — `start` may have failed because the
+			// container is already running, in which case the HUP is the
+			// reload path we actually want.
+		}
+		killCmd := exec.CommandContext(ctx, "docker", "kill", "--signal=HUP", name)
+		out, err := killCmd.CombinedOutput()
 		if err != nil {
 			opts.Logger.Warn("reload signal failed",
 				"container", name,
