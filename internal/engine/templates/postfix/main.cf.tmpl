@@ -22,16 +22,21 @@ virtual_minimum_uid = 5000
 # Delivery via LMTP to Dovecot (ADR-008: TCP port 24)
 virtual_transport = lmtp:inet:dovecot:24
 
-# Disable SMTPUTF8 negotiation on the LMTP transport. Dovecot 2.3.x's LMTP
-# listener does not advertise SMTPUTF8 in EHLO, so when an inbound message
-# carries 8-bit UTF-8 in headers (a real-world Subject like "Café") postfix
-# bounces local delivery with `SMTPUTF8 is required, but was not offered by
-# host dovecot`. With this off, postfix downgrades 8-bit headers to MIME
-# encoded-word form before LMTP and delivery succeeds. SMTPUTF8 stays
-# enabled for the egress smtp() transport so external hops keep using it
-# when supported. (Found by 2026-05-10 fresh-VPS §10 walkthrough — see
+# Disable SMTPUTF8 globally. Dovecot 2.3.x's LMTP listener does not
+# advertise SMTPUTF8 in EHLO, so when an inbound message carries 8-bit
+# UTF-8 in headers (a real-world Subject like "Café") postfix bounces
+# local delivery with `SMTPUTF8 is required, but was not offered by host
+# dovecot`. With this off, postfix accepts/forwards 8-bit content via
+# 8BITMIME (which dovecot DOES advertise) instead of insisting on the
+# SMTPUTF8 extension. Trade-off: postfix can no longer route mail to
+# IDN local-parts (Алексей@example.com); for the typical Vectis user
+# this is a non-issue.
+#
+# Note: postfix 3.9 has no per-transport `lmtp_smtputf8_enable` override
+# — verified at 2026-05-10 (rc1 walkthrough caught the wrong-name bug).
+# (Found by 2026-05-10 fresh-VPS §10 walkthrough — see
 # docs/notes/2026-05-10-fresh-vps-walkthrough-v0.1.10.md FINDING #2.)
-lmtp_smtputf8_enable = no
+smtputf8_enable = no
 
 # Inbound notification — BCC a copy of every inbound message to a synthetic
 # address under the reserved vectis.notify zone, which transport_maps routes

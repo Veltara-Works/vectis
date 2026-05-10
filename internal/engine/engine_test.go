@@ -92,7 +92,7 @@ func TestPostfixMainCF(t *testing.T) {
 	checks := []string{
 		"myhostname = mail.example.com",
 		"virtual_transport = lmtp:inet:dovecot:24",
-		"lmtp_smtputf8_enable = no",
+		"smtputf8_enable = no",
 		"virtual_mailbox_domains = pgsql:/etc/postfix/pgsql_virtual_domains.cf",
 		"smtpd_milters = inet:rspamd:11332",
 		"message_size_limit = 52428800",
