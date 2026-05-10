@@ -509,6 +509,36 @@ func (dm *DockerManager) ApplyCompose(ctx context.Context) error {
 	return nil
 }
 
+// RestartContainers issues `docker container restart` for every named container
+// in a single shell-out. Idempotent (no-op on already-running containers gets
+// a brief stop+start). Used by self-heal after RegenerateConfigs writes new
+// per-service config files: a `compose up -d` with unchanged image+compose is
+// a no-op, so containers keep their old bind-mount inodes for any single-file
+// config that was atomically replaced (postfix main.cf, dovecot.conf, etc).
+// `docker container restart` re-resolves bind-mount inodes at start time —
+// this is the surgical fix for the bind-mount-inode class of bug.
+//
+// Names are container names (e.g. "vectis-postfix"), NOT compose service
+// names. Failures are returned as a wrapped error; the caller decides
+// whether to surface or continue.
+//
+// (Found by 2026-05-10 v0.1.11-rc2 sa1001 walkthrough — main.cf had the
+// fix but postfix wasn't reading it because compose up -d didn't recreate
+// the container. See feedback_bind_mount_edits.md.)
+func (dm *DockerManager) RestartContainers(ctx context.Context, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	args := append([]string{"container", "restart"}, names...)
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker container restart %v: %w: %s", names, err, strings.TrimSpace(string(out)))
+	}
+	dm.logger.Info("restarted containers", "containers", names)
+	return nil
+}
+
 // ApplyComposeServices runs `docker compose up -d <s1> <s2> …` for exactly the
 // listed services, rather than the whole compose like ApplyCompose.
 //

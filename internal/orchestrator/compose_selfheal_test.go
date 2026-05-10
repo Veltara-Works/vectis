@@ -1,6 +1,9 @@
 package orchestrator
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestDecideSelfHealAction(t *testing.T) {
 	tests := []struct {
@@ -64,6 +67,67 @@ func TestDecideSelfHealAction(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("decideSelfHealAction(prev=%q, cur=%q, gen=%v, path=%v) = %v, want %v\n  reason: %s",
 					tc.prev, tc.current, tc.hasGen, tc.hasPath, got, tc.want, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestContainerNamesForConfigPaths(t *testing.T) {
+	tests := []struct {
+		name  string
+		paths []string
+		want  []string
+	}{
+		{
+			name:  "single postfix file maps to vectis-postfix",
+			paths: []string{"postfix/main.cf"},
+			want:  []string{"vectis-postfix"},
+		},
+		{
+			name:  "multiple files in same service deduplicate",
+			paths: []string{"rspamd/maps/allow.map", "rspamd/maps/block.map", "rspamd/local.d/options.inc"},
+			want:  []string{"vectis-rspamd"},
+		},
+		{
+			name:  "mixed services produce sorted list",
+			paths: []string{"postfix/main.cf", "dovecot/dovecot.conf", "rspamd/maps/allow.map"},
+			want:  []string{"vectis-dovecot", "vectis-postfix", "vectis-rspamd"},
+		},
+		{
+			name:  "orchestrator never restarts itself",
+			paths: []string{"orchestrator/whatever.conf"},
+			want:  []string{},
+		},
+		{
+			name:  "data services excluded (not in VectisImageServices)",
+			paths: []string{"postgres/init-users.sh"},
+			want:  []string{},
+		},
+		{
+			name:  "unknown first segment dropped silently",
+			paths: []string{"unknown-service/foo.conf", "postfix/main.cf"},
+			want:  []string{"vectis-postfix"},
+		},
+		{
+			name:  "empty + malformed paths skipped",
+			paths: []string{"", "no-slash", "/leading-slash"},
+			want:  []string{},
+		},
+		{
+			name:  "empty input returns empty",
+			paths: nil,
+			want:  []string{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := containerNamesForConfigPaths(tc.paths)
+			// Normalise empty slice vs nil for compare.
+			if len(got) == 0 && len(tc.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("containerNamesForConfigPaths(%v) = %v, want %v", tc.paths, got, tc.want)
 			}
 		})
 	}

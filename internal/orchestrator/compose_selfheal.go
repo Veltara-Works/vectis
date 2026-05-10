@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/valkey-io/valkey-go"
@@ -260,6 +262,27 @@ func (o *Orchestrator) SelfHealComposeOnVersionTransition(
 		return
 	}
 
+	// `compose up -d` is a no-op when the image and compose-defined config are
+	// unchanged, so containers keep their old bind-mount inodes for any
+	// single-file config we atomically replaced (postfix main.cf,
+	// dovecot.conf, rspamd maps, etc). `docker container restart` re-resolves
+	// bind-mount inodes at start time. We restart only the services whose
+	// configs actually changed — minimising blast radius. Restart failure is
+	// non-fatal: the configs are written, just inactive until a future
+	// container restart picks them up.
+	// (Found by 2026-05-10 v0.1.11-rc2 sa1001 walkthrough.)
+	if configsRewritten && len(configsChanged) > 0 {
+		targets := containerNamesForConfigPaths(configsChanged)
+		if len(targets) > 0 {
+			o.logger.Info("self-heal: restarting containers to pick up new bind-mounted configs",
+				"containers", targets, "configs", configsChanged)
+			if err := o.docker.RestartContainers(ctx, targets); err != nil {
+				o.logger.Warn("self-heal: container restart failed (configs written, manual `docker restart` may be required)",
+					"error", err, "containers", targets)
+			}
+		}
+	}
+
 	o.logger.Info("self-heal: complete — non-data services running on regenerated compose+configs",
 		"version", binaryVersion)
 	if writeErr := o.writeLastSeenVersion(ctx, binaryVersion); writeErr != nil {
@@ -284,4 +307,38 @@ func (o *Orchestrator) readLastSeenVersion(ctx context.Context) (string, error) 
 func (o *Orchestrator) writeLastSeenVersion(ctx context.Context, v string) error {
 	cmd := o.vk.B().Set().Key(lastSeenVersionKey).Value(v).Build()
 	return o.vk.Do(ctx, cmd).Error()
+}
+
+// containerNamesForConfigPaths maps configsChanged rel-paths to the
+// vectis-* container names that need restarting. RegenerateConfigs writes
+// files like "postfix/main.cf", "rspamd/maps/allow_domain.map",
+// "dovecot/dovecot.conf" — first path segment is always the service name.
+// Result is deduplicated, sorted (deterministic for tests + log lines),
+// and filtered to vectis-* image services *excluding* orchestrator (we
+// never self-restart) and excluding postgres/valkey (data services live
+// outside VectisImageServices anyway). Any first-segment that isn't a
+// known vectis-* service is silently dropped — we'd rather miss a niche
+// config-touched service than restart something unexpected.
+func containerNamesForConfigPaths(paths []string) []string {
+	known := make(map[string]struct{}, len(VectisImageServicesExcludingSelf()))
+	for _, s := range VectisImageServicesExcludingSelf() {
+		known[s] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		first, _, ok := strings.Cut(p, "/")
+		if !ok || first == "" {
+			continue
+		}
+		if _, ok := known[first]; !ok {
+			continue
+		}
+		seen["vectis-"+first] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
