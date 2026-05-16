@@ -668,8 +668,8 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireAdminOrAbove()).Post("/webhooks", s.handleCreateWebhook)
 			r.With(requireAdminOrAbove()).Delete("/webhooks/{webhookID}", s.handleDeleteWebhook)
 
-			// Audit log — all roles (domain_admin filtered in handler).
-			r.Get("/audit", s.handleListAudit)
+			// Audit log — super_admin only (handler returns platform-wide entries unfiltered).
+			r.With(requireSuperAdmin()).Get("/audit", s.handleListAudit)
 			r.With(requireSuperAdmin()).Get("/audit/export", s.handleExportAudit)
 
 			// Sieve filter management — all roles (domain scoping in handler).
