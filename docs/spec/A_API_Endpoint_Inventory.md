@@ -1,7 +1,7 @@
 # A. API Endpoint Inventory
 
 **Status:** Living reference — kept in sync with `internal/api/server.go`
-**Last refreshed:** 2026-04-27 (against `main` at `71fd774`)
+**Last refreshed:** 2026-05-17 (against `main` at `c3255ee`)
 **Complements:** Vectis Architecture v1.4 (frozen), Implementation Spec v1.1
 **Source of truth:** Route registrations in [`internal/api/server.go`](../../internal/api/server.go) — refresh this doc whenever a new route is added.
 
@@ -48,6 +48,7 @@ Auth column legend used throughout: `none` = public; `session` = signed admin se
 |--------|----------|---------|------|
 | GET | /api/v1/health | System health summary | none |
 | GET | /api/v1/version | Vectis version + per-container image tags | none |
+| GET | /api/v1/metrics/prometheus | Prometheus scrape endpoint (collector registered in `internal/metrics`) | none |
 | POST | /api/v1/auth/login | Authenticate admin, return session cookie | none |
 | POST | /api/v1/auth/reset-request | Request password-reset email | none |
 | POST | /api/v1/auth/reset-password | Complete password reset with token | none |
@@ -106,6 +107,11 @@ Auth column legend used throughout: `none` = public; `session` = signed admin se
 | POST | /api/v1/domains/{domainID}/dkim/generate | Generate new DKIM key pair | admin+ |
 | POST | /api/v1/domains/{domainID}/dkim/rotate | Rotate DKIM key with new selector | admin+ |
 | POST | /api/v1/domains/{domainID}/verify | Re-run DNS/PTR verification | admin+ |
+| GET | /api/v1/domains/{domainID}/spam-lists | List per-domain allow/block list entries | admin+, gated by `advanced_spam` |
+| POST | /api/v1/domains/{domainID}/spam-lists | Add an allow/block list entry | admin+, gated by `advanced_spam` |
+| DELETE | /api/v1/domains/{domainID}/spam-lists/{entryID} | Remove an allow/block list entry | admin+, gated by `advanced_spam` |
+
+Spam-list field-level extensions to `PATCH /domains/{domainID}` (e.g. `reject_threshold`, `greylist_enabled`) are gated inside the handler — the core domain CRUD route stays open to Free for ungated fields like `spam_threshold`. See [`internal/api/handle_domains.go`].
 
 ### Domain creation flow
 
@@ -218,7 +224,7 @@ Domain scoping: handlers enforce that a session/api-key may only act on domains 
 | GET | /api/v1/webhooks | List webhook subscriptions | admin+ |
 | POST | /api/v1/webhooks | Create webhook subscription | admin+ |
 | DELETE | /api/v1/webhooks/{webhookID} | Delete webhook subscription | admin+ |
-| GET | /api/v1/audit | List audit-log entries (domain_admin filtered in handler) | session |
+| GET | /api/v1/audit | List audit-log entries (platform-wide; handler returns unfiltered) | super |
 | GET | /api/v1/audit/export | Export audit log (CSV) | super |
 | GET | /api/v1/tracking/stats | Aggregate engagement stats | admin+ |
 | GET | /api/v1/tracking/messages/{messageID} | Per-message engagement summary | admin+ |
@@ -264,6 +270,31 @@ Behaviour at the gate:
 
 - POST runs a ValidonX probe; on success persists to `validonx_config` and atomically swaps the running gate client (no api restart).
 - Beta1 (current) calls path-1 (`/api/v1/integration/entitlements/check`); v0.1.0 stable swaps to path-2 (`/v1/integration/licensing/resolve`). See [`docs/notes/deferred-items.md` §11](../notes/deferred-items.md).
+
+---
+
+## A.12a Customer account / billing portal
+
+| Method | Endpoint | Purpose | Auth |
+|--------|----------|---------|------|
+| POST | /api/v1/account/billing-portal-session | Mint a Stripe Customer Portal session via ValidonX and return the redirect URL | super |
+
+- Backs the admin-UI `/account/billing` page so the customer never sees the ValidonX brand.
+- Unlike Pro-feature gates, this route does NOT require an active license — past_due / cancelled customers must be able to reach the portal to reactivate.
+- Marketing-site counterpart at `vectismail.com/account/billing` proxies the same flow for welcome-email CTAs.
+
+---
+
+## A.12b Custom branding (Pro feature)
+
+| Method | Endpoint | Purpose | Auth |
+|--------|----------|---------|------|
+| GET | /api/v1/branding | Get current branding config (logo URL, accent colour, login footer) | super |
+| PUT | /api/v1/branding | Set / update branding config | super, gated by `custom_branding` |
+| DELETE | /api/v1/branding | Clear branding overrides (revert to defaults) | super, gated by `custom_branding` |
+
+- GET is ungated so Free installs can still fetch defaults on every page load.
+- PUT and DELETE require the `custom_branding` Pro feature; Free installs return 403 `FEATURE_NOT_AVAILABLE`.
 
 ---
 

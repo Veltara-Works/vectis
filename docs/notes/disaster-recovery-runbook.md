@@ -31,7 +31,7 @@
 ### NOT included in backups (manual recovery required)
 - **`/etc/vectis/secrets.yaml`** — contains DB passwords, API secret, orchestrator token, backup encryption key. Must be backed up separately via secure out-of-band mechanism (e.g., encrypted vault, password manager).
 - **Docker images** — pulled from GHCR on install; not backed up.
-- **TLS certificates** — re-provisioned automatically by acme.sh on startup.
+- **TLS certificates** — re-provisioned automatically by Traefik (ACME) on startup; the `cert-extractor` sidecar then splits Traefik's `acme.json` into mail-stack PEM files and HUPs Postfix/Dovecot on rotation. No backup of cert material is needed; both certificate chains rebuild from a clean ACME challenge.
 - **Fail2ban state** — jail state is ephemeral; rebuilds on restart.
 
 ---

@@ -43,7 +43,7 @@
 | Update Orchestrator | Atomic updates, rollback, versioning |
 | ValidonX Agent | Optional licensing container |
 | Traefik | Reverse proxy + automatic SSL for HTTP |
-| acme.sh sidecar | TLS certificates for mail services (SMTP/IMAP) |
+| cert-extractor sidecar | Splits Traefik's `acme.json` into PEM and HUPs mail services on cert rotation (replaces former acme.sh sidecar; see ADR-009) |
 
 ---
 
@@ -72,7 +72,7 @@
 10. **Orchestrator** is the only container with Docker socket access
 11. **Four container networks:** frontend, mail, data, orchestrator
 12. **Three Postgres users:** vectis_postfix (read-only), vectis_dovecot (read-only), vectis_api (full)
-13. **acme.sh sidecar** provisions SMTP/IMAP TLS certs (separate from Traefik's HTTP certs)
+13. **cert-extractor sidecar** reuses Traefik's ACME certs for SMTP/IMAP — single ACME flow, no separate sidecar (see ADR-009)
 14. **GHCR** for container images (public-read Free, private Pro)
 
 ---

@@ -8,7 +8,7 @@
 
 > **Use memory-safe TLS implementations where we control the choice.
 > Don't add new greenfield OpenSSL surface. Keep upstream OSS services
-> (Postfix, Dovecot, Rspamd, acme.sh, Roundcube) on their standard
+> (Postfix, Dovecot, Rspamd, Traefik, Roundcube) on their standard
 > crypto — it's been audited for decades — and keep the distro
 > packages current.**
 
@@ -61,7 +61,8 @@ codebases that link `libssl`:
 | **vectis-postfix** | SMTPS (465), STARTTLS (25/587) | 25+ years of audited TLS code. Replacing Postfix is not on the roadmap — architecture v1.4 is frozen and the entire mail flow (ADR-008, ADR-010, Spec C) is built around it. |
 | **vectis-dovecot** | IMAPS (993), POP3S (995), ManageSieve TLS | Same. Postfix's delivery partner; replacing one means replacing both. |
 | **vectis-rspamd** | Outbound HTTPS to RBLs, DMARC reporting | C codebase, upstream dep. |
-| **acme.sh** (sidecar) | ACME challenges via curl + system libssl | Upstream shell + OS libssl. |
+| **Traefik** | ACME challenges (HTTP-01 / DNS-01) | Go (`crypto/tls`); same posture as a sibling service. Single ACME flow for both HTTP and mail. |
+| **vectis-cert-extractor** (sidecar) | Parses Traefik's `acme.json`, writes PEM, HUPs mail containers on rotation | Go (`crypto/tls`); minimal blast radius; replaces the former `acme.sh` sidecar (see ADR-009). |
 | **vectis-webmail** (Roundcube) | IMAPS to Dovecot from PHP | Upstream PHP + libssl. |
 
 **Maintenance commitment:** these services stay current via their

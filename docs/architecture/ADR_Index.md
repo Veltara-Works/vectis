@@ -56,10 +56,12 @@ These 25 decisions were made across six review rounds. They are binding for impl
 - **Decision:** Dovecot listens on TCP port 24 (inet_listener); Postfix uses `lmtp:inet:dovecot:24`
 - **Consequence:** Works cleanly over Docker networking; no shared socket volume needed
 
-### ADR-009: acme.sh sidecar for mail TLS certificates
+### ADR-009: Mail TLS certificate provisioning
 - **Context:** Traefik manages HTTP certs but Postfix/Dovecot need their own TLS certs for SMTP/IMAP
-- **Decision:** Separate acme.sh container provisions certs for mail hostname, writes to shared volume
-- **Consequence:** Mail certs managed independently of HTTP certs; both auto-renew
+- **Decision (original, superseded):** Separate `acme.sh` sidecar container would provision certs for the mail hostname and write to a shared volume.
+- **Decision (current):** Reuse the cert already issued by Traefik. A `cert-extractor` sidecar parses `acme.json` (Traefik's ACME state), splits the cert + key into PEM files on a shared volume, and signals Postfix + Dovecot via `docker kill --signal=HUP` whenever the cert rotates. The `acme.sh` sidecar is removed entirely.
+- **Consequence:** Single ACME flow (Traefik), single source of cert truth. No risk of HTTP and mail certs drifting. Cert-extractor's Docker-socket access is scoped via ADR-017. Implementation: `internal/engine/templates/docker-compose.yml.tmpl` lines 419-460, `internal/tls/traefik_extract.go`.
+- **History:** Original decision shipped with the v0.0.x architecture; cert-extractor superseded acme.sh before v0.1.0 stable (commit history at `internal/tls/traefik_extract.go`). 2026-05-17 audit (P6-M2) flagged that ADR-009 still documented the removed acme.sh path.
 
 ### ADR-010: Direct SQL lookups for Postfix/Dovecot
 - **Context:** Postfix/Dovecot need to know about domains, mailboxes, aliases
@@ -108,10 +110,16 @@ These 25 decisions were made across six review rounds. They are binding for impl
 
 ## Security Decisions
 
-### ADR-017: Orchestrator-only Docker socket access
+### ADR-017: Minimal Docker socket exposure
 - **Context:** Docker socket access = root on host; minimize exposure
-- **Decision:** Only the orchestrator container mounts the Docker socket; API communicates via authenticated internal HTTP
-- **Consequence:** Compromised API container cannot control other containers directly
+- **Decision:** Three containers mount the Docker socket, each with the minimum capability needed for a specific operational requirement:
+  - **`vectis-orchestrator`** — `:ro` mount; manages full compose stack lifecycle (Plan/Apply, image pulls, container recreate). Primary socket-holder.
+  - **`vectis-promtail`** — `:ro` mount; required for `docker_sd_configs` log-label discovery so per-container labels appear in Loki.
+  - **`vectis-cert-extractor`** — RW mount; required for `docker kill --signal=HUP` on mail-stack containers when Traefik writes new certs.
+
+  No other container has socket access; API talks to the orchestrator over authenticated internal HTTP for any container-control operation.
+- **Consequence:** Compromised API container cannot control other containers directly. Compromised promtail or cert-extractor has tightly-scoped blast radius (read-only socket plus, for cert-extractor, the ability to send HUP signals to known mail containers). Original "orchestrator-only" rule from 2026-03 was relaxed to accept these two minimal-blast-radius helpers; revisit if a cAdvisor-style or file-watch alternative removes the need for socket access.
+- **History:** Drift first acknowledged in 2026-05-17 audit (P6-M1) — code was at 3 sockets, ADR still said 1. Updated to reflect reality.
 
 ### ADR-018: Four named container networks
 - **Context:** Need network isolation between service groups
