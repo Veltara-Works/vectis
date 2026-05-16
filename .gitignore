@@ -51,3 +51,6 @@ logs/
 
 # Docker data
 docker-compose.override.yml
+
+# Wrangler local state (created when running wrangler from this cwd)
+.wrangler/
