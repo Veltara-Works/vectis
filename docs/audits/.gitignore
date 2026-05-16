@@ -1,0 +1,8 @@
+# Raw scan output that may contain unsanitised paths or credentials.
+# Sanitised versions live in each audit's evidence/ subdir.
+evidence-raw/
+*.local.*
+.scratch/
+
+# Tool work dirs
+.cache/
