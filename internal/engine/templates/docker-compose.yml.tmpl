@@ -16,6 +16,11 @@ services:
     restart: unless-stopped
     networks:
       - vectis-frontend
+    # P7-H1 capacity ceiling. Reverse proxy footprint is small; static-config
+    # routing only (no plugins). 256m comfortably covers TLS termination at
+    # the expected request rate for the admin UI + sending API. If you've
+    # bolted on Traefik plugins or expect >1k rps, raise this.
+    mem_limit: 256m
     ports:
       - "80:80"
       - "443:443"
@@ -42,6 +47,10 @@ services:
       - vectis-frontend
       - vectis-data
       - vectis-orchestrator
+    # P7-H1 capacity ceiling. Go binary; baseline ~80 MB. 1g leaves headroom
+    # for a request burst with full-Maildir scans + multipart parsing on the
+    # send path. Bump if you run /api/v1/abuse/dashboard on a large dataset.
+    mem_limit: 1g
     volumes:
       - /etc/vectis:/etc/vectis:ro
       - mail-data:/var/vectis/mail
@@ -83,6 +92,11 @@ services:
       - vectis-frontend
       - vectis-orchestrator
       - vectis-data
+    # P7-H1 capacity ceiling. Plan/Apply state machine is light; the
+    # in-flight diff + compose template render are the heaviest steps and
+    # peak well under 100 MB. 512m gives generous headroom for big-jump
+    # migrations that compute large config diffs.
+    mem_limit: 512m
     # Bind to 127.0.0.1 only — exposes the orchestrator API to the host so
     # the `vectis update {plan,apply}` CLI can reach it at its default
     # http://localhost:8081 without an env-var workaround. Localhost-only
@@ -137,6 +151,11 @@ services:
     networks:
       - vectis-mail
       - vectis-data
+    # P7-H1 capacity ceiling. smtpd/smtp/cleanup/qmgr processes are small;
+    # 512m covers a moderate mail spike. If you regularly burst >100 concurrent
+    # SMTP sessions, raise this and bump smtpd_client_connection_count_limit
+    # in main.cf together so process count and per-process RAM stay aligned.
+    mem_limit: 512m
     ports:
       - "25:25"
       - "465:465"
@@ -175,6 +194,11 @@ services:
     networks:
       - vectis-mail
       - vectis-data
+    # P7-H1 capacity ceiling. imap/pop3/lmtp processes are per-connection;
+    # 1g comfortably handles ~200 concurrent IMAP clients. See P7-L1 for the
+    # related dovecot.conf process_limit / client_limit tuning that should
+    # land alongside this so cgroup + Dovecot's own caps agree.
+    mem_limit: 1g
     ports:
       - "993:993"
       - "995:995"
@@ -209,6 +233,11 @@ services:
     networks:
       - vectis-mail
       - vectis-data
+    # P7-H1 capacity ceiling. Lua plugins + Bayes statfiles + DNS resolver
+    # cache dominate. 1g is enough for the default ruleset; a runaway Lua
+    # plugin (or expensive regex chain) will OOM-kill at this ceiling rather
+    # than the host. See P7-L2 — rspamd worker count should be cgroup-aware.
+    mem_limit: 1g
     volumes:
       - /var/vectis/generated/rspamd/actions.conf:/etc/rspamd/local.d/actions.conf:ro
       - /var/vectis/generated/rspamd/classifier-bayes.conf:/etc/rspamd/local.d/classifier-bayes.conf:ro
@@ -261,6 +290,11 @@ services:
     networks:
       - vectis-frontend
       - vectis-mail
+    # P7-H1 capacity ceiling. Apache + mod_php + roundcube. 512m covers
+    # a modest pool of concurrent webmail sessions; raise (and tune Apache
+    # MaxRequestWorkers) if you've enabled many roundcube plugins or
+    # routinely send large attachments via the upload pipeline.
+    mem_limit: 512m
     volumes:
       - webmail-data:/var/roundcube/db
       # Vectis-specific Roundcube config overrides. The baked-in
@@ -309,6 +343,11 @@ services:
     restart: unless-stopped
     networks:
       - vectis-data
+    # P7-H1 capacity ceiling. Single-binary Loki + filesystem chunks. 512m
+    # covers a small/medium install. Index RAM scales with stream count —
+    # P7-H3 (drop the user label) and P7-M5 (cardinality caps) both keep
+    # this bound from creeping up as mailbox count grows.
+    mem_limit: 512m
     command: -config.file=/etc/loki/loki.yml
     volumes:
       - loki-config:/etc/loki:ro
@@ -330,6 +369,9 @@ services:
     restart: unless-stopped
     networks:
       - vectis-data
+    # P7-H1 capacity ceiling. Log scraper; 256m is plenty for the per-pipeline
+    # JSON/regex parsing on the small handful of Vectis containers.
+    mem_limit: 256m
     command: -config.file=/etc/promtail/promtail.yml
     volumes:
       - promtail-config:/etc/promtail:ro
@@ -352,6 +394,10 @@ services:
     networks:
       - vectis-frontend
       - vectis-data
+    # P7-H1 capacity ceiling. UI + query layer over Loki. 512m covers the
+    # built-in dashboards comfortably; raise if you've added heavy
+    # data sources or many concurrent dashboard viewers.
+    mem_limit: 512m
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
@@ -433,6 +479,9 @@ services:
     restart: unless-stopped
     networks:
       - vectis-mail
+    # P7-H1 capacity ceiling. Tiny Go binary; idles below 20 MB and only
+    # wakes on acme.json mtime change. 64m is generous headroom.
+    mem_limit: 64m
     volumes:
       - traefik-acme:/var/traefik/acme:ro
       - mail-certs:/etc/ssl/mail
@@ -465,6 +514,11 @@ services:
     restart: unless-stopped
     networks:
       - vectis-data
+    # P7-H1 capacity ceiling. shared_buffers + work_mem + the per-backend
+    # process pool. 2g is sized against the default postgres pool (P7-M1:
+    # 20 conns) on a small-to-medium install. If you've raised pool size
+    # or shared_buffers (P7-M2 follow-up), bump this together with them.
+    mem_limit: 2g
     # No host port publishing: `vectis-data` is `internal: true`, which
     # makes Docker silently drop any `ports:` directive. Host-side tooling
     # (migrations, admin seeding) therefore runs in a one-shot container
@@ -502,6 +556,9 @@ services:
     restart: unless-stopped
     networks:
       - vectis-data
+    # P7-H1 capacity ceiling. Single-process connection pooler; very small
+    # footprint regardless of pool size. 128m is plenty.
+    mem_limit: 128m
     volumes:
       - pgbouncer-config:/etc/pgbouncer:ro
     depends_on:
@@ -524,11 +581,22 @@ services:
     restart: unless-stopped
     networks:
       - vectis-data
+    # P7-H1 capacity ceiling. Cgroup ceiling sits above the in-server
+    # --maxmemory below so valkey hits its own LRU eviction (graceful)
+    # before the kernel OOM-killer (hard reset).
+    mem_limit: 512m
     entrypoint: ["sh", "-c"]
+    # P7-H2: --maxmemory + allkeys-lru protect against credential-stuffing
+    # session-key floods and any other unbounded-write bug. All Vectis
+    # keys carry TTLs and tolerate LRU eviction. 256m sits comfortably
+    # under the 512m cgroup ceiling above; valkey starts evicting at 256m
+    # rather than letting the cgroup OOM-kill the process.
     command:
       - |
         exec valkey-server \
           --requirepass "$$(cat /run/secrets/valkey_password)" \
+          --maxmemory 256mb \
+          --maxmemory-policy allkeys-lru \
           --save 60 1000 \
           --save 300 100{{ if .Cluster.Enabled }} \
           --min-replicas-to-write 0 \

@@ -64,6 +64,14 @@ scrape_configs:
 
       # Dovecot: parse Dovecot log format.
       # Format: "Mon DD HH:MM:SS service(user)<pid><session>: message"
+      # NOTE (P7-H3 / P5-H3): `user` is intentionally NOT promoted to a
+      # Loki label. Every mailbox owner's email becomes a label value
+      # otherwise, which (a) is PII baked into a 30-day retained index
+      # and (b) creates one stream per mailbox — index RAM scales O(N)
+      # in mailbox count. The regex still captures it as a parsed field,
+      # so LogQL queries like `{service="dovecot"} |= "user@domain"`
+      # (or `{service="dovecot"} | regexp "..." | user="user@domain"`)
+      # still work; they're just not indexed.
       - match:
           selector: '{service="dovecot"}'
           stages:
@@ -71,7 +79,6 @@ scrape_configs:
                 expression: '(?P<dovecot_service>\w+)\((?P<user>[^)]*)\).*?:\s+(?P<message>.*)'
             - labels:
                 dovecot_service:
-                user:
 
       # Rspamd: parse Rspamd JSON log output.
       - match:
