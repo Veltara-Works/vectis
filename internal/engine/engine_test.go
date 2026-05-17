@@ -12,9 +12,10 @@ import (
 
 func testData() *TemplateData {
 	return &TemplateData{
-		Hostname: "mail.example.com",
-		TLS:      config.TLSConfig{Provider: "letsencrypt", Email: "admin@example.com"},
-		ClamAV:   resolveClamAVKnobs("none"),
+		Hostname:  "mail.example.com",
+		TLS:       config.TLSConfig{Provider: "letsencrypt", Email: "admin@example.com"},
+		Resources: resolveResourceKnobs("small"),
+		ClamAV:    resolveClamAVKnobs("none"),
 		Rspamd:   config.RspamdConfig{SpamThreshold: 15.0, RejectThreshold: 999, GreylistEnabled: false},
 		Postfix:  config.PostfixConfig{MessageSizeLimit: 52428800, SmtpBanner: "$myhostname ESMTP"},
 		Dovecot:  config.DovecotConfig{MailLocation: "maildir:/var/vectis/mail/%d/%n/Maildir", QuotaDefaultMB: 1024},
@@ -837,5 +838,87 @@ func TestDetermineActions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestResolveResourceKnobs locks down the per-service mem_limit matrix.
+// Adding a service or changing a profile value must update this table
+// (and bump the RAM matrix in the installation docs in lockstep).
+func TestResolveResourceKnobs(t *testing.T) {
+	tests := []struct {
+		profile  string
+		api      string
+		postgres string
+		valkey   string
+		valkeyMM string
+		traefik  string
+	}{
+		{"dev", "256m", "512m", "128m", "64mb", "128m"},
+		{"small", "512m", "1g", "256m", "128mb", "128m"},
+		{"production", "1g", "2g", "512m", "256mb", "256m"},
+		{"enterprise", "2g", "4g", "1g", "512mb", "512m"},
+		{"", "512m", "1g", "256m", "128mb", "128m"},        // empty → small default
+		{"garbage", "512m", "1g", "256m", "128mb", "128m"}, // unknown → small default
+	}
+	for _, tt := range tests {
+		t.Run(tt.profile, func(t *testing.T) {
+			k := resolveResourceKnobs(tt.profile)
+			if k.APIMemLimit != tt.api {
+				t.Errorf("api: want %s, got %s", tt.api, k.APIMemLimit)
+			}
+			if k.PostgresMemLimit != tt.postgres {
+				t.Errorf("postgres: want %s, got %s", tt.postgres, k.PostgresMemLimit)
+			}
+			if k.ValkeyMemLimit != tt.valkey {
+				t.Errorf("valkey cgroup: want %s, got %s", tt.valkey, k.ValkeyMemLimit)
+			}
+			if k.ValkeyMaxMemory != tt.valkeyMM {
+				t.Errorf("valkey --maxmemory: want %s, got %s", tt.valkeyMM, k.ValkeyMaxMemory)
+			}
+			if k.TraefikMemLimit != tt.traefik {
+				t.Errorf("traefik: want %s, got %s", tt.traefik, k.TraefikMemLimit)
+			}
+		})
+	}
+}
+
+// TestComposeMemLimitsRendered verifies the resolved profile actually
+// reaches the compose YAML and ALL services carry a mem_limit. Guards
+// against a future service being added to the template without a
+// matching ResourceKnobs field — which would render as empty and
+// produce invalid compose.
+func TestComposeMemLimitsRendered(t *testing.T) {
+	data := testData()
+	data.Resources = resolveResourceKnobs("production")
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+
+	// Production profile values that MUST appear after rendering.
+	for _, want := range []string{
+		"mem_limit: 1g",     // api / dovecot / rspamd / orchestrator (one of several)
+		"mem_limit: 2g",     // postgres
+		"mem_limit: 512m",   // valkey cgroup / postfix / webmail / loki / grafana
+		"mem_limit: 256m",   // traefik / promtail
+		"--maxmemory 256mb", // valkey internal cap
+		"--maxmemory-policy allkeys-lru",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose missing %q under production profile", want)
+		}
+	}
+
+	// Hard rule: no `mem_limit:` followed by empty value (which would mean a
+	// service's template references an unresolved knob).
+	if strings.Contains(compose, "mem_limit: \n") || strings.Contains(compose, "mem_limit:\n") {
+		t.Error("compose has an empty mem_limit — a template references an unresolved ResourceKnobs field")
 	}
 }

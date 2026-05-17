@@ -28,6 +28,7 @@ type TemplateData struct {
 	// From config.yaml
 	Hostname   string
 	TLS        config.TLSConfig
+	Resources  ResourceKnobs
 	ClamAV     ClamAVKnobs
 	Rspamd     config.RspamdConfig
 	Postfix    config.PostfixConfig
@@ -68,6 +69,130 @@ type SpamListInfo struct {
 	Kind       string // "allow" | "block"
 	Scope      string // "email" | "domain"
 	Pattern    string
+}
+
+// ResourceKnobs holds the resolved per-service mem_limit ceilings for
+// every container in the stack. The raw config.yaml exposes only
+// `resources.profile`; this struct turns that single string into the
+// concrete numbers needed by compose's `mem_limit` directive. Resolved
+// once at render time via NewTemplateData so templates can reference
+// `.Resources.APIMemLimit` etc. without re-deriving.
+//
+// Profile semantics (P7-H1 / audit 2026-05-17):
+//   dev        — laptop / 2 GB VPS; minimal ceilings (~1.8 GB base)
+//   small      — single-domain 4 GB VPS; default for fresh installs (~3.5 GB base)
+//   production — multi-domain 8 GB VPS; matches audit recommendation (~6.7 GB base)
+//   enterprise — 16 GB+; doubled from production for high-volume sites (~13.5 GB base)
+//
+// "Base" excludes ClamAV (which has its own profile) and the optional
+// webmail / Loki / Promtail / Grafana / cert-extractor / pgbouncer
+// services. See installation.md for the full RAM-vs-feature matrix.
+//
+// ValkeyMaxMemory is the in-server `--maxmemory` flag (allkeys-lru policy)
+// and intentionally sits well below ValkeyMemLimit so valkey LRU-evicts
+// gracefully before the cgroup OOM-kills the process.
+type ResourceKnobs struct {
+	Profile              string
+	APIMemLimit          string
+	OrchestratorMemLimit string
+	TraefikMemLimit      string
+	PostfixMemLimit      string
+	DovecotMemLimit      string
+	RspamdMemLimit       string
+	PostgresMemLimit     string
+	ValkeyMemLimit       string
+	ValkeyMaxMemory      string
+	WebmailMemLimit      string
+	LokiMemLimit         string
+	PromtailMemLimit     string
+	GrafanaMemLimit      string
+	CertExtractorMemLimit string
+	PgBouncerMemLimit    string
+}
+
+// resolveResourceKnobs maps a resources.profile string to concrete per-service
+// mem_limit values. Empty string defaults to "small" — that's the right call
+// for fresh installs on the documented 4 GB-VPS minimum. Unknown profiles
+// also fall through to "small" to keep behaviour conservative.
+func resolveResourceKnobs(profile string) ResourceKnobs {
+	switch profile {
+	case "dev":
+		return ResourceKnobs{
+			Profile:               "dev",
+			APIMemLimit:           "256m",
+			OrchestratorMemLimit:  "128m",
+			TraefikMemLimit:       "128m",
+			PostfixMemLimit:       "128m",
+			DovecotMemLimit:       "256m",
+			RspamdMemLimit:        "256m",
+			PostgresMemLimit:      "512m",
+			ValkeyMemLimit:        "128m",
+			ValkeyMaxMemory:       "64mb",
+			WebmailMemLimit:       "256m",
+			LokiMemLimit:          "256m",
+			PromtailMemLimit:      "64m",
+			GrafanaMemLimit:       "256m",
+			CertExtractorMemLimit: "32m",
+			PgBouncerMemLimit:     "64m",
+		}
+	case "production":
+		return ResourceKnobs{
+			Profile:               "production",
+			APIMemLimit:           "1g",
+			OrchestratorMemLimit:  "512m",
+			TraefikMemLimit:       "256m",
+			PostfixMemLimit:       "512m",
+			DovecotMemLimit:       "1g",
+			RspamdMemLimit:        "1g",
+			PostgresMemLimit:      "2g",
+			ValkeyMemLimit:        "512m",
+			ValkeyMaxMemory:       "256mb",
+			WebmailMemLimit:       "512m",
+			LokiMemLimit:          "512m",
+			PromtailMemLimit:      "256m",
+			GrafanaMemLimit:       "512m",
+			CertExtractorMemLimit: "64m",
+			PgBouncerMemLimit:     "128m",
+		}
+	case "enterprise":
+		return ResourceKnobs{
+			Profile:               "enterprise",
+			APIMemLimit:           "2g",
+			OrchestratorMemLimit:  "1g",
+			TraefikMemLimit:       "512m",
+			PostfixMemLimit:       "1g",
+			DovecotMemLimit:       "2g",
+			RspamdMemLimit:        "2g",
+			PostgresMemLimit:      "4g",
+			ValkeyMemLimit:        "1g",
+			ValkeyMaxMemory:       "512mb",
+			WebmailMemLimit:       "1g",
+			LokiMemLimit:          "1g",
+			PromtailMemLimit:      "512m",
+			GrafanaMemLimit:       "1g",
+			CertExtractorMemLimit: "128m",
+			PgBouncerMemLimit:     "256m",
+		}
+	default: // "small" or empty or unknown — conservative fresh-install default
+		return ResourceKnobs{
+			Profile:               "small",
+			APIMemLimit:           "512m",
+			OrchestratorMemLimit:  "256m",
+			TraefikMemLimit:       "128m",
+			PostfixMemLimit:       "256m",
+			DovecotMemLimit:       "512m",
+			RspamdMemLimit:        "512m",
+			PostgresMemLimit:      "1g",
+			ValkeyMemLimit:        "256m",
+			ValkeyMaxMemory:       "128mb",
+			WebmailMemLimit:       "512m",
+			LokiMemLimit:          "256m",
+			PromtailMemLimit:      "128m",
+			GrafanaMemLimit:       "256m",
+			CertExtractorMemLimit: "64m",
+			PgBouncerMemLimit:     "128m",
+		}
+	}
 }
 
 // ClamAVKnobs holds the resolved per-profile knobs for the ClamAV sidecar.
@@ -152,6 +277,7 @@ func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, do
 		Version:    version.Version,
 		Hostname:   cfg.Hostname,
 		TLS:        cfg.TLS,
+		Resources:  resolveResourceKnobs(cfg.Resources.Profile),
 		ClamAV:     resolveClamAVKnobs(cfg.ClamAV.Profile),
 		Rspamd:     cfg.Rspamd,
 		Postfix:    cfg.Postfix,

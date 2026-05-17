@@ -14,13 +14,20 @@ tls:
   # key_path:  /etc/vectis/tls/privkey.pem
 
 # Container resource-limit profile.
-# Controls memory and CPU constraints for all Vectis containers.
-#   dev        — minimal limits, suitable for local development
-#   small      — single-domain, low-traffic server (~50 mailboxes)
-#   production — multi-domain, moderate traffic (~500 mailboxes)
-#   enterprise — high-volume, multi-tenant deployment
+# Picks per-container `mem_limit` ceilings (P7-H1 / audit 2026-05-17).
+# Limits are HARD cgroup ceilings — a service exceeding its limit gets
+# OOM-killed by the container's cgroup rather than crashing the host.
+#
+#   dev        — laptop / 2 GB VPS; ~1.8 GB base ceiling
+#   small      — single-domain 4 GB VPS; ~3.5 GB base ceiling  (default)
+#   production — multi-domain 8 GB VPS; ~6.7 GB base ceiling
+#   enterprise — high-volume 16 GB+; ~13.5 GB base ceiling
+#
+# "Base" excludes the optional webmail / Loki+Promtail+Grafana / ClamAV /
+# cert-extractor / pgbouncer services — each adds its own profile-scaled
+# ceiling. See the RAM-vs-feature matrix in the installation docs.
 resources:
-  profile: dev             # dev, small, production, enterprise
+  profile: small           # dev, small, production, enterprise
 
 # ClamAV antivirus sidecar.
 # Set to "none" to omit the ClamAV container entirely, saving ~1 GB RAM.
