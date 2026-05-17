@@ -90,15 +90,17 @@ func (s *Server) handleBillingPortalSession(w http.ResponseWriter, r *http.Reque
 	defer cancel()
 
 	resp, err := client.BillingPortalSession(ctx, validonx.BillingPortalRequest{ReturnURL: returnURL})
+	adminID := getAdminID(r.Context())
+	ip := clientIP(r)
 	if err != nil {
 		s.logger.Warn("billing portal session failed", "error", err, "tenant_id", runtimeCfg.TenantID)
+		s.audit.Log(r.Context(), &adminID, "billing.portal.mint_failed", "billing", nil,
+			map[string]string{"tenant_id": runtimeCfg.TenantID, "error": err.Error()}, &ip)
 		respondError(w, r, http.StatusBadGateway, "BILLING_PORTAL_FAILED",
 			"Could not mint billing portal session: "+err.Error())
 		return
 	}
 
-	adminID := getAdminID(r.Context())
-	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "billing.portal.mint", "billing", nil,
 		map[string]string{"tenant_id": runtimeCfg.TenantID}, &ip)
 
