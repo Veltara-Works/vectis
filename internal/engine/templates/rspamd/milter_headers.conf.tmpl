@@ -1,0 +1,27 @@
+## Rspamd milter_headers overrides for Vectis Mail.
+##
+## Default upstream config has `use = []` which means Rspamd loads the
+## module but adds zero headers — so inbound mail arrives with no
+## Authentication-Results, no spam-score visibility, nothing.
+##
+## This override enables the standard set of inbound-hygiene headers.
+##
+## NOTE: This template is rendered by the config engine to
+## /var/vectis/generated/rspamd/milter_headers.conf and bind-mounted
+## into the rspamd container at /etc/rspamd/local.d/milter_headers.conf.
+##
+## See https://www.rspamd.com/doc/modules/milter_headers.html for the
+## full list of available headers and routines.
+
+use = [
+    "authentication-results",  # Stamp inbound SPF/DKIM/DMARC verdict.
+    "x-spamd-result",          # Detailed Rspamd symbol breakdown.
+    "x-spam-level",            # SpamAssassin-style score bar.
+    "x-spam-status",           # SpamAssassin-style status string.
+    "x-spamd-bar",             # Compact spam-score visual.
+];
+
+## Strip any inbound auth-results from upstream relays so we always rewrite
+## with our own verdict — prevents spoofing by attackers who add their own
+## Authentication-Results header on the way in.
+authenticated_headers = ["authentication-results"];

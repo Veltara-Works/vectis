@@ -31,6 +31,13 @@ $config['ip_check']         = true;
 $config['useragent']        = 'Vectis Webmail';
 $config['x_frame_options']  = 'sameorigin';
 
+// Reverse-proxy path prefix — Traefik routes /webmail/* to this container
+// and strips /webmail before forwarding. Without this, Roundcube generates
+// URLs with no /webmail/ prefix and the login form POSTs land on the bare
+// host (which routes to the Admin UI). Setting request_path makes Roundcube
+// add the prefix back when emitting URLs.
+$config['request_path'] = '/webmail/';
+
 // SQLite session DB lives in the webmail-data named volume.
 $config['db_dsnw'] = 'sqlite:////var/roundcube/db/roundcube.db?mode=0640';
 
