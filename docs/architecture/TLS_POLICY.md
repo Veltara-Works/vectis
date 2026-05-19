@@ -99,8 +99,7 @@ Exactly the four items ratified with a sibling service on 2026-04-17:
       binaries — see Dockerfiles and CI.
 - [x] This document.
 - [x] Git commit introducing this policy (in lieu of a standalone
-      CHANGELOG — Vectis uses git history as its changelog, per
-      `BUILD_CONTEXT.md`).
+      CHANGELOG — Vectis uses git history as its changelog).
 
 ## Escalation
 

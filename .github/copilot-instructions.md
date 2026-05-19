@@ -103,7 +103,7 @@ Don't comment on these unless something is genuinely off:
 > **Edit this section per repo.** Everything above is the same across the our repositories.
 
 - This repo is **`Veltara-Works/vectis`** — a self-hosted mail server (Postfix + Dovecot + Rspamd + Traefik + Postgres + Valkey + ClamAV). Go + Chi backend, React + TypeScript admin UI, deployed via Docker Compose. Currently live in production at `mail.vectismail.com`.
-- **Architecture v1.4 is frozen** — start with `BUILD_CONTEXT.md`, then `docs/architecture/ADR_Index.md` (25 binding ADRs) and `docs/spec/` (Specs A–G). Don't suggest architectural changes without an ADR; flag PRs that drift from the frozen architecture.
+- **Architecture v1.4 is frozen** — start with `AGENTS.md`, then `docs/architecture/ADR_Index.md` (25 binding ADRs) and `docs/spec/` (Specs A–G). Don't suggest architectural changes without an ADR; flag PRs that drift from the frozen architecture.
 - **Domains live in Postgres, not config files.** Postfix and Dovecot read domain/mailbox/alias data via direct SQL lookups (`pgsql_virtual_*.cf`). Don't suggest writing per-domain Postfix maps or templating per-domain Dovecot config — entity changes must not require a container reload.
 - **Three Postgres users by privilege:** `vectis_postfix` (RO), `vectis_dovecot` (RO), `vectis_api` (full). If a new query under `internal/api` or `internal/orchestrator` is using a postfix/dovecot user, or postfix/dovecot SQL config is using vectis_api, that's a bug.
 - **The orchestrator is the ONLY container with the Docker socket.** Never suggest giving `/var/run/docker.sock` to api, postfix, dovecot, or anything else. New container-management code goes through `internal/orchestrator/docker.go` (`DockerManager`).
