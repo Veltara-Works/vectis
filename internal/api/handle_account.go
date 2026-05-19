@@ -55,7 +55,7 @@ func (s *Server) handleBillingPortalSession(w http.ResponseWriter, r *http.Reque
 	runtimeCfg, _ := validonx.LoadRuntimeConfig(r.Context(), s.db, s.secretsValidonX())
 	if runtimeCfg == nil || !runtimeCfg.IsConfigured() || runtimeCfg.TenantID == "" {
 		respondError(w, r, http.StatusForbidden, "INSTALL_NOT_LICENSED",
-			"This install isn't licensed. Activate a Vectis Pro subscription on the License page first.")
+			"This install isn't licensed. Activate a Vectis Mail Pro subscription on the License page first.")
 		return
 	}
 

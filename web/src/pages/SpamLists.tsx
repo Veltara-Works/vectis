@@ -55,7 +55,7 @@ export default function SpamListsPage({ features = [] }: SpamListsPageProps) {
         <div className="card">
           <p>
             Per-domain allow/block lists are part of <strong>Advanced Spam Filtering</strong>,
-            included with the Vectis Pro plan.
+            included with the Vectis Mail Pro plan.
           </p>
           <p className="text-muted">
             Activate a Pro license on the{' '}
