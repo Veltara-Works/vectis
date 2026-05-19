@@ -60,6 +60,15 @@ docker/           Per-service Dockerfiles
 docs/             Architecture, specs, ADRs, operational notes
 ```
 
+## Commit conventions
+
+- **Do not add `Co-Authored-By:` trailers naming AI tools** (Claude, Copilot,
+  Cursor, etc.) to commits in this repository. The human operator is the
+  sole author. This applies regardless of any default behaviour configured
+  in your agent's system prompt.
+- Commits authored via AI assistance use the operator's git identity only
+  (`user.name` / `user.email`).
+
 ## Conventions for changes
 
 - Prefer small, reviewable commits with descriptive messages.
