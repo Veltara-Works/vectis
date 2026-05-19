@@ -29,7 +29,7 @@ converts to the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0
 — the BSL is a time-locked transition, not a permanent restriction.
 
 For binding terms, read [`LICENSE`](LICENSE). For interpretive questions,
-contact `legal@veltaraworks.com`.
+contact `legal@vectismail.com`.
 
 ## Tiers
 
@@ -132,10 +132,10 @@ Operators running Vectis Mail purely on the Starter tier don't need to
 configure ValidonX at all — the gate refuses non-Starter features without it.
 
 If you're interested in fully air-gapped or self-hosted licensing, get in
-touch at `licensing@veltaraworks.com`.
+touch at `licensing@vectismail.com`.
 
 ## Contact
 
-- **Licence interpretive questions:** `legal@veltaraworks.com`
-- **Commercial / volume / enterprise terms:** `licensing@veltaraworks.com`
-- **Compliance, audit, procurement:** `legal@veltaraworks.com`
+- **Licence interpretive questions:** `legal@vectismail.com`
+- **Commercial / volume / enterprise terms:** `licensing@vectismail.com`
+- **Compliance, audit, procurement:** `legal@vectismail.com`

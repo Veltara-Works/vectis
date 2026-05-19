@@ -77,5 +77,5 @@ scripts/           Installer + utilities
 
 - **Bug reports:** https://github.com/Veltara-Works/vectis/issues
 - **Pro support tickets:** included with Pro subscription via ValidonX
-- **Commercial enquiries:** sales@veltaraworks.com
-- **Legal / licensing:** legal@veltaraworks.com
+- **Commercial enquiries:** sales@vectismail.com
+- **Legal / licensing:** legal@vectismail.com

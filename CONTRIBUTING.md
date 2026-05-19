@@ -146,5 +146,5 @@ When opening an issue:
 - **Bug reports:** [GitHub Issues](https://github.com/Veltara-Works/vectis/issues)
 - **Questions, ideas, show-and-tell:** [GitHub Discussions](https://github.com/Veltara-Works/vectis/discussions)
 - **Security:** `security@vectismail.com` (see [`SECURITY.md`](SECURITY.md))
-- **Licensing / commercial:** `licensing@veltaraworks.com`
+- **Licensing / commercial:** `licensing@vectismail.com`
 - **General:** `hello@vectismail.com`
