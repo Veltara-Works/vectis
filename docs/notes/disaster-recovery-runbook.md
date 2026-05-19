@@ -2,7 +2,7 @@
 
 **Status:** Active
 **Created:** 2026-04-03
-**Owner:** Ian Holt
+**Owner:** Veltara Works
 **Audience:** System administrators, on-call operators
 **Last tested:** Not yet tested (schedule first DR drill after production deployment)
 
@@ -222,7 +222,7 @@ vectis backup restore "$LATEST" --confirm  # On a TEST server only!
 
 6. **Copy backup archive to new server:**
    ```bash
-   scp -P 54703 backup-server:/path/to/vectis-YYYYMMDD-HHMMSS.tar.gz /var/vectis/backups/
+   scp -P <your-ssh-port> backup-server:/path/to/vectis-YYYYMMDD-HHMMSS.tar.gz /var/vectis/backups/
    ```
 
 7. **Restore from backup:**
@@ -350,10 +350,9 @@ For production deployments requiring geographic redundancy:
 
 | Role | Contact |
 |------|---------|
-| System Owner | Ian Holt |
+| System Owner | [Your name / role] |
 | Hosting Provider | [Update with provider details] |
-| DNS Provider | Cloudflare |
-| Dev Server | mail-dev.vectismail.com (43.229.63.178), SSH port 54703 |
+| DNS Provider | [e.g. Cloudflare, Route 53] |
 | Production Server | [Update after production deployment] |
 
 ---

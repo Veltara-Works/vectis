@@ -131,7 +131,7 @@ States: idle → planning → validating → applying → rolling_back → faile
 
 ## 10. Deployment
 
-- **Dev:** Sydney VPS, `mail-dev.vectismail.com`
-- **Production:** Clone to Singapore VPS post-testing
-- **Install:** Two-step (preflight + install)
-- **Git:** `github.com/Veltara-Works/vectis` (private)
+- **Target:** Any modern Linux VPS (Ubuntu 22.04+ recommended) with Docker.
+- **Install:** Two-step (`vectis preflight` then `vectis install`); see
+  the installation guide on the marketing site for the canonical path.
+- **Source:** `github.com/Veltara-Works/vectis`

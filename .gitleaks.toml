@@ -1,0 +1,30 @@
+# gitleaks v8 configuration for Vectis Mail.
+#
+# Three known-safe findings are allowlisted below. All are dummy test
+# fixtures, not real secrets:
+#
+#   1. internal/tls/traefik_extract_test.go — generated EC test key used
+#      only to unit-test cert extraction. Never deployed.
+#   2. internal/config/validate_test.go — the literal string
+#      "0123456789abcdef0123456789abcdef" used as a config-validation
+#      test input.
+#
+# Any new finding that isn't on this list should be investigated
+# before being added.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist for known-safe test fixtures."
+
+# Test fixture paths.
+paths = [
+    '''internal/tls/traefik_extract_test\.go''',
+    '''internal/config/validate_test\.go''',
+]
+
+# Exact literal dummy test values used across the test suite.
+regexes = [
+    '''0123456789abcdef0123456789abcdef''',
+]
