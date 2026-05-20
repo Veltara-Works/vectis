@@ -182,24 +182,27 @@ probe_vx() {
     fi
   fi
 
-  # Non-201: extract Vx error envelope if present.
-  local err_code err_msg
+  # Non-201: extract Vx error envelope if present. request_id is captured
+  # for fail/soft-pass too so we can quote it back to Vx when a probe fails
+  # — Vx looks up the same id in its server-side request log.
+  local err_code err_msg request_id
   err_code=$(jq -r '.error.code // .code // ""' < "$TMP" 2>/dev/null)
   err_msg=$(jq -r '.error.message // .message // ""' < "$TMP" 2>/dev/null)
+  request_id=$(jq -r '.meta.request_id // .error.details.context.requestId // ""' < "$TMP" 2>/dev/null)
 
   # Soft-pass: when expect_201=0 (upgrade-existing probe with a bogus tenant_id)
   # a 404 TENANT.NOT_FOUND is the expected outcome — it proves the branch was
   # reached and the tenant lookup happened.
   if [ "$expect_201" = "0" ] && [ "$status" = "404" ] && [ "$err_code" = "TENANT.NOT_FOUND" ]; then
-    echo "✓ $label — soft-pass (404 TENANT.NOT_FOUND for bogus tenant_id; branch reached)"
+    echo "✓ $label — soft-pass (404 TENANT.NOT_FOUND for bogus tenant_id; branch reached) req ${request_id}"
     pass=$((pass + 1))
-    record "$label" "pass" "soft-pass status=404 code=TENANT.NOT_FOUND (bogus tenant_id, branch reached)"
+    record "$label" "pass" "soft-pass status=404 code=TENANT.NOT_FOUND request_id=${request_id} (bogus tenant_id, branch reached)"
     return 0
   fi
 
-  echo "✗ $label — status=${status} code='${err_code}' message='${err_msg}'"
+  echo "✗ $label — status=${status} code='${err_code}' message='${err_msg}' req ${request_id}"
   fail=$((fail + 1))
-  record "$label" "fail" "status=${status} code=${err_code} message=${err_msg}"
+  record "$label" "fail" "status=${status} code=${err_code} request_id=${request_id} message=${err_msg}"
   return 1
 }
 
