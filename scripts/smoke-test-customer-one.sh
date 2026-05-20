@@ -76,10 +76,30 @@ if [ -z "$PARTNER_KEY" ]; then
 fi
 
 # ---- install fingerprint (with run-ts mixed in, so each run gets a new session) ----
+#
+# Per-probe fingerprint variation matters: Vx derives a deterministic
+# Stripe Idempotency-Key as `vx-integration-checkout:<product>:<sha256(fingerprint)>`.
+# Two probes in the same run sharing one fingerprint but differing on
+# metadata (e.g. new-signup vs upgrade-existing — the latter adds
+# metadata[customer_one_tenant_id]) collide on the Stripe side and yield
+# a 400 "Keys for idempotent requests can only be used with the same
+# parameters they were first used with" which Vx wraps as 502
+# CHECKOUT.INTEGRATION_STRIPE_ERROR. Mix the probe label into the
+# fingerprint so each probe type gets its own idempotency namespace —
+# same-probe retries within a run still benefit from idempotency.
+# (Root-caused 2026-05-20 by Vx; harness fix is on our side.)
 MACHINE_ID=$(cat /etc/machine-id 2>/dev/null || echo "")
 HOST_NAME=$(hostname 2>/dev/null || echo "")
 RUN_TS=$(date -u +%Y-%m-%dT%H%M%SZ)
-FINGERPRINT=$(printf '%s' "smoke-${RUN_TS}|${MACHINE_ID}|${HOST_NAME}" | sha256sum | awk '{print $1}')
+BASE_FINGERPRINT=$(printf '%s' "smoke-${RUN_TS}|${MACHINE_ID}|${HOST_NAME}" | sha256sum | awk '{print $1}')
+
+probe_fingerprint() {
+  # $1 = probe label ("new-signup", "upgrade", etc.) — namespace the
+  # Stripe Idempotency-Key per probe type so calls with different
+  # metadata can't collide on the same key. Re-hash to keep the wire
+  # value a 64-char sha256 hex (matches the production fingerprint shape).
+  printf '%s' "${BASE_FINGERPRINT}|${1}" | sha256sum | awk '{print $1}'
+}
 
 # ---- probe metadata ----
 PROBE_EMAIL_BASE="probe+customer-one"
@@ -126,6 +146,8 @@ record() {
 probe_vx() {
   local label="$1" email_suffix="$2" tenant_id="$3" expect_201="${4:-1}"
   local probe_email="${PROBE_EMAIL_BASE}-${email_suffix}-${RUN_TS}@vectismail.com"
+  local fp
+  fp=$(probe_fingerprint "$email_suffix")
 
   # Build body via jq so quoting + omit-tenant-when-empty is reliable.
   local body
@@ -138,7 +160,7 @@ probe_vx() {
       --arg tid "$tenant_id" \
       --arg su "$SUCCESS_URL" \
       --arg cu "$CANCEL_URL" \
-      --arg fp "$FINGERPRINT" \
+      --arg fp "$fp" \
       '{product_code:$pc, price_id:$pid, customer_email:$em, customer_name:$nm, tenant_id:$tid, success_url:$su, cancel_url:$cu, metadata:{vectis_install_fingerprint:$fp, source:"in-product"}}')
   else
     body=$(jq -n \
@@ -148,7 +170,7 @@ probe_vx() {
       --arg nm "Smoke probe ${email_suffix} ${RUN_TS}" \
       --arg su "$SUCCESS_URL" \
       --arg cu "$CANCEL_URL" \
-      --arg fp "$FINGERPRINT" \
+      --arg fp "$fp" \
       '{product_code:$pc, price_id:$pid, customer_email:$em, customer_name:$nm, success_url:$su, cancel_url:$cu, metadata:{vectis_install_fingerprint:$fp, source:"in-product"}}')
   fi
 
@@ -228,7 +250,7 @@ probe_vx_auth_negative() {
 
 echo "Smoke test: Vectis Mail Customer #1 checkout @ ${VX_BASE}"
 echo "Run timestamp: ${RUN_TS}"
-echo "Install fingerprint (smoke-prefixed): ${FINGERPRINT:0:16}..."
+echo "Install fingerprint (smoke-prefixed, base): ${BASE_FINGERPRINT:0:16}..."
 echo ""
 
 probe_vx_auth_negative
@@ -269,11 +291,11 @@ if [ -n "$JSON_OUT" ]; then
   jq -n \
     --arg vx_base "$VX_BASE" \
     --arg ts "$RUN_TS" \
-    --arg fp "$FINGERPRINT" \
+    --arg fp "$BASE_FINGERPRINT" \
     --argjson pass "$pass" \
     --argjson fail "$fail" \
     --argjson results "$results_json" \
-    '{vx_base: $vx_base, run_ts: $ts, install_fingerprint: $fp, pass: $pass, fail: $fail, results: $results}' \
+    '{vx_base: $vx_base, run_ts: $ts, base_fingerprint: $fp, pass: $pass, fail: $fail, results: $results}' \
     > "$JSON_OUT"
   echo "JSON report: $JSON_OUT"
 fi
