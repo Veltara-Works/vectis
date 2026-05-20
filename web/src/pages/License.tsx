@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.ts'
 
 // LicenseState mirrors the GET /api/v1/license response. The masked id is
@@ -19,6 +20,13 @@ interface LicenseState {
 }
 
 export default function LicensePage() {
+  const [searchParams] = useSearchParams()
+  // Set by /admin/license?checkout=success|cancel — Stripe Checkout redirects
+  // here after the customer completes or abandons the in-product upgrade flow.
+  // The banner naturally disappears once they paste their credentials and the
+  // Free-tier branch unmounts.
+  const checkoutStatus = searchParams.get('checkout')
+
   const [state, setState] = useState<LicenseState | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -26,6 +34,7 @@ export default function LicensePage() {
   const [submitting, setSubmitting] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [showForm, setShowForm] = useState(false)
+  const [upgrading, setUpgrading] = useState(false)
 
   // Form fields. license_key + service_key + tenant_id are the three
   // required values customers paste from their ValidonX dashboard.
@@ -91,6 +100,23 @@ export default function LicensePage() {
       setError(e instanceof Error ? e.message : 'Re-validation failed')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleStartCheckout = async () => {
+    // Mint a Stripe Checkout session via the admin-side proxy, then redirect
+    // the browser to Stripe-hosted checkout. After payment, Stripe redirects
+    // back to /admin/license?checkout=success and Vx emails provisioning
+    // credentials (license_key + service_key + tenant_id) to the customer.
+    setUpgrading(true)
+    setError('')
+    setSuccess('')
+    try {
+      const { url } = await api.createUpgradeCheckoutSession({})
+      window.location.assign(url)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Could not start checkout')
+      setUpgrading(false)
     }
   }
 
@@ -169,6 +195,20 @@ export default function LicensePage() {
           </>
         ) : (
           <>
+            {checkoutStatus === 'success' && (
+              <div className="alert alert-success">
+                Thanks for subscribing to Vectis Mail Pro! Check your email
+                for your License Key, Service Key, and Tenant ID, then paste
+                them below to activate Pro features on this install.
+              </div>
+            )}
+            {checkoutStatus === 'cancel' && (
+              <div className="alert">
+                Checkout cancelled — no charge was made. Click "Subscribe to
+                Vectis Mail Pro" below whenever you're ready.
+              </div>
+            )}
+
             <p className="text-muted">
               This server is running in Free tier. Pro features (per-domain
               analytics, advanced spam filtering — per-domain reject thresholds,
@@ -176,19 +216,21 @@ export default function LicensePage() {
               priority support) are not available.
             </p>
             <p className="text-muted">
-              To activate Pro, sign into your{' '}
-              <a href="https://validonx.com/" target="_blank" rel="noopener noreferrer">
-                ValidonX dashboard
-              </a>
-              {' '}and paste your License Key and Service Key below. The
-              server validates against ValidonX before activating, then
-              features unlock immediately — no restart required.
+              Subscribe to Vectis Mail Pro for $29 USD/month to unlock Pro
+              features. Checkout runs securely on Stripe; after payment your
+              activation credentials are emailed to you — paste them on this
+              page and Pro features unlock immediately, no restart required.
             </p>
-            {!showForm && (
-              <button className="btn" onClick={() => setShowForm(true)}>
-                Activate Pro / Enterprise
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem', flexWrap: 'wrap' }}>
+              <button className="btn" onClick={handleStartCheckout} disabled={upgrading}>
+                {upgrading ? 'Starting checkout...' : 'Subscribe to Vectis Mail Pro — $29 USD/mo'}
               </button>
-            )}
+              {!showForm && (
+                <button className="btn btn-sm" onClick={() => setShowForm(true)} disabled={upgrading}>
+                  Already purchased? Paste credentials
+                </button>
+              )}
+            </div>
           </>
         )}
       </div>

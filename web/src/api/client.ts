@@ -247,6 +247,17 @@ export const api = {
       return_url ? { return_url } : {}
     ),
 
+  // In-product "Buy Pro" checkout (super_admin only). Mints a Stripe
+  // Checkout session via ValidonX's Customer #1 partner-key endpoint so a
+  // Free install can subscribe without leaving the admin UI. owner_email
+  // and owner_name are optional — when omitted Stripe collects them. The
+  // License page calls this and navigates to the returned url; after
+  // payment Stripe redirects back to /admin/license?checkout=success.
+  createUpgradeCheckoutSession: (body: { owner_email?: string; owner_name?: string }) =>
+    request<{ url: string; session_id?: string; expires_at?: string }>(
+      'POST', '/account/upgrade-checkout-session', body
+    ),
+
   // Branding (Pro feature: custom_branding). GET is always callable;
   // PUT/DELETE require the Pro feature gate at the API layer (the page
   // hides the form when `tier !== 'pro' && tier !== 'enterprise'`).

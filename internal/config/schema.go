@@ -312,6 +312,14 @@ type ValidonXSecrets struct {
 	// pre-seed via secrets.yaml; admin UI License page also accepts it
 	// and persists to validonx_config (DB takes precedence over yaml).
 	LicenseKey string `yaml:"license_key"`
+	// CustomerOneKey is the ValidonX-issued partner key that authorises
+	// this install to mint Stripe Checkout sessions for purchasing a
+	// Vectis Mail Pro subscription (Customer #1 flow). It is bootstrapped
+	// into every install's secrets.yaml at release time and never written
+	// to the DB — partner-scoped, not tenant-scoped. Sent as X-API-Key on
+	// POST /api/v1/integration/checkout/create-session. Distinct from
+	// ServiceKey (tenant-scoped, used by licensing-resolve / billing-portal).
+	CustomerOneKey string `yaml:"customer_one_key"`
 }
 
 // ValidonXConfigured returns true if ValidonX licensing secrets are present.

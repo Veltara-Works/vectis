@@ -733,6 +733,14 @@ func (s *Server) buildRouter() chi.Router {
 			// must be able to reach the portal to reactivate.
 			r.With(requireSuperAdmin()).Post("/account/billing-portal-session", s.handleBillingPortalSession)
 
+			// In-product "Buy Pro" checkout — super_admin only.
+			// Mints a Stripe Checkout session via ValidonX's Customer #1
+			// partner-key endpoint so a Free install can buy Pro without
+			// leaving the admin UI. Does NOT require an existing license
+			// (the whole point is bootstrapping one). Returns the URL the
+			// admin UI navigates to.
+			r.With(requireSuperAdmin()).Post("/account/upgrade-checkout-session", s.handleUpgradeCheckoutSession)
+
 			// Branding — super_admin only. GET is unauthenticated-feature-wise
 			// (Free installs hit it on every page load to render defaults);
 			// PUT/DELETE require the custom_branding Pro feature.
