@@ -38,11 +38,13 @@
 # exercised only at release-cutover time via a manual probe.
 #
 # Tag convention: all probe emails use probe+customer-one-*@vectismail.com
-# so Vx can filter them out of audit dashboards. metadata.source must be
-# "in-product" — Vx server-side validates it as an enum and rejects other
-# values with VALIDATION.FAILED (verified 2026-05-20 smoke run with the
-# initial "smoke-probe-t2" value). Per-run customer_name carries the
-# "Smoke probe" tag for the secondary audit-filter cut.
+# so Vx can filter them out of audit dashboards. metadata.source is set
+# to "smoke-probe" — first-class allowlisted enum value on the Customer #1
+# endpoint (Vx PR #71 merged 2026-05-20T06:53:24Z, asked for in
+# /opt/vectis-private-notes/docs/notes/validonx/2026-05-20-customer-one-smoke-results-and-source-ask.md).
+# Per-run customer_name carries the "Smoke probe" tag for the secondary
+# audit-filter cut. Real production traffic from the in-product Buy Pro
+# button uses source:"smoke-probe" — see internal/api/handle_account.go.
 
 set -u
 
@@ -161,7 +163,7 @@ probe_vx() {
       --arg su "$SUCCESS_URL" \
       --arg cu "$CANCEL_URL" \
       --arg fp "$fp" \
-      '{product_code:$pc, price_id:$pid, customer_email:$em, customer_name:$nm, tenant_id:$tid, success_url:$su, cancel_url:$cu, metadata:{vectis_install_fingerprint:$fp, source:"in-product"}}')
+      '{product_code:$pc, price_id:$pid, customer_email:$em, customer_name:$nm, tenant_id:$tid, success_url:$su, cancel_url:$cu, metadata:{vectis_install_fingerprint:$fp, source:"smoke-probe"}}')
   else
     body=$(jq -n \
       --arg pc "$PRODUCT_CODE" \
@@ -171,7 +173,7 @@ probe_vx() {
       --arg su "$SUCCESS_URL" \
       --arg cu "$CANCEL_URL" \
       --arg fp "$fp" \
-      '{product_code:$pc, price_id:$pid, customer_email:$em, customer_name:$nm, success_url:$su, cancel_url:$cu, metadata:{vectis_install_fingerprint:$fp, source:"in-product"}}')
+      '{product_code:$pc, price_id:$pid, customer_email:$em, customer_name:$nm, success_url:$su, cancel_url:$cu, metadata:{vectis_install_fingerprint:$fp, source:"smoke-probe"}}')
   fi
 
   log "POST ${VX_BASE}/api/v1/integration/checkout/create-session (probe=${email_suffix})"
