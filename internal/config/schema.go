@@ -320,6 +320,25 @@ type ValidonXSecrets struct {
 	// POST /api/v1/integration/checkout/create-session. Distinct from
 	// ServiceKey (tenant-scoped, used by licensing-resolve / billing-portal).
 	CustomerOneKey string `yaml:"customer_one_key"`
+
+	// Forward is a catch-all for fields that exist in a future version's
+	// schema but not in this binary's. The yaml.v3 decoder runs in strict
+	// mode (KnownFields(true)) at the top level to catch typos in real
+	// operational configs — but the ValidonX section evolves across
+	// releases as new endpoint contracts land, and forward-staging a
+	// field in secrets.yaml before the matching binary is deployed used
+	// to be a reboot-time crash (incident 2026-05-25). This inline map
+	// tolerates such forward-staged fields so any future restart while
+	// the operator has pre-staged a v(N+1) secret on a v(N) binary
+	// keeps running on the v(N) feature set.
+	//
+	// Tradeoff: typos in field names INSIDE the validonx: section will
+	// no longer surface at load time — they'll silently land in Forward
+	// instead of erroring. Acceptable because (a) the field list is
+	// small + reviewed, (b) typo'd auth secrets fail loudly at use time
+	// (401 from Vx with a clear message), and (c) the alternative
+	// (release-time crash on every reboot) is materially worse.
+	Forward map[string]any `yaml:",inline"`
 }
 
 // ValidonXConfigured returns true if ValidonX licensing secrets are present.

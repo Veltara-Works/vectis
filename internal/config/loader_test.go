@@ -169,3 +169,63 @@ func TestLoadAll_MissingConfig(t *testing.T) {
 		t.Fatal("expected error when config.yaml is missing")
 	}
 }
+
+// TestLoadSecrets_ValidonXForwardCompat asserts that an unknown field
+// nested under the validonx: section does NOT cause a strict-unmarshal
+// crash. This prevents the class of incident hit on 2026-05-25 where a
+// forward-staged secret (customer_one_key, added before v0.1.14 deploy)
+// crashed v0.1.12 binaries on host reboot. The unknown field is captured
+// in ValidonXSecrets.Forward so it is not silently dropped — operators
+// can observe it via the loaded struct if they need to confirm staging.
+func TestLoadSecrets_ValidonXForwardCompat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.yaml")
+	yaml := testSecretsYAML + `validonx:
+  base_url: https://api.validonx.com
+  service_key: svckey
+  tenant_id: ""
+  subscription_id: ""
+  server_id: ""
+  license_key: ""
+  customer_one_key: vectis_known_key_value
+  some_future_v0_1_99_key: "this should not crash the loader"
+`
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	secrets, err := LoadSecrets(path)
+	if err != nil {
+		t.Fatalf("LoadSecrets must tolerate unknown validonx.* fields, got: %v", err)
+	}
+	if secrets.ValidonX == nil {
+		t.Fatal("ValidonX block should be loaded")
+	}
+	if secrets.ValidonX.CustomerOneKey != "vectis_known_key_value" {
+		t.Errorf("known field CustomerOneKey not parsed; got %q", secrets.ValidonX.CustomerOneKey)
+	}
+	got, ok := secrets.ValidonX.Forward["some_future_v0_1_99_key"]
+	if !ok {
+		t.Fatal("unknown field should land in Forward map, not be silently dropped")
+	}
+	if gotStr, _ := got.(string); gotStr != "this should not crash the loader" {
+		t.Errorf("Forward[some_future_v0_1_99_key] = %v, want the staged sentinel string", got)
+	}
+}
+
+// TestLoadSecrets_UnknownTopLevel asserts the inline catch-all on
+// ValidonXSecrets does NOT defeat strict mode at the top level — a typo
+// in a top-level section name (e.g. "vlidonx:" instead of "validonx:")
+// must still fail loudly so operational typos are caught immediately.
+func TestLoadSecrets_UnknownTopLevel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.yaml")
+	yaml := testSecretsYAML + "vlidonx:\n  base_url: typo\n"
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadSecrets(path); err == nil {
+		t.Fatal("expected strict-mode error for unknown top-level field, got nil")
+	}
+}
