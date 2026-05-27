@@ -1,8 +1,17 @@
 # Vectis Mail Server
 
-A self-hosted, container-orchestrated email platform. One YAML config, one
-admin UI, one API. Built for operators who want the control of running their
-own Postfix stack with the developer experience of a hosted sending API.
+A self-host mail server built on **Postfix, Dovecot, and Rspamd**, with a
+REST API and admin UI on top. One YAML config; the orchestrator handles
+atomic updates, rollback, and per-service reloads.
+
+Built for operators who want the underlying mail stack (no reinventing) but
+a modern operator surface (no manual config tweaking).
+
+If you're choosing between Vectis Mail, [Mail-in-a-Box](https://mailinabox.email/),
+and [Mailcow](https://mailcow.email/) — they all sit in the same self-host
+mail niche with different trade-offs. Vectis prioritises declarative config
+and a REST API; the others prioritise install simplicity (MIAB) and admin-UI
+maturity (Mailcow).
 
 **Marketing site:** https://vectismail.com
 **Documentation:** https://vectismail.com/getting-started
@@ -32,12 +41,14 @@ pointed at the host:
 curl -fsSL https://dl.vectismail.com/latest/install.sh | sudo bash
 ```
 
+(Or download `install.sh` first and inspect it — see the [installation
+walkthrough](https://vectismail.com/getting-started/installation/) for the
+full step-by-step.)
+
 The installer provisions Postgres, Valkey, Postfix, Dovecot, Rspamd,
 Traefik, the orchestrator, and the API container. Pre-flight checks
 verify DNS, port 25 reachability, hostname/PTR alignment, and disk
 space before any container starts.
-
-Full walkthrough: https://vectismail.com/getting-started/installation
 
 ## Tiers and licensing
 
