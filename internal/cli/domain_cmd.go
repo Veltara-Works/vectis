@@ -169,6 +169,10 @@ func runDomainList(cmd *cobra.Command, args []string) error {
 }
 
 // connectDB creates a DB pool from secrets.yaml and returns it with a cleanup function.
+// If the calling command defines a --db-host flag and the caller passes a non-empty
+// value, that value overrides secrets.Database.Host for the connection (useful when
+// running the CLI from the host but Postgres is reachable via a Docker bridge IP).
+// Commands that don't define the flag get the no-op default.
 func connectDB(cmd *cobra.Command) (*pgxpool.Pool, *config.VectisSecrets, func()) {
 	secrets, err := loadSecrets(cmd)
 	if err != nil {
@@ -179,8 +183,12 @@ func connectDB(cmd *cobra.Command) (*pgxpool.Pool, *config.VectisSecrets, func()
 	logger := logging.NewLogger("warn")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
+	dbHost := secrets.Database.Host
+	if override, _ := cmd.Flags().GetString("db-host"); override != "" {
+		dbHost = override
+	}
 	dbCfg := database.ConfigFromSecrets(
-		secrets.Database.Host, secrets.Database.Port, secrets.Database.Name,
+		dbHost, secrets.Database.Port, secrets.Database.Name,
 		secrets.Database.APIUser, secrets.Database.APIPassword,
 	)
 	pool, err := database.NewPool(ctx, dbCfg, logger)

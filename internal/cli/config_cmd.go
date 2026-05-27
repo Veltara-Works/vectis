@@ -685,10 +685,12 @@ func fetchSpamListEntries(cmd *cobra.Command) []engine.SpamListInfo {
 func init() {
 	// Diff flags.
 	diffCmd.Flags().String("output-dir", defaultOutputDir, "Output directory for generated config files")
+	diffCmd.Flags().String("db-host", "", "Override database host for connection (templates still use secrets.yaml value)")
 
 	// Apply flags.
 	applyCmd.Flags().String("output-dir", defaultOutputDir, "Output directory for generated config files")
 	applyCmd.Flags().Bool("dry-run", false, "Show what would change without applying (equivalent to diff)")
+	applyCmd.Flags().String("db-host", "", "Override database host for connection (templates still use secrets.yaml value)")
 
 	configCmd.AddCommand(validateCmd)
 	configCmd.AddCommand(diffCmd)
