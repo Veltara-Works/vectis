@@ -17,6 +17,8 @@ maturity (Mailcow).
 **Documentation:** https://vectismail.com/getting-started
 **Pricing:** https://vectismail.com/pricing
 
+![Vectis Mail admin UI — Updates page showing orchestrator state, Plan/Apply/Rollback controls, and the operation history of real version transitions](docs/screenshots/admin-updates.png)
+
 ## What's in the box
 
 - **Mail stack:** Postfix, Dovecot, Rspamd; DKIM/SPF/DMARC out of the box.
