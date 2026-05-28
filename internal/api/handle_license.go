@@ -205,7 +205,7 @@ func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Warn("license validation failed", "error", err)
 		respondError(w, r, http.StatusUnprocessableEntity, "LICENSE_VALIDATION_FAILED",
-			"ValidonX rejected the license: "+err.Error())
+			"ValidonX rejected the license. Check the service key and that the subscription is active.")
 		return
 	}
 	if !resp.Valid {

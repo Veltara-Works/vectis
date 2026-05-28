@@ -6,8 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strings"
 	"time"
 )
+
+// logServiceNameRe restricts the `service` filter to a safe charset so a
+// caller-supplied value can't break out of the LogQL stream selector (P3-M3).
+var logServiceNameRe = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // handleLogSearch queries the Loki API for log entries matching the given filters.
 // Query params: query (LogQL), service (postfix|dovecot|...), start, end, limit, pattern
@@ -24,12 +30,18 @@ func (s *Server) handleLogSearch(w http.ResponseWriter, r *http.Request) {
 		limitStr = "500"
 	}
 
+	if service != "" && !logServiceNameRe.MatchString(service) {
+		respondError(w, r, http.StatusBadRequest, "INVALID_SERVICE",
+			"service may only contain lowercase letters, digits, and hyphens")
+		return
+	}
+
 	// If Loki is enabled, query Loki API.
 	if s.cfg != nil && s.cfg.Observability.LokiEnabled {
 		results, err := s.queryLoki(r, logqlQuery, service, pattern, startStr, endStr, limitStr)
 		if err != nil {
 			s.logger.Error("loki query failed", "error", err)
-			respondError(w, r, http.StatusInternalServerError, "LOKI_ERROR", "Failed to query logs: "+err.Error())
+			respondError(w, r, http.StatusInternalServerError, "LOKI_ERROR", "Failed to query logs")
 			return
 		}
 		respond(w, r, http.StatusOK, results)
@@ -62,7 +74,10 @@ func (s *Server) queryLoki(r *http.Request, logqlQuery, service, pattern, startS
 			logqlQuery = `{container_name=~"vectis-.*"}`
 		}
 		if pattern != "" {
-			logqlQuery += fmt.Sprintf(` |~ "%s"`, pattern)
+			// Escape for the LogQL double-quoted string literal so a
+			// caller-supplied pattern can't break out and inject operators (P3-M3).
+			esc := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(pattern)
+			logqlQuery += fmt.Sprintf(` |~ "%s"`, esc)
 		}
 	}
 
