@@ -30,6 +30,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/validonx"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	"github.com/Veltara-Works/vectis/internal/repository"
+	"github.com/Veltara-Works/vectis/internal/secretcrypto"
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
 )
 
@@ -142,6 +143,13 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		}
 	}
 
+	// Webhook signing secrets are encrypted at rest (P5-M10) with a key
+	// derived from the API signing secret — no extra secret to provision.
+	// Rotating cfg.CookieSecret therefore orphans existing webhook secrets
+	// (they must be re-created), the same blast radius as rotating it
+	// already has for sessions/JWTs.
+	webhookEncKey := secretcrypto.DeriveKey([]byte(cfg.CookieSecret), "vectis-webhook-secret-v1")
+
 	s := &Server{
 		logger:       logger,
 		db:           db,
@@ -161,7 +169,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		admins:       repository.NewAdminRepo(db),
 		adminDomains: repository.NewAdminDomainRepo(db),
 		apiKeys:      repository.NewAPIKeyRepo(db),
-		webhooks:     repository.NewWebhookRepo(db),
+		webhooks:     repository.NewWebhookRepo(db, webhookEncKey),
 		abuseEvents:  repository.NewAbuseRepo(db),
 		audit:        repository.NewAuditRepo(db),
 		alerts:       repository.NewAlertRepo(db),
@@ -173,6 +181,16 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		fblReports:   repository.NewFBLReportRepo(db),
 		resetTokens:  repository.NewPasswordResetRepo(db),
 		totpManager:  auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
+	}
+
+	// Self-heal: encrypt any webhook signing secret still stored as plaintext
+	// from before encryption at rest landed (P5-M10). Idempotent and non-fatal
+	// — a failure leaves the legacy plaintext readable (Decrypt passes it
+	// through), so delivery keeps working either way.
+	if n, err := s.webhooks.EncryptLegacySecrets(context.Background()); err != nil {
+		logger.Warn("webhook secret encryption pass failed (non-fatal)", "error", err)
+	} else if n > 0 {
+		logger.Info("encrypted legacy webhook secrets at rest", "count", n)
 	}
 
 	// Initialize orchestrator client — prefer mTLS, fall back to bearer token.

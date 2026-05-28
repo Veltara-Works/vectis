@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/Veltara-Works/vectis/internal/secretcrypto"
 	"github.com/Veltara-Works/vectis/internal/types"
 )
 
@@ -49,23 +50,30 @@ type WebhookDelivery struct {
 
 // WebhookRepo handles webhook CRUD and delivery logging.
 type WebhookRepo struct {
-	db *pgxpool.Pool
+	db     *pgxpool.Pool
+	encKey []byte // AES-256 key for encrypting the signing secret at rest
 }
 
-// NewWebhookRepo creates a new webhook repository.
-func NewWebhookRepo(db *pgxpool.Pool) *WebhookRepo {
-	return &WebhookRepo{db: db}
+// NewWebhookRepo creates a new webhook repository. encKey is the AES-256 key
+// used to encrypt webhook signing secrets at rest (derive it with
+// secretcrypto.DeriveKey from install key material).
+func NewWebhookRepo(db *pgxpool.Pool, encKey []byte) *WebhookRepo {
+	return &WebhookRepo{db: db, encKey: encKey}
 }
 
 // --- Webhook CRUD ---
 
-// Create inserts a new webhook.
+// Create inserts a new webhook. The signing secret is encrypted at rest.
 func (r *WebhookRepo) Create(ctx context.Context, input WebhookCreate) (*Webhook, error) {
 	id := types.NewUUIDv7()
-	_, err := r.db.Exec(ctx,
+	encSecret, err := secretcrypto.Encrypt(r.encKey, input.Secret)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt webhook secret: %w", err)
+	}
+	_, err = r.db.Exec(ctx,
 		`INSERT INTO webhooks (id, domain_id, url, secret, events, active, created_by, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, true, $6, NOW(), NOW())`,
-		id, input.DomainID, input.URL, input.Secret, input.Events, input.CreatedBy,
+		id, input.DomainID, input.URL, encSecret, input.Events, input.CreatedBy,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert webhook: %w", err)
@@ -86,6 +94,9 @@ func (r *WebhookRepo) GetByID(ctx context.Context, id string) (*Webhook, error) 
 	if err != nil {
 		return nil, fmt.Errorf("get webhook: %w", err)
 	}
+	if w.Secret, err = secretcrypto.Decrypt(r.encKey, w.Secret); err != nil {
+		return nil, fmt.Errorf("decrypt webhook secret %s: %w", w.ID, err)
+	}
 	return w, nil
 }
 
@@ -99,7 +110,7 @@ func (r *WebhookRepo) ListByDomain(ctx context.Context, domainID string) ([]Webh
 		return nil, fmt.Errorf("list webhooks by domain: %w", err)
 	}
 	defer rows.Close()
-	return scanWebhooks(rows)
+	return r.scanWebhooks(rows)
 }
 
 // ListAll returns all webhooks.
@@ -111,7 +122,7 @@ func (r *WebhookRepo) ListAll(ctx context.Context) ([]Webhook, error) {
 		return nil, fmt.Errorf("list all webhooks: %w", err)
 	}
 	defer rows.Close()
-	return scanWebhooks(rows)
+	return r.scanWebhooks(rows)
 }
 
 // Delete removes a webhook.
@@ -191,16 +202,60 @@ func (r *WebhookRepo) ListPendingRetries(ctx context.Context, limit int) ([]Webh
 	return deliveries, nil
 }
 
-func scanWebhooks(rows interface{ Next() bool; Scan(dest ...any) error }) ([]Webhook, error) {
+func (r *WebhookRepo) scanWebhooks(rows interface{ Next() bool; Scan(dest ...any) error }) ([]Webhook, error) {
 	var webhooks []Webhook
 	for rows.Next() {
 		var w Webhook
 		if err := rows.Scan(&w.ID, &w.DomainID, &w.URL, &w.Secret, &w.Events, &w.Active, &w.CreatedBy, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan webhook: %w", err)
 		}
+		var err error
+		if w.Secret, err = secretcrypto.Decrypt(r.encKey, w.Secret); err != nil {
+			return nil, fmt.Errorf("decrypt webhook secret %s: %w", w.ID, err)
+		}
 		webhooks = append(webhooks, w)
 	}
 	return webhooks, nil
+}
+
+// EncryptLegacySecrets is an idempotent startup pass that encrypts any webhook
+// signing secret still stored as plaintext (rows created before encryption at
+// rest was introduced — finding P5-M10). It returns the number of rows
+// migrated. Safe to run on every boot: already-encrypted rows are skipped.
+func (r *WebhookRepo) EncryptLegacySecrets(ctx context.Context) (int, error) {
+	rows, err := r.db.Query(ctx, `SELECT id, secret FROM webhooks`)
+	if err != nil {
+		return 0, fmt.Errorf("list webhook secrets: %w", err)
+	}
+	type row struct{ id, secret string }
+	var legacy []row
+	for rows.Next() {
+		var rw row
+		if err := rows.Scan(&rw.id, &rw.secret); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan webhook secret: %w", err)
+		}
+		if !secretcrypto.IsEncrypted(rw.secret) {
+			legacy = append(legacy, rw)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate webhook secrets: %w", err)
+	}
+
+	migrated := 0
+	for _, rw := range legacy {
+		enc, err := secretcrypto.Encrypt(r.encKey, rw.secret)
+		if err != nil {
+			return migrated, fmt.Errorf("encrypt legacy webhook secret %s: %w", rw.id, err)
+		}
+		if _, err := r.db.Exec(ctx, `UPDATE webhooks SET secret = $1 WHERE id = $2`, enc, rw.id); err != nil {
+			return migrated, fmt.Errorf("update legacy webhook secret %s: %w", rw.id, err)
+		}
+		migrated++
+	}
+	return migrated, nil
 }
 
 func truncate(s string, n int) string {

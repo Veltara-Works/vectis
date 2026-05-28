@@ -16,7 +16,11 @@ import (
 
 	"github.com/Veltara-Works/vectis/internal/database"
 	"github.com/Veltara-Works/vectis/internal/repository"
+	"github.com/Veltara-Works/vectis/internal/secretcrypto"
+	"github.com/Veltara-Works/vectis/internal/types"
 )
+
+var testWebhookKey = secretcrypto.DeriveKey([]byte("repo-test-master-secret"), "vectis-webhook-secret-v1")
 
 var testPool *pgxpool.Pool
 
@@ -98,7 +102,7 @@ func TestAPIKey_CRUD(t *testing.T) {
 
 func TestWebhook_CRUD(t *testing.T) {
 	ctx := context.Background()
-	repo := repository.NewWebhookRepo(testPool)
+	repo := repository.NewWebhookRepo(testPool, testWebhookKey)
 	adminRepo := repository.NewAdminRepo(testPool)
 
 	suffix := uniqueSuffix()
@@ -111,9 +115,10 @@ func TestWebhook_CRUD(t *testing.T) {
 	}
 	defer adminRepo.Delete(ctx, admin.ID)
 
+	plainSecret := "testsecret-" + suffix
 	wh, err := repo.Create(ctx, repository.WebhookCreate{
 		URL:       "https://example.com/hook/" + suffix,
-		Secret:    "testsecret-" + suffix,
+		Secret:    plainSecret,
 		Events:    []string{"domain.created", "mailbox.created"},
 		CreatedBy: admin.ID,
 	})
@@ -125,6 +130,22 @@ func TestWebhook_CRUD(t *testing.T) {
 	if wh.URL == "" {
 		t.Error("url should be set on returned webhook")
 	}
+	// Create -> GetByID round-trips the plaintext secret.
+	if wh.Secret != plainSecret {
+		t.Errorf("returned secret = %q, want decrypted %q", wh.Secret, plainSecret)
+	}
+
+	// The column is encrypted at rest, not plaintext (P5-M10).
+	var stored string
+	if err := testPool.QueryRow(ctx, `SELECT secret FROM webhooks WHERE id = $1`, wh.ID).Scan(&stored); err != nil {
+		t.Fatalf("read raw secret: %v", err)
+	}
+	if !secretcrypto.IsEncrypted(stored) {
+		t.Errorf("stored secret is not encrypted: %q", stored)
+	}
+	if strings.Contains(stored, plainSecret) {
+		t.Error("stored secret leaks plaintext")
+	}
 
 	hooks, err := repo.ListAll(ctx)
 	if err != nil {
@@ -134,6 +155,9 @@ func TestWebhook_CRUD(t *testing.T) {
 	for _, h := range hooks {
 		if h.ID == wh.ID {
 			found = true
+			if h.Secret != plainSecret {
+				t.Errorf("listed secret = %q, want decrypted %q", h.Secret, plainSecret)
+			}
 		}
 	}
 	if !found {
@@ -146,6 +170,70 @@ func TestWebhook_CRUD(t *testing.T) {
 	}
 	if !ok {
 		t.Error("Delete returned false for existing webhook")
+	}
+}
+
+// TestWebhook_EncryptLegacySecrets verifies the idempotent startup migration
+// encrypts a plaintext secret in place while preserving its value (P5-M10).
+func TestWebhook_EncryptLegacySecrets(t *testing.T) {
+	ctx := context.Background()
+	repo := repository.NewWebhookRepo(testPool, testWebhookKey)
+	adminRepo := repository.NewAdminRepo(testPool)
+
+	suffix := uniqueSuffix()
+	admin, err := adminRepo.Create(ctx, repository.AdminCreate{
+		Email:        "wh-legacy-" + suffix + "@repo-test.com",
+		PasswordHash: "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQ$dGVzdGhhc2g",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	defer adminRepo.Delete(ctx, admin.ID)
+
+	// Insert a row with a PLAINTEXT secret, simulating a pre-encryption install.
+	legacyID := types.NewUUIDv7()
+	legacySecret := "legacy-plaintext-" + suffix
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO webhooks (id, domain_id, url, secret, events, active, created_by, created_at, updated_at)
+		 VALUES ($1, NULL, $2, $3, $4, true, $5, NOW(), NOW())`,
+		legacyID, "https://example.com/legacy/"+suffix, legacySecret,
+		[]string{"mail.sent"}, admin.ID,
+	); err != nil {
+		t.Fatalf("insert legacy webhook: %v", err)
+	}
+	defer repo.Delete(ctx, legacyID)
+
+	n, err := repo.EncryptLegacySecrets(ctx)
+	if err != nil {
+		t.Fatalf("encrypt legacy secrets: %v", err)
+	}
+	if n < 1 {
+		t.Errorf("expected at least 1 row migrated, got %d", n)
+	}
+
+	// Column is now encrypted, but reads still yield the original plaintext.
+	var stored string
+	if err := testPool.QueryRow(ctx, `SELECT secret FROM webhooks WHERE id = $1`, legacyID).Scan(&stored); err != nil {
+		t.Fatalf("read migrated secret: %v", err)
+	}
+	if !secretcrypto.IsEncrypted(stored) {
+		t.Errorf("legacy secret not encrypted after migration: %q", stored)
+	}
+	got, err := repo.GetByID(ctx, legacyID)
+	if err != nil {
+		t.Fatalf("get migrated webhook: %v", err)
+	}
+	if got.Secret != legacySecret {
+		t.Errorf("migrated secret decrypts to %q, want %q", got.Secret, legacySecret)
+	}
+
+	// Idempotent: a second pass migrates nothing new.
+	n2, err := repo.EncryptLegacySecrets(ctx)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("second pass migrated %d rows, want 0 (idempotent)", n2)
 	}
 }
 
