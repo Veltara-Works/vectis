@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	stdmail "net/mail"
@@ -38,7 +39,7 @@ type inboundNotification struct {
 func (s *Server) handleInboundNotify(w http.ResponseWriter, r *http.Request) {
 	// Authenticate via internal token.
 	token := r.Header.Get("X-Internal-Token")
-	if token == "" || token != s.internalToken {
+	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.internalToken)) != 1 {
 		respondError(w, r, http.StatusUnauthorized, "AUTH_REQUIRED", "Invalid internal token")
 		return
 	}

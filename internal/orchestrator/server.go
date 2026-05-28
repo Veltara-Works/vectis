@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -132,7 +133,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		token := strings.TrimPrefix(auth, "Bearer ")
-		if token != s.token {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) != 1 {
 			s.respondError(w, http.StatusUnauthorized, "AUTH_INVALID", "Invalid bearer token")
 			return
 		}
