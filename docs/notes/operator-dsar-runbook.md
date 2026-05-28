@@ -152,6 +152,11 @@ SQL
 
 ### 3c — Engagement tracking events (Pro only)
 
+As of v0.1.16 engagement recording is **opt-in and off by default**
+(finding P5-H2) — see `operator-gdpr-tracking.md`. If the operator
+never set `tracking.enabled: true`, this table is empty for the
+relevant period and there is nothing to export here.
+
 `email_events` join via `message_id` (RFC 5322 Message-ID, not the
 UUID). Pull events for messages the mailbox owns:
 
@@ -295,40 +300,65 @@ mailbox-related PII:
 ## Right-to-be-forgotten requests (deletion)
 
 A separate but related request: the data subject asks for their data
-to be **deleted**, not just disclosed. Vectis has no first-class
-delete-mailbox-and-purge command yet (audit finding **P5-H1** —
-Maildir purge on mailbox delete; target v0.1.13). Until that lands:
+to be **deleted**, not just disclosed.
+
+As of **v0.1.16** (audit finding **P5-H1**), deleting a mailbox is a
+complete on-disk erasure: after removing the DB row, the API resolves
+the domain and `os.RemoveAll`s the per-mailbox directory under
+`/var/vectis/mail/{domain}/{local_part}` (mail content **and** the
+sieve script). The outcome is recorded in the `mailbox.delete` audit
+entry as `{"maildir_purged": true|false}`. A purge failure is logged
+and audited but does **not** fail the delete — the row is already
+gone — so you must check the audit field and run the manual fallback
+(step 2 below) if it came back `false`.
+
+What the delete does **not** purge automatically (these tables outlive
+the mailbox row by design, so erasure still needs the manual SQL):
+
+- `messages` — `mailbox_id` is `ON DELETE SET NULL`, so envelope
+  metadata survives with a null mailbox.
+- `email_events` — keyed by RFC 5322 Message-ID (text), not an FK to
+  the mailbox, so engagement events survive.
+- `fbl_reports` — `mailbox_id` is `ON DELETE SET NULL`, survives.
+- `abuse_events` — `mailbox_id` is `ON DELETE CASCADE`, so these **are**
+  removed automatically with the mailbox.
+- `audit_log` — retained on purpose (legal-basis exemption: legitimate
+  interest in security/abuse recordkeeping). Document the decision.
 
 ```bash
-# 1. Soft-delete from the API or admin UI (deletes the mailbox row).
+# 1. Delete the mailbox (API or admin UI). As of v0.1.16 this ALSO
+#    purges the on-disk Maildir + sieve automatically.
 curl -X DELETE "https://mail.example.com/api/v1/mailboxes/$MAILBOX_ID" \
      -H "X-API-Key: $ADMIN_KEY"
 
-# 2. Manually purge the Maildir tree on disk.
+# 1a. Confirm the Maildir was purged. If maildir_purged is false,
+#     run step 2; if true, skip it.
+$PSQL -c "SELECT details->>'maildir_purged' AS maildir_purged
+          FROM audit_log
+          WHERE action='mailbox.delete' AND resource_id='$MAILBOX_ID'::uuid
+          ORDER BY created_at DESC LIMIT 1;"
+
+# 2. Manual fallback ONLY if step 1a returned false (e.g. domain
+#    lookup failed at delete time, or a pre-v0.1.16 install).
 sudo rm -rf "/var/vectis/mail/example.com/subject"
 
-# 3. Erase messages rows. ON DELETE SET NULL on mailbox_id means
-#    the messages survive the mailbox deletion — explicitly purge:
+# 3. Erase messages rows (survive the delete — see table above).
+#    Capture their Message-IDs first if you need them for step 4.
 $PSQL -c "DELETE FROM messages WHERE mailbox_id IS NULL
           AND (sender LIKE 'subject@example.com'
                OR 'subject@example.com' = ANY(recipients));"
 
-# 4. Erase email_events for those messages' Message-IDs (capture
-#    the IDs before step 3 if you need to grep them out).
+# 4. Erase email_events for those messages' Message-IDs (grep them
+#    out before step 3 — once messages are gone the join is lost).
 
-# 5. Erase abuse_events + fbl_reports for the mailbox (CASCADE on
-#    mailbox_id DROP handles this for abuse_events;
-#    fbl_reports.mailbox_id is ON DELETE SET NULL — purge by domain
-#    + manual filter).
-
-# 6. Audit log: usually retained (legal-basis exemption: legitimate
-#    interest in recordkeeping for security/abuse). Document the
-#    decision in the response.
+# 5. Erase fbl_reports for the mailbox (mailbox_id SET NULL — purge
+#    by domain + manual filter). abuse_events are gone via CASCADE.
 ```
 
-The post-v0.1.13 endpoint `DELETE /api/v1/mailboxes/{id}?purge=true`
-will collapse steps 1–5 into a single call. Track that in the
-release notes.
+A higher-effort future option — a dedicated
+`DELETE /api/v1/mailboxes/{id}?purge=true` that also sweeps the
+SET-NULL tables (steps 3–5) in one transaction — remains on the
+backlog. Until then, steps 3–5 are manual.
 
 ---
 
