@@ -22,6 +22,7 @@ type VectisConfig struct {
 	Webmail      WebmailConfig       `yaml:"webmail"`
 	Observability ObservabilityConfig `yaml:"observability"`
 	RateLimits   RateLimitConfig     `yaml:"rate_limits"`
+	Tracking     TrackingConfig      `yaml:"tracking"`
 	Cluster      ClusterConfig       `yaml:"cluster"`
 }
 
@@ -155,6 +156,14 @@ type RateLimitConfig struct {
 	APIBurst      int `yaml:"api_burst"`      // burst above average, default 100
 	MutateAverage int `yaml:"mutate_average"` // mutating endpoints (POST/PATCH/DELETE), default 20 req/s
 	MutateBurst   int `yaml:"mutate_burst"`   // burst above average, default 40
+}
+
+// TrackingConfig controls email open/click engagement tracking. Disabled by
+// default: recording recipient IP + user-agent is personal-data processing
+// (GDPR), so operators must explicitly opt in. When false, the tracking pixel
+// and click-redirect still function but no engagement event is recorded.
+type TrackingConfig struct {
+	Enabled bool `yaml:"enabled"` // record open/click events; default false
 }
 
 // ClusterConfig controls multi-node clustering (Phase 3).

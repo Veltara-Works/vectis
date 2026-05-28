@@ -70,6 +70,11 @@ func (s *Server) handleTrackClick(w http.ResponseWriter, r *http.Request) {
 // test token), the insert is skipped. Silent on errors — tracking must never
 // block pixel/redirect response.
 func (s *Server) recordEngagement(r *http.Request, messageID, eventType, targetURL string) {
+	// Engagement tracking is opt-in (GDPR): record nothing unless the operator
+	// has enabled it. The pixel/redirect still function regardless (P5-H2).
+	if s.cfg == nil || !s.cfg.Tracking.Enabled {
+		return
+	}
 	if s.emailEvents == nil || s.messages == nil {
 		return
 	}
