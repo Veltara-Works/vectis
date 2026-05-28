@@ -417,6 +417,7 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 		`/var/vectis/generated/dovecot/dovecot-sql.conf.ext:/etc/dovecot/dovecot-sql.conf.ext:ro`,
 		// Rspamd scoring + DKIM signing.
 		`/var/vectis/generated/rspamd/dkim_signing.conf:/etc/rspamd/local.d/dkim_signing.conf:ro`,
+		`/var/vectis/generated/rspamd/milter_headers.conf:/etc/rspamd/local.d/milter_headers.conf:ro`,
 	}
 	for _, m := range requiredMounts {
 		if !strings.Contains(compose, m) {
