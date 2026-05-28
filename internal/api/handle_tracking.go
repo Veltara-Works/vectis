@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -45,11 +46,22 @@ func (s *Server) handleTrackClick(w http.ResponseWriter, r *http.Request) {
 	}
 
 	messageID, ok := s.verifyTrackingToken(token)
-	if ok {
-		vectismetrics.EmailClicks.Inc()
-		s.recordEngagement(r, messageID, "click", targetURL)
+	if !ok {
+		// Forged/expired token: never redirect to an attacker-supplied URL.
+		// The redirect used to run unconditionally — an unauthenticated open
+		// redirect (audit P3-H1).
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
 	}
 
+	// Only follow http(s) targets — blocks javascript:/data: redirect payloads.
+	if u, err := url.Parse(targetURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		http.Error(w, "Invalid redirect target", http.StatusBadRequest)
+		return
+	}
+
+	vectismetrics.EmailClicks.Inc()
+	s.recordEngagement(r, messageID, "click", targetURL)
 	http.Redirect(w, r, targetURL, http.StatusFound)
 }
 

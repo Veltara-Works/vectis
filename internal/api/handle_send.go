@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -51,7 +52,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	for i, a := range req.To {
 		if a.Email == "" {
 			respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS",
-				"to["+strings.Repeat("", 0)+string(rune('0'+i))+"].email is required")
+				fmt.Sprintf("to[%d].email is required", i))
 			return
 		}
 	}
