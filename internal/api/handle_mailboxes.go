@@ -205,16 +205,33 @@ func (s *Server) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 	respond(w, r, http.StatusCreated, mailbox)
 }
 
-func (s *Server) handleGetMailbox(w http.ResponseWriter, r *http.Request) {
-	mailboxID := chi.URLParam(r, "mailboxID")
+// requireMailboxAccess fetches the mailbox by ID and verifies the caller may
+// access its domain. On any failure it writes the error response and returns
+// ok=false. Guards the by-ID handlers against cross-domain IDOR (audit P3-M1):
+// the List/Create paths already gate on canAccessDomain, but Get/Update/Delete
+// acted on a caller-supplied UUID without checking domain ownership.
+func (s *Server) requireMailboxAccess(w http.ResponseWriter, r *http.Request, mailboxID string) (*repository.Mailbox, bool) {
 	mailbox, err := s.mailboxes.GetByID(r.Context(), mailboxID)
 	if err != nil {
 		s.logger.Error("get mailbox failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get mailbox")
-		return
+		return nil, false
 	}
 	if mailbox == nil {
 		respondError(w, r, http.StatusNotFound, "NOT_FOUND", "Mailbox not found")
+		return nil, false
+	}
+	if !s.canAccessDomain(r.Context(), mailbox.DomainID) {
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this mailbox")
+		return nil, false
+	}
+	return mailbox, true
+}
+
+func (s *Server) handleGetMailbox(w http.ResponseWriter, r *http.Request) {
+	mailboxID := chi.URLParam(r, "mailboxID")
+	mailbox, ok := s.requireMailboxAccess(w, r, mailboxID)
+	if !ok {
 		return
 	}
 	respond(w, r, http.StatusOK, mailbox)
@@ -222,6 +239,10 @@ func (s *Server) handleGetMailbox(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateMailbox(w http.ResponseWriter, r *http.Request) {
 	mailboxID := chi.URLParam(r, "mailboxID")
+
+	if _, ok := s.requireMailboxAccess(w, r, mailboxID); !ok {
+		return
+	}
 
 	var req updateMailboxRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -271,6 +292,10 @@ func (s *Server) handleDeleteMailbox(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("X-Confirm-Delete") != "true" {
 		respondError(w, r, http.StatusBadRequest, "CONFIRMATION_REQUIRED",
 			"Set X-Confirm-Delete: true header to confirm deletion")
+		return
+	}
+
+	if _, ok := s.requireMailboxAccess(w, r, mailboxID); !ok {
 		return
 	}
 

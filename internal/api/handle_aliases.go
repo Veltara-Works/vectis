@@ -136,16 +136,31 @@ func (s *Server) handleCreateAlias(w http.ResponseWriter, r *http.Request) {
 	respond(w, r, http.StatusCreated, alias)
 }
 
-func (s *Server) handleGetAlias(w http.ResponseWriter, r *http.Request) {
-	aliasID := chi.URLParam(r, "aliasID")
+// requireAliasAccess fetches the alias by ID and verifies the caller may access
+// its domain. On any failure it writes the error response and returns ok=false.
+// Guards the by-ID handlers against cross-domain IDOR (audit P3-M2).
+func (s *Server) requireAliasAccess(w http.ResponseWriter, r *http.Request, aliasID string) (*repository.Alias, bool) {
 	alias, err := s.aliases.GetByID(r.Context(), aliasID)
 	if err != nil {
 		s.logger.Error("get alias failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get alias")
-		return
+		return nil, false
 	}
 	if alias == nil {
 		respondError(w, r, http.StatusNotFound, "NOT_FOUND", "Alias not found")
+		return nil, false
+	}
+	if !s.canAccessDomain(r.Context(), alias.DomainID) {
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this alias")
+		return nil, false
+	}
+	return alias, true
+}
+
+func (s *Server) handleGetAlias(w http.ResponseWriter, r *http.Request) {
+	aliasID := chi.URLParam(r, "aliasID")
+	alias, ok := s.requireAliasAccess(w, r, aliasID)
+	if !ok {
 		return
 	}
 	respond(w, r, http.StatusOK, alias)
@@ -153,6 +168,10 @@ func (s *Server) handleGetAlias(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateAlias(w http.ResponseWriter, r *http.Request) {
 	aliasID := chi.URLParam(r, "aliasID")
+
+	if _, ok := s.requireAliasAccess(w, r, aliasID); !ok {
+		return
+	}
 
 	var req updateAliasRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -183,6 +202,10 @@ func (s *Server) handleUpdateAlias(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteAlias(w http.ResponseWriter, r *http.Request) {
 	aliasID := chi.URLParam(r, "aliasID")
+
+	if _, ok := s.requireAliasAccess(w, r, aliasID); !ok {
+		return
+	}
 
 	deleted, err := s.aliases.Delete(r.Context(), aliasID)
 	if err != nil {
