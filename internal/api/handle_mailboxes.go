@@ -295,7 +295,8 @@ func (s *Server) handleDeleteMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, ok := s.requireMailboxAccess(w, r, mailboxID); !ok {
+	mb, ok := s.requireMailboxAccess(w, r, mailboxID)
+	if !ok {
 		return
 	}
 
@@ -310,9 +311,25 @@ func (s *Server) handleDeleteMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Purge the on-disk Maildir so a delete is a complete erasure (P5-H1).
+	// The DB row is gone, but mail content + sieve under
+	// /var/vectis/mail/{domain}/{local_part} would otherwise survive.
+	maildirPurged := false
+	if domain, derr := s.domains.GetByID(r.Context(), mb.DomainID); derr == nil && domain != nil {
+		userDir := filepath.Join("/var/vectis/mail", domain.Name, mb.LocalPart)
+		if rmErr := os.RemoveAll(userDir); rmErr != nil {
+			s.logger.Warn("maildir purge failed after mailbox delete", "path", userDir, "error", rmErr)
+		} else {
+			maildirPurged = true
+		}
+	} else {
+		s.logger.Warn("maildir purge skipped: domain lookup failed", "domain_id", mb.DomainID, "error", derr)
+	}
+
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
-	s.audit.Log(r.Context(), &adminID, "mailbox.delete", "mailbox", &mailboxID, nil, &ip)
+	s.audit.Log(r.Context(), &adminID, "mailbox.delete", "mailbox", &mailboxID,
+		map[string]any{"maildir_purged": maildirPurged}, &ip)
 
 	respond(w, r, http.StatusOK, map[string]string{"message": "Mailbox deleted"})
 }
