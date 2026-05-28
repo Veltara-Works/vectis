@@ -279,7 +279,7 @@ services:
         max-size: "{{ .Logging.MaxSizeMB }}m"
         max-file: "{{ .Logging.MaxFiles }}"
 {{ if .Webmail.Enabled }}
-  # Vectis webmail — thin layer on roundcube/roundcubemail:latest-apache
+  # Vectis webmail — thin layer on roundcube/roundcubemail:1.7.1-apache
   # that bakes in the Vectis skin (extends elastic) and an entrypoint
   # task wiring config.docker.inc.php → config.vectis.inc.php.
   #
