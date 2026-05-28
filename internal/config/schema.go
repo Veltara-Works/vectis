@@ -241,6 +241,11 @@ type DatabaseSecrets struct {
 	PostfixPassword    string `yaml:"postfix_password"`
 	DovecotUser        string `yaml:"dovecot_user"`
 	DovecotPassword    string `yaml:"dovecot_password"`
+
+	// Forward tolerates a field from a future schema version pre-staged in
+	// secrets.yaml on an older binary. Top-level decode is KnownFields(true),
+	// which would otherwise crash on reboot. See ValidonXSecrets.Forward.
+	Forward map[string]any `yaml:",inline"`
 }
 
 // ValkeySecrets holds connection details for the Valkey (Redis-compatible)
@@ -258,6 +263,10 @@ type APISecrets struct {
 	AdminEmail          string `yaml:"admin_email"`                    // initial admin, used by installer only
 	AdminPassword       string `yaml:"admin_password"`                 // initial admin, used by installer only
 	BackupEncryptionKey string `yaml:"backup_encryption_key"` // AES-256 encryption key for backups; required for production
+
+	// Forward tolerates a forward-staged field on an older binary; see
+	// ValidonXSecrets.Forward for the rationale.
+	Forward map[string]any `yaml:",inline"`
 }
 
 // OrchestratorSecrets holds authentication credentials for internal HTTP calls
@@ -270,6 +279,10 @@ type OrchestratorSecrets struct {
 // DKIMSecrets stores the base path where per-domain DKIM private keys live.
 type DKIMSecrets struct {
 	KeyBasePath string `yaml:"key_base_path"` // default "/var/vectis/dkim"
+
+	// Forward tolerates a forward-staged field on an older binary; see
+	// ValidonXSecrets.Forward for the rationale.
+	Forward map[string]any `yaml:",inline"`
 }
 
 // CloudflareSecrets is retained only so pre-rc27 secrets.yaml files still
