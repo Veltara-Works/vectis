@@ -73,6 +73,10 @@ Veltara Works's billing platform.
 The Change Date is four years from each version's first publication;
 on that date, the affected version converts to Apache License 2.0.
 
+Third-party components bundled into or distributed with Vectis, and the
+licenses they are made available under, are listed in
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+
 ## Repository layout
 
 ```
