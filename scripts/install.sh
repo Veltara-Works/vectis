@@ -71,6 +71,48 @@ if [ "$EXPECTED" != "$ACTUAL" ]; then
     exit 1
 fi
 
+# --- cosign signature verification (Sigstore keyless) ----------------------
+# Defence beyond the same-origin SHA256: the binary is signed in CI using
+# GitHub OIDC (no key to manage). When cosign is available we verify the
+# signature against the Vectis release-workflow identity and abort on
+# failure. When cosign is absent we note it and continue on the checksum.
+#   VECTIS_SKIP_COSIGN=1    skip verification entirely
+#   VECTIS_REQUIRE_COSIGN=1 make a missing cosign / missing bundle fatal
+COSIGN_ID_REGEXP='^https://github\.com/Veltara-Works/vectis/\.github/workflows/release\.yml@refs/tags/'
+COSIGN_ISSUER='https://token.actions.githubusercontent.com'
+
+if [ "${VECTIS_SKIP_COSIGN:-0}" = "1" ]; then
+    warn "VECTIS_SKIP_COSIGN=1 — skipping cosign signature verification."
+elif command -v cosign &>/dev/null; then
+    info "Verifying cosign signature (keyless)"
+    if curl -fsSL --retry 3 -o "$TMP_DIR/vectis.cosign.bundle" "${BIN_URL}.cosign.bundle"; then
+        if cosign verify-blob \
+            --bundle "$TMP_DIR/vectis.cosign.bundle" \
+            --certificate-identity-regexp "$COSIGN_ID_REGEXP" \
+            --certificate-oidc-issuer "$COSIGN_ISSUER" \
+            "$TMP_DIR/vectis" >/dev/null 2>&1; then
+            info "cosign signature verified"
+        else
+            error "cosign signature verification FAILED."
+            error "The binary's signature does not match the expected Vectis release identity."
+            error "Aborting. (Set VECTIS_SKIP_COSIGN=1 to bypass — NOT recommended.)"
+            exit 1
+        fi
+    elif [ "${VECTIS_REQUIRE_COSIGN:-0}" = "1" ]; then
+        error "VECTIS_REQUIRE_COSIGN=1 but no cosign bundle found at ${BIN_URL}.cosign.bundle"
+        exit 1
+    else
+        warn "No cosign bundle published for ${VECTIS_VERSION} — relying on SHA256 only."
+    fi
+elif [ "${VECTIS_REQUIRE_COSIGN:-0}" = "1" ]; then
+    error "VECTIS_REQUIRE_COSIGN=1 but cosign is not installed."
+    error "Install cosign: https://docs.sigstore.dev/system_config/installation/"
+    exit 1
+else
+    warn "cosign not found — skipping signature verification (SHA256 checksum still enforced)."
+    warn "For full supply-chain verification see docs/notes/verifying-downloads.md"
+fi
+
 install -m 0755 "$TMP_DIR/vectis" "$VECTIS_BIN_DEST"
 info "Installed $($VECTIS_BIN_DEST version) → $VECTIS_BIN_DEST"
 

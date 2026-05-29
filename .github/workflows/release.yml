@@ -17,6 +17,9 @@ jobs:
   build-binary:
     name: Build & Publish Binary
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read       # checkout only
+      id-token: write      # keyless cosign signing via Sigstore OIDC
     outputs:
       version: ${{ steps.version.outputs.version }}
       sha256: ${{ steps.checksum.outputs.sha256 }}
@@ -57,6 +60,23 @@ jobs:
           sha256sum vectis-linux-amd64 | tee vectis-linux-amd64.sha256
           echo "sha256=$(awk '{print $1}' vectis-linux-amd64.sha256)" >> "$GITHUB_OUTPUT"
 
+      - uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: 'v3.0.6'   # pin the signing tool for reproducibility
+
+      - name: Sign release blobs (keyless / Sigstore OIDC)
+        env:
+          COSIGN_YES: "true"   # non-interactive: accept the transparency-log entry
+        run: |
+          set -euo pipefail
+          # Sign the byte-identical root copy of install.sh so the published
+          # artifact, the GitHub Release asset, and the signed blob all match.
+          cp scripts/install.sh install.sh
+          for blob in vectis-linux-amd64 vectis-linux-amd64.sha256 install.sh; do
+            cosign sign-blob --bundle "${blob}.cosign.bundle" "$blob"
+          done
+          ls -la ./*.cosign.bundle
+
       - name: Upload to Cloudflare R2
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -67,18 +87,25 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           set -euo pipefail
-          for obj in vectis-linux-amd64 vectis-linux-amd64.sha256; do
+          # Binary + checksum + their cosign bundles
+          for obj in vectis-linux-amd64 vectis-linux-amd64.sha256 \
+                     vectis-linux-amd64.cosign.bundle \
+                     vectis-linux-amd64.sha256.cosign.bundle; do
             aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
               "$obj" "s3://$R2_BUCKET/${VERSION}/$obj"
             aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
               "$obj" "s3://$R2_BUCKET/latest/$obj"
           done
 
-          # Install script at the versioned path so users can pin
-          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
-            scripts/install.sh "s3://$R2_BUCKET/${VERSION}/install.sh"
-          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
-            scripts/install.sh "s3://$R2_BUCKET/latest/install.sh"
+          # Install script (+ its cosign bundle) at the versioned path so
+          # users can pin and verify. install.sh is the root copy signed
+          # above — byte-identical to scripts/install.sh.
+          for obj in install.sh install.sh.cosign.bundle; do
+            aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+              "$obj" "s3://$R2_BUCKET/${VERSION}/$obj"
+            aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+              "$obj" "s3://$R2_BUCKET/latest/$obj"
+          done
 
           # Example configs the installer drops into /etc/vectis on a fresh host
           for example in config.yaml.example secrets.yaml.example; do
@@ -95,6 +122,10 @@ jobs:
           path: |
             vectis-linux-amd64
             vectis-linux-amd64.sha256
+            vectis-linux-amd64.cosign.bundle
+            vectis-linux-amd64.sha256.cosign.bundle
+            install.sh
+            install.sh.cosign.bundle
           retention-days: 7
 
   build-images:
@@ -187,6 +218,25 @@ jobs:
             echo "- SHA256: \`${{ needs.build-binary.outputs.sha256 }}\`"
             echo "- Images: \`ghcr.io/veltara-works/vectis-{api,orchestrator,postfix,dovecot,rspamd,clamav,cert-extractor,webmail}:${GITHUB_REF_NAME}\`"
             echo ""
+            echo "## Verify (cosign, keyless)"
+            echo ""
+            echo "The installer, binary and checksum are signed via Sigstore keyless"
+            echo "OIDC. Each has a \`.cosign.bundle\` published alongside it. To verify the"
+            echo "binary (same pattern for \`install.sh\`):"
+            echo ""
+            echo '```bash'
+            echo "BASE=https://dl.vectismail.com/${GITHUB_REF_NAME}"
+            echo "curl -fsSLO \$BASE/vectis-linux-amd64"
+            echo "curl -fsSLO \$BASE/vectis-linux-amd64.cosign.bundle"
+            echo "cosign verify-blob \\"
+            echo "  --bundle vectis-linux-amd64.cosign.bundle \\"
+            echo "  --certificate-identity-regexp '^https://github.com/Veltara-Works/vectis/.github/workflows/release.yml@refs/tags/' \\"
+            echo "  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\"
+            echo "  vectis-linux-amd64"
+            echo '```'
+            echo ""
+            echo "See [docs/notes/verifying-downloads.md](https://github.com/Veltara-Works/vectis/blob/${GITHUB_REF_NAME}/docs/notes/verifying-downloads.md)."
+            echo ""
             echo "## Changes"
             echo ""
             git log --pretty=format:'- %s (%h)' "$RANGE"
@@ -249,4 +299,8 @@ jobs:
           files: |
             vectis-linux-amd64
             vectis-linux-amd64.sha256
+            vectis-linux-amd64.cosign.bundle
+            vectis-linux-amd64.sha256.cosign.bundle
+            install.sh
+            install.sh.cosign.bundle
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
