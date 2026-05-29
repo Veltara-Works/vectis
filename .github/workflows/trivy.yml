@@ -21,6 +21,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'web/package-lock.json'
+      - '.trivyignore'
       - '.github/workflows/trivy.yml'
   push:
     branches: [main]
@@ -29,6 +30,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'web/package-lock.json'
+      - '.trivyignore'
       - '.github/workflows/trivy.yml'
   schedule:
     # Mondays 14:17 UTC — surface newly-disclosed CVEs in pinned base images.
