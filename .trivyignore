@@ -1,0 +1,15 @@
+# Trivy ignore file — vulnerability suppressions WITH RATIONALE (audit P2-M1).
+#
+# Rules:
+#   - Every entry MUST document why the finding is safe to ignore.
+#   - Prefer fixing over ignoring. Only suppress non-actionable / unreachable
+#     findings (no fix available to us, or not exploitable in our usage).
+#   - Re-review every entry when the relevant base image is bumped.
+
+# CVE-2026-43494 — linux-libc-dev, in the upstream roundcube/roundcubemail
+# (Debian) base used by the webmail image. This package provides only Linux
+# kernel *header files* for compiling against; there is no running kernel
+# inside the container, so the vulnerability is not reachable at runtime.
+# We cannot patch it directly — it ships from the upstream base image and
+# clears when Roundcube republishes. Re-check on the next roundcube base bump.
+CVE-2026-43494
