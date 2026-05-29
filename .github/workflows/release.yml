@@ -116,7 +116,7 @@ jobs:
           done
 
       - name: Upload binary to GitHub Release
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: vectis-linux-amd64
           path: |
@@ -192,7 +192,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: vectis-linux-amd64
 
