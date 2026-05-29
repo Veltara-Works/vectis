@@ -69,7 +69,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
 
       - name: Trivy scan -> SARIF
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: vectis-${{ matrix.service }}:scan
           scanners: vuln
@@ -93,7 +93,7 @@ jobs:
 
       - name: Trivy scan -> run summary
         if: always()
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: vectis-${{ matrix.service }}:scan
           scanners: vuln
