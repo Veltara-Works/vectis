@@ -86,16 +86,27 @@ type Manager struct {
 	cfg        Config
 	repo       *repository.BackupRepo
 	onComplete CompletionCallback
+
+	// Service-control hooks used by restore. They default to the docker
+	// compose implementations below; the backup-restore integration test
+	// overrides them with no-ops because CI has no compose stack to control.
+	stopServicesFn  func(context.Context) error
+	startServicesFn func(context.Context) error
+	healthCheckFn   func(context.Context) error
 }
 
 // NewManager creates a new backup Manager.
 func NewManager(db *pgxpool.Pool, logger *slog.Logger, cfg Config) *Manager {
-	return &Manager{
+	m := &Manager{
 		db:     db,
 		logger: logger,
 		cfg:    cfg,
 		repo:   repository.NewBackupRepo(db),
 	}
+	m.stopServicesFn = m.stopServices
+	m.startServicesFn = m.startServices
+	m.healthCheckFn = m.healthCheck
+	return m
 }
 
 // SetOnComplete registers a callback invoked when async operations finish.
@@ -711,7 +722,7 @@ func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) erro
 	_ = m.repo.UpdateProgress(ctx, jobID, 18, "Stopping services")
 	m.logger.Info("restore: stopping services", "job_id", jobID)
 
-	if err := m.stopServices(ctx); err != nil {
+	if err := m.stopServicesFn(ctx); err != nil {
 		m.logger.Warn("restore: failed to stop services (may not be running)", "error", err)
 	}
 	_ = m.repo.UpdateProgress(ctx, jobID, 25, "Services stopped")
@@ -776,7 +787,7 @@ func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) erro
 	_ = m.repo.UpdateProgress(ctx, jobID, 88, "Starting services")
 	m.logger.Info("restore: starting services", "job_id", jobID)
 
-	if err := m.startServices(ctx); err != nil {
+	if err := m.startServicesFn(ctx); err != nil {
 		return fmt.Errorf("start services: %w", err)
 	}
 	_ = m.repo.UpdateProgress(ctx, jobID, 95, "Services started")
@@ -785,7 +796,7 @@ func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) erro
 	_ = m.repo.UpdateProgress(ctx, jobID, 96, "Running health checks")
 	m.logger.Info("restore: running health checks", "job_id", jobID)
 
-	if err := m.healthCheck(ctx); err != nil {
+	if err := m.healthCheckFn(ctx); err != nil {
 		m.logger.Warn("restore: health check reported issues", "error", err)
 		// Non-fatal: services may still be starting up.
 	}

@@ -134,3 +134,65 @@ jobs:
           ./vectis version
         env:
           CGO_ENABLED: "0"
+
+  backup-restore:
+    # P8-H3: prove the disaster-recovery path actually round-trips data.
+    # Runs the real Manager.Create/Restore (pg_dump + psql + tar + AES-256-GCM)
+    # against a disposable Postgres; service control is stubbed (no compose
+    # stack in CI). pg_dump must be >= the server version (17), so we install
+    # the PGDG client rather than the runner's default 16.
+    name: Backup & Restore
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: vectis
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: vectis_dev_super
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vectis"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install PostgreSQL 17 client (pg_dump must match the server)
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+
+      - name: Seed test database roles (migrations GRANT to these)
+        run: |
+          /usr/lib/postgresql/17/bin/psql -h 127.0.0.1 -U postgres -d vectis -c "
+            CREATE USER vectis_api WITH PASSWORD 'vectis_dev_api';
+            CREATE USER vectis_postfix WITH PASSWORD 'vectis_dev_postfix';
+            CREATE USER vectis_dovecot WITH PASSWORD 'vectis_dev_dovecot';
+          "
+        env:
+          PGPASSWORD: vectis_dev_super
+
+      - name: Backup → restore round-trip
+        run: |
+          export PATH=/usr/lib/postgresql/17/bin:$PATH
+          pg_dump --version
+          go test -tags integration ./internal/backup/ -run TestBackupRestoreRoundTrip -v -count=1 -timeout 120s
+        env:
+          VECTIS_TEST_PG_HOST: 127.0.0.1
+          VECTIS_TEST_PG_PORT: "5432"
+          VECTIS_TEST_PG_DB: vectis
+          VECTIS_TEST_PG_USER: postgres
+          VECTIS_TEST_PG_PASSWORD: vectis_dev_super
