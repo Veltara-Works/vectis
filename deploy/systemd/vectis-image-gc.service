@@ -1,0 +1,13 @@
+[Unit]
+Description=Vectis image GC — prune old docker image tags + dead apply-helpers
+Documentation=file:/opt/vectis/scripts/prune-images.sh
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# --apply: this is the scheduled, operator-sanctioned run. The script keeps
+# the running images, the previous stable, and :latest; never uses rmi -f.
+ExecStart=/opt/vectis/scripts/prune-images.sh --apply
+Nice=10
+IOSchedulingClass=idle

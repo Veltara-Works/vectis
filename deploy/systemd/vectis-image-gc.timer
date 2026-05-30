@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly Vectis image GC
+Documentation=file:/opt/vectis/scripts/prune-images.sh
+
+[Timer]
+# Weekly, Sunday 04:00 local time. Persistent catches a run missed while the
+# host was down; the randomized delay avoids a thundering herd at the minute.
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
