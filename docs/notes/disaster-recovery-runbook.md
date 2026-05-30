@@ -4,7 +4,10 @@
 **Created:** 2026-04-03
 **Owner:** Veltara Works
 **Audience:** System administrators, on-call operators
-**Last tested:** Not yet tested (schedule first DR drill after production deployment)
+**Last tested:** 2026-05-30 — isolated backup-restore drill PASSED (a real prod
+backup restored to a working system in a throwaway sandbox). See
+[dr-drill-2026-05-30.md](dr-drill-2026-05-30.md). Two backup-durability gaps
+found — see the ⚠️ note below. Next: an in-place / full-rebuild (Scenario B) drill.
 
 ---
 
@@ -17,6 +20,18 @@
 | **MTTR** (Mean Time to Repair) | 2 hours | Includes diagnosis, restore, and verification. |
 
 **Note:** RPO can be reduced to as low as 1 hour by adjusting the backup cron schedule. For critical deployments, consider `0 * * * *` (hourly backups) with a shorter retention period.
+
+---
+
+> ⚠️ **Open gaps from the 2026-05-30 drill (fix before relying on this runbook):**
+> 1. **Backups are not persisted.** `/var/vectis/backups` is not mounted on the
+>    `vectis-api` container, so backups land on its ephemeral layer and are lost
+>    on the next `compose down/up` (every cutover). The paths in §8 assume
+>    persistence that isn't wired yet. Add a durable mount for the api service.
+> 2. **Scheduled backups are off** (`config.yaml backup.enabled: false`). The
+>    24h RPO is not currently being met. Enable — but only after gap #1.
+>
+> See [dr-drill-2026-05-30.md](dr-drill-2026-05-30.md) for details + remediation.
 
 ---
 

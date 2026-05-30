@@ -148,6 +148,124 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDRDrillRealArchive restores a REAL backup archive into an isolated,
+// throwaway database and temp dirs — the operator DR drill (P8-H1). It uses
+// the exact production restore code (decrypt + psql + tar), only stubbing the
+// docker-compose service control, and asserts the result is a working system.
+//
+// Skipped unless VECTIS_DRILL_ARCHIVE is set. Inputs:
+//   VECTIS_DRILL_ARCHIVE  path to a .tar.gz[.enc] backup archive
+//   VECTIS_DRILL_KEY      backup encryption key (for .enc archives; on this
+//                         deployment that is secrets.api.secret)
+//   VECTIS_TEST_PG_*      a THROWAWAY Postgres — restore is destructive to it.
+//
+// NEVER point VECTIS_TEST_PG_* at production. The target DB needs the app
+// roles (vectis_api/postfix/dovecot) pre-created, as a real Scenario-B
+// rebuild would via `vectis install`.
+func TestDRDrillRealArchive(t *testing.T) {
+	archive := os.Getenv("VECTIS_DRILL_ARCHIVE")
+	if archive == "" {
+		t.Skip("DR drill: set VECTIS_DRILL_ARCHIVE to a backup archive to run")
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	dbCfg := database.Config{
+		Host:     envOr("VECTIS_TEST_PG_HOST", "127.0.0.1"),
+		Port:     envOrInt("VECTIS_TEST_PG_PORT", 5432),
+		Name:     envOr("VECTIS_TEST_PG_DB", "vectis"),
+		User:     envOr("VECTIS_TEST_PG_USER", "postgres"),
+		Password: envOr("VECTIS_TEST_PG_PASSWORD", "vectis_dev_super"),
+	}
+	pool, err := database.NewPool(ctx, dbCfg, logger)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer pool.Close()
+	// Migrate the target first, exactly as a real Scenario-B rebuild does via
+	// `vectis install` before restoring: Restore records its own job row in
+	// backup_jobs before the DB-restore step recreates the schema, so the
+	// table must already exist. The restore's --clean dump then overwrites
+	// everything with the backup's contents.
+	if err := database.RunMigrations(dbCfg.DSN(), logger); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.BackupDir = filepath.Join(root, "backups")
+	// Targets must share the basename of the production source dirs (mail,
+	// dkim, vectis) because the archive members carry that top-level name and
+	// restore extracts into the target's parent.
+	cfg.MailDataDir = filepath.Join(root, "mail")
+	cfg.DKIMDir = filepath.Join(root, "dkim")
+	cfg.ConfigDir = filepath.Join(root, "vectis")
+	cfg.SnapshotDir = filepath.Join(root, "snapshots")
+	cfg.DBHost, cfg.DBPort = dbCfg.Host, dbCfg.Port
+	cfg.DBName, cfg.DBUser, cfg.DBPassword = dbCfg.Name, dbCfg.User, dbCfg.Password
+	cfg.ComposePath = filepath.Join(root, "nonexistent-compose.yml")
+	cfg.EncryptionKey = os.Getenv("VECTIS_DRILL_KEY")
+	if err := os.MkdirAll(cfg.BackupDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(pool, logger, cfg)
+	mgr.stopServicesFn = func(context.Context) error { return nil }
+	mgr.startServicesFn = func(context.Context) error { return nil }
+	mgr.healthCheckFn = func(context.Context) error { return nil }
+
+	t.Logf("DRILL: restoring %s into throwaway %s@%s:%d", archive, dbCfg.Name, dbCfg.Host, dbCfg.Port)
+	if err := mgr.Restore(ctx, archive, nil); err != nil {
+		t.Fatalf("DRILL FAILED: restore: %v", err)
+	}
+
+	// Core tables must be present and queryable; row counts are drill evidence.
+	core := []string{
+		"domains", "mailboxes", "aliases", "admins", "sessions",
+		"audit_log", "orchestrator_history", "api_keys",
+	}
+	for _, tbl := range core {
+		var n int64
+		// Identifiers are fixed literals from the slice above, not user input.
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM "+tbl).Scan(&n); err != nil {
+			t.Errorf("DRILL: table %q not restored/queryable: %v", tbl, err)
+			continue
+		}
+		t.Logf("DRILL: %-22s %6d rows", tbl, n)
+	}
+
+	// A working system has at least one admin.
+	var admins int64
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM admins").Scan(&admins); err == nil && admins == 0 {
+		t.Error("DRILL: zero admins after restore — not a working system")
+	}
+
+	// Files restored.
+	t.Logf("DRILL: mail files restored: %d", countFilesUnder(t, cfg.MailDataDir))
+	t.Logf("DRILL: dkim files restored: %d", countFilesUnder(t, cfg.DKIMDir))
+	if _, err := os.Stat(filepath.Join(cfg.ConfigDir, "config.yaml")); err != nil {
+		t.Errorf("DRILL: config.yaml not restored: %v", err)
+	}
+	// secrets.yaml must never be in a backup.
+	if _, err := os.Stat(filepath.Join(cfg.ConfigDir, "secrets.yaml")); !os.IsNotExist(err) {
+		t.Errorf("DRILL: secrets.yaml present after restore — must be excluded; err=%v", err)
+	}
+	t.Log("DRILL: PASS — archive restored to a working system")
+}
+
+func countFilesUnder(t *testing.T, dir string) int {
+	t.Helper()
+	n := 0
+	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			n++
+		}
+		return nil
+	})
+	return n
+}
+
 // --- helpers ---
 
 func envOr(key, def string) string {
