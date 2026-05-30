@@ -132,6 +132,10 @@ jobs:
     name: Build & Push Image
     runs-on: ubuntu-24.04
     needs: build-binary
+    permissions:
+      contents: read       # checkout only
+      packages: write      # push image + signature to ghcr
+      id-token: write      # keyless cosign signing via Sigstore OIDC
     strategy:
       fail-fast: false
       matrix:
@@ -146,6 +150,10 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: 'v3.0.6'   # pin the signing tool (matches build-binary)
 
       # `:latest` must move only on stable tags. rc/beta tags publish only
       # the version-pinned image so they can never demote `:latest` below
@@ -171,6 +179,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build & push
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -182,6 +191,20 @@ jobs:
             VERSION=${{ needs.build-binary.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+      # Sign the image by its immutable manifest digest (not a mutable tag), so
+      # the signature is pinned to exact bytes and covers every tag that points
+      # at this digest (e.g. :<version> and :latest). Keyless / Sigstore OIDC,
+      # same trust anchor as the release blobs — verify with the release.yml
+      # workflow identity. See docs/notes/verifying-downloads.md.
+      - name: Sign image (keyless / Sigstore OIDC)
+        env:
+          COSIGN_YES: "true"   # non-interactive: accept the transparency-log entry
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/vectis-${{ matrix.service }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign "${IMAGE}@${DIGEST}"
 
   github-release:
     name: Create GitHub Release
@@ -233,6 +256,16 @@ jobs:
             echo "  --certificate-identity-regexp '^https://github.com/Veltara-Works/vectis/.github/workflows/release.yml@refs/tags/' \\"
             echo "  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\"
             echo "  vectis-linux-amd64"
+            echo '```'
+            echo ""
+            echo "The container images are signed the same way (signature stored in"
+            echo "ghcr alongside the image). Verify any service image, e.g. \`api\`:"
+            echo ""
+            echo '```bash'
+            echo "cosign verify \\"
+            echo "  --certificate-identity-regexp '^https://github.com/Veltara-Works/vectis/.github/workflows/release.yml@refs/tags/' \\"
+            echo "  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\"
+            echo "  ghcr.io/veltara-works/vectis-api:${GITHUB_REF_NAME}"
             echo '```'
             echo ""
             echo "See [docs/notes/verifying-downloads.md](https://github.com/Veltara-Works/vectis/blob/${GITHUB_REF_NAME}/docs/notes/verifying-downloads.md)."

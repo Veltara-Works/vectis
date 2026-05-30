@@ -16,6 +16,21 @@ Signed artifacts (each has a companion `.cosign.bundle`):
 `<version>` is a release tag (e.g. `v0.1.17`) or `latest`. The same files are
 attached to each [GitHub Release](https://github.com/Veltara-Works/vectis/releases).
 
+The eight container images are signed the same way. Their signatures live in the
+registry next to the image (no separate bundle file) and are verified with
+`cosign verify`:
+
+| Image | Reference (per version) |
+|---|---|
+| api | `ghcr.io/veltara-works/vectis-api:<version>` |
+| orchestrator | `ghcr.io/veltara-works/vectis-orchestrator:<version>` |
+| postfix | `ghcr.io/veltara-works/vectis-postfix:<version>` |
+| dovecot | `ghcr.io/veltara-works/vectis-dovecot:<version>` |
+| rspamd | `ghcr.io/veltara-works/vectis-rspamd:<version>` |
+| clamav | `ghcr.io/veltara-works/vectis-clamav:<version>` |
+| cert-extractor | `ghcr.io/veltara-works/vectis-cert-extractor:<version>` |
+| webmail | `ghcr.io/veltara-works/vectis-webmail:<version>` |
+
 ## Trust anchor
 
 cosign verification must assert **who** signed the artifact:
@@ -40,6 +55,23 @@ cosign verify-blob \
 ```
 
 A successful run prints `Verified OK`.
+
+## Verify a container image
+
+Each image is signed by its immutable manifest digest, so the signature is
+pinned to exact bytes and covers every tag that points at that digest (e.g.
+`:<version>` and `:latest`). Verify by tag or by digest — cosign resolves the
+tag to the digest before checking:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/Veltara-Works/vectis/.github/workflows/release.yml@refs/tags/' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  ghcr.io/veltara-works/vectis-api:latest      # or a pinned version / @sha256:digest
+```
+
+A successful run prints `Verified OK` and the signature's certificate details.
+Repeat for each of the eight service images listed above.
 
 ## Verify the installer before running it
 
