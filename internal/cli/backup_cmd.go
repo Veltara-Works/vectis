@@ -131,8 +131,16 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	pool, secrets, cleanup := connectDB(cmd)
-	defer cleanup()
+	// Restore runs WITHOUT a DB pool. On a real install the host cannot resolve
+	// the Docker-internal "postgres" hostname (and during restore the DB has
+	// just been stopped), so the Manager drives the DB via `docker exec` as the
+	// superuser and skips DB-backed job tracking. (Finding B, 2026-05-30
+	// Scenario-B DR drill — see docs/notes/dr-drill-scenario-b-2026-05-30.md.)
+	secrets, err := loadSecrets(cmd)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+	}
 
 	quiet := isQuiet(cmd)
 	jsonOutput, _ := cmd.Flags().GetBool("json")
@@ -144,11 +152,8 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	logger := logging.NewLogger(logLevel)
 
 	cfg := backup.DefaultConfig()
-	cfg.DBHost = secrets.Database.Host
-	cfg.DBPort = secrets.Database.Port
 	cfg.DBName = secrets.Database.Name
-	cfg.DBUser = secrets.Database.APIUser
-	cfg.DBPassword = secrets.Database.APIPassword
+	cfg.SuperuserPassword = secrets.Database.SuperuserPassword
 	if secrets.DKIM.KeyBasePath != "" {
 		cfg.DKIMDir = secrets.DKIM.KeyBasePath
 	}
@@ -158,7 +163,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 		cfg.EncryptionKey = secrets.API.Secret
 	}
 
-	mgr := backup.NewManager(pool, logger, cfg)
+	mgr := backup.NewManager(nil, logger, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()

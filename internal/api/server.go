@@ -577,6 +577,7 @@ func (s *Server) backupManager() *backup.Manager {
 	cfg.DBName = s.secrets.Database.Name
 	cfg.DBUser = s.secrets.Database.APIUser
 	cfg.DBPassword = s.secrets.Database.APIPassword
+	cfg.SuperuserPassword = s.secrets.Database.SuperuserPassword
 	if s.secrets.DKIM.KeyBasePath != "" {
 		cfg.DKIMDir = s.secrets.DKIM.KeyBasePath
 	}

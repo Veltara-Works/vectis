@@ -21,11 +21,19 @@ import (
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
-// secretsExcludeFiles lists filenames that must never be included in backup
-// archives. These files contain credentials and must be backed up separately
-// by the operator using secure, out-of-band mechanisms.
+// secretsExcludeFiles lists tar exclude patterns for files that must never be
+// included in backup archives. These files contain credentials and must be
+// backed up separately by the operator using secure, out-of-band mechanisms.
+//
+// The pattern is a GLOB (`secrets.yaml*`), not just the literal name: config
+// tooling leaves renamed copies in the config dir on every cutover
+// (secrets.yaml.pre-v0.1.17, secrets.yaml.bak.YYYYMMDD, secrets.yaml.pre-f3.*,
+// …) and each one holds the SAME live credentials. Excluding only the exact
+// name `secrets.yaml` leaked those variants into the (encrypted) archive — found
+// by the 2026-05-30 Scenario-B DR drill (Finding A). Patterns are passed
+// verbatim to `tar --exclude` (no shell), so tar does the glob matching.
 var secretsExcludeFiles = map[string]bool{
-	"secrets.yaml": true,
+	"secrets.yaml*": true,
 }
 
 // Config holds the backup manager configuration.
@@ -42,6 +50,18 @@ type Config struct {
 	DBName     string
 	DBUser     string
 	DBPassword string
+
+	// DBContainer / DBService / DBSuperuser / SuperuserPassword drive the
+	// host-run restore path (runbook Scenario B). On the host the CLI cannot
+	// resolve the Docker-internal "postgres" hostname, may not have psql
+	// installed, and the app user (vectis_api) cannot restore superuser-owned
+	// extension objects (e.g. pgcrypto). So restore loads the dump via
+	// `docker exec <DBContainer> psql -U <DBSuperuser>` instead. Found by the
+	// 2026-05-30 Scenario-B DR drill (Finding B).
+	DBContainer       string // Postgres container name, default "vectis-postgres"
+	DBService         string // Postgres docker-compose service name, default "postgres"
+	DBSuperuser       string // DB superuser for restore, default "postgres"
+	SuperuserPassword string // superuser password (secrets.database.superuser_password)
 
 	// Docker compose path for stopping/starting services.
 	ComposePath string
@@ -69,6 +89,9 @@ func DefaultConfig() Config {
 		DBPort:      5432,
 		DBName:      "vectis",
 		DBUser:      "vectis_api",
+		DBContainer: "vectis-postgres",
+		DBService:   "postgres",
+		DBSuperuser: "postgres",
 		ComposePath:         "/etc/vectis/docker-compose.yml",
 		MaxIncrementalChain: 7,
 	}
@@ -93,6 +116,13 @@ type Manager struct {
 	stopServicesFn  func(context.Context) error
 	startServicesFn func(context.Context) error
 	healthCheckFn   func(context.Context) error
+
+	// restoreDBFn loads the SQL dump into Postgres; ensureDBUpFn makes sure the
+	// DB container is running before that load. Defaults drive Docker (the
+	// production host path); the backup-restore integration test overrides them
+	// because CI has no compose stack / DB container to drive.
+	restoreDBFn  func(ctx context.Context, dumpPath string) error
+	ensureDBUpFn func(context.Context) error
 }
 
 // NewManager creates a new backup Manager.
@@ -101,12 +131,56 @@ func NewManager(db *pgxpool.Pool, logger *slog.Logger, cfg Config) *Manager {
 		db:     db,
 		logger: logger,
 		cfg:    cfg,
-		repo:   repository.NewBackupRepo(db),
+	}
+	// A nil pool is valid: the host-run `vectis backup restore` cannot reach the
+	// Docker-internal DB, so it runs without DB-backed job tracking. Guard repo
+	// access via the job* helpers below.
+	if db != nil {
+		m.repo = repository.NewBackupRepo(db)
 	}
 	m.stopServicesFn = m.stopServices
 	m.startServicesFn = m.startServices
 	m.healthCheckFn = m.healthCheck
+	m.restoreDBFn = m.restoreDatabaseViaDocker
+	m.ensureDBUpFn = m.ensureDBUp
 	return m
+}
+
+// --- nil-safe job tracking ---------------------------------------------------
+// These wrap the backup_jobs repo so the restore path works with a nil pool
+// (host CLI restore: the DB is unreachable from the host until it is itself
+// restored). When repo is nil, job tracking is skipped.
+
+func (m *Manager) jobCreate(ctx context.Context, action string, triggeredBy *string) (string, error) {
+	if m.repo == nil {
+		return "no-db-" + action, nil
+	}
+	job, err := m.repo.Create(ctx, action, triggeredBy)
+	if err != nil {
+		return "", err
+	}
+	return job.ID, nil
+}
+
+func (m *Manager) jobProgress(ctx context.Context, jobID string, progress int, step string) {
+	if m.repo == nil {
+		return
+	}
+	_ = m.repo.UpdateProgress(ctx, jobID, progress, step)
+}
+
+func (m *Manager) jobFail(ctx context.Context, jobID, errMsg string) {
+	if m.repo == nil {
+		return
+	}
+	_ = m.repo.Fail(ctx, jobID, errMsg)
+}
+
+func (m *Manager) jobComplete(ctx context.Context, jobID, path string) error {
+	if m.repo == nil {
+		return nil
+	}
+	return m.repo.Complete(ctx, jobID, path)
 }
 
 // SetOnComplete registers a callback invoked when async operations finish.
@@ -298,17 +372,17 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 	defer os.RemoveAll(tmpDir)
 
 	// Step 1: Database dump (0% -> 25%)
-	_ = m.repo.UpdateProgress(ctx, jobID, 5, "Dumping database")
+	m.jobProgress(ctx, jobID, 5, "Dumping database")
 	m.logger.Info("backup: dumping database", "job_id", jobID)
 
 	dbDumpPath := filepath.Join(tmpDir, "database.sql")
 	if err := m.dumpDatabase(ctx, dbDumpPath); err != nil {
 		return "", 0, fmt.Errorf("database dump: %w", err)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 25, "Database dump complete")
+	m.jobProgress(ctx, jobID, 25, "Database dump complete")
 
 	// Step 2: Archive mail data (25% -> 60%)
-	_ = m.repo.UpdateProgress(ctx, jobID, 30, "Archiving mail data")
+	m.jobProgress(ctx, jobID, 30, "Archiving mail data")
 	m.logger.Info("backup: archiving mail data", "job_id", jobID)
 
 	mailArchive := filepath.Join(tmpDir, "mail-data.tar")
@@ -319,13 +393,13 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 		}
 		m.logger.Warn("backup: mail data directory not found, skipping", "path", m.cfg.MailDataDir)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 60, "Mail data archived")
+	m.jobProgress(ctx, jobID, 60, "Mail data archived")
 
 	// Step 3: Copy config files (60% -> 80%)
 	// SECURITY: secrets.yaml is excluded from backups. It contains DB passwords,
 	// API secrets, and orchestrator tokens. Operators must back up secrets
 	// separately using secure, out-of-band mechanisms.
-	_ = m.repo.UpdateProgress(ctx, jobID, 65, "Copying configuration (excluding secrets)")
+	m.jobProgress(ctx, jobID, 65, "Copying configuration (excluding secrets)")
 	m.logger.Info("backup: copying config files (excluding secrets)", "job_id", jobID)
 
 	configArchive := filepath.Join(tmpDir, "config.tar")
@@ -335,10 +409,10 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 		}
 		m.logger.Warn("backup: config directory not found, skipping", "path", m.cfg.ConfigDir)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 80, "Configuration copied")
+	m.jobProgress(ctx, jobID, 80, "Configuration copied")
 
 	// Step 4: Copy DKIM keys (80% -> 90%)
-	_ = m.repo.UpdateProgress(ctx, jobID, 85, "Copying DKIM keys")
+	m.jobProgress(ctx, jobID, 85, "Copying DKIM keys")
 	m.logger.Info("backup: copying DKIM keys", "job_id", jobID)
 
 	dkimArchive := filepath.Join(tmpDir, "dkim.tar")
@@ -348,10 +422,10 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 		}
 		m.logger.Warn("backup: DKIM directory not found, skipping", "path", m.cfg.DKIMDir)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 90, "DKIM keys copied")
+	m.jobProgress(ctx, jobID, 90, "DKIM keys copied")
 
 	// Step 5: Create final tar.gz archive (90% -> 100%)
-	_ = m.repo.UpdateProgress(ctx, jobID, 92, "Creating backup archive")
+	m.jobProgress(ctx, jobID, 92, "Creating backup archive")
 	m.logger.Info("backup: creating final archive", "job_id", jobID, "path", archivePath)
 
 	if encrypted {
@@ -362,7 +436,7 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 			return "", 0, fmt.Errorf("create archive: %w", err)
 		}
 
-		_ = m.repo.UpdateProgress(ctx, jobID, 96, "Encrypting backup archive")
+		m.jobProgress(ctx, jobID, 96, "Encrypting backup archive")
 		m.logger.Info("backup: encrypting archive", "job_id", jobID)
 
 		if err := encryptFile(plaintextPath, archivePath, m.cfg.EncryptionKey); err != nil {
@@ -421,17 +495,17 @@ func (m *Manager) runCreateIncremental(ctx context.Context, jobID string, parent
 	defer os.RemoveAll(tmpDir)
 
 	// Step 1: Database dump (always full — small relative to mail).
-	_ = m.repo.UpdateProgress(ctx, jobID, 5, "Dumping database")
+	m.jobProgress(ctx, jobID, 5, "Dumping database")
 	m.logger.Info("incremental backup: dumping database", "job_id", jobID)
 
 	dbDumpPath := filepath.Join(tmpDir, "database.sql")
 	if err := m.dumpDatabase(ctx, dbDumpPath); err != nil {
 		return "", 0, fmt.Errorf("database dump: %w", err)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 25, "Database dump complete")
+	m.jobProgress(ctx, jobID, 25, "Database dump complete")
 
 	// Step 2: Archive only mail files modified since the parent backup.
-	_ = m.repo.UpdateProgress(ctx, jobID, 30, "Archiving changed mail data")
+	m.jobProgress(ctx, jobID, 30, "Archiving changed mail data")
 	m.logger.Info("incremental backup: archiving mail changes since parent",
 		"job_id", jobID,
 		"since", parent.CreatedAt.Format(time.RFC3339))
@@ -443,34 +517,34 @@ func (m *Manager) runCreateIncremental(ctx context.Context, jobID string, parent
 		}
 		m.logger.Warn("incremental backup: mail data directory not found, skipping", "path", m.cfg.MailDataDir)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 60, "Mail changes archived")
+	m.jobProgress(ctx, jobID, 60, "Mail changes archived")
 
 	// Step 3: Config (always full, tiny).
-	_ = m.repo.UpdateProgress(ctx, jobID, 65, "Copying configuration (excluding secrets)")
+	m.jobProgress(ctx, jobID, 65, "Copying configuration (excluding secrets)")
 	configArchive := filepath.Join(tmpDir, "config.tar")
 	if err := m.archiveDirectoryExcluding(ctx, m.cfg.ConfigDir, configArchive, secretsExcludeFiles); err != nil {
 		if !os.IsNotExist(err) {
 			return "", 0, fmt.Errorf("archive config: %w", err)
 		}
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 80, "Configuration copied")
+	m.jobProgress(ctx, jobID, 80, "Configuration copied")
 
 	// Step 4: DKIM (always full, tiny).
-	_ = m.repo.UpdateProgress(ctx, jobID, 85, "Copying DKIM keys")
+	m.jobProgress(ctx, jobID, 85, "Copying DKIM keys")
 	dkimArchive := filepath.Join(tmpDir, "dkim.tar")
 	if err := m.archiveDirectory(ctx, m.cfg.DKIMDir, dkimArchive); err != nil {
 		if !os.IsNotExist(err) {
 			return "", 0, fmt.Errorf("archive DKIM keys: %w", err)
 		}
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 90, "DKIM keys copied")
+	m.jobProgress(ctx, jobID, 90, "DKIM keys copied")
 
 	// Step 5: Write a type marker so restore knows this is incremental.
 	typeMarker := filepath.Join(tmpDir, "backup-type.txt")
 	os.WriteFile(typeMarker, []byte("incremental\n"), 0600)
 
 	// Step 6: Create final archive.
-	_ = m.repo.UpdateProgress(ctx, jobID, 92, "Creating backup archive")
+	m.jobProgress(ctx, jobID, 92, "Creating backup archive")
 	m.logger.Info("incremental backup: creating final archive", "job_id", jobID, "path", archivePath)
 
 	if encrypted {
@@ -479,7 +553,7 @@ func (m *Manager) runCreateIncremental(ctx context.Context, jobID string, parent
 			os.Remove(archivePath)
 			return "", 0, fmt.Errorf("create archive: %w", err)
 		}
-		_ = m.repo.UpdateProgress(ctx, jobID, 96, "Encrypting backup archive")
+		m.jobProgress(ctx, jobID, 96, "Encrypting backup archive")
 		if err := encryptFile(plaintextPath, archivePath, m.cfg.EncryptionKey); err != nil {
 			os.Remove(archivePath)
 			return "", 0, fmt.Errorf("encrypt archive: %w", err)
@@ -607,10 +681,11 @@ func (m *Manager) applyIncremental(ctx context.Context, archivePath string) erro
 		return fmt.Errorf("extract incremental: %w: %s", err, string(output))
 	}
 
-	// Restore database (overwrites the one from full backup).
+	// Restore database (overwrites the one from full backup). Uses the same
+	// injectable hook as the full restore so the host path goes via docker exec.
 	dbDump := filepath.Join(tmpDir, "database.sql")
 	if _, err := os.Stat(dbDump); err == nil {
-		if err := m.restoreDatabase(ctx, dbDump); err != nil {
+		if err := m.restoreDBFn(ctx, dbDump); err != nil {
 			return fmt.Errorf("restore incremental database: %w", err)
 		}
 	}
@@ -639,18 +714,17 @@ func (m *Manager) Restore(ctx context.Context, backupPath string, triggeredBy *s
 		return fmt.Errorf("invalid backup archive: %w", err)
 	}
 
-	job, err := m.repo.Create(ctx, "restore", triggeredBy)
+	jobID, err := m.jobCreate(ctx, "restore", triggeredBy)
 	if err != nil {
 		return fmt.Errorf("create restore job: %w", err)
 	}
 
-	err = m.runRestore(ctx, job.ID, backupPath)
-	if err != nil {
-		_ = m.repo.Fail(ctx, job.ID, err.Error())
+	if err := m.runRestore(ctx, jobID, backupPath); err != nil {
+		m.jobFail(ctx, jobID, err.Error())
 		return err
 	}
 
-	if err := m.repo.Complete(ctx, job.ID, backupPath); err != nil {
+	if err := m.jobComplete(ctx, jobID, backupPath); err != nil {
 		m.logger.Error("failed to mark restore job complete", "error", err)
 	}
 
@@ -664,24 +738,24 @@ func (m *Manager) RestoreAsync(ctx context.Context, backupPath string, triggered
 		return "", fmt.Errorf("invalid backup archive: %w", err)
 	}
 
-	job, err := m.repo.Create(ctx, "restore", triggeredBy)
+	jobID, err := m.jobCreate(ctx, "restore", triggeredBy)
 	if err != nil {
 		return "", fmt.Errorf("create restore job: %w", err)
 	}
 
 	go func() {
 		bgCtx := context.Background()
-		if err := m.runRestore(bgCtx, job.ID, backupPath); err != nil {
-			m.logger.Error("async restore failed", "job_id", job.ID, "error", err)
-			_ = m.repo.Fail(bgCtx, job.ID, err.Error())
+		if err := m.runRestore(bgCtx, jobID, backupPath); err != nil {
+			m.logger.Error("async restore failed", "job_id", jobID, "error", err)
+			m.jobFail(bgCtx, jobID, err.Error())
 			return
 		}
-		if err := m.repo.Complete(bgCtx, job.ID, backupPath); err != nil {
-			m.logger.Error("failed to mark async restore complete", "job_id", job.ID, "error", err)
+		if err := m.jobComplete(bgCtx, jobID, backupPath); err != nil {
+			m.logger.Error("failed to mark async restore complete", "job_id", jobID, "error", err)
 		}
 	}()
 
-	return job.ID, nil
+	return jobID, nil
 }
 
 func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) error {
@@ -693,7 +767,7 @@ func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) erro
 	defer os.RemoveAll(tmpDir)
 
 	// Step 1: Extract backup archive (0% -> 15%)
-	_ = m.repo.UpdateProgress(ctx, jobID, 5, "Extracting backup archive")
+	m.jobProgress(ctx, jobID, 5, "Extracting backup archive")
 	m.logger.Info("restore: extracting archive", "job_id", jobID, "path", backupPath)
 
 	extractPath := backupPath
@@ -702,7 +776,7 @@ func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) erro
 		if m.cfg.EncryptionKey == "" {
 			return fmt.Errorf("backup is encrypted but no encryption key is configured")
 		}
-		_ = m.repo.UpdateProgress(ctx, jobID, 3, "Decrypting backup archive")
+		m.jobProgress(ctx, jobID, 3, "Decrypting backup archive")
 		m.logger.Info("restore: decrypting archive", "job_id", jobID)
 
 		decryptedPath := filepath.Join(tmpDir, "backup.tar.gz")
@@ -716,35 +790,41 @@ func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) erro
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("extract archive: %w: %s", err, string(output))
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 15, "Archive extracted")
+	m.jobProgress(ctx, jobID, 15, "Archive extracted")
 
 	// Step 2: Stop services (15% -> 25%)
-	_ = m.repo.UpdateProgress(ctx, jobID, 18, "Stopping services")
+	m.jobProgress(ctx, jobID, 18, "Stopping services")
 	m.logger.Info("restore: stopping services", "job_id", jobID)
 
 	if err := m.stopServicesFn(ctx); err != nil {
 		m.logger.Warn("restore: failed to stop services (may not be running)", "error", err)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 25, "Services stopped")
+	m.jobProgress(ctx, jobID, 25, "Services stopped")
 
 	// Step 3: Restore database (25% -> 50%)
 	dbDump := filepath.Join(tmpDir, "database.sql")
 	if _, err := os.Stat(dbDump); err == nil {
-		_ = m.repo.UpdateProgress(ctx, jobID, 30, "Restoring database")
+		// The stop above took everything down, but the DB load targets a LIVE
+		// Postgres (the host path drives it via `docker exec`, which needs a
+		// running container). Bring the DB back up before loading.
+		if err := m.ensureDBUpFn(ctx); err != nil {
+			return fmt.Errorf("ensure database up before restore: %w", err)
+		}
+		m.jobProgress(ctx, jobID, 30, "Restoring database")
 		m.logger.Info("restore: restoring database", "job_id", jobID)
 
-		if err := m.restoreDatabase(ctx, dbDump); err != nil {
+		if err := m.restoreDBFn(ctx, dbDump); err != nil {
 			return fmt.Errorf("restore database: %w", err)
 		}
 	} else {
 		m.logger.Warn("restore: no database dump found in archive", "job_id", jobID)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 50, "Database restored")
+	m.jobProgress(ctx, jobID, 50, "Database restored")
 
 	// Step 4: Restore mail data (50% -> 70%)
 	mailArchive := filepath.Join(tmpDir, "mail-data.tar")
 	if _, err := os.Stat(mailArchive); err == nil {
-		_ = m.repo.UpdateProgress(ctx, jobID, 55, "Restoring mail data")
+		m.jobProgress(ctx, jobID, 55, "Restoring mail data")
 		m.logger.Info("restore: restoring mail data", "job_id", jobID)
 
 		if err := m.restoreDirectory(ctx, mailArchive, m.cfg.MailDataDir); err != nil {
@@ -753,26 +833,28 @@ func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) erro
 	} else {
 		m.logger.Warn("restore: no mail data archive found", "job_id", jobID)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 70, "Mail data restored")
+	m.jobProgress(ctx, jobID, 70, "Mail data restored")
 
 	// Step 5: Restore config files (70% -> 80%)
 	configArchive := filepath.Join(tmpDir, "config.tar")
 	if _, err := os.Stat(configArchive); err == nil {
-		_ = m.repo.UpdateProgress(ctx, jobID, 75, "Restoring configuration")
+		m.jobProgress(ctx, jobID, 75, "Restoring configuration")
 		m.logger.Info("restore: restoring config", "job_id", jobID)
 
-		if err := m.restoreDirectory(ctx, configArchive, m.cfg.ConfigDir); err != nil {
+		// Preserve secrets.yaml*: it is never in a backup (excluded for
+		// security) and must survive the config-dir replace (Finding E).
+		if err := m.restoreDirectory(ctx, configArchive, m.cfg.ConfigDir, "secrets.yaml*"); err != nil {
 			return fmt.Errorf("restore config: %w", err)
 		}
 	} else {
 		m.logger.Warn("restore: no config archive found", "job_id", jobID)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 80, "Configuration restored")
+	m.jobProgress(ctx, jobID, 80, "Configuration restored")
 
 	// Step 6: Restore DKIM keys (80% -> 85%)
 	dkimArchive := filepath.Join(tmpDir, "dkim.tar")
 	if _, err := os.Stat(dkimArchive); err == nil {
-		_ = m.repo.UpdateProgress(ctx, jobID, 82, "Restoring DKIM keys")
+		m.jobProgress(ctx, jobID, 82, "Restoring DKIM keys")
 		m.logger.Info("restore: restoring DKIM keys", "job_id", jobID)
 
 		if err := m.restoreDirectory(ctx, dkimArchive, m.cfg.DKIMDir); err != nil {
@@ -781,19 +863,19 @@ func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) erro
 	} else {
 		m.logger.Warn("restore: no DKIM archive found", "job_id", jobID)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 85, "DKIM keys restored")
+	m.jobProgress(ctx, jobID, 85, "DKIM keys restored")
 
 	// Step 7: Start services (85% -> 95%)
-	_ = m.repo.UpdateProgress(ctx, jobID, 88, "Starting services")
+	m.jobProgress(ctx, jobID, 88, "Starting services")
 	m.logger.Info("restore: starting services", "job_id", jobID)
 
 	if err := m.startServicesFn(ctx); err != nil {
 		return fmt.Errorf("start services: %w", err)
 	}
-	_ = m.repo.UpdateProgress(ctx, jobID, 95, "Services started")
+	m.jobProgress(ctx, jobID, 95, "Services started")
 
 	// Step 8: Health check (95% -> 100%)
-	_ = m.repo.UpdateProgress(ctx, jobID, 96, "Running health checks")
+	m.jobProgress(ctx, jobID, 96, "Running health checks")
 	m.logger.Info("restore: running health checks", "job_id", jobID)
 
 	if err := m.healthCheckFn(ctx); err != nil {
@@ -918,6 +1000,77 @@ func (m *Manager) restoreDatabase(ctx context.Context, dumpPath string) error {
 	return nil
 }
 
+// restoreDatabaseViaDocker loads a SQL dump into the Postgres container as the
+// superuser via `docker exec`. This is the production (host) restore path: the
+// host running `vectis backup restore` cannot resolve the Docker-internal
+// "postgres" hostname, may not have psql installed, and the app user cannot
+// restore superuser-owned extension objects (pgcrypto fails with
+// "must be owner of extension"). Executing psql inside the container as the
+// superuser over the local socket sidesteps all three. (Finding B, 2026-05-30
+// Scenario-B DR drill.) The integration test overrides restoreDBFn with the
+// TCP-based restoreDatabase because CI has no DB container to exec into.
+func (m *Manager) restoreDatabaseViaDocker(ctx context.Context, dumpPath string) error {
+	f, err := os.Open(dumpPath)
+	if err != nil {
+		return fmt.Errorf("open database dump: %w", err)
+	}
+	defer f.Close()
+
+	args := []string{"exec", "-i"}
+	if m.cfg.SuperuserPassword != "" {
+		// Belt-and-suspenders: the local socket connection is usually trust/peer
+		// (no password), but pass it in case pg_hba requires it.
+		args = append(args, "-e", "PGPASSWORD="+m.cfg.SuperuserPassword)
+	}
+	args = append(args,
+		m.cfg.DBContainer,
+		"psql",
+		"-U", m.cfg.DBSuperuser,
+		"-d", m.cfg.DBName,
+		"-v", "ON_ERROR_STOP=1",
+		"--single-transaction",
+	)
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Stdin = f
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker exec psql restore failed: %w: %s", err, string(output))
+	}
+
+	m.logger.Info("database restored via docker exec", "container", m.cfg.DBContainer, "path", dumpPath)
+	return nil
+}
+
+// ensureDBUp brings the Postgres service up (idempotent) and waits for it to
+// accept connections, so the docker-exec DB restore has a live target after the
+// preceding stop took everything down.
+func (m *Manager) ensureDBUp(ctx context.Context) error {
+	up := exec.CommandContext(ctx, "docker", "compose",
+		"-f", m.cfg.ComposePath,
+		"up", "-d", m.cfg.DBService,
+	)
+	if output, err := up.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker compose up -d %s: %w: %s", m.cfg.DBService, err, string(output))
+	}
+
+	// Wait (bounded) for Postgres to be ready for connections.
+	for i := 0; i < 30; i++ {
+		check := exec.CommandContext(ctx, "docker", "exec",
+			m.cfg.DBContainer, "pg_isready", "-U", m.cfg.DBSuperuser,
+		)
+		if err := check.Run(); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	return fmt.Errorf("postgres (%s) did not become ready after restart", m.cfg.DBContainer)
+}
+
 // archiveDirectory creates a tar of a directory. If the source directory
 // does not exist, returns os.ErrNotExist.
 func (m *Manager) archiveDirectory(ctx context.Context, srcDir, dstPath string) error {
@@ -963,10 +1116,46 @@ func (m *Manager) archiveDirectoryExcluding(ctx context.Context, srcDir, dstPath
 
 // restoreDirectory extracts a tar archive, then replaces the target directory
 // with the extracted contents.
-func (m *Manager) restoreDirectory(ctx context.Context, archivePath, targetDir string) error {
+func (m *Manager) restoreDirectory(ctx context.Context, archivePath, targetDir string, preserveGlobs ...string) error {
 	// Ensure target parent exists.
 	if err := os.MkdirAll(filepath.Dir(targetDir), 0755); err != nil {
 		return fmt.Errorf("create parent dir: %w", err)
+	}
+
+	// Stash files that must survive the restore before wiping the target. The
+	// config restore passes "secrets.yaml*": secrets are NEVER in a backup
+	// (excluded for security), so without this the RemoveAll below would delete
+	// /etc/vectis/secrets.yaml and leave the install unbootable — a DR-breaking
+	// bug found by the 2026-05-30 Scenario-B drill (Finding E).
+	stash, err := os.MkdirTemp("", "vectis-restore-keep-*")
+	if err != nil {
+		return fmt.Errorf("create preserve stash: %w", err)
+	}
+	defer os.RemoveAll(stash)
+	var preserved []string
+	for _, glob := range preserveGlobs {
+		matches, _ := filepath.Glob(filepath.Join(targetDir, glob))
+		for _, src := range matches {
+			// Only regular files are stashed. If a glob ever matched a directory
+			// (or symlink/socket), copyFilePreserve's ReadFile would fail and
+			// abort the entire restore — DR code must not abort on an edge like
+			// that. In practice secrets.yaml* are always regular files.
+			fi, statErr := os.Stat(src)
+			if statErr != nil {
+				return fmt.Errorf("stat preserved file %s: %w", src, statErr)
+			}
+			if !fi.Mode().IsRegular() {
+				if m.logger != nil {
+					m.logger.Warn("restore: skipping non-regular preserved match", "path", src, "mode", fi.Mode().String())
+				}
+				continue
+			}
+			base := filepath.Base(src)
+			if err := copyFilePreserve(src, filepath.Join(stash, base)); err != nil {
+				return fmt.Errorf("stash preserved file %s: %w", src, err)
+			}
+			preserved = append(preserved, base)
+		}
 	}
 
 	// Remove existing target directory.
@@ -985,7 +1174,33 @@ func (m *Manager) restoreDirectory(ctx context.Context, archivePath, targetDir s
 		return fmt.Errorf("tar extract failed for %s: %w: %s", archivePath, err, string(output))
 	}
 
+	// Put the preserved files back (the extract recreated targetDir).
+	if len(preserved) > 0 {
+		if err := os.MkdirAll(targetDir, 0o755); err != nil {
+			return fmt.Errorf("recreate target dir: %w", err)
+		}
+		for _, base := range preserved {
+			if err := copyFilePreserve(filepath.Join(stash, base), filepath.Join(targetDir, base)); err != nil {
+				return fmt.Errorf("restore preserved file %s: %w", base, err)
+			}
+		}
+	}
+
 	return nil
+}
+
+// copyFilePreserve copies src to dst preserving the file mode. Used to stash and
+// restore files (e.g. secrets.yaml) across a directory restore.
+func copyFilePreserve(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, info.Mode().Perm())
 }
 
 // createFinalArchive creates a tar.gz of the assembled backup directory.

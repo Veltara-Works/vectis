@@ -99,6 +99,11 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	mgr.stopServicesFn = func(context.Context) error { return nil }
 	mgr.startServicesFn = func(context.Context) error { return nil }
 	mgr.healthCheckFn = func(context.Context) error { return nil }
+	// Production restore drives the DB via `docker exec` (Finding B fix); CI has
+	// no DB container to exec into, so restore against the TCP test Postgres
+	// (connected as the superuser via cfg.DBUser) and skip the DB bounce.
+	mgr.restoreDBFn = mgr.restoreDatabase
+	mgr.ensureDBUpFn = func(context.Context) error { return nil }
 
 	// --- Back up ---
 	archivePath, size, err := mgr.Create(ctx, nil)
@@ -214,6 +219,11 @@ func TestDRDrillRealArchive(t *testing.T) {
 	mgr.stopServicesFn = func(context.Context) error { return nil }
 	mgr.startServicesFn = func(context.Context) error { return nil }
 	mgr.healthCheckFn = func(context.Context) error { return nil }
+	// Production restore drives the DB via `docker exec` (Finding B fix); CI has
+	// no DB container to exec into, so restore against the TCP test Postgres
+	// (connected as the superuser via cfg.DBUser) and skip the DB bounce.
+	mgr.restoreDBFn = mgr.restoreDatabase
+	mgr.ensureDBUpFn = func(context.Context) error { return nil }
 
 	t.Logf("DRILL: restoring %s into throwaway %s@%s:%d", archive, dbCfg.Name, dbCfg.Host, dbCfg.Port)
 	if err := mgr.Restore(ctx, archive, nil); err != nil {
