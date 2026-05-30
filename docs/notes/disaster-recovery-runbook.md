@@ -4,10 +4,19 @@
 **Created:** 2026-04-03
 **Owner:** Veltara Works
 **Audience:** System administrators, on-call operators
-**Last tested:** 2026-05-30 — isolated backup-restore drill PASSED (a real prod
-backup restored to a working system in a throwaway sandbox). See
-[dr-drill-2026-05-30.md](dr-drill-2026-05-30.md). Two backup-durability gaps
-found — see the ⚠️ note below. Next: an in-place / full-rebuild (Scenario B) drill.
+**Last tested:** 2026-05-30 — **two drills**:
+1. Isolated backup-restore (P8-H1) PASSED — real prod backup restored to a working
+   system in a sandbox. See [dr-drill-2026-05-30.md](dr-drill-2026-05-30.md).
+2. **Full-rebuild Scenario B** PASSED on a clean-OS rebuild — service health +
+   mail send/receive after restore both verified for the first time. See
+   [dr-drill-scenario-b-2026-05-30.md](dr-drill-scenario-b-2026-05-30.md).
+   ⚠️ It also found the **documented `vectis backup restore` host procedure does
+   NOT work as written** (Finding B — see ⚠️ in Scenario B below), a
+   **backup secrets leak** (Finding A — `secrets.yaml.*` renamed copies were
+   included in archives), and a **destructive restore** (Finding E — restore wiped
+   the live `secrets.yaml`). **All three are fixed in code (branch
+   `dr-scenario-b-2026-05-30`) and ship in the next release.** Until that release is
+   deployed, prod still runs the old path — use the manual fallback in step 7.
 
 ---
 
@@ -243,6 +252,20 @@ vectis backup restore "$LATEST" --confirm  # On a TEST server only!
    ```bash
    vectis backup restore /var/vectis/backups/vectis-YYYYMMDD-HHMMSS.tar.gz --confirm
    ```
+   > ⚠️ **KNOWN GAP (2026-05-30 Scenario-B drill, Finding B — fixed in code on
+   > branch `dr-scenario-b-2026-05-30`; lands in the next release, not yet deployed
+   > to prod).** Until that release is on the server, this
+   > command does **not** work as written: run on the host it fails at the
+   > DB ping (`lookup postgres ... server misbehaving`) because the DB hostname
+   > `postgres` only resolves inside the Docker network; it also stops Postgres
+   > before restoring into it, assumes host `pg_dump`/`psql`, and connects as the
+   > app user (`vectis_api`), which can't restore the `pgcrypto` extension
+   > (`must be owner of extension`). **Working manual fallback until fixed:**
+   > decrypt the archive, then load `database.sql` as the **superuser** with
+   > Postgres **up**:
+   > `docker exec -i vectis-postgres psql -U postgres -d vectis --single-transaction < database.sql`,
+   > and extract `mail-data.tar` / `dkim.tar` into `/var/vectis`. See
+   > [dr-drill-scenario-b-2026-05-30.md](dr-drill-scenario-b-2026-05-30.md).
 
 8. **Update DNS records to point to new server IP:**
    - A/AAAA records for mail hostname
