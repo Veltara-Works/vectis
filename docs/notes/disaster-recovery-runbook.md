@@ -23,15 +23,14 @@ found — see the ⚠️ note below. Next: an in-place / full-rebuild (Scenario 
 
 ---
 
-> ⚠️ **Open gaps from the 2026-05-30 drill (fix before relying on this runbook):**
-> 1. **Backups are not persisted.** `/var/vectis/backups` is not mounted on the
->    `vectis-api` container, so backups land on its ephemeral layer and are lost
->    on the next `compose down/up` (every cutover). The paths in §8 assume
->    persistence that isn't wired yet. Add a durable mount for the api service.
-> 2. **Scheduled backups are off** (`config.yaml backup.enabled: false`). The
->    24h RPO is not currently being met. Enable — but only after gap #1.
->
-> See [dr-drill-2026-05-30.md](dr-drill-2026-05-30.md) for details + remediation.
+> ✅ **2026-05-30 drill gaps — REMEDIATED** (see [dr-drill-2026-05-30.md](dr-drill-2026-05-30.md)):
+> 1. **Backup persistence (F1) — FIXED.** The api service now bind-mounts
+>    `/var/vectis/backups` (compose template + applied to prod; durability
+>    proven across a container recreate). Permanent from v0.1.18.
+> 2. **Scheduled backups (F2) — FIXED.** An in-app cron scheduler ships in
+>    v0.1.18; a host-cron stopgap (`/etc/cron.d/vectis-backup`, daily 02:00,
+>    30-day retention) gives prod scheduled durable backups right now. At the
+>    v0.1.18 cutover, set `backup.enabled: true` AND remove the stopgap cron.
 
 ---
 
