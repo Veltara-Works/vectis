@@ -62,6 +62,11 @@ services:
       # map files here; rspamd reads them via its own bind mounts on the same
       # path. RW for api so regenerateRspamdSpamConfig can rewrite atomically.
       - /var/vectis/generated/rspamd:/var/vectis/generated/rspamd
+      # Backups MUST persist on the host: without this bind they land on the
+      # container's ephemeral layer and are destroyed by every cutover's
+      # compose down/up. Host path matches the DR runbook §8 + off-host rsync
+      # (§5). See docs/notes/dr-drill-2026-05-30.md (finding F1).
+      - /var/vectis/backups:/var/vectis/backups
     depends_on:
       postgres:
         condition: service_healthy

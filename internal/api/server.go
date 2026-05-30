@@ -101,10 +101,11 @@ type Server struct {
 	clusterHealth *cluster.HealthChecker
 
 	// Background services
-	monitor        *monitor.Monitor
-	auditPruner    *audit.Pruner
-	sessionCleaner *auth.SessionCleaner
-	usageReporter  *validonx.UsageReporter
+	monitor         *monitor.Monitor
+	auditPruner     *audit.Pruner
+	sessionCleaner  *auth.SessionCleaner
+	backupScheduler *backup.Scheduler
+	usageReporter   *validonx.UsageReporter
 	// featureGate is always non-nil. When ValidonX is not configured the
 	// install runs as Free tier — only free-tier features pass; Pro/Enterprise
 	// gates deny with 403 / 402. Pre-v0.1.6 the unconfigured branch was an
@@ -397,6 +398,39 @@ func (s *Server) StopAuditPruner() {
 	}
 }
 
+// StartBackupScheduler starts the periodic backup scheduler when backups are
+// enabled in config. It is a no-op (with a log line) when disabled or
+// misconfigured, so a bad schedule never crashes the server — it just doesn't
+// run scheduled backups.
+func (s *Server) StartBackupScheduler() {
+	if s.cfg == nil || !s.cfg.Backup.Enabled {
+		s.logger.Info("backup scheduler disabled (backup.enabled=false)")
+		return
+	}
+	mgr := s.backupManager()
+	if mgr == nil {
+		s.logger.Error("backup scheduler not started: backup manager unavailable")
+		return
+	}
+	sched, err := backup.NewScheduler(mgr, backup.SchedulerConfig{
+		Schedule:   s.cfg.Backup.Schedule,
+		RetainDays: s.cfg.Backup.RetainDays,
+	}, s.logger.With("component", "backup-scheduler"))
+	if err != nil {
+		s.logger.Error("backup scheduler not started: invalid schedule", "error", err)
+		return
+	}
+	s.backupScheduler = sched
+	s.backupScheduler.Start()
+}
+
+// StopBackupScheduler stops the backup scheduler if it is running.
+func (s *Server) StopBackupScheduler() {
+	if s.backupScheduler != nil {
+		s.backupScheduler.Stop()
+	}
+}
+
 // StartWebhookDispatcher starts the webhook retry worker.
 func (s *Server) StartWebhookDispatcher() {
 	if s.webhookDispatcher != nil {
@@ -515,6 +549,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.StopMonitor()
 	s.StopAuditPruner()
 	s.StopSessionCleaner()
+	s.StopBackupScheduler()
 	s.StopWebhookDispatcher()
 	s.StopPostfixLogTailer()
 	s.StopUsageReporter()

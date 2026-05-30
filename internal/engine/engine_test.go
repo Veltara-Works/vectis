@@ -286,6 +286,31 @@ func TestAdvancedSpamCompose_APIBindMount(t *testing.T) {
 	}
 }
 
+// The api service must persist /var/vectis/backups on the host. Without this
+// bind, backups land on the container's ephemeral layer and are destroyed by
+// every cutover's compose down/up — there is no durable backup at all. Caught
+// by the 2026-05-30 DR drill (finding F1); see docs/notes/dr-drill-2026-05-30.md.
+func TestBackupsCompose_APIBindMount(t *testing.T) {
+	files, _ := Generate(testData())
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if compose == "" {
+		t.Fatal("docker-compose.yml not generated")
+	}
+	apiBlock := serviceBlock(compose, "api")
+	if apiBlock == "" {
+		t.Fatal("api service block not found in compose")
+	}
+	if !strings.Contains(apiBlock, "/var/vectis/backups:/var/vectis/backups") {
+		t.Errorf("api service must bind-mount /var/vectis/backups so backups survive container recreate; got:\n%s", apiBlock)
+	}
+}
+
 // serviceBlock returns the compose service block for `name`, ending at the
 // next top-level `  <name>:` line (or end of file). A service header is
 // exactly `  ` + word + `:` at the start of a line; continuation lines for
