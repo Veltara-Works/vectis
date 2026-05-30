@@ -141,8 +141,18 @@ func NewManager(db *pgxpool.Pool, logger *slog.Logger, cfg Config) *Manager {
 	m.stopServicesFn = m.stopServices
 	m.startServicesFn = m.startServices
 	m.healthCheckFn = m.healthCheck
-	m.restoreDBFn = m.restoreDatabaseViaDocker
-	m.ensureDBUpFn = m.ensureDBUp
+	if db != nil {
+		// In-app (api container) path: a real pool means the DB is reachable
+		// over the Docker network as cfg.DBUser, and the container has no docker
+		// CLI to drive. Keep the pre-existing TCP restore and skip the docker DB
+		// bring-up (the DB is already running). Only the host CLI restore (nil
+		// pool) needs the docker-exec path + ensureDBUp.
+		m.restoreDBFn = m.restoreDatabase
+		m.ensureDBUpFn = func(context.Context) error { return nil }
+	} else {
+		m.restoreDBFn = m.restoreDatabaseViaDocker
+		m.ensureDBUpFn = m.ensureDBUp
+	}
 	return m
 }
 
@@ -1019,8 +1029,10 @@ func (m *Manager) restoreDatabaseViaDocker(ctx context.Context, dumpPath string)
 	args := []string{"exec", "-i"}
 	if m.cfg.SuperuserPassword != "" {
 		// Belt-and-suspenders: the local socket connection is usually trust/peer
-		// (no password), but pass it in case pg_hba requires it.
-		args = append(args, "-e", "PGPASSWORD="+m.cfg.SuperuserPassword)
+		// (no password), but pass it in case pg_hba requires it. Pass the env
+		// NAME only in argv and supply the value via the docker client's own
+		// environment, so the password never appears in `ps`/process listings.
+		args = append(args, "-e", "PGPASSWORD")
 	}
 	args = append(args,
 		m.cfg.DBContainer,
@@ -1032,6 +1044,9 @@ func (m *Manager) restoreDatabaseViaDocker(ctx context.Context, dumpPath string)
 	)
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
+	if m.cfg.SuperuserPassword != "" {
+		cmd.Env = append(os.Environ(), "PGPASSWORD="+m.cfg.SuperuserPassword)
+	}
 	cmd.Stdin = f
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1189,8 +1204,10 @@ func (m *Manager) restoreDirectory(ctx context.Context, archivePath, targetDir s
 	return nil
 }
 
-// copyFilePreserve copies src to dst preserving the file mode. Used to stash and
-// restore files (e.g. secrets.yaml) across a directory restore.
+// copyFilePreserve copies src to dst preserving its permission bits. Used to
+// stash and restore files (e.g. secrets.yaml) across a directory restore.
+// (Only the permission bits are carried, not setuid/setgid/sticky — adequate
+// for the 0600 secrets file this is used on.)
 func copyFilePreserve(src, dst string) error {
 	info, err := os.Stat(src)
 	if err != nil {
