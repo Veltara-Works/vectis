@@ -117,10 +117,12 @@ type Manager struct {
 	startServicesFn func(context.Context) error
 	healthCheckFn   func(context.Context) error
 
-	// restoreDBFn loads the SQL dump into Postgres; ensureDBUpFn makes sure the
-	// DB container is running before that load. Defaults drive Docker (the
-	// production host path); the backup-restore integration test overrides them
-	// because CI has no compose stack / DB container to drive.
+	// dumpDBFn writes the database dump; restoreDBFn loads a SQL dump back into
+	// Postgres; ensureDBUpFn makes sure the DB container is running before that
+	// load. Defaults drive Docker (the production host path); the backup-restore
+	// integration test overrides them because CI has no compose stack / DB
+	// container to drive.
+	dumpDBFn     func(ctx context.Context, dumpPath string) error
 	restoreDBFn  func(ctx context.Context, dumpPath string) error
 	ensureDBUpFn func(context.Context) error
 }
@@ -144,12 +146,14 @@ func NewManager(db *pgxpool.Pool, logger *slog.Logger, cfg Config) *Manager {
 	if db != nil {
 		// In-app (api container) path: a real pool means the DB is reachable
 		// over the Docker network as cfg.DBUser, and the container has no docker
-		// CLI to drive. Keep the pre-existing TCP restore and skip the docker DB
-		// bring-up (the DB is already running). Only the host CLI restore (nil
+		// CLI to drive. Keep the pre-existing TCP dump/restore and skip the docker
+		// DB bring-up (the DB is already running). Only the host CLI path (nil
 		// pool) needs the docker-exec path + ensureDBUp.
+		m.dumpDBFn = m.dumpDatabase
 		m.restoreDBFn = m.restoreDatabase
 		m.ensureDBUpFn = func(context.Context) error { return nil }
 	} else {
+		m.dumpDBFn = m.dumpDatabaseViaDocker
 		m.restoreDBFn = m.restoreDatabaseViaDocker
 		m.ensureDBUpFn = m.ensureDBUp
 	}
@@ -211,19 +215,22 @@ type BackupInfo struct {
 // in the backup_jobs table. The backup runs synchronously; callers should invoke
 // it in a goroutine for async operation.
 func (m *Manager) Create(ctx context.Context, triggeredBy *string) (string, int64, error) {
-	// Create job record.
-	job, err := m.repo.Create(ctx, "create", triggeredBy)
+	// Create job record. jobCreate is nil-pool-safe: the host CLI `vectis backup
+	// create` runs without a DB pool (the host cannot resolve the Docker-internal
+	// postgres hostname), so it skips DB job tracking — the same model the restore
+	// path uses (Finding B follow-up, 2026-05-30 Scenario-B DR drill).
+	jobID, err := m.jobCreate(ctx, "create", triggeredBy)
 	if err != nil {
 		return "", 0, fmt.Errorf("create backup job: %w", err)
 	}
 
-	path, size, err := m.runCreate(ctx, job.ID)
+	path, size, err := m.runCreate(ctx, jobID)
 	if err != nil {
-		_ = m.repo.Fail(ctx, job.ID, err.Error())
+		m.jobFail(ctx, jobID, err.Error())
 		return "", 0, err
 	}
 
-	if err := m.repo.Complete(ctx, job.ID, path); err != nil {
+	if err := m.jobComplete(ctx, jobID, path); err != nil {
 		m.logger.Error("failed to mark backup job complete", "error", err)
 	}
 
@@ -231,7 +238,7 @@ func (m *Manager) Create(ctx context.Context, triggeredBy *string) (string, int6
 	manifest, _ := LoadManifest(m.cfg.BackupDir)
 	if manifest != nil {
 		manifest.Add(ManifestEntry{
-			ID:        job.ID,
+			ID:        jobID,
 			Type:      BackupFull,
 			Path:      path,
 			Size:      size,
@@ -386,7 +393,7 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 	m.logger.Info("backup: dumping database", "job_id", jobID)
 
 	dbDumpPath := filepath.Join(tmpDir, "database.sql")
-	if err := m.dumpDatabase(ctx, dbDumpPath); err != nil {
+	if err := m.dumpDBFn(ctx, dbDumpPath); err != nil {
 		return "", 0, fmt.Errorf("database dump: %w", err)
 	}
 	m.jobProgress(ctx, jobID, 25, "Database dump complete")
@@ -509,7 +516,7 @@ func (m *Manager) runCreateIncremental(ctx context.Context, jobID string, parent
 	m.logger.Info("incremental backup: dumping database", "job_id", jobID)
 
 	dbDumpPath := filepath.Join(tmpDir, "database.sql")
-	if err := m.dumpDatabase(ctx, dbDumpPath); err != nil {
+	if err := m.dumpDBFn(ctx, dbDumpPath); err != nil {
 		return "", 0, fmt.Errorf("database dump: %w", err)
 	}
 	m.jobProgress(ctx, jobID, 25, "Database dump complete")
@@ -983,6 +990,62 @@ func (m *Manager) dumpDatabase(ctx context.Context, dstPath string) error {
 	}
 
 	m.logger.Info("database dump complete", "path", dstPath, "size_bytes", info.Size())
+	return nil
+}
+
+// dumpDatabaseViaDocker writes a pg_dump of the database to dstPath by running
+// pg_dump inside the Postgres container as the superuser via `docker exec`. It is
+// the host CLI backup path (the create-side twin of restoreDatabaseViaDocker):
+// the host running `vectis backup create` cannot resolve the Docker-internal
+// "postgres" hostname and may not have pg_dump installed, so it dumps in-container
+// over the local socket as the superuser instead. (Finding B follow-up, 2026-05-30
+// Scenario-B DR drill.) The integration test overrides dumpDBFn with the
+// TCP-based dumpDatabase because CI has no DB container to exec into.
+func (m *Manager) dumpDatabaseViaDocker(ctx context.Context, dstPath string) error {
+	out, err := os.Create(dstPath)
+	if err != nil {
+		return fmt.Errorf("create database dump file: %w", err)
+	}
+	defer out.Close()
+
+	args := []string{"exec"}
+	if m.cfg.SuperuserPassword != "" {
+		// Pass the env NAME only in argv and supply the value via the docker
+		// client's own environment, so the password never appears in `ps`/process
+		// listings (matches restoreDatabaseViaDocker).
+		args = append(args, "-e", "PGPASSWORD")
+	}
+	args = append(args,
+		m.cfg.DBContainer,
+		"pg_dump",
+		"-U", m.cfg.DBSuperuser,
+		"-d", m.cfg.DBName,
+		"--no-password",
+		"--clean",
+		"--if-exists",
+	)
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	if m.cfg.SuperuserPassword != "" {
+		cmd.Env = append(os.Environ(), "PGPASSWORD="+m.cfg.SuperuserPassword)
+	}
+	var stderr strings.Builder
+	cmd.Stdout = out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker exec pg_dump failed: %w: %s", err, stderr.String())
+	}
+
+	info, err := os.Stat(dstPath)
+	if err != nil {
+		return fmt.Errorf("stat database dump: %w", err)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("database dump is empty")
+	}
+
+	m.logger.Info("database dump complete via docker exec",
+		"container", m.cfg.DBContainer, "path", dstPath, "size_bytes", info.Size())
 	return nil
 }
 

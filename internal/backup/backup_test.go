@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,5 +143,50 @@ func TestRestoreDirectoryPreservesSecrets(t *testing.T) {
 	}
 	if !strings.Contains(string(cfg), "from-backup") {
 		t.Errorf("config.yaml not restored from backup: %q", cfg)
+	}
+}
+
+// TestCreateHostPathNilPool guards the Finding-B follow-up: `vectis backup create`
+// runs on the host without a DB pool (the host cannot resolve the Docker-internal
+// "postgres" hostname), so Create must not panic on the absent backup_jobs repo
+// and must drive the DB dump through the injectable hook (the real host path is
+// `docker exec pg_dump`). The hook is stubbed here so the test stays offline.
+func TestCreateHostPathNilPool(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.BackupDir = filepath.Join(root, "backups")
+	cfg.MailDataDir = filepath.Join(root, "mail")
+	cfg.DKIMDir = filepath.Join(root, "dkim")
+	cfg.ConfigDir = filepath.Join(root, "vectis")
+	cfg.SnapshotDir = filepath.Join(root, "snapshots")
+	cfg.EncryptionKey = "test-key-host-create" // exercise the production .enc path
+	for _, d := range []string{cfg.BackupDir, cfg.MailDataDir, cfg.DKIMDir, cfg.ConfigDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(cfg.ConfigDir, "config.yaml"), []byte("version: host-create\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(nil, logger, cfg) // nil pool = host CLI path
+	// Stub the DB dump: the real host path is `docker exec pg_dump`, unavailable in CI.
+	mgr.dumpDBFn = func(_ context.Context, dst string) error {
+		return os.WriteFile(dst, []byte("-- fake dump\nSELECT 1;\n"), 0o600)
+	}
+
+	path, size, err := mgr.Create(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Create on nil-pool host path: %v", err)
+	}
+	if size <= 0 {
+		t.Fatalf("backup size = %d, want > 0", size)
+	}
+	if filepath.Ext(path) != ".enc" {
+		t.Fatalf("expected encrypted archive (.enc), got %q", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("archive not written: %v", err)
 	}
 }

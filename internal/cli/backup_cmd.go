@@ -45,8 +45,17 @@ var (
 )
 
 func runBackupCreate(cmd *cobra.Command, args []string) error {
-	pool, secrets, cleanup := connectDB(cmd)
-	defer cleanup()
+	// Create runs as a host CLI operation. Like restore, the host cannot resolve
+	// the Docker-internal "postgres" hostname and may not have pg_dump installed,
+	// so the Manager dumps the DB via `docker exec` as the superuser (nil pool, no
+	// DB-backed job tracking). The in-app/API scheduler keeps using the pool path.
+	// (Finding B follow-up — the create-side twin of the restore fix; see
+	// docs/notes/dr-drill-scenario-b-2026-05-30.md.)
+	secrets, err := loadSecrets(cmd)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+	}
 
 	quiet := isQuiet(cmd)
 	jsonOutput, _ := cmd.Flags().GetBool("json")
@@ -58,11 +67,8 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 	logger := logging.NewLogger(logLevel)
 
 	cfg := backup.DefaultConfig()
-	cfg.DBHost = secrets.Database.Host
-	cfg.DBPort = secrets.Database.Port
 	cfg.DBName = secrets.Database.Name
-	cfg.DBUser = secrets.Database.APIUser
-	cfg.DBPassword = secrets.Database.APIPassword
+	cfg.SuperuserPassword = secrets.Database.SuperuserPassword
 	if secrets.DKIM.KeyBasePath != "" {
 		cfg.DKIMDir = secrets.DKIM.KeyBasePath
 	}
@@ -72,7 +78,7 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 		cfg.EncryptionKey = secrets.API.Secret
 	}
 
-	mgr := backup.NewManager(pool, logger, cfg)
+	mgr := backup.NewManager(nil, logger, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
