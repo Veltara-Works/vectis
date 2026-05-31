@@ -3,27 +3,56 @@ package tls
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"log/slog"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-const samplePEMCert = `-----BEGIN CERTIFICATE-----
-MIIBsTCCAVegAwIBAgIBAjANBgkqhkiG9w0BAQsFADASMRAwDgYDVQQDDAd0ZXN0
-Y2EwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjASMRAwDgYDVQQDDAd0
-ZXN0c3J2MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsomething
------END CERTIFICATE-----
-`
+// samplePEMCert / samplePEMKey are a real, ephemeral EC P-256 self-signed cert
+// and its matching key, generated fresh at test init. They replace hardcoded PEM
+// literals: a committed `-----BEGIN EC PRIVATE KEY-----` block trips GitHub secret
+// scanning + push protection even though it is only a test fixture — Extract
+// treats the cert/key as opaque base64 blobs (tests assert PEM prefixes, never
+// parse them), so the value never needed to be real. Generating at runtime keeps
+// zero key material in the source tree.
+var samplePEMCert, samplePEMKey = genSelfSignedEC()
 
-const samplePEMKey = `-----BEGIN EC PRIVATE KEY-----
-MHcCAQEEIKey
------END EC PRIVATE KEY-----
-`
+func genSelfSignedEC() (certPEM, keyPEM string) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic("test cert keygen: " + err.Error())
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "testsrv"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		panic("test cert create: " + err.Error())
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		panic("test key marshal: " + err.Error())
+	}
+	certPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	keyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+	return certPEM, keyPEM
+}
 
 func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
@@ -559,9 +588,10 @@ func TestRunOnce_RealCertOverwritesPlaceholder(t *testing.T) {
 		t.Fatal(err)
 	}
 	runOnce(context.Background(), opts, lg, state)
-	// fullchain content should now be the sample PEM, not placeholder DER.
+	// fullchain content should now be the sample cert, not the placeholder
+	// (decodeCert writes the cert blob verbatim, so it round-trips exactly).
 	data, _ := os.ReadFile(filepath.Join(outDir, "fullchain.pem"))
-	if !strings.Contains(string(data), "MIIBsTCCAVegAwIBAgIBAjAN") { // first chars of samplePEMCert body
+	if string(data) != samplePEMCert {
 		t.Errorf("real cert should have overwritten placeholder; content:\n%s", string(data))
 	}
 	// "cert written" INFO should appear.
