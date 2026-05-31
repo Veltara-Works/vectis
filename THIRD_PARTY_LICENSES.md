@@ -51,7 +51,7 @@ fork) and are listed separately to reflect that.
 | `github.com/jackc/pgerrcode` | 469b46aa5efa | MIT |
 | `github.com/jackc/pgpassfile` | v1.0.0 | MIT |
 | `github.com/jackc/pgservicefile` | 5a60cdf6a761 | MIT |
-| `github.com/jackc/pgx/v5` | v5.9.1 | MIT |
+| `github.com/jackc/pgx/v5` | v5.9.2 | MIT |
 | `github.com/jackc/puddle/v2` | v2.2.2 | MIT |
 | `github.com/munnerz/goautoneg` | a7dc8b61c822 | BSD-3-Clause |
 | `github.com/pquerna/otp` | v1.5.0 | Apache-2.0 |
