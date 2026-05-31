@@ -63,6 +63,14 @@ type Config struct {
 	DBSuperuser       string // DB superuser for restore, default "postgres"
 	SuperuserPassword string // superuser password (secrets.database.superuser_password)
 
+	// DirectDB forces the TCP pg_dump/psql path against cfg.DBHost even when the
+	// Manager has a nil pool (host CLI). It is set by `vectis backup create
+	// --db-host <host>` for operators whose Postgres is directly reachable from
+	// the host, as an opt-in alternative to the default docker-exec-into-container
+	// path (which the host CLI uses otherwise). A directly-reachable DB is assumed
+	// already running, so the docker DB bring-up becomes a no-op.
+	DirectDB bool
+
 	// Docker compose path for stopping/starting services.
 	ComposePath string
 
@@ -143,12 +151,13 @@ func NewManager(db *pgxpool.Pool, logger *slog.Logger, cfg Config) *Manager {
 	m.stopServicesFn = m.stopServices
 	m.startServicesFn = m.startServices
 	m.healthCheckFn = m.healthCheck
-	if db != nil {
-		// In-app (api container) path: a real pool means the DB is reachable
-		// over the Docker network as cfg.DBUser, and the container has no docker
-		// CLI to drive. Keep the pre-existing TCP dump/restore and skip the docker
-		// DB bring-up (the DB is already running). Only the host CLI path (nil
-		// pool) needs the docker-exec path + ensureDBUp.
+	if db != nil || cfg.DirectDB {
+		// Reachable-DB path: either a real pool (in-app/api container, reachable
+		// over the Docker network as cfg.DBUser) or an operator-supplied --db-host
+		// (cfg.DirectDB) for a host that can reach Postgres directly. Use the TCP
+		// pg_dump/psql path and skip the docker DB bring-up (the DB is assumed
+		// already running). Only the default host CLI path (nil pool, no --db-host)
+		// needs the docker-exec path + ensureDBUp.
 		m.dumpDBFn = m.dumpDatabase
 		m.restoreDBFn = m.restoreDatabase
 		m.ensureDBUpFn = func(context.Context) error { return nil }

@@ -208,3 +208,44 @@ func TestCreateHostPathNilPool(t *testing.T) {
 		t.Errorf("manifest entry ID = %q, want archive basename %q", entry.ID, filepath.Base(path))
 	}
 }
+
+// TestDirectDBUsesTCPDumpNotDocker verifies the `vectis backup create --db-host`
+// override: with cfg.DirectDB set, NewManager must route the dump through the TCP
+// pg_dump path (cfg.DBHost) even with a nil pool — not the default docker-exec
+// path. Pointed at an unreachable host so the dump fails fast; the error must come
+// from pg_dump (TCP), never from `docker exec`. Robust whether or not pg_dump is
+// installed in CI (both "not found" and "connection refused" surface as a pg_dump
+// error, and neither mentions docker exec).
+func TestDirectDBUsesTCPDumpNotDocker(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.BackupDir = filepath.Join(root, "backups")
+	cfg.MailDataDir = filepath.Join(root, "mail")
+	cfg.DKIMDir = filepath.Join(root, "dkim")
+	cfg.ConfigDir = filepath.Join(root, "vectis")
+	cfg.SnapshotDir = filepath.Join(root, "snapshots")
+	cfg.DirectDB = true      // the --db-host override
+	cfg.DBHost = "127.0.0.1" // directly-reachable host (here, nothing listening)
+	cfg.DBPort = 1           // no server on port 1
+	cfg.DBName = "vectis"
+	cfg.DBUser = "vectis_api"
+	for _, d := range []string{cfg.BackupDir, cfg.MailDataDir, cfg.DKIMDir, cfg.ConfigDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(nil, logger, cfg) // nil pool, but DirectDB → TCP path
+
+	_, _, err := mgr.Create(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected the dump to fail against an unreachable host")
+	}
+	if !strings.Contains(err.Error(), "pg_dump") {
+		t.Errorf("expected a pg_dump (TCP) error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "docker exec") {
+		t.Errorf("DirectDB must not use the docker-exec path, but error mentions it: %v", err)
+	}
+}

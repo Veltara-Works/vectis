@@ -21,8 +21,11 @@ var backupCmd = &cobra.Command{
 var backupCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a full backup",
-	Long:  "Creates a full backup of the database, mail data, configuration, and DKIM keys.",
-	RunE:  runBackupCreate,
+	Long: "Creates a full backup of the database, mail data, configuration, and DKIM keys.\n\n" +
+		"By default the database is dumped via `docker exec` into the vectis-postgres\n" +
+		"container. Use --db-host to dump over TCP from a directly-reachable Postgres\n" +
+		"instead (requires pg_dump on the host).",
+	RunE: runBackupCreate,
 }
 
 var backupRestoreCmd = &cobra.Command{
@@ -42,14 +45,17 @@ var backupListCmd = &cobra.Command{
 var (
 	backupOutput  string
 	backupConfirm bool
+	backupDBHost  string
 )
 
 func runBackupCreate(cmd *cobra.Command, args []string) error {
-	// Create runs as a host CLI operation. Like restore, the host cannot resolve
-	// the Docker-internal "postgres" hostname and may not have pg_dump installed,
-	// so the Manager dumps the DB via `docker exec` as the superuser (nil pool, no
-	// DB-backed job tracking). The in-app/API scheduler keeps using the pool path.
-	// (Finding B follow-up — the create-side twin of the restore fix; see
+	// Create runs as a host CLI operation. By default the host cannot resolve the
+	// Docker-internal "postgres" hostname and may not have pg_dump installed, so
+	// the Manager dumps the DB via `docker exec` as the superuser (nil pool, no
+	// DB-backed job tracking). --db-host overrides this for operators whose
+	// Postgres is directly reachable: it dumps over TCP as the app user instead.
+	// The in-app/API scheduler keeps using the pool path. (Finding B follow-up —
+	// the create-side twin of the restore fix; see
 	// docs/notes/dr-drill-scenario-b-2026-05-30.md.)
 	secrets, err := loadSecrets(cmd)
 	if err != nil {
@@ -68,7 +74,19 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 
 	cfg := backup.DefaultConfig()
 	cfg.DBName = secrets.Database.Name
-	cfg.SuperuserPassword = secrets.Database.SuperuserPassword
+	if backupDBHost != "" {
+		// Operator opted into a directly-reachable Postgres: dump over TCP as the
+		// app user from this host, instead of docker exec into the container.
+		// Requires pg_dump on the host and network reach to the DB.
+		cfg.DirectDB = true
+		cfg.DBHost = backupDBHost
+		cfg.DBPort = secrets.Database.Port
+		cfg.DBUser = secrets.Database.APIUser
+		cfg.DBPassword = secrets.Database.APIPassword
+	} else {
+		// Default host path: dump via docker exec as the superuser.
+		cfg.SuperuserPassword = secrets.Database.SuperuserPassword
+	}
 	if secrets.DKIM.KeyBasePath != "" {
 		cfg.DKIMDir = secrets.DKIM.KeyBasePath
 	}
@@ -281,6 +299,7 @@ func copyBackupFile(src, dst string) error {
 
 func init() {
 	backupCreateCmd.Flags().StringVar(&backupOutput, "output", "", "Output path for the backup archive")
+	backupCreateCmd.Flags().StringVar(&backupDBHost, "db-host", "", "Dump the DB over TCP from this directly-reachable Postgres host (requires pg_dump on the host) instead of docker exec into the vectis-postgres container")
 	backupRestoreCmd.Flags().BoolVar(&backupConfirm, "confirm", false, "Confirm destructive restore operation")
 
 	backupCmd.AddCommand(backupCreateCmd)
