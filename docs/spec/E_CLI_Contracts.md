@@ -369,7 +369,7 @@ Applying update plan...
 
 | Property | Value |
 |----------|-------|
-| **Input** | Optional: `--output /path/to/backup.tar.gz`. Default: `/var/vectis/backups/vectis-YYYYMMDD-HHMMSS.tar.gz` |
+| **Input** | Optional: `--output /path/to/backup.tar.gz` (default `/var/vectis/backups/vectis-YYYYMMDD-HHMMSS.tar.gz`); `--db-host <host>` dumps the DB over TCP from a directly-reachable Postgres (requires `pg_dump` on the host) instead of the default `docker exec` into the `vectis-postgres` container |
 | **Output** | Progress per component; final: backup path + size |
 | **Side effects** | Creates backup archive |
 | **Exit code 0** | Backup complete |
