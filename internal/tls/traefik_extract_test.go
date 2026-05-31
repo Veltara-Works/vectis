@@ -23,11 +23,11 @@ import (
 
 // samplePEMCert / samplePEMKey are a real, ephemeral EC P-256 self-signed cert
 // and its matching key, generated fresh at test init. They replace hardcoded PEM
-// literals: a committed `-----BEGIN EC PRIVATE KEY-----` block trips GitHub secret
-// scanning + push protection even though it is only a test fixture — Extract
-// treats the cert/key as opaque base64 blobs (tests assert PEM prefixes, never
-// parse them), so the value never needed to be real. Generating at runtime keeps
-// zero key material in the source tree.
+// literals: a committed EC private-key PEM block trips GitHub secret scanning +
+// push protection even though it is only a test fixture — Extract treats the
+// cert/key as opaque base64 blobs (tests assert PEM prefixes, never parse them),
+// so the value never needed to be real. Generating at runtime keeps zero key
+// material in the source tree.
 var samplePEMCert, samplePEMKey = genSelfSignedEC()
 
 func genSelfSignedEC() (certPEM, keyPEM string) {
