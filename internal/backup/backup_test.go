@@ -189,4 +189,22 @@ func TestCreateHostPathNilPool(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("archive not written: %v", err)
 	}
+
+	// The manifest entry must carry a UNIQUE id, not the non-unique
+	// "no-db-create" sentinel — otherwise repeated host CLI backups collide in
+	// the full→incremental chain (Copilot review, PR #3).
+	manifest, err := LoadManifest(cfg.BackupDir)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	entry := manifest.LastFull()
+	if entry == nil {
+		t.Fatal("manifest has no full entry after Create")
+	}
+	if entry.ID == "no-db-create" {
+		t.Errorf("manifest entry ID is the non-unique sentinel %q", entry.ID)
+	}
+	if entry.ID != filepath.Base(path) {
+		t.Errorf("manifest entry ID = %q, want archive basename %q", entry.ID, filepath.Base(path))
+	}
 }

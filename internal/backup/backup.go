@@ -234,11 +234,20 @@ func (m *Manager) Create(ctx context.Context, triggeredBy *string) (string, int6
 		m.logger.Error("failed to mark backup job complete", "error", err)
 	}
 
-	// Record in manifest.
+	// Record in manifest. The manifest ID must be UNIQUE per backup — it keys the
+	// full→incremental chain in LastFull/IncrementalsSince/RestoreChain/Prune. On
+	// the host CLI path there is no DB job row, so jobID is the non-unique sentinel
+	// "no-db-create"; using it would make every host backup collide in the chain
+	// (Copilot review, PR #3). Fall back to the archive's timestamped basename,
+	// which is as unique as the archives themselves.
 	manifest, _ := LoadManifest(m.cfg.BackupDir)
 	if manifest != nil {
+		manifestID := jobID
+		if m.repo == nil {
+			manifestID = filepath.Base(path)
+		}
 		manifest.Add(ManifestEntry{
-			ID:        jobID,
+			ID:        manifestID,
 			Type:      BackupFull,
 			Path:      path,
 			Size:      size,
