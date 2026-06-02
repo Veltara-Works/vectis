@@ -27,15 +27,15 @@ const (
 
 // Feature constants for use with FeatureGate middleware.
 const (
-	FeatureBasicMail        = "basic_mail"             // domains, mailboxes, aliases
-	FeatureAnalytics        = "analytics"              // Pro: per-domain analytics dashboard
-	FeatureOIDCSSO          = "oidc_sso"               // Pro: OIDC single sign-on
-	FeatureCustomBranding   = "custom_branding"        // Pro: custom branding
-	FeatureAdvancedSpam     = "advanced_spam"          // Pro: advanced spam config
-	FeaturePrioritySupport  = "priority_support"       // Pro: priority support
-	FeatureMultiTenant      = "multi_tenant"           // Enterprise: multi-tenant
-	FeatureDeliverability   = "advanced_deliverability" // Enterprise: advanced deliverability
-	FeatureSLA              = "sla"                    // Enterprise: SLA guarantees
+	FeatureBasicMail       = "basic_mail"              // domains, mailboxes, aliases
+	FeatureAnalytics       = "analytics"               // Pro: per-domain analytics dashboard
+	FeatureOIDCSSO         = "oidc_sso"                // Pro: OIDC single sign-on
+	FeatureCustomBranding  = "custom_branding"         // Pro: custom branding
+	FeatureAdvancedSpam    = "advanced_spam"           // Pro: advanced spam config
+	FeaturePrioritySupport = "priority_support"        // Pro: priority support
+	FeatureMultiTenant     = "multi_tenant"            // Enterprise: multi-tenant
+	FeatureDeliverability  = "advanced_deliverability" // Enterprise: advanced deliverability
+	FeatureSLA             = "sla"                     // Enterprise: SLA guarantees
 )
 
 // FreeTierFeatures are always available without a license.
@@ -384,18 +384,21 @@ func (fgs *FeatureGateService) FeatureGateBrowser(feature, featureLabel, upgrade
 //  3. Cache stale (past CacheTTL) → attempt live refresh.
 //     a. Refresh succeeds → use refreshed entitlements.
 //     b. Refresh fails → fall back to the stale cache UNLESS:
-//        - cached LicenseData.Valid is false (ValidonX previously said
-//          this customer is not entitled — don't undo that on a network
-//          blip), OR
-//        - cached LicenseData.GracePeriodEndsAt is set and in the past
-//          (the customer's per-subscription grace window has elapsed).
-//        Either condition surfaces as licenseExpiredError → drop to Free.
+//     - cached LicenseData.Valid is false (ValidonX previously said
+//     this customer is not entitled — don't undo that on a network
+//     blip), OR
+//     - the cache is past its offline horizon (see offlineHorizonPassed):
+//     grace_period_ends_at when set, else expires_at. Past it we must
+//     NOT keep serving Pro from a stale cache.
+//     Either condition surfaces as licenseExpiredError → drop to Free.
 //
 // This separates two concerns that path-1 conflated under a 30-day
 // constant: cache freshness (when to try ValidonX again) vs offline
 // tolerance (how long to keep working on stale data when ValidonX is
-// unreachable). The customer's grace boundary is server-authoritative
-// via the resolve response's grace_period_ends_at field.
+// unreachable). Per the 2026-06-01 ValidonX coordination, ValidonX sets no
+// connectivity grace window — offline tolerance is bounded by the license's
+// own paid period (expires_at), extended by grace_period_ends_at for the
+// past_due / cancel-at-period-end cases. Both are server-authoritative.
 func (fgs *FeatureGateService) checkFeatureAccess(ctx context.Context, tenantID, feature string) (bool, error) {
 	if fgs.cache == nil {
 		return false, nil
@@ -443,20 +446,40 @@ func (fgs *FeatureGateService) checkFeatureAccess(ctx context.Context, tenantID,
 		writeFeatureErrorToLogger(fgs.logger, tenantID, feature)
 		return false, &licenseExpiredError{tenantID: tenantID}
 	}
-	if cached.LicenseData.GracePeriodEndsAt != nil &&
-		time.Now().After(*cached.LicenseData.GracePeriodEndsAt) {
-		// Per-customer subscription grace window has elapsed.
-		fgs.logger.Warn("cached license past grace_period_ends_at",
+	// Offline tolerance is bounded by the license's own horizon, never by
+	// cache age. The horizon is grace_period_ends_at when present (it extends
+	// past the paid period for past_due dunning and cancel-at-period-end),
+	// otherwise expires_at (the paid-through date for a healthy active sub).
+	// A nil horizon means a perpetual license — no offline bound. Past the
+	// horizon with ValidonX unreachable we require a successful re-resolve
+	// before serving Pro again, rather than serving a stale cache forever.
+	if offlineHorizonPassed(cached.LicenseData, time.Now()) {
+		fgs.logger.Warn("cached license past offline horizon while ValidonX unreachable",
 			"tenant_id", tenantID,
+			"expires_at", cached.LicenseData.ExpiresAt,
 			"grace_period_ends_at", cached.LicenseData.GracePeriodEndsAt,
 		)
 		writeFeatureErrorToLogger(fgs.logger, tenantID, feature)
 		return false, &licenseExpiredError{tenantID: tenantID}
 	}
 
-	// Stale cache, but the cache itself says the customer is fine. Serve
-	// from it.
+	// Stale cache within the license horizon — serve from it.
 	return cached.HasFeature(feature), nil
+}
+
+// offlineHorizonPassed reports whether a stale cached license has passed the
+// point beyond which Vectis must stop serving Pro while ValidonX is
+// unreachable. ValidonX sets no connectivity grace window (per the 2026-06-01
+// coordination); the horizon is grace_period_ends_at when present (it covers
+// past_due dunning and cancel-at-period-end, which extend past the paid
+// period), otherwise expires_at (the paid-through date for a healthy active
+// sub). A nil horizon means a perpetual license — no offline bound.
+func offlineHorizonPassed(ld LicenseResponse, now time.Time) bool {
+	horizon := ld.ExpiresAt
+	if ld.GracePeriodEndsAt != nil {
+		horizon = ld.GracePeriodEndsAt
+	}
+	return horizon != nil && now.After(*horizon)
 }
 
 // refreshLicense performs a live license check and updates the cache.
