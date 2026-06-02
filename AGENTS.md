@@ -16,7 +16,7 @@
    of truth; migrations must keep it in sync.
 4. The marketing site (`vectismail.com`) lives in a separate repo and is the
    public-facing source of truth for tier limits and pricing — keep `README.md`
-   and `docs/notes/vectis-licensing-plan.md` aligned with it.
+   aligned with it.
 
 ## Key invariants (do not violate)
 

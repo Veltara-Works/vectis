@@ -60,8 +60,7 @@ contact `legal@vectismail.com`.
 - Multi-tenant isolation
 - SLAs and named support contact
 - Advanced compliance features
-- See [`docs/notes/enterprise-readiness.md`](docs/notes/enterprise-readiness.md)
-  for the in-flight feature roadmap
+- Contact `licensing@vectismail.com` for Enterprise availability and pricing
 
 ## How gating is enforced (technical detail)
 
