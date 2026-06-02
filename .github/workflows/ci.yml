@@ -81,7 +81,12 @@ jobs:
         run: go vet ./...
 
       - name: Unit tests
-        run: go test ./internal/auth ./internal/backup ./internal/config ./internal/dkim ./internal/engine ./internal/orchestrator ./internal/types -v -count=1
+        # Whole internal/ tree, not a hand-maintained package list — that list
+        # silently omitted validonx, mail, branding, secretcrypto, monitor,
+        # tls and cli. Integration/e2e tests are build-tagged (`integration`/
+        # `e2e`) so this untagged run only exercises unit tests (no DB/services
+        # needed — it runs before the DB-role seeding step below).
+        run: go test ./internal/... -v -count=1
 
       - name: Seed test database roles (migrations GRANT to these)
         run: |
