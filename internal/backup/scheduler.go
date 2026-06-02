@@ -16,7 +16,46 @@ import (
 // SchedulerConfig controls the periodic backup scheduler.
 type SchedulerConfig struct {
 	Schedule   string // standard 5-field cron, e.g. "0 2 * * *"; empty = disabled
+	Timezone   string // IANA tz (e.g. "Australia/Sydney") evaluated via CRON_TZ; empty = UTC/container-local
 	RetainDays int    // archives older than this are pruned after each run; 0 = keep all
+}
+
+// cronParser is the standard 5-field parser shared by NewScheduler and
+// NextScheduledRun. It also accepts a leading CRON_TZ= prefix, which is how
+// a configured timezone is honoured.
+var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+
+// buildCronSchedule parses a 5-field cron expression, evaluating it in the
+// given IANA timezone when one is set (empty = the container's local time,
+// which is UTC in our images). The timezone is validated up front so a bad
+// value surfaces as a clear error instead of silently falling back to UTC.
+func buildCronSchedule(schedule, timezone string) (cron.Schedule, error) {
+	spec := strings.TrimSpace(schedule)
+	if spec == "" {
+		return nil, fmt.Errorf("backup schedule is empty")
+	}
+	if tz := strings.TrimSpace(timezone); tz != "" {
+		if _, err := time.LoadLocation(tz); err != nil {
+			return nil, fmt.Errorf("invalid backup timezone %q: %w", tz, err)
+		}
+		spec = "CRON_TZ=" + tz + " " + spec
+	}
+	sched, err := cronParser.Parse(spec)
+	if err != nil {
+		return nil, fmt.Errorf("parse backup schedule %q: %w", schedule, err)
+	}
+	return sched, nil
+}
+
+// NextScheduledRun returns the next time the given schedule would fire after
+// `from`, honouring the timezone. Used by the API to show operators the next
+// backup time without needing a live scheduler instance.
+func NextScheduledRun(schedule, timezone string, from time.Time) (time.Time, error) {
+	sched, err := buildCronSchedule(schedule, timezone)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return sched.Next(from), nil
 }
 
 // Scheduler runs full backups on a cron schedule and prunes old archives.
@@ -35,13 +74,9 @@ type Scheduler struct {
 // returns an error if the schedule is empty or invalid, so a misconfiguration
 // surfaces at startup rather than silently never running.
 func NewScheduler(mgr *Manager, cfg SchedulerConfig, logger *slog.Logger) (*Scheduler, error) {
-	if strings.TrimSpace(cfg.Schedule) == "" {
-		return nil, fmt.Errorf("backup schedule is empty")
-	}
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	sched, err := parser.Parse(cfg.Schedule)
+	sched, err := buildCronSchedule(cfg.Schedule, cfg.Timezone)
 	if err != nil {
-		return nil, fmt.Errorf("parse backup schedule %q: %w", cfg.Schedule, err)
+		return nil, err
 	}
 	return &Scheduler{
 		mgr:    mgr,
@@ -56,7 +91,7 @@ func NewScheduler(mgr *Manager, cfg SchedulerConfig, logger *slog.Logger) (*Sche
 // Start launches the scheduling loop in a background goroutine.
 func (s *Scheduler) Start() {
 	s.logger.Info("starting backup scheduler",
-		"schedule", s.cfg.Schedule, "retain_days", s.cfg.RetainDays)
+		"schedule", s.cfg.Schedule, "timezone", s.cfg.Timezone, "retain_days", s.cfg.RetainDays)
 	go s.loop()
 }
 

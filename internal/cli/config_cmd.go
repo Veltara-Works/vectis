@@ -254,11 +254,19 @@ func validateConfig(cfg *config.VectisConfig) []validateError {
 			Message: "required when backup is enabled",
 		})
 	}
-	if cfg.Backup.Enabled && cfg.Backup.RetainDays <= 0 {
+	if cfg.Backup.Enabled && cfg.Backup.RetainDays < 0 {
 		errs = append(errs, validateError{
 			Field:   "backup.retain_days",
-			Message: "must be greater than 0 when backup is enabled",
+			Message: "must not be negative (0 = keep all) when backup is enabled",
 		})
+	}
+	if cfg.Backup.Timezone != "" {
+		if _, err := time.LoadLocation(cfg.Backup.Timezone); err != nil {
+			errs = append(errs, validateError{
+				Field:   "backup.timezone",
+				Message: fmt.Sprintf("unknown IANA timezone %q (e.g. \"Australia/Sydney\", \"UTC\")", cfg.Backup.Timezone),
+			})
+		}
 	}
 
 	// Logging

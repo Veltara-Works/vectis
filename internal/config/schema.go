@@ -69,10 +69,12 @@ type DovecotConfig struct {
 	ValkeyPort     int    `yaml:"valkey_port"`      // populated from secrets at render time
 }
 
-// BackupConfig controls periodic backup behaviour.
+// BackupConfig controls periodic backup behaviour. A backup_config DB row
+// (set via the admin UI) takes precedence over these install-time defaults.
 type BackupConfig struct {
 	Enabled    bool   `yaml:"enabled"`
 	Schedule   string `yaml:"schedule"`    // cron expression, e.g. "0 3 * * *"
+	Timezone   string `yaml:"timezone"`    // IANA tz, e.g. "Australia/Sydney"; empty = UTC/container-local
 	RetainDays int    `yaml:"retain_days"`
 }
 

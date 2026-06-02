@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -199,4 +201,96 @@ func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 		"backup_path": backupPath,
 		"message":     "Restore job started",
 	})
+}
+
+// --- GET /api/v1/backup/settings ---
+
+// backupSettingsResponse is the wire shape for GET / PUT /backup/settings.
+// next_run is the next time the schedule will fire (omitted when disabled or
+// the schedule is invalid). from_db reports whether the values came from the
+// admin-UI override (true) or the file config defaults (false).
+type backupSettingsResponse struct {
+	Enabled    bool       `json:"enabled"`
+	Schedule   string     `json:"schedule"`
+	Timezone   string     `json:"timezone"`
+	RetainDays int        `json:"retain_days"`
+	FromDB     bool       `json:"from_db"`
+	NextRun    *time.Time `json:"next_run,omitempty"`
+}
+
+func (s *Server) backupSettingsResponseFor(st backup.Settings) backupSettingsResponse {
+	resp := backupSettingsResponse{
+		Enabled:    st.Enabled,
+		Schedule:   st.Schedule,
+		Timezone:   st.Timezone,
+		RetainDays: st.RetainDays,
+		FromDB:     st.FromDB,
+	}
+	if st.Enabled {
+		if next, err := backup.NextScheduledRun(st.Schedule, st.Timezone, time.Now()); err == nil {
+			resp.NextRun = &next
+		}
+	}
+	return resp
+}
+
+func (s *Server) handleGetBackupSettings(w http.ResponseWriter, r *http.Request) {
+	st := s.effectiveBackupSettings(r.Context())
+	respond(w, r, http.StatusOK, s.backupSettingsResponseFor(st))
+}
+
+// --- PUT /api/v1/backup/settings ---
+
+type updateBackupSettingsRequest struct {
+	Enabled    bool   `json:"enabled"`
+	Schedule   string `json:"schedule"`
+	Timezone   string `json:"timezone"`
+	RetainDays int    `json:"retain_days"`
+}
+
+func (s *Server) handleUpdateBackupSettings(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		respondError(w, r, http.StatusServiceUnavailable, "BACKUP_NOT_CONFIGURED",
+			"Database is not available")
+		return
+	}
+
+	var req updateBackupSettingsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON request body")
+		return
+	}
+
+	st := backup.Settings{
+		Enabled:    req.Enabled,
+		Schedule:   strings.TrimSpace(req.Schedule),
+		Timezone:   strings.TrimSpace(req.Timezone),
+		RetainDays: req.RetainDays,
+	}
+	if err := st.Validate(); err != nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_BACKUP_SETTINGS", err.Error())
+		return
+	}
+
+	adminID := getAdminID(r.Context())
+	if err := backup.SaveSettings(r.Context(), s.db, s.logger, st, adminID); err != nil {
+		s.logger.Error("save backup settings failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to save backup settings")
+		return
+	}
+
+	// Apply the new schedule/timezone immediately — no container restart.
+	s.ReloadBackupScheduler()
+
+	ip := clientIP(r)
+	s.audit.Log(r.Context(), &adminID, "backup.settings.update", "backup", nil,
+		map[string]string{
+			"enabled":     boolStr(st.Enabled),
+			"schedule":    st.Schedule,
+			"timezone":    st.Timezone,
+			"retain_days": strconv.Itoa(st.RetainDays),
+		}, &ip)
+
+	st.FromDB = true
+	respond(w, r, http.StatusOK, s.backupSettingsResponseFor(st))
 }

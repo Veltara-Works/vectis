@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -105,6 +106,7 @@ type Server struct {
 	auditPruner     *audit.Pruner
 	sessionCleaner  *auth.SessionCleaner
 	backupScheduler *backup.Scheduler
+	backupSchedMu   sync.Mutex // serialises Start/Stop/Reload of backupScheduler
 	usageReporter   *validonx.UsageReporter
 	// featureGate is always non-nil. When ValidonX is not configured the
 	// install runs as Free tier — only free-tier features pass; Pro/Enterprise
@@ -398,12 +400,43 @@ func (s *Server) StopAuditPruner() {
 	}
 }
 
+// effectiveBackupSettings returns the runtime backup settings: the
+// backup_config DB row when present, otherwise the file config (config.yaml
+// `backup:`). Mirrors how validonx_config / branding_config overlay their
+// file-config equivalents.
+func (s *Server) effectiveBackupSettings(ctx context.Context) backup.Settings {
+	if s.db != nil {
+		if st, err := backup.LoadSettings(ctx, s.db); err != nil {
+			s.logger.Warn("load backup settings; falling back to file config", "error", err)
+		} else if st.FromDB {
+			return st
+		}
+	}
+	st := backup.Settings{}
+	if s.cfg != nil {
+		st.Enabled = s.cfg.Backup.Enabled
+		st.Schedule = s.cfg.Backup.Schedule
+		st.Timezone = s.cfg.Backup.Timezone
+		st.RetainDays = s.cfg.Backup.RetainDays
+	}
+	return st
+}
+
 // StartBackupScheduler starts the periodic backup scheduler when backups are
-// enabled in config. It is a no-op (with a log line) when disabled or
-// misconfigured, so a bad schedule never crashes the server — it just doesn't
-// run scheduled backups.
+// enabled. It is a no-op (with a log line) when disabled or misconfigured, so
+// a bad schedule never crashes the server — it just doesn't run scheduled
+// backups. Settings come from the DB overlay (effectiveBackupSettings).
 func (s *Server) StartBackupScheduler() {
-	if s.cfg == nil || !s.cfg.Backup.Enabled {
+	s.backupSchedMu.Lock()
+	defer s.backupSchedMu.Unlock()
+	s.startBackupSchedulerLocked()
+}
+
+// startBackupSchedulerLocked is the unsynchronised body shared by Start and
+// Reload. Callers must hold backupSchedMu.
+func (s *Server) startBackupSchedulerLocked() {
+	st := s.effectiveBackupSettings(context.Background())
+	if !st.Enabled {
 		s.logger.Info("backup scheduler disabled (backup.enabled=false)")
 		return
 	}
@@ -413,8 +446,9 @@ func (s *Server) StartBackupScheduler() {
 		return
 	}
 	sched, err := backup.NewScheduler(mgr, backup.SchedulerConfig{
-		Schedule:   s.cfg.Backup.Schedule,
-		RetainDays: s.cfg.Backup.RetainDays,
+		Schedule:   st.Schedule,
+		Timezone:   st.Timezone,
+		RetainDays: st.RetainDays,
 	}, s.logger.With("component", "backup-scheduler"))
 	if err != nil {
 		s.logger.Error("backup scheduler not started: invalid schedule", "error", err)
@@ -426,9 +460,29 @@ func (s *Server) StartBackupScheduler() {
 
 // StopBackupScheduler stops the backup scheduler if it is running.
 func (s *Server) StopBackupScheduler() {
+	s.backupSchedMu.Lock()
+	defer s.backupSchedMu.Unlock()
+	s.stopBackupSchedulerLocked()
+}
+
+// stopBackupSchedulerLocked stops + clears the scheduler. Callers must hold
+// backupSchedMu. Clearing the pointer makes a subsequent Stop a safe no-op
+// (the underlying Stop closes a channel, which must not happen twice).
+func (s *Server) stopBackupSchedulerLocked() {
 	if s.backupScheduler != nil {
 		s.backupScheduler.Stop()
+		s.backupScheduler = nil
 	}
+}
+
+// ReloadBackupScheduler restarts the scheduler from the current effective
+// settings. Called after the admin UI saves new backup settings so a schedule
+// or timezone change takes effect immediately, without a container restart.
+func (s *Server) ReloadBackupScheduler() {
+	s.backupSchedMu.Lock()
+	defer s.backupSchedMu.Unlock()
+	s.stopBackupSchedulerLocked()
+	s.startBackupSchedulerLocked()
 }
 
 // StartWebhookDispatcher starts the webhook retry worker.
@@ -840,6 +894,8 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Get("/backup/status/{jobId}", s.handleBackupStatus)
 			r.With(requireSuperAdmin()).Get("/backup/list", s.handleBackupList)
 			r.With(requireSuperAdmin()).Post("/backup/restore/{id}", s.handleBackupRestore)
+			r.With(requireSuperAdmin()).Get("/backup/settings", s.handleGetBackupSettings)
+			r.With(requireSuperAdmin()).Put("/backup/settings", s.handleUpdateBackupSettings)
 
 			// Cluster management — super_admin only.
 			r.With(requireSuperAdmin()).Get("/cluster/status", s.handleClusterStatus)

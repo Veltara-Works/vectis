@@ -1,9 +1,14 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { api } from '../api/client.ts'
 
 interface BackupInfo {
   path: string; name: string; size: number; created_at: string;
 }
+
+// dailyCron matches a simple "every day at HH:MM" schedule (minute hour * * *),
+// which is what the friendly time picker produces and reads back. Anything
+// more complex flips the form into advanced (raw cron) mode.
+const dailyCron = /^(\d{1,2}) (\d{1,2}) \* \* \*$/
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
@@ -21,8 +26,62 @@ export default function BackupsPage() {
   const [jobStatus, setJobStatus] = useState<string | null>(null)
   const [restoring, setRestoring] = useState<string | null>(null)
 
+  // Schedule & retention settings (DB-backed, hot-reloaded server-side on save).
+  const [enabled, setEnabled] = useState(false)
+  const [dailyTime, setDailyTime] = useState('02:00')
+  const [timezone, setTimezone] = useState('UTC')
+  const [retainDays, setRetainDays] = useState(30)
+  const [advanced, setAdvanced] = useState(false)
+  const [cron, setCron] = useState('0 2 * * *')
+  const [nextRun, setNextRun] = useState<string | null>(null)
+  const [savingSettings, setSavingSettings] = useState(false)
+
+  const tzOptions = useMemo(() => {
+    let list: string[]
+    try { list = (Intl as unknown as { supportedValuesOf(k: string): string[] }).supportedValuesOf('timeZone') }
+    catch { list = ['Australia/Sydney', 'Australia/Perth', 'Asia/Singapore', 'Asia/Tokyo', 'Europe/London', 'Europe/Berlin', 'America/New_York', 'America/Los_Angeles'] }
+    const set = new Set<string>(['UTC', ...list])
+    if (timezone) set.add(timezone)
+    return Array.from(set)
+  }, [timezone])
+
   const load = () => api.backupList().then(d => setBackups(d || [])).catch(() => setError('Failed to load backups'))
-  useEffect(() => { load() }, [])
+
+  const loadSettings = () => api.backupGetSettings().then(s => {
+    setEnabled(s.enabled)
+    setTimezone(s.timezone || 'UTC')
+    setRetainDays(s.retain_days ?? 30) // 0 is valid ("keep all"); only fall back when absent
+    setCron(s.schedule || '0 2 * * *')
+    setNextRun(s.next_run || null)
+    const m = dailyCron.exec(s.schedule || '')
+    if (m) {
+      setAdvanced(false)
+      setDailyTime(`${m[2].padStart(2, '0')}:${m[1].padStart(2, '0')}`)
+    } else if (s.schedule) {
+      setAdvanced(true)
+    }
+  }).catch(() => setError('Failed to load backup settings — values shown are defaults; saving may create an override row'))
+
+  useEffect(() => { load(); loadSettings() }, [])
+
+  const handleSaveSettings = async () => {
+    setSavingSettings(true); setError(''); setSuccess('')
+    let schedule = cron.trim()
+    if (!advanced) {
+      const [hh, mm] = dailyTime.split(':')
+      schedule = `${parseInt(mm, 10)} ${parseInt(hh, 10)} * * *`
+    }
+    try {
+      const s = await api.backupUpdateSettings({ enabled, schedule, timezone, retain_days: retainDays })
+      setNextRun(s.next_run || null)
+      if (dailyCron.exec(s.schedule)) setCron(s.schedule)
+      setSuccess('Backup settings saved')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to save settings')
+    } finally {
+      setSavingSettings(false)
+    }
+  }
 
   // Poll for job status when a backup is in progress.
   useEffect(() => {
@@ -89,6 +148,58 @@ export default function BackupsPage() {
 
       {error && <div className="alert alert-error">{error}</div>}
       {success && <div className="alert alert-success">{success}</div>}
+
+      <div className="card mb-2">
+        <h3 className="mb-1">Schedule &amp; retention</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxWidth: '30rem' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+            Automatic backups enabled
+          </label>
+
+          {!advanced ? (
+            <label>Run daily at:{' '}
+              <input type="time" value={dailyTime} onChange={e => setDailyTime(e.target.value)} disabled={!enabled} />
+            </label>
+          ) : (
+            <label>Cron schedule:{' '}
+              <input type="text" className="mono" value={cron} placeholder="0 2 * * *"
+                onChange={e => setCron(e.target.value)} disabled={!enabled} style={{ width: '12rem' }} />
+            </label>
+          )}
+
+          <label>Timezone:{' '}
+            <select value={timezone} onChange={e => setTimezone(e.target.value)} disabled={!enabled}>
+              {tzOptions.map(tz => <option key={tz} value={tz}>{tz}</option>)}
+            </select>
+          </label>
+
+          <label>Keep backups for:{' '}
+            <input type="number" min={0} value={retainDays} style={{ width: '5rem' }} disabled={!enabled}
+              onChange={e => setRetainDays(parseInt(e.target.value, 10) || 0)} /> days{' '}
+            <span className="text-muted">(0 = keep all)</span>
+          </label>
+
+          {enabled && nextRun && (
+            <p className="text-muted" style={{ margin: 0 }}>
+              Next run: {new Date(nextRun).toLocaleString(undefined, { timeZone: timezone })} ({timezone})
+            </p>
+          )}
+
+          <div>
+            <button type="button" onClick={() => setAdvanced(a => !a)}
+              style={{ background: 'none', border: 'none', color: 'var(--color-primary, #3b82f6)', cursor: 'pointer', padding: 0, font: 'inherit' }}>
+              {advanced ? '▾ Simple (daily time)' : '▸ Advanced (custom cron)'}
+            </button>
+          </div>
+
+          <div>
+            <button className="btn" onClick={handleSaveSettings} disabled={savingSettings}>
+              {savingSettings ? 'Saving...' : 'Save settings'}
+            </button>
+          </div>
+        </div>
+      </div>
 
       {jobStatus && (
         <div className="card">

@@ -59,6 +59,7 @@ dovecot:
 backup:
   enabled: false
   schedule: "0 2 * * *"    # Cron expression — 2 AM daily
+  timezone: ""             # IANA tz for the schedule (e.g. "Australia/Sydney"); empty = UTC. Editable in the admin UI.
   retain_days: 30
 
 # Container logging driver and rotation.

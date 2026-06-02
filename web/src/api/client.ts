@@ -290,6 +290,10 @@ export const api = {
       return json.data
     })
   },
+  backupGetSettings: () =>
+    request<{ enabled: boolean; schedule: string; timezone: string; retain_days: number; from_db: boolean; next_run?: string }>('GET', '/backup/settings'),
+  backupUpdateSettings: (s: { enabled: boolean; schedule: string; timezone: string; retain_days: number }) =>
+    request<{ enabled: boolean; schedule: string; timezone: string; retain_days: number; from_db: boolean; next_run?: string }>('PUT', '/backup/settings', s),
 
   // Sieve filter management
   listSieveScripts: (mailboxId: string) =>
