@@ -255,7 +255,7 @@ func (fgs *FeatureGateService) FeatureGate(feature string) func(http.Handler) ht
 				var expErr *licenseExpiredError
 				if errors.As(err, &expErr) {
 					writeFeatureError(w, http.StatusForbidden, ErrLicenseExpired,
-						"License grace period has expired — please renew your subscription")
+						"Your license entitlement has expired — please renew your subscription")
 					return
 				}
 
@@ -363,7 +363,7 @@ func (fgs *FeatureGateService) FeatureGateBrowser(feature, featureLabel, upgrade
 			if wantsJSON(r) {
 				if expired {
 					writeFeatureError(w, http.StatusForbidden, ErrLicenseExpired,
-						"License grace period has expired — please renew your subscription")
+						"Your license entitlement has expired — please renew your subscription")
 					return
 				}
 				writeFeatureError(w, http.StatusForbidden, ErrFeatureNotAvailable,
@@ -544,7 +544,7 @@ type licenseExpiredError struct {
 }
 
 func (e *licenseExpiredError) Error() string {
-	return "license grace period expired for tenant " + e.tenantID
+	return "license entitlement expired for tenant " + e.tenantID
 }
 
 // featureErrorResponse is the JSON body returned when feature access is denied.
@@ -579,7 +579,7 @@ func writeFeatureError(w http.ResponseWriter, status int, code, message string) 
 }
 
 func writeFeatureErrorToLogger(logger *slog.Logger, tenantID, feature string) {
-	logger.Warn("denying access — license grace period expired",
+	logger.Warn("denying access — license entitlement expired (past offline horizon)",
 		"tenant_id", tenantID,
 		"feature", feature,
 	)
@@ -625,7 +625,7 @@ func writeFeatureUpgradeHTML(w http.ResponseWriter, featureLabel, upgradeURL str
 	body := featureLabel + " requires a Pro license. Your current install is on the Free tier."
 	if expired {
 		heading = "License expired"
-		body = "Your license grace period has expired. Renew your subscription to continue using " + featureLabel + "."
+		body = "Your license entitlement has expired. Renew your subscription to continue using " + featureLabel + "."
 	}
 	if upgradeURL == "" {
 		upgradeURL = "https://vectismail.com/pricing"
