@@ -222,9 +222,9 @@ func TestFeatureGateBrowser_Deny_HTMLAccept_RendersUpgradePage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"OIDC single sign-on",     // featureLabel must appear
+		"OIDC single sign-on",            // featureLabel must appear
 		"https://vectismail.com/pricing", // upgrade link must appear
-		"<!doctype html>",          // a real HTML page, not JSON
+		"<!doctype html>",                // a real HTML page, not JSON
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("HTML body missing %q\nbody:\n%s", want, body)
@@ -371,7 +371,7 @@ func TestWriteFeatureUpgradeHTML_ExpiredBranch(t *testing.T) {
 	if !strings.Contains(body, "License expired") {
 		t.Errorf("expected 'License expired' heading on expired branch; body:\n%s", body)
 	}
-	if !strings.Contains(body, "grace period has expired") {
+	if !strings.Contains(body, "entitlement has expired") {
 		t.Errorf("expected expired-specific copy; body:\n%s", body)
 	}
 }
@@ -386,4 +386,3 @@ func TestWriteFeatureUpgradeHTML_DefaultUpgradeURL(t *testing.T) {
 		t.Errorf("empty upgradeURL must fall back to canonical pricing URL; body:\n%s", body)
 	}
 }
-
