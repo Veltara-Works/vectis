@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodic Vectis off-host backup sync to Cloudflare R2
+
+[Timer]
+# Hourly rather than once-at-02:30 so the off-host copy is robust to the
+# (now UI-editable) backup schedule changing — any new archive lands off-host
+# within the hour. The sync is idempotent and cheap (a tiny bucket listing +
+# a few ~1 MB uploads), so the cadence costs next to nothing.
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
