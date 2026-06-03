@@ -2,7 +2,6 @@
 
 **Status:** Ratified 2026-04-17
 **Applies to:** Vectis Mail (this repository)
-**Part of:** shared TLS policy
 
 ## Statement
 
@@ -12,9 +11,8 @@
 > crypto — it's been audited for decades — and keep the distro
 > packages current.**
 
-This policy was ratified across the our repositories on 2026-04-17.
-a sibling service (Rust) satisfies it via `rustls`. Vectis Mail (Go + upstream C
-services) satisfies it as described below.
+This policy applies to Vectis Mail, which is Go plus upstream C
+services, and is satisfied as described below.
 
 ## Scope
 
@@ -48,8 +46,8 @@ the Go-ecosystem equivalent of `rustls`.
 **On drift:** if a future dep upgrade pulls an OpenSSL-family crate
 transitively, CI will fail loudly. At that point the fix is either to
 swap the offending library or — if there's no reasonable alternative —
-to add an explicit carve-out entry to this document with justification
-and notify a sibling service. Do not silently mask the grep.
+to add an explicit carve-out entry to this document with justification.
+Do not silently mask the grep.
 
 ### Upstream OSS services — carved out by design
 
@@ -61,7 +59,7 @@ codebases that link `libssl`:
 | **vectis-postfix** | SMTPS (465), STARTTLS (25/587) | 25+ years of audited TLS code. Replacing Postfix is not on the roadmap — architecture v1.4 is frozen and the entire mail flow (ADR-008, ADR-010, Spec C) is built around it. |
 | **vectis-dovecot** | IMAPS (993), POP3S (995), ManageSieve TLS | Same. Postfix's delivery partner; replacing one means replacing both. |
 | **vectis-rspamd** | Outbound HTTPS to RBLs, DMARC reporting | C codebase, upstream dep. |
-| **Traefik** | ACME challenges (HTTP-01 / DNS-01) | Go (`crypto/tls`); same posture as a sibling service. Single ACME flow for both HTTP and mail. |
+| **Traefik** | ACME challenges (HTTP-01 / DNS-01) | Go (`crypto/tls`); memory-safe. Single ACME flow for both HTTP and mail. |
 | **vectis-cert-extractor** (sidecar) | Parses Traefik's `acme.json`, writes PEM, HUPs mail containers on rotation | Go (`crypto/tls`); minimal blast radius; replaces the former `acme.sh` sidecar (see ADR-009). |
 | **vectis-webmail** (Roundcube) | IMAPS to Dovecot from PHP | Upstream PHP + libssl. |
 
@@ -79,9 +77,9 @@ the policy.
 
 ## Interop
 
-- **a sibling service → Vectis Mail** (planned V1.1 SMTP via `lettre` +
-  `tokio1-rustls-tls`): handled by vectis-postfix. TLS 1.2+ with modern
-  ciphers accepts rustls and OpenSSL clients identically.
+- **Inbound SMTP clients** (whether the sending stack uses a rustls- or
+  OpenSSL-based TLS implementation): handled by vectis-postfix. TLS 1.2+
+  with modern ciphers accepts both identically.
 - **ValidonX → Vectis Mail** (PHP/Guzzle/curl/OpenSSL): handled by
   vectis-postfix. Same path; no policy tension because ValidonX is
   consuming, not embedding, Vectis TLS.
@@ -91,7 +89,7 @@ the policy.
 
 ## Compliance artefact checklist
 
-Exactly the four items ratified with a sibling service on 2026-04-17:
+Exactly the four items ratified for this policy on 2026-04-17:
 
 - [x] `grep -iE 'openssl|boring|native-tls' go.mod go.sum` returns
       empty — verified in CI.

@@ -17,12 +17,12 @@ jobs:
       - uses: actions/checkout@v5
       - name: Fail if any source-ext file is ignored by .gitignore
         run: |
-          # a sibling service cross-product advisory (2026-04-17): an unanchored `wal/`
-          # pattern in .gitignore silently excluded internal-store/src/wal/
-          # from origin/main for 30 CI runs. Vectis passed the initial audit
-          # but adopts the same guard preventively. Fails the build if any
-          # working-tree file with a source-file extension is ignored by
-          # .gitignore outside an allowlisted build/dep directory.
+          # Guard against a .gitignore footgun: an unanchored directory
+          # pattern (e.g. a bare `wal/`) can silently exclude real source
+          # files from the repo for many CI runs before anyone notices.
+          # Fails the build if any working-tree file with a source-file
+          # extension is ignored by .gitignore outside an allowlisted
+          # build/dep directory.
           allowed_prefixes='^(web/node_modules/|web/dist/|web/build/|\.venv/|__pycache__/|var/|full_auto_provisioner_setup/|coverage/|target/|vendor/|\.claude/|\.idea/|\.vscode/)'
           source_exts='\.(go|ts|tsx|js|jsx|py|rs|sh|sql|yml|yaml|md|html|css|scss|toml|proto|rb|java|kt|swift|c|cc|cpp|h|hpp)$'
           offenders=$(git ls-files --others --ignored --exclude-standard | grep -E "$source_exts" | grep -vE "$allowed_prefixes" || true)
@@ -32,7 +32,7 @@ jobs:
             echo ""
             echo "This usually means a .gitignore rule is accidentally matching real source code."
             echo "Either fix .gitignore so the file is tracked, or add the path prefix to the allowlist in .github/workflows/ci.yml."
-            echo "See a sibling service WAL incident (2026-04-17) for the original bug class."
+            echo "A bare directory pattern in .gitignore can silently exclude real source — anchor it or allowlist the path."
             exit 1
           fi
           echo "OK: no ignored source files outside allowlisted directories."

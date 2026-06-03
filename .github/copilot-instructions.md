@@ -100,7 +100,7 @@ Don't comment on these unless something is genuinely off:
 
 ## Repo-specific notes
 
-> **Edit this section per repo.** Everything above is the same across the our repositories.
+> **Edit this section per repo.** Everything above is shared boilerplate across our repositories.
 
 - This repo is **`Veltara-Works/vectis`** — a self-hosted mail server (Postfix + Dovecot + Rspamd + Traefik + Postgres + Valkey + ClamAV). Go + Chi backend, React + TypeScript admin UI, deployed via Docker Compose. Currently live in production at `mail.vectismail.com`.
 - **Architecture v1.4 is frozen** — start with `AGENTS.md`, then `docs/architecture/ADR_Index.md` (25 binding ADRs) and `docs/spec/` (Specs A–G). Don't suggest architectural changes without an ADR; flag PRs that drift from the frozen architecture.

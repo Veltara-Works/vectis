@@ -6,7 +6,7 @@ Standard process for conducting in-repo audits of Vectis Mail.
 
 - **Pre-flip / pre-release** — before any irreversible production change (billing live-flip, major version cut, infrastructure migration).
 - **Quarterly hardening review** — keeps drift visible even without a triggering event.
-- **Comprehensive full-codebase review** — comprehensive review of the full codebase.
+- **Comprehensive full-codebase review** — periodic deep review of the entire codebase.
 - **Post-incident** — focused audit of the affected subsystem.
 
 ## Phase model
