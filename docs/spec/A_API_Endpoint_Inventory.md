@@ -1,7 +1,7 @@
 # A. API Endpoint Inventory
 
 **Status:** Living reference — kept in sync with `internal/api/server.go`
-**Last refreshed:** 2026-05-17 (against `main` at `c3255ee`)
+**Last refreshed:** 2026-05-17 (against `main`)
 **Complements:** Vectis Architecture v1.4 (frozen), Implementation Spec v1.1
 **Source of truth:** Route registrations in [`internal/api/server.go`](../../internal/api/server.go) — refresh this doc whenever a new route is added.
 
