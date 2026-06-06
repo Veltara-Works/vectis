@@ -2,29 +2,13 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/Veltara-Works/vectis/internal/validonx"
-)
-
-// upgradeCheckout — constants for the in-product "Buy Pro" flow. These are
-// product-wide values stable across all installs; they live here rather than
-// in config because rotating them is a release event, not an install knob.
-//
-//   - upgradeProductCode: Vx's product-catalogue identifier for Vectis Mail.
-//   - upgradePriceID:     the Stripe price_id for "Vectis Mail Pro USD$29/mo".
-//     Sourced from /opt/vectis/.claude/.stripe.md and matches the price the
-//     marketing-site Customer #2 endpoint resolves to. If/when we add tiers
-//     (annual, multi-seat) this becomes a lookup, not a constant.
-const (
-	upgradeProductCode = "vectis-mail"
-	upgradePriceID     = "price_1TUlqrBBhyrgaTgwLHyuvLVD"
 )
 
 // billingPortalSessionRequest is the inbound shape for
@@ -162,10 +146,10 @@ func (e invalidReturnURLError) Error() string { return string(e) }
 func invalidReturnURL(reason string) error { return invalidReturnURLError(reason) }
 
 // upgradeCheckoutRequest is the inbound shape for the in-product "Buy Pro"
-// admin button. Both fields are optional on the wire — when omitted, Stripe
-// Checkout collects the email itself and Vx falls back to "Vectis Mail
-// Customer" for the owner_name. Sending them lets us pre-fill the Stripe
-// form for the logged-in admin so the customer doesn't retype.
+// admin button. Both fields are optional on the wire — the React UI sends an
+// empty body and the handler sources owner_email/owner_name from the logged-in
+// super-admin (the keyless checkout endpoint requires both). A caller may pass
+// them explicitly to override; the buyer can still edit them on the Stripe page.
 type upgradeCheckoutRequest struct {
 	OwnerEmail string `json:"owner_email,omitempty"`
 	OwnerName  string `json:"owner_name,omitempty"`
@@ -182,26 +166,24 @@ type upgradeCheckoutResponse struct {
 }
 
 // handleUpgradeCheckoutSession mints a Stripe Checkout session via Vx's
-// Customer #1 partner-key endpoint and returns the URL for the admin UI to
-// navigate to. The flow:
+// KEYLESS Customer #2 endpoint (POST /api/v1/checkout/vectis-pro) and returns
+// the URL for the admin UI to navigate to. No partner credential is involved —
+// it was deliberately removed from the box so no Vx key ever lives on a
+// customer machine; Vx price-locks the endpoint and validates the return URLs
+// against its apex allowlist. The flow:
 //
 //  1. Caller is authenticated + super_admin (route-level).
-//  2. Partner key must be present in secrets — without it the install can't
-//     reach the endpoint at all; bail with INSTALL_NOT_PROVISIONED.
-//  3. Determine tenant_id: pass-through from runtime config if set, omit
-//     (new-signup branch) otherwise. Free-tier installs always hit the
-//     new-signup branch since runtime config is empty.
-//  4. Compute success/cancel URLs against the request host so the customer
-//     comes back to *their* install, not vectismail.com.
-//  5. Derive a stable install fingerprint (sha256 of /etc/machine-id +
-//     hostname) for Vx's idempotency key.
-//  6. Call validonx.CreateCheckoutSession; surface their error code if any.
-//  7. Audit-log the session mint and return {url, session_id, expires_at}.
+//  2. Source owner_email/owner_name from the logged-in admin (the keyless
+//     endpoint requires both); the request body may override.
+//  3. SERVER-SET success/cancel URLs to allowlisted vectismail.com pages —
+//     never the request host (that would be an open-redirect vector).
+//  4. Call validonx.CreateVectisProCheckout; surface its error if any.
+//  5. Audit-log the session mint and return {url, session_id, expires_at}.
 //
-// Notably: we do NOT require the install to be licensed. The whole point of
-// this endpoint is bootstrapping a paid subscription from a Free install.
-// Pro installs *can* call it (e.g. to switch billing accounts) but the UI
-// currently only surfaces it on the Free-tier path.
+// We do NOT require the install to be licensed — the whole point is
+// bootstrapping a paid subscription from a Free install. After payment the
+// customer lands on vectismail.com and Vx emails the activation credentials
+// to paste on this install's License page.
 func (s *Server) handleUpgradeCheckoutSession(w http.ResponseWriter, r *http.Request) {
 	var req upgradeCheckoutRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -209,77 +191,106 @@ func (s *Server) handleUpgradeCheckoutSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Resolve the Vx base URL — the keyless checkout endpoint is served on the
+	// same host the box already uses for licensing (confirmed live on both
+	// validonx.com and api.validonx.com), so we reuse the configured base_url.
 	secrets := s.secretsValidonX()
-	if secrets == nil || secrets.CustomerOneKey == "" {
-		respondError(w, r, http.StatusServiceUnavailable, "INSTALL_NOT_PROVISIONED",
-			"This install can't initiate checkout — validonx.customer_one_key is not set in secrets.yaml. Contact support.")
-		return
+	baseURL := ""
+	if secrets != nil {
+		baseURL = strings.TrimRight(secrets.BaseURL, "/")
 	}
-
-	baseURL := strings.TrimRight(secrets.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = validonx.DefaultBaseURL
 	}
 
-	// tenant_id: runtime config wins if present. Free installs have an empty
-	// runtime config → empty TenantID → new-signup branch on Vx side. Pro
-	// installs that hit this endpoint (currently no UI affordance for it)
-	// would route to the upgrade-existing branch.
-	runtimeCfg, _ := validonx.LoadRuntimeConfig(r.Context(), s.db, secrets)
-	var tenantID string
-	if runtimeCfg != nil {
-		tenantID = runtimeCfg.TenantID
+	// owner_email / owner_name are REQUIRED by the keyless endpoint. Source
+	// them server-side from the authenticated super-admin; the request body
+	// may override (the React UI sends an empty body). The buyer can still
+	// edit both on the Stripe-hosted page.
+	adminID := getAdminID(r.Context())
+	ownerEmail := strings.TrimSpace(req.OwnerEmail)
+	ownerName := strings.TrimSpace(req.OwnerName)
+
+	// Only hit the admin store when a required field is actually missing.
+	if ownerEmail == "" || ownerName == "" {
+		admin, err := s.admins.GetByID(r.Context(), adminID)
+		if err != nil {
+			// Don't fail outright — the request may carry usable fields and
+			// owner_name has a safe fallback below. Log it so a broken admin
+			// store is visible rather than silently degrading every checkout.
+			s.logger.Warn("upgrade checkout: admin lookup failed; using request-supplied owner fields only",
+				"error", err, "admin_id", adminID)
+		} else if admin != nil && ownerEmail == "" {
+			ownerEmail = strings.TrimSpace(admin.Email)
+		}
 	}
 
-	scheme := "https"
-	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
-		scheme = "http"
+	// Derive owner_name from whichever email we actually ended up with —
+	// request-supplied takes precedence over the admin's. Deriving from the
+	// admin's email when the caller supplied a *different* owner_email would
+	// mis-label the buyer; this keeps the name consistent with the address.
+	if ownerName == "" {
+		ownerName = deriveOwnerName(ownerEmail)
 	}
-	origin := scheme + "://" + r.Host
-	successURL := origin + "/admin/license?checkout=success&session={CHECKOUT_SESSION_ID}"
-	cancelURL := origin + "/admin/license?checkout=cancel"
+	if ownerName == "" {
+		ownerName = "Vectis Mail Admin"
+	}
+	if ownerEmail == "" {
+		respondError(w, r, http.StatusInternalServerError, "OWNER_EMAIL_UNAVAILABLE",
+			"Could not determine your account email to start checkout. Contact support.")
+		return
+	}
 
-	fingerprint := installFingerprint()
+	// Return URLs are SERVER-SET to the allowlisted vectismail.com pages and
+	// are NEVER derived from the request host — Vx independently validates them
+	// against its apex return-URL allowlist, so a bug here cannot open-redirect
+	// the customer off to a third party.
+	const returnBase = "https://vectismail.com"
+	successURL := returnBase + "/upgrade/success/?origin=install&session={CHECKOUT_SESSION_ID}"
+	cancelURL := returnBase + "/upgrade/cancelled/?origin=install"
 
-	checkoutReq := validonx.CheckoutCreateSessionRequest{
-		ProductCode:   upgradeProductCode,
-		PriceID:       upgradePriceID,
-		CustomerEmail: strings.TrimSpace(req.OwnerEmail),
-		CustomerName:  strings.TrimSpace(req.OwnerName),
-		TenantID:      tenantID,
-		SuccessURL:    successURL,
-		CancelURL:     cancelURL,
+	checkoutReq := validonx.VectisProCheckoutRequest{
+		OwnerEmail:               ownerEmail,
+		OwnerName:                ownerName,
+		SuccessURL:               successURL,
+		CancelURL:                cancelURL,
+		AllowPromotionCodes:      true,
+		Locale:                   "en",
+		BillingAddressCollection: "required",
+		TaxIDCollection:          &validonx.TaxIDCollection{Enabled: true},
+		ConsentCollection:        &validonx.ConsentCollection{TermsOfService: "required"},
 		Metadata: map[string]string{
-			"vectis_install_fingerprint": fingerprint,
-			"source":                     "in-product",
+			"vm_source": "in-product",
 		},
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	resp, err := validonx.CreateCheckoutSession(ctx, nil,
+	resp, err := validonx.CreateVectisProCheckout(ctx, nil,
 		s.logger.With("component", "validonx.checkout"),
-		baseURL, secrets.CustomerOneKey, checkoutReq)
+		baseURL, checkoutReq)
 
-	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
 	if err != nil {
-		s.logger.Warn("upgrade checkout session failed",
-			"error", err, "tenant_id", tenantID, "fingerprint", fingerprint)
+		s.logger.Warn("upgrade checkout session failed", "error", err)
 		s.audit.Log(r.Context(), &adminID, "billing.checkout.mint_failed", "billing", nil,
-			map[string]string{"tenant_id": tenantID, "error": err.Error()}, &ip)
+			map[string]string{"error": err.Error()}, &ip)
+		// Surface Vx's per-IP rate limit as 429 (not 502) so the UI and API
+		// clients can back off and retry rather than treating it as a hard
+		// upstream failure. Every other upstream error stays a 502.
+		if errors.Is(err, validonx.ErrCheckoutRateLimited) {
+			respondError(w, r, http.StatusTooManyRequests, "CHECKOUT_RATE_LIMITED",
+				"Checkout is briefly rate-limited. Please wait a few seconds and try again.")
+			return
+		}
 		respondError(w, r, http.StatusBadGateway, "CHECKOUT_FAILED",
 			"Could not start checkout: "+err.Error())
 		return
 	}
 
 	s.audit.Log(r.Context(), &adminID, "billing.checkout.mint", "billing", nil,
-		map[string]string{
-			"tenant_id":   tenantID,
-			"session_id":  resp.SessionID,
-			"fingerprint": fingerprint,
-		}, &ip)
+		map[string]string{"session_id": resp.SessionID}, &ip)
 
 	respond(w, r, http.StatusOK, upgradeCheckoutResponse{
 		URL:       resp.CheckoutURL,
@@ -288,24 +299,13 @@ func (s *Server) handleUpgradeCheckoutSession(w http.ResponseWriter, r *http.Req
 	})
 }
 
-// installFingerprint returns a stable, opaque identifier for this install,
-// suitable as a Stripe Idempotency-Key seed on the Vx side. Derived from
-// /etc/machine-id (the systemd/dbus standard install identifier) with
-// hostname mixed in as a tiebreaker for containers that share machine-id
-// from the host. Falls back to hostname-only if machine-id is unreadable
-// (e.g. some non-systemd test environments), and to a constant final
-// fallback so the field is never empty — Vx requires it.
-func installFingerprint() string {
-	var parts []string
-	if b, err := os.ReadFile("/etc/machine-id"); err == nil {
-		parts = append(parts, strings.TrimSpace(string(b)))
+// deriveOwnerName produces a non-empty owner_name from an email local-part for
+// the keyless checkout endpoint (which 422s without one). The buyer can edit it
+// on the Stripe-hosted page; this is just a sensible pre-fill / fallback.
+func deriveOwnerName(email string) string {
+	local, _, found := strings.Cut(email, "@")
+	if local = strings.TrimSpace(local); !found || local == "" {
+		return ""
 	}
-	if host, err := os.Hostname(); err == nil && host != "" {
-		parts = append(parts, host)
-	}
-	if len(parts) == 0 {
-		parts = append(parts, "vectis-install-no-id")
-	}
-	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
-	return hex.EncodeToString(sum[:])
+	return local
 }

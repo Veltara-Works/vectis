@@ -201,8 +201,11 @@ func TestLoadSecrets_ValidonXForwardCompat(t *testing.T) {
 	if secrets.ValidonX == nil {
 		t.Fatal("ValidonX block should be loaded")
 	}
-	if secrets.ValidonX.CustomerOneKey != "vectis_known_key_value" {
-		t.Errorf("known field CustomerOneKey not parsed; got %q", secrets.ValidonX.CustomerOneKey)
+	// customer_one_key was removed from the struct when in-product checkout
+	// moved to the keyless endpoint. Existing installs still carry it, so it
+	// must be tolerated via Forward — not crash the loader, not vanish.
+	if _, ok := secrets.ValidonX.Forward["customer_one_key"]; !ok {
+		t.Error("legacy customer_one_key should be captured in Forward, not dropped")
 	}
 	got, ok := secrets.ValidonX.Forward["some_future_v0_1_99_key"]
 	if !ok {
