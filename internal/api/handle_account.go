@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -209,15 +210,27 @@ func (s *Server) handleUpgradeCheckoutSession(w http.ResponseWriter, r *http.Req
 	adminID := getAdminID(r.Context())
 	ownerEmail := strings.TrimSpace(req.OwnerEmail)
 	ownerName := strings.TrimSpace(req.OwnerName)
+
+	// Only hit the admin store when a required field is actually missing.
 	if ownerEmail == "" || ownerName == "" {
-		if admin, err := s.admins.GetByID(r.Context(), adminID); err == nil && admin != nil {
-			if ownerEmail == "" {
-				ownerEmail = strings.TrimSpace(admin.Email)
-			}
-			if ownerName == "" {
-				ownerName = deriveOwnerName(admin.Email)
-			}
+		admin, err := s.admins.GetByID(r.Context(), adminID)
+		if err != nil {
+			// Don't fail outright — the request may carry usable fields and
+			// owner_name has a safe fallback below. Log it so a broken admin
+			// store is visible rather than silently degrading every checkout.
+			s.logger.Warn("upgrade checkout: admin lookup failed; using request-supplied owner fields only",
+				"error", err, "admin_id", adminID)
+		} else if admin != nil && ownerEmail == "" {
+			ownerEmail = strings.TrimSpace(admin.Email)
 		}
+	}
+
+	// Derive owner_name from whichever email we actually ended up with —
+	// request-supplied takes precedence over the admin's. Deriving from the
+	// admin's email when the caller supplied a *different* owner_email would
+	// mis-label the buyer; this keeps the name consistent with the address.
+	if ownerName == "" {
+		ownerName = deriveOwnerName(ownerEmail)
 	}
 	if ownerName == "" {
 		ownerName = "Vectis Mail Admin"
@@ -263,6 +276,14 @@ func (s *Server) handleUpgradeCheckoutSession(w http.ResponseWriter, r *http.Req
 		s.logger.Warn("upgrade checkout session failed", "error", err)
 		s.audit.Log(r.Context(), &adminID, "billing.checkout.mint_failed", "billing", nil,
 			map[string]string{"error": err.Error()}, &ip)
+		// Surface Vx's per-IP rate limit as 429 (not 502) so the UI and API
+		// clients can back off and retry rather than treating it as a hard
+		// upstream failure. Every other upstream error stays a 502.
+		if errors.Is(err, validonx.ErrCheckoutRateLimited) {
+			respondError(w, r, http.StatusTooManyRequests, "CHECKOUT_RATE_LIMITED",
+				"Checkout is briefly rate-limited. Please wait a few seconds and try again.")
+			return
+		}
 		respondError(w, r, http.StatusBadGateway, "CHECKOUT_FAILED",
 			"Could not start checkout: "+err.Error())
 		return

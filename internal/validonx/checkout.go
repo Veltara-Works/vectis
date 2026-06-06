@@ -4,12 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"time"
 )
+
+// ErrCheckoutRateLimited is returned by CreateVectisProCheckout when Vx's
+// keyless endpoint responds 429 (anonymous per-IP rate limit, 6/min). It is a
+// sentinel so the API handler can map this case to HTTP 429 — letting the UI
+// and API clients back off and retry — instead of folding it into a generic
+// 502 upstream failure. The message is deliberately user-presentable.
+var ErrCheckoutRateLimited = errors.New("validonx checkout is briefly rate-limited (HTTP 429) — please try again shortly")
 
 // ---------------------------------------------------------------------------
 // Vectis Mail Pro checkout
@@ -132,7 +140,7 @@ func CreateVectisProCheckout(ctx context.Context, httpClient *http.Client, logge
 	}
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, fmt.Errorf("validonx checkout is briefly rate-limited (HTTP 429) — please try again shortly")
+		return nil, ErrCheckoutRateLimited
 	}
 	if resp.StatusCode >= 400 {
 		var verr laravelValidationError

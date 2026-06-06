@@ -105,9 +105,11 @@ export default function LicensePage() {
 
   const handleStartCheckout = async () => {
     // Mint a Stripe Checkout session via the admin-side proxy, then redirect
-    // the browser to Stripe-hosted checkout. After payment, Stripe redirects
-    // back to /admin/license?checkout=success and Vx emails provisioning
-    // credentials (license_key + service_key + tenant_id) to the customer.
+    // the browser to Stripe-hosted checkout. The success/cancel return URLs are
+    // server-set to vectismail.com/upgrade/{success,cancelled} (allowlisted by
+    // Vx) — NOT back to this install — so after payment the buyer lands on the
+    // marketing site, which guides them back here to paste the provisioning
+    // credentials (license_key + service_key + tenant_id) that Vx emails them.
     setUpgrading(true)
     setError('')
     setSuccess('')

@@ -795,6 +795,108 @@ func TestBillingPortalSession_RejectsCrossOriginReturnURL(t *testing.T) {
 	}
 }
 
+// ── In-product upgrade checkout (keyless Customer #2) ────────────
+//
+// /account/upgrade-checkout-session mints a Stripe Checkout session via Vx's
+// keyless endpoint. The load-bearing security property is that the success/
+// cancel return URLs are SERVER-SET to allowlisted vectismail.com pages and are
+// NEVER derived from the request host — a bug there would be an open-redirect
+// vector through the Vx call chain. This test pins that line, and also pins the
+// owner_name-from-supplied-email derivation.
+
+func TestUpgradeCheckout_ServerSetsAllowlistedReturnURLs(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+
+	var gotCheckoutBody []byte
+	var checkoutHits int
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/integration/licensing/resolve":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"data": {"valid": true, "status": "active", "allowed_features": ["basic_mail","analytics"], "grace_period_ends_at": null, "expires_at": "2099-01-01T00:00:00+00:00"},
+				"meta": {"request_id": "rid", "api_version": "1"}
+			}`))
+		case "/api/v1/checkout/vectis-pro":
+			checkoutHits++
+			gotCheckoutBody, _ = io.ReadAll(r.Body)
+			// The keyless endpoint must receive NO X-API-Key.
+			if r.Header.Get("X-API-Key") != "" {
+				t.Errorf("keyless checkout must not carry X-API-Key, got %q", r.Header.Get("X-API-Key"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"data":{"checkout_url":"https://checkout.stripe.com/c/pay/cs_test_xyz","session_id":"cs_test_xyz"},"meta":{"request_id":"r","api_version":"1"}}`)
+		default:
+			t.Errorf("unexpected mock path: %q", r.URL.Path)
+			http.Error(w, "unexpected", http.StatusNotFound)
+		}
+	}))
+	defer mock.Close()
+
+	// Activate so the handler resolves base_url to the mock (not real Vx).
+	body, _ := json.Marshal(map[string]string{
+		"base_url":        mock.URL,
+		"service_key":     "test-service-key",
+		"tenant_id":       fmt.Sprintf("upgrade-test-%d", time.Now().UnixNano()),
+		"subscription_id": "sub_upgrade_test",
+		"license_key":     "VLDX-VECTIS-PRO-UPGRADE-001",
+	})
+	if r := env.doRequest(t, "POST", "/api/v1/license", string(body)); r.StatusCode != 200 {
+		raw, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		t.Fatalf("license activation prereq failed: %d (body: %s)", r.StatusCode, raw)
+	}
+	defer deactivateLicense(t, env)
+
+	// Caller supplies an owner_email that differs from the logged-in admin's,
+	// and NO owner_name — exercising the supplied-email derivation (#5).
+	resp := env.doRequest(t, "POST", "/api/v1/account/upgrade-checkout-session",
+		`{"owner_email":"buyer@elsewhere.example"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	if checkoutHits != 1 {
+		t.Fatalf("expected exactly 1 hit on keyless checkout endpoint, got %d", checkoutHits)
+	}
+
+	var sent struct {
+		OwnerEmail string `json:"owner_email"`
+		OwnerName  string `json:"owner_name"`
+		SuccessURL string `json:"success_url"`
+		CancelURL  string `json:"cancel_url"`
+	}
+	if err := json.Unmarshal(gotCheckoutBody, &sent); err != nil {
+		t.Fatalf("decode forwarded checkout body: %v (raw: %s)", err, gotCheckoutBody)
+	}
+
+	// Security line: return URLs are the vectismail.com constants, never the
+	// request host (httptest default is example.com).
+	const wantSuccess = "https://vectismail.com/upgrade/success/?origin=install&session={CHECKOUT_SESSION_ID}"
+	const wantCancel = "https://vectismail.com/upgrade/cancelled/?origin=install"
+	if sent.SuccessURL != wantSuccess {
+		t.Errorf("success_url = %q, want server-set %q", sent.SuccessURL, wantSuccess)
+	}
+	if sent.CancelURL != wantCancel {
+		t.Errorf("cancel_url = %q, want server-set %q", sent.CancelURL, wantCancel)
+	}
+	if strings.Contains(sent.SuccessURL, "example.com") || strings.Contains(sent.CancelURL, "example.com") {
+		t.Errorf("return URLs must never derive from the request host; got success=%q cancel=%q", sent.SuccessURL, sent.CancelURL)
+	}
+
+	// owner_name (#5): derived from the SUPPLIED email's local-part, not the
+	// admin's address.
+	if sent.OwnerEmail != "buyer@elsewhere.example" {
+		t.Errorf("owner_email = %q, want the supplied address passed through", sent.OwnerEmail)
+	}
+	if sent.OwnerName != "buyer" {
+		t.Errorf("owner_name = %q, want %q derived from the supplied owner_email", sent.OwnerName, "buyer")
+	}
+}
+
 // ── Tier-gate test helper (Advanced Spam) ────────────────────────
 //
 // activateLicenseWithFeatures spins up a mock ValidonX server that returns
