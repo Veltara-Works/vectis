@@ -82,13 +82,25 @@ describe('LicensePage — in-product Buy Pro flow (v0.1.14)', () => {
     expect(screen.getByPlaceholderText('your-tenant-code')).toBeInTheDocument()
   })
 
-  it('keeps the optional fields behind an "Advanced (optional)" disclosure', async () => {
+  it('keeps the optional fields collapsed behind "Advanced (optional)" by default', async () => {
     renderAt('/admin/license')
     fireEvent.click(await screen.findByRole('button', { name: /Already purchased\? Paste credentials/i }))
     await screen.findByPlaceholderText('VLDX-...')
-    // The three required keys are surfaced directly; the rest live under a
-    // collapsible <summary> so the default view matches the activation email.
-    expect(screen.getByText(/Advanced \(optional\)/i)).toBeInTheDocument()
+
+    const summary = screen.getByText(/Advanced \(optional\)/i)
+    const details = summary.closest('details') as HTMLDetailsElement
+    expect(details).toBeTruthy()
+    expect(details.open).toBe(false)
+
+    // Optional fields exist in the DOM but are hidden inside the closed
+    // <details> — the default view shows only the three emailed keys.
+    expect(screen.getByPlaceholderText('sub_...')).not.toBeVisible()
+    expect(screen.getByPlaceholderText('server-name')).not.toBeVisible()
+
+    // Opening the disclosure reveals them.
+    details.open = true
+    expect(screen.getByPlaceholderText('sub_...')).toBeVisible()
+    expect(screen.getByPlaceholderText('server-name')).toBeVisible()
   })
 
   it('renders cancel banner when ?checkout=cancel is in the URL', async () => {
