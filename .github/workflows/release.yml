@@ -187,6 +187,11 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          # Link every published package to THIS (public) repo. Without it, ghcr
+          # falls back to the renamed-to-private vectis-archive, surfacing its
+          # "do not make public" README + a stale contributor on the package page.
+          labels: |
+            org.opencontainers.image.source=https://github.com/Veltara-Works/vectis
           build-args: |
             VERSION=${{ needs.build-binary.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.service }}
