@@ -39,7 +39,7 @@ describe('LicensePage — in-product Buy Pro flow (v0.1.14)', () => {
   it('renders primary "Subscribe to Vectis Mail Pro" CTA in Free tier', async () => {
     renderAt('/admin/license')
     expect(await screen.findByRole('button', {
-      name: /Subscribe to Vectis Mail Pro.*\$29 USD\/mo/i,
+      name: /Subscribe to Vectis Mail Pro.*\$39 USD\/mo/i,
     })).toBeInTheDocument()
   })
 
