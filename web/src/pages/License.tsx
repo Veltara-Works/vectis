@@ -19,6 +19,12 @@ interface LicenseState {
   grace_remaining_days?: number
 }
 
+// Displayed Pro price — single source of truth for this page. $29 matches the
+// current live Stripe price and vectismail.com. Strategy moves Pro to $39
+// later (marketing rebuild #5); flip this once Vx/Stripe + the marketing site
+// change together so all three stay consistent.
+const PRO_PRICE = '$29 USD'
+
 export default function LicensePage() {
   const [searchParams] = useSearchParams()
   // Set by /admin/license?checkout=success|cancel — Stripe Checkout redirects
@@ -65,6 +71,13 @@ export default function LicensePage() {
   }
 
   useEffect(() => { load() }, [])
+
+  // Returning from a successful Stripe checkout: open the activation form
+  // straight away so the "paste them below" banner has something below it —
+  // one less click between paying and pasting the emailed credentials.
+  useEffect(() => {
+    if (checkoutStatus === 'success') setShowForm(true)
+  }, [checkoutStatus])
 
   const handleActivate = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -150,8 +163,8 @@ export default function LicensePage() {
     <div>
       <h2 className="page-title">License</h2>
 
-      {error && <div className="alert alert-error">{error}</div>}
-      {success && <div className="alert alert-success">{success}</div>}
+      {error && <div className="alert alert-error" role="alert">{error}</div>}
+      {success && <div className="alert alert-success" role="status">{success}</div>}
 
       <div className="card">
         <h3 className="mb-1">Current tier</h3>
@@ -218,14 +231,14 @@ export default function LicensePage() {
               priority support) are not available.
             </p>
             <p className="text-muted">
-              Subscribe to Vectis Mail Pro for $29 USD/month to unlock Pro
+              Subscribe to Vectis Mail Pro for {PRO_PRICE}/month to unlock Pro
               features. Checkout runs securely on Stripe; after payment your
               activation credentials are emailed to you — paste them on this
               page and Pro features unlock immediately, no restart required.
             </p>
             <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem', flexWrap: 'wrap' }}>
-              <button className="btn" onClick={handleStartCheckout} disabled={upgrading}>
-                {upgrading ? 'Starting checkout...' : 'Subscribe to Vectis Mail Pro — $29 USD/mo'}
+              <button className="btn" onClick={handleStartCheckout} disabled={upgrading} aria-busy={upgrading}>
+                {upgrading ? 'Starting checkout...' : `Subscribe to Vectis Mail Pro — ${PRO_PRICE}/mo`}
               </button>
               {!showForm && (
                 <button className="btn btn-sm" onClick={() => setShowForm(true)} disabled={upgrading}>
@@ -239,86 +252,115 @@ export default function LicensePage() {
 
       {showForm && (
         <div className="card">
-          <h3 className="mb-1">Activate license</h3>
+          <h3 className="mb-1">Activate Pro</h3>
           <p className="text-muted mb-1">
-            Paste your License Key and Service Key from the ValidonX
-            dashboard. Empty fields use values from{' '}
-            <span className="mono">secrets.yaml</span> if present.
+            Paste the three keys from your <strong>activation email</strong>{' '}
+            (sent the moment checkout completes). They're also in your ValidonX
+            dashboard if you need them again. Pro unlocks immediately — no
+            restart.
           </p>
           <form onSubmit={handleActivate} autoComplete="off">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <label>
-                <div>License Key <span className="text-muted">(required, from ValidonX → Licenses tab; the "Subscription License" string)</span></div>
+            <div className="form-group">
+              <label htmlFor="license_key">License Key <span className="text-muted">(required)</span></label>
+              <input
+                id="license_key"
+                name="vectis_license_key"
+                value={form.license_key}
+                onChange={e => setForm({ ...form, license_key: e.target.value })}
+                placeholder="VLDX-..."
+                aria-describedby="license_key_hint"
+                aria-required="true"
+                autoComplete="off"
+                required
+              />
+              <div id="license_key_hint" className="field-hint">Labelled "License Key" in your email · ValidonX &rarr; Licenses ("Subscription License").</div>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="service_key">Service Key <span className="text-muted">(required)</span></label>
+              <input
+                id="service_key"
+                name="vectis_service_key"
+                value={form.service_key}
+                onChange={e => setForm({ ...form, service_key: e.target.value })}
+                placeholder="vx_..."
+                type="password"
+                aria-describedby="service_key_hint"
+                aria-required="true"
+                autoComplete="off"
+                required
+              />
+              <div id="service_key_hint" className="field-hint">Labelled "Service Key" in your email · ValidonX &rarr; API Keys.</div>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="tenant_id">Tenant ID <span className="text-muted">(required)</span></label>
+              <input
+                id="tenant_id"
+                name="vectis_tenant_id"
+                value={form.tenant_id}
+                onChange={e => setForm({ ...form, tenant_id: e.target.value })}
+                placeholder="your-tenant-code"
+                aria-describedby="tenant_id_hint"
+                aria-required="true"
+                autoComplete="off"
+                required
+              />
+              <div id="tenant_id_hint" className="field-hint">Labelled "Tenant ID" in your email · ValidonX &rarr; Overview (tenant code).</div>
+            </div>
+
+            <details className="advanced-fields">
+              <summary>Advanced (optional)</summary>
+              <p className="field-hint mb-1">
+                Most installs can leave these blank. Empty fields fall back to{' '}
+                <span className="mono">secrets.yaml</span> if present.
+              </p>
+              <div className="form-group">
+                <label htmlFor="subscription_id">Subscription ID</label>
                 <input
-                  name="vectis_license_key"
-                  value={form.license_key}
-                  onChange={e => setForm({ ...form, license_key: e.target.value })}
-                  placeholder="VLDX-..."
-                  autoComplete="off"
-                  required
-                />
-              </label>
-              <label>
-                <div>Service Key <span className="text-muted">(required, from ValidonX → API Keys tab)</span></div>
-                <input
-                  name="vectis_service_key"
-                  value={form.service_key}
-                  onChange={e => setForm({ ...form, service_key: e.target.value })}
-                  placeholder="vx_..."
-                  autoComplete="off"
-                  type="password"
-                  required
-                />
-              </label>
-              <label>
-                <div>Tenant ID <span className="text-muted">(required, from ValidonX → Overview tab; tenant code)</span></div>
-                <input
-                  name="vectis_tenant_id"
-                  value={form.tenant_id}
-                  onChange={e => setForm({ ...form, tenant_id: e.target.value })}
-                  placeholder="your-tenant-code"
-                  autoComplete="off"
-                  required
-                />
-              </label>
-              <label>
-                <div>Subscription ID <span className="text-muted">(optional, audit/display only)</span></div>
-                <input
+                  id="subscription_id"
                   name="vectis_subscription_id"
                   value={form.subscription_id}
                   onChange={e => setForm({ ...form, subscription_id: e.target.value })}
                   placeholder="sub_..."
+                  aria-describedby="subscription_id_hint"
                   autoComplete="off"
                 />
-              </label>
-              <label>
-                <div>Base URL <span className="text-muted">(optional, defaults to https://api.validonx.com)</span></div>
+                <div id="subscription_id_hint" className="field-hint">Audit/display only.</div>
+              </div>
+              <div className="form-group">
+                <label htmlFor="base_url">Base URL</label>
                 <input
+                  id="base_url"
                   name="vectis_base_url"
                   value={form.base_url}
                   onChange={e => setForm({ ...form, base_url: e.target.value })}
                   placeholder="https://api.validonx.com"
+                  aria-describedby="base_url_hint"
                   autoComplete="off"
                 />
-              </label>
-              <label>
-                <div>Server ID <span className="text-muted">(optional)</span></div>
+                <div id="base_url_hint" className="field-hint">Defaults to https://api.validonx.com.</div>
+              </div>
+              <div className="form-group">
+                <label htmlFor="server_id">Server ID</label>
                 <input
+                  id="server_id"
                   name="vectis_server_id"
                   value={form.server_id}
                   onChange={e => setForm({ ...form, server_id: e.target.value })}
                   placeholder="server-name"
                   autoComplete="off"
                 />
-              </label>
-              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
-                <button type="submit" className="btn" disabled={submitting}>
-                  {submitting ? 'Validating with ValidonX...' : 'Activate'}
-                </button>
-                <button type="button" className="btn" onClick={() => setShowForm(false)} disabled={submitting}>
-                  Cancel
-                </button>
               </div>
+            </details>
+
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+              <button type="submit" className="btn" disabled={submitting} aria-busy={submitting}>
+                {submitting ? 'Validating with ValidonX...' : 'Activate Pro'}
+              </button>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowForm(false)} disabled={submitting}>
+                Cancel
+              </button>
             </div>
           </form>
         </div>

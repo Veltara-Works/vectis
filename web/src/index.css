@@ -161,8 +161,24 @@ th { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; fon
 .btn:hover { background: var(--primary-hover); }
 .btn-sm { padding: 0.3rem 0.7rem; font-size: 0.8rem; }
 .btn-danger { background: var(--danger); }
+.btn-secondary { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
+.btn-secondary:hover { background: var(--bg-input); color: var(--text); }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .form-group { margin-bottom: 1rem; }
+/* Per-field helper text under an input (where to find the value, defaults). */
+.field-hint { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.3rem; line-height: 1.4; }
+/* Collapsible "Advanced (optional)" block in the license activation form. */
+.advanced-fields { margin: 0.25rem 0 1rem; }
+.advanced-fields > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  padding: 0.35rem 0;
+  user-select: none;
+}
+.advanced-fields > summary:hover { color: var(--text); }
+.advanced-fields[open] > summary { margin-bottom: 0.5rem; }
 .form-group label { display: block; margin-bottom: 0.3rem; font-size: 0.85rem; color: var(--text-muted); }
 .form-group input, .form-group select {
   width: 100%;

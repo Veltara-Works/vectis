@@ -72,6 +72,25 @@ describe('LicensePage — in-product Buy Pro flow (v0.1.14)', () => {
       .toBeInTheDocument()
   })
 
+  it('auto-opens the paste-credentials form when returning from a successful checkout', async () => {
+    // ?checkout=success means the buyer just paid and their credentials are in
+    // their inbox — the activation form should already be visible so the
+    // "paste them below" banner has something below it (no extra click).
+    renderAt('/admin/license?checkout=success')
+    expect(await screen.findByPlaceholderText('VLDX-...')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('vx_...')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('your-tenant-code')).toBeInTheDocument()
+  })
+
+  it('keeps the optional fields behind an "Advanced (optional)" disclosure', async () => {
+    renderAt('/admin/license')
+    fireEvent.click(await screen.findByRole('button', { name: /Already purchased\? Paste credentials/i }))
+    await screen.findByPlaceholderText('VLDX-...')
+    // The three required keys are surfaced directly; the rest live under a
+    // collapsible <summary> so the default view matches the activation email.
+    expect(screen.getByText(/Advanced \(optional\)/i)).toBeInTheDocument()
+  })
+
   it('renders cancel banner when ?checkout=cancel is in the URL', async () => {
     renderAt('/admin/license?checkout=cancel')
     await waitFor(() => {
