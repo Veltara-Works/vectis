@@ -35,6 +35,9 @@ desktop.ini
 # Claude Code local config
 .claude/
 
+# Marketing-skill context (pricing/tier strategy + partner internals — keep private)
+.agents/
+
 # Playwright MCP scratch dir
 .playwright-mcp/
 
