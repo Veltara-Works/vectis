@@ -23,7 +23,7 @@ interface LicenseState {
 // current live Stripe price and vectismail.com. Strategy moves Pro to $39
 // later (marketing rebuild #5); flip this once Vx/Stripe + the marketing site
 // change together so all three stay consistent.
-const PRO_PRICE = '$29 USD'
+const PRO_PRICE = '$39 USD'
 
 export default function LicensePage() {
   const [searchParams] = useSearchParams()
