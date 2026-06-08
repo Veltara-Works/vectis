@@ -21,6 +21,14 @@ body {
   line-height: 1.6;
 }
 
+/* Content links. The dark theme made browser-default visited links (purple)
+   fail WCAG contrast against --bg, so set an explicit, legible visited colour.
+   Chrome links (.sidebar a, .account-menu-item) pin their own colour for every
+   state below so this base rule never bleeds into the nav/menu. */
+a { color: var(--primary); }
+a:hover { color: var(--primary-hover); }
+a:visited { color: #c4b5fd; } /* violet-300 — high contrast on --bg, still reads as "visited" */
+
 .app { display: flex; min-height: 100vh; }
 
 .sidebar {
@@ -39,7 +47,7 @@ body {
   margin-bottom: 1rem;
 }
 
-.sidebar a {
+.sidebar a, .sidebar a:visited {
   display: block;
   padding: 0.5rem 1.25rem;
   color: var(--text-muted);
@@ -102,7 +110,8 @@ body {
 .account-menu-label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .account-menu-email { font-size: 0.875rem; color: var(--text); word-break: break-all; }
 .account-menu-role { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.15rem; }
-.account-menu-item {
+.account-menu-tier { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.4rem; display: flex; align-items: center; gap: 0.35rem; }
+.account-menu-item, .account-menu-item:visited {
   display: block;
   width: 100%;
   text-align: left;
@@ -146,6 +155,9 @@ th { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; fon
 .badge-warning { background: rgba(234,179,8,0.15); color: var(--warning); }
 .badge-danger { background: rgba(239,68,68,0.15); color: var(--danger); }
 .badge-muted { background: rgba(148,163,184,0.15); color: var(--text-muted); }
+/* Tier badge (FREE/PRO/ENTERPRISE) — the primary entitlement indicator, sized
+   up from the default .badge so it's legible at a glance on License + account menu. */
+.badge-tier { font-size: 0.9rem; padding: 0.2rem 0.6rem; letter-spacing: 0.03em; }
 
 .btn {
   display: inline-block;

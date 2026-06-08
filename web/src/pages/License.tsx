@@ -19,10 +19,9 @@ interface LicenseState {
   grace_remaining_days?: number
 }
 
-// Displayed Pro price — single source of truth for this page. $29 matches the
-// current live Stripe price and vectismail.com. Strategy moves Pro to $39
-// later (marketing rebuild #5); flip this once Vx/Stripe + the marketing site
-// change together so all three stay consistent.
+// Displayed Pro price — single source of truth for this page. $39 is the live
+// Stripe price and matches vectismail.com (flipped $29 → $39 together across
+// Vx/Stripe + marketing in 2026-06). Keep all three in lockstep on any change.
 const PRO_PRICE = '$39 USD'
 
 export default function LicensePage() {
@@ -152,9 +151,11 @@ export default function LicensePage() {
   }
 
   const tierBadgeClass = (tier?: string) => {
-    if (tier === 'enterprise') return 'badge badge-success'
-    if (tier === 'pro') return 'badge badge-success'
-    return 'badge'
+    // badge-tier sizes up the primary entitlement indicator so FREE/PRO/
+    // ENTERPRISE reads at a glance (was too small at the default .badge size).
+    if (tier === 'enterprise') return 'badge badge-tier badge-success'
+    if (tier === 'pro') return 'badge badge-tier badge-success'
+    return 'badge badge-tier'
   }
 
   if (loading) return <div><h2 className="page-title">License</h2><p className="text-muted">Loading...</p></div>
@@ -349,8 +350,10 @@ export default function LicensePage() {
                   value={form.server_id}
                   onChange={e => setForm({ ...form, server_id: e.target.value })}
                   placeholder="server-name"
+                  aria-describedby="server_id_hint"
                   autoComplete="off"
                 />
+                <div id="server_id_hint" className="field-hint">Optional label that identifies this install in your ValidonX dashboard and telemetry (e.g. "mail-prod-syd"). Audit/display only — leave blank if unsure.</div>
               </div>
             </details>
 

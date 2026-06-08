@@ -178,9 +178,10 @@ function AccountMenu({ email, role, tier, features, onLogout }: { email: string;
   }, [open])
   // Priority Support is gated by the priority_support feature flag on the
   // active license (Pro+ only). Free tier sees a community-support link
-  // pointing to the public docs + GitHub Discussions instead — never a dead
-  // end. Server is the source of truth: it sends the features array via
-  // /auth/me, the UI just renders accordingly.
+  // pointing to the public docs (getting-started) instead — never a dead
+  // end, and no moderated channel to staff pre-launch. Server is the source
+  // of truth: it sends the features array via /auth/me, the UI just renders
+  // accordingly.
   const hasPrioritySupport = features.includes('priority_support')
   return (
     <div className="account-menu" onClick={e => e.stopPropagation()}>
@@ -194,14 +195,14 @@ function AccountMenu({ email, role, tier, features, onLogout }: { email: string;
             <div className="account-menu-label">Signed in as</div>
             <div className="account-menu-email">{email}</div>
             {role && <div className="account-menu-role">{role}</div>}
-            {tier && <div className="account-menu-tier">{tier.toUpperCase()} tier</div>}
+            {tier && <div className="account-menu-tier"><span className="badge badge-tier">{tier.toUpperCase()}</span> tier</div>}
           </div>
           {hasPrioritySupport ? (
             <a className="account-menu-item" role="menuitem" href="mailto:support@vectismail.com?subject=Vectis%20Pro%20support%20request" onClick={() => setOpen(false)}>
               Priority support →
             </a>
           ) : (
-            <a className="account-menu-item" role="menuitem" href="https://vectismail.com/docs" target="_blank" rel="noopener noreferrer" onClick={() => setOpen(false)}>
+            <a className="account-menu-item" role="menuitem" href="https://vectismail.com/getting-started/" target="_blank" rel="noopener noreferrer" onClick={() => setOpen(false)}>
               Community support →
             </a>
           )}
