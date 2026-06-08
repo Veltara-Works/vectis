@@ -82,6 +82,13 @@ protocol sieve {
 
 plugin {
     sieve = file:~/sieve;active=~/.dovecot.sieve
+{{- if .Rspamd.SpamToJunkEnabled }}
+    # Global spam-filing script, applied before any per-user sieve: files
+    # rspamd-tagged spam (X-Spam: Yes) into Junk so it never lands in INBOX.
+    # Opt out with rspamd.file_spam_to_junk: false. The Junk mailbox is
+    # auto-subscribed (\Junk special-use) in the namespace inbox block below.
+    sieve_before = /etc/dovecot/sieve/spam-to-junk.sieve
+{{- end }}
     sieve_max_script_size = 1M
     sieve_max_actions = 32
     sieve_max_redirects = 4

@@ -16,11 +16,11 @@ func testData() *TemplateData {
 		TLS:       config.TLSConfig{Provider: "letsencrypt", Email: "admin@example.com"},
 		Resources: resolveResourceKnobs("small"),
 		ClamAV:    resolveClamAVKnobs("none"),
-		Rspamd:   config.RspamdConfig{SpamThreshold: 15.0, RejectThreshold: 999, GreylistEnabled: false},
-		Postfix:  config.PostfixConfig{MessageSizeLimit: 52428800, SmtpBanner: "$myhostname ESMTP"},
-		Dovecot:  config.DovecotConfig{MailLocation: "maildir:/var/vectis/mail/%d/%n/Maildir", QuotaDefaultMB: 1024},
-		Logging:  config.LoggingConfig{Level: "info", Driver: "json-file", MaxSizeMB: 50, MaxFiles: 5},
-		Admin:    config.AdminConfig{ListenAddr: ":8080", SessionTTLHours: 24},
+		Rspamd:    config.RspamdConfig{SpamThreshold: 15.0, RejectThreshold: 999, GreylistEnabled: false},
+		Postfix:   config.PostfixConfig{MessageSizeLimit: 52428800, SmtpBanner: "$myhostname ESMTP"},
+		Dovecot:   config.DovecotConfig{MailLocation: "maildir:/var/vectis/mail/%d/%n/Maildir", QuotaDefaultMB: 1024},
+		Logging:   config.LoggingConfig{Level: "info", Driver: "json-file", MaxSizeMB: 50, MaxFiles: 5},
+		Admin:     config.AdminConfig{ListenAddr: ":8080", SessionTTLHours: 24},
 		Database: config.DatabaseSecrets{Host: "postgres", Port: 5432, Name: "vectis",
 			SuperuserPassword: "secret_super",
 			APIUser:           "vectis_api", APIPassword: "secret_api",
@@ -440,6 +440,8 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 		// Dovecot auth + SQL lookup.
 		`/var/vectis/generated/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro`,
 		`/var/vectis/generated/dovecot/dovecot-sql.conf.ext:/etc/dovecot/dovecot-sql.conf.ext:ro`,
+		// Dovecot global spam->Junk sieve (always mounted; see TestSpamToJunk*).
+		`/var/vectis/generated/dovecot/spam-to-junk.sieve:/etc/dovecot/sieve/spam-to-junk.sieve:ro`,
 		// Rspamd scoring + DKIM signing.
 		`/var/vectis/generated/rspamd/dkim_signing.conf:/etc/rspamd/local.d/dkim_signing.conf:ro`,
 		`/var/vectis/generated/rspamd/milter_headers.conf:/etc/rspamd/local.d/milter_headers.conf:ro`,
@@ -817,9 +819,9 @@ func TestWriteAndDiff(t *testing.T) {
 
 func TestDetermineActions(t *testing.T) {
 	tests := []struct {
-		name    string
-		diffs   []FileDiff
-		expect  map[string]string
+		name   string
+		diffs  []FileDiff
+		expect map[string]string
 	}{
 		{
 			name:   "postfix main.cf → reload",
@@ -946,5 +948,55 @@ func TestComposeMemLimitsRendered(t *testing.T) {
 	// service's template references an unresolved knob).
 	if strings.Contains(compose, "mem_limit: \n") || strings.Contains(compose, "mem_limit:\n") {
 		t.Error("compose has an empty mem_limit — a template references an unresolved ResourceKnobs field")
+	}
+}
+
+// TestSpamToJunkSieve verifies the global spam->Junk filing feature
+// (rspamd.file_spam_to_junk). When enabled (the default, nil pointer),
+// dovecot.conf wires the sieve_before script, the milter_headers use-list adds
+// the spam-header routine, and the sieve script renders; when explicitly
+// disabled, none of those wire up (but the sieve file is still rendered, since
+// the compose mount is unconditional).
+func TestSpamToJunkSieve(t *testing.T) {
+	get := func(files []GeneratedFile, relPath string) string {
+		for _, f := range files {
+			if f.RelPath == relPath {
+				return string(f.Content)
+			}
+		}
+		return ""
+	}
+
+	// Default (FileSpamToJunk nil) — feature ON.
+	on, err := Generate(testData())
+	if err != nil {
+		t.Fatalf("Generate (default): %v", err)
+	}
+	if !strings.Contains(get(on, "dovecot/dovecot.conf"), "sieve_before = /etc/dovecot/sieve/spam-to-junk.sieve") {
+		t.Error("default: dovecot.conf missing sieve_before wiring")
+	}
+	if !strings.Contains(get(on, "rspamd/milter_headers.conf"), `"spam-header"`) {
+		t.Error("default: milter_headers.conf missing spam-header routine")
+	}
+	if sieve := get(on, "dovecot/spam-to-junk.sieve"); !strings.Contains(sieve, `fileinto :create "Junk"`) {
+		t.Errorf("default: spam-to-junk.sieve missing fileinto rule; got:\n%s", sieve)
+	}
+
+	// Explicitly disabled — feature OFF.
+	off := false
+	d := testData()
+	d.Rspamd.FileSpamToJunk = &off
+	gen, err := Generate(d)
+	if err != nil {
+		t.Fatalf("Generate (disabled): %v", err)
+	}
+	if strings.Contains(get(gen, "dovecot/dovecot.conf"), "sieve_before") {
+		t.Error("disabled: dovecot.conf still wires sieve_before")
+	}
+	if strings.Contains(get(gen, "rspamd/milter_headers.conf"), `"spam-header"`) {
+		t.Error("disabled: milter_headers.conf still adds spam-header")
+	}
+	if get(gen, "dovecot/spam-to-junk.sieve") == "" {
+		t.Error("disabled: spam-to-junk.sieve should still be generated (mount is unconditional)")
 	}
 }
