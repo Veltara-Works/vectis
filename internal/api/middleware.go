@@ -183,6 +183,13 @@ func (s *Server) authenticateAPIKey(w http.ResponseWriter, r *http.Request, next
 		return
 	}
 
+	// Enforce the per-key requests/minute budget (api_keys.rate_limit) before
+	// any work. Placed ahead of TouchLastUsed so a 429 flood doesn't spam
+	// last_used updates. Fail-open on limiter errors.
+	if !s.enforceAPIKeyRateLimit(w, r, apiKey) {
+		return
+	}
+
 	// Touch last_used_at (fire-and-forget).
 	go s.apiKeys.TouchLastUsed(context.Background(), apiKey.ID)
 
