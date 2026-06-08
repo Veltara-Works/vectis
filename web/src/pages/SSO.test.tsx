@@ -59,13 +59,26 @@ describe('SSOPage', () => {
     })
   })
 
-  it('shows the upsell empty-state when no SAML providers are enabled', async () => {
+  it('shows the configure-providers empty-state when entitled but none configured', async () => {
+    // Default profile is Enterprise-entitled (features include saml_sso).
     mockApi.samlProviders.mockResolvedValue([])
 
     render(<SSOPage />)
     await waitFor(() =>
-      expect(screen.getByText(/No SAML providers are enabled/i)).toBeInTheDocument()
+      expect(screen.getByText(/No SAML providers are configured yet/i)).toBeInTheDocument()
     )
+    expect(screen.queryByText(/Enterprise feature/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the Enterprise upsell empty-state when not entitled', async () => {
+    mockApi.me.mockResolvedValue(profile({ tier: 'free', features: [] }))
+    mockApi.samlProviders.mockResolvedValue([])
+
+    render(<SSOPage />)
+    await waitFor(() =>
+      expect(screen.getByText(/SAML 2\.0 SSO is an Enterprise feature/i)).toBeInTheDocument()
+    )
+    expect(screen.getByRole('link', { name: 'View plans' })).toBeInTheDocument()
   })
 
   it('hides the SP metadata section from non-super_admins', async () => {

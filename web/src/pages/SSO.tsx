@@ -27,6 +27,10 @@ export default function SSOPage() {
   useEffect(() => { load() }, [])
 
   const isSuperAdmin = me?.role === 'super_admin'
+  // Entitlement, not provider count, decides the empty-state copy: an entitled
+  // install with no providers yet needs "configure providers", whereas a
+  // non-entitled install needs the upsell. samlProviders is [] in both cases.
+  const samlEntitled = (me?.features ?? []).includes('saml_sso')
 
   const handleDisconnectSAML = async () => {
     if (!confirm('Disconnect SAML from your account? You will sign in with your password (and TOTP, if enabled) afterwards.')) return
@@ -100,10 +104,16 @@ export default function SSOPage() {
             <a href="https://vectismail.com/docs/" target="_blank" rel="noopener noreferrer">SAML setup guide</a>.
           </p>
           {samlProviders.length === 0 ? (
-            <p className="text-muted">
-              No SAML providers are enabled. SAML 2.0 SSO is an Enterprise feature — configure providers in the
-              install's SAML secrets, then they appear here. <a href="https://vectismail.com/pricing" target="_blank" rel="noopener noreferrer">View plans</a>.
-            </p>
+            samlEntitled ? (
+              <p className="text-muted">
+                No SAML providers are configured yet. Add providers under the install's SAML
+                secrets (see the setup guide above) and run <span className="mono">vectis config apply</span> — they will appear here.
+              </p>
+            ) : (
+              <p className="text-muted">
+                SAML 2.0 SSO is an Enterprise feature. <a href="https://vectismail.com/pricing" target="_blank" rel="noopener noreferrer">View plans</a> to enable it, then configure your providers.
+              </p>
+            )
           ) : (
             <table>
               <thead>
