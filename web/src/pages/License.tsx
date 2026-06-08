@@ -155,7 +155,7 @@ export default function LicensePage() {
     // ENTERPRISE reads at a glance (was too small at the default .badge size).
     if (tier === 'enterprise') return 'badge badge-tier badge-success'
     if (tier === 'pro') return 'badge badge-tier badge-success'
-    return 'badge badge-tier'
+    return 'badge badge-tier badge-muted'
   }
 
   if (loading) return <div><h2 className="page-title">License</h2><p className="text-muted">Loading...</p></div>

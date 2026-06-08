@@ -183,6 +183,10 @@ function AccountMenu({ email, role, tier, features, onLogout }: { email: string;
   // of truth: it sends the features array via /auth/me, the UI just renders
   // accordingly.
   const hasPrioritySupport = features.includes('priority_support')
+  // Colour the tier pill the same way the License page does: Pro/Enterprise
+  // read as "active" (success), Free as muted — so the badge is a real pill,
+  // not colourless text. Keep in sync with tierBadgeClass in pages/License.tsx.
+  const tierBadgeColour = tier === 'pro' || tier === 'enterprise' ? 'badge-success' : 'badge-muted'
   return (
     <div className="account-menu" onClick={e => e.stopPropagation()}>
       <button className="account-menu-trigger" onClick={() => setOpen(o => !o)} aria-haspopup="menu" aria-expanded={open}>
@@ -195,7 +199,7 @@ function AccountMenu({ email, role, tier, features, onLogout }: { email: string;
             <div className="account-menu-label">Signed in as</div>
             <div className="account-menu-email">{email}</div>
             {role && <div className="account-menu-role">{role}</div>}
-            {tier && <div className="account-menu-tier"><span className="badge badge-tier">{tier.toUpperCase()}</span> tier</div>}
+            {tier && <div className="account-menu-tier"><span className={`badge badge-tier ${tierBadgeColour}`}>{tier.toUpperCase()}</span> tier</div>}
           </div>
           {hasPrioritySupport ? (
             <a className="account-menu-item" role="menuitem" href="mailto:support@vectismail.com?subject=Vectis%20Pro%20support%20request" onClick={() => setOpen(false)}>
