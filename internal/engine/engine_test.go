@@ -978,6 +978,18 @@ func TestSpamToJunkSieve(t *testing.T) {
 	if !strings.Contains(get(on, "rspamd/milter_headers.conf"), `"spam-header"`) {
 		t.Error("default: milter_headers.conf missing spam-header routine")
 	}
+	// Whitespace guard (Copilot review on PR #9): the {{- if }} trimming must
+	// NOT fold "spam-header" onto the preceding inline-comment line — if it did,
+	// rspamd would read it as commented-out and the array would lose the entry.
+	// Assert the exact line break: comment line, newline, then its own element.
+	if !strings.Contains(get(on, "rspamd/milter_headers.conf"), "visual.\n    \"spam-header\",") {
+		t.Errorf("default: spam-header not on its own line (template trimming bug); got:\n%s", get(on, "rspamd/milter_headers.conf"))
+	}
+	// Same guard for dovecot: the comment/sieve_before block must start on a new
+	// line after the per-user `sieve = ...` setting, not be folded onto it.
+	if !strings.Contains(get(on, "dovecot/dovecot.conf"), "active=~/.dovecot.sieve\n    # Global spam-filing") {
+		t.Errorf("default: sieve_before block folded onto the sieve= line (template trimming bug); got dovecot.conf plugin section")
+	}
 	if sieve := get(on, "dovecot/spam-to-junk.sieve"); !strings.Contains(sieve, `fileinto :create "Junk"`) {
 		t.Errorf("default: spam-to-junk.sieve missing fileinto rule; got:\n%s", sieve)
 	}
