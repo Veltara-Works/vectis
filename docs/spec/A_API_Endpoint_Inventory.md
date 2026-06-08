@@ -55,6 +55,10 @@ Auth column legend used throughout: `none` = public; `session` = signed admin se
 | GET | /api/v1/auth/oidc/providers | List enabled OIDC providers (suppressed to `[]` on Free) | none |
 | GET | /api/v1/auth/oidc/login/{provider} | Begin OIDC SSO redirect | none, gated by `oidc_sso` (browser-friendly 402+HTML on Free) |
 | GET | /api/v1/auth/oidc/callback/{provider} | OIDC SSO callback | none, gated by `oidc_sso` |
+| GET | /api/v1/auth/saml/providers | List enabled SAML providers (suppressed to `[]` unless Enterprise) | none |
+| GET | /api/v1/auth/saml/metadata/{provider} | SP metadata XML for the IdP (no secrets) | none |
+| GET | /api/v1/auth/saml/login/{provider} | Begin SP-initiated SAML SSO redirect | none, gated by `saml_sso` (browser-friendly 402+HTML on non-Enterprise) |
+| POST | /api/v1/auth/saml/acs/{provider} | SAML Assertion Consumer Service (HTTP-POST binding) | none, gated by `saml_sso`; authenticity = signed assertion + RelayState |
 | POST | /api/v1/internal/inbound | Postfix → API inbound webhook delivery | localhost-only via socket |
 | GET | /api/v1/track/open/{token} | Open-tracking pixel | none |
 | GET | /api/v1/track/click/{token} | Click-tracking redirect | none |
@@ -74,6 +78,7 @@ Auth column legend used throughout: `none` = public; `session` = signed admin se
 | POST | /api/v1/auth/totp/verify | Confirm TOTP enrolment with first code | session |
 | DELETE | /api/v1/auth/totp | Remove TOTP (requires current TOTP code) | session |
 | DELETE | /api/v1/auth/oidc/disconnect | Unlink OIDC provider from admin | session |
+| POST | /api/v1/auth/saml/disconnect | Unlink SAML provider from admin (refused if no password set) | session |
 
 ### Login flow
 

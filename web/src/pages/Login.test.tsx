@@ -7,6 +7,7 @@ vi.mock('../api/client', () => ({
   api: {
     login: vi.fn(),
     oidcProviders: vi.fn().mockResolvedValue([]),
+    samlProviders: vi.fn().mockResolvedValue([]),
   },
 }))
 
@@ -16,6 +17,7 @@ const mockApi = vi.mocked(api)
 beforeEach(() => {
   vi.clearAllMocks()
   mockApi.oidcProviders.mockResolvedValue([])
+  mockApi.samlProviders.mockResolvedValue([])
 })
 
 describe('LoginPage', () => {
@@ -103,6 +105,18 @@ describe('LoginPage', () => {
     await waitFor(() => {
       expect(screen.getByText('Google')).toBeInTheDocument()
       expect(screen.getByText('Microsoft')).toBeInTheDocument()
+    })
+  })
+
+  it('shows SAML provider buttons linking to the SP-initiated login', async () => {
+    mockApi.samlProviders.mockResolvedValue(['okta'])
+
+    render(<LoginPage onLogin={() => {}} />)
+
+    await waitFor(() => {
+      const link = screen.getByRole('link', { name: 'okta' })
+      expect(link).toBeInTheDocument()
+      expect(link).toHaveAttribute('href', '/api/v1/auth/saml/login/okta')
     })
   })
 
