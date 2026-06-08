@@ -33,6 +33,7 @@ const (
 	FeatureCustomBranding  = "custom_branding"         // Pro: custom branding
 	FeatureAdvancedSpam    = "advanced_spam"           // Pro: advanced spam config
 	FeaturePrioritySupport = "priority_support"        // Pro: priority support
+	FeatureSAMLSSO         = "saml_sso"                // Enterprise: SAML 2.0 single sign-on
 	FeatureMultiTenant     = "multi_tenant"            // Enterprise: multi-tenant
 	FeatureDeliverability  = "advanced_deliverability" // Enterprise: advanced deliverability
 	FeatureSLA             = "sla"                     // Enterprise: SLA guarantees
@@ -61,6 +62,7 @@ var EnterpriseFeatures = []string{
 	FeatureCustomBranding,
 	FeatureAdvancedSpam,
 	FeaturePrioritySupport,
+	FeatureSAMLSSO,
 	FeatureMultiTenant,
 	FeatureDeliverability,
 	FeatureSLA,
@@ -190,7 +192,7 @@ func tierFromFeatures(features []string) string {
 	hasPro := false
 	for _, f := range features {
 		switch f {
-		case FeatureMultiTenant, FeatureDeliverability, FeatureSLA:
+		case FeatureSAMLSSO, FeatureMultiTenant, FeatureDeliverability, FeatureSLA:
 			hasEnterprise = true
 		case FeatureAnalytics, FeatureOIDCSSO, FeatureCustomBranding,
 			FeatureAdvancedSpam, FeaturePrioritySupport:

@@ -21,6 +21,8 @@ type Admin struct {
 	Role         string     `json:"role"`
 	OIDCProvider *string    `json:"oidc_provider,omitempty"`
 	OIDCSubject  *string    `json:"-"`
+	SAMLProvider *string    `json:"saml_provider,omitempty"`
+	SAMLSubject  *string    `json:"-"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
 }
@@ -41,6 +43,8 @@ type AdminUpdate struct {
 	Role         *string
 	OIDCProvider *string
 	OIDCSubject  *string
+	SAMLProvider *string
+	SAMLSubject  *string
 }
 
 // AdminRepo handles admin CRUD operations.
@@ -84,9 +88,9 @@ func (r *AdminRepo) Create(ctx context.Context, input AdminCreate) (*Admin, erro
 func (r *AdminRepo) GetByID(ctx context.Context, id string) (*Admin, error) {
 	a := &Admin{}
 	err := r.db.QueryRow(ctx,
-		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, created_at, last_login_at
+		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, saml_provider, saml_subject, created_at, last_login_at
 		 FROM admins WHERE id = $1`, id,
-	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.CreatedAt, &a.LastLoginAt)
+	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.SAMLProvider, &a.SAMLSubject, &a.CreatedAt, &a.LastLoginAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -100,9 +104,9 @@ func (r *AdminRepo) GetByID(ctx context.Context, id string) (*Admin, error) {
 func (r *AdminRepo) GetByEmail(ctx context.Context, email string) (*Admin, error) {
 	a := &Admin{}
 	err := r.db.QueryRow(ctx,
-		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, created_at, last_login_at
+		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, saml_provider, saml_subject, created_at, last_login_at
 		 FROM admins WHERE email = $1`, email,
-	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.CreatedAt, &a.LastLoginAt)
+	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.SAMLProvider, &a.SAMLSubject, &a.CreatedAt, &a.LastLoginAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -115,7 +119,7 @@ func (r *AdminRepo) GetByEmail(ctx context.Context, email string) (*Admin, error
 // List returns all admins.
 func (r *AdminRepo) List(ctx context.Context) ([]Admin, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, created_at, last_login_at
+		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, saml_provider, saml_subject, created_at, last_login_at
 		 FROM admins ORDER BY email`)
 	if err != nil {
 		return nil, fmt.Errorf("list admins: %w", err)
@@ -125,7 +129,7 @@ func (r *AdminRepo) List(ctx context.Context) ([]Admin, error) {
 	var admins []Admin
 	for rows.Next() {
 		var a Admin
-		if err := rows.Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.CreatedAt, &a.LastLoginAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.SAMLProvider, &a.SAMLSubject, &a.CreatedAt, &a.LastLoginAt); err != nil {
 			return nil, fmt.Errorf("scan admin: %w", err)
 		}
 		admins = append(admins, a)
@@ -174,6 +178,16 @@ func (r *AdminRepo) Update(ctx context.Context, id string, input AdminUpdate) (*
 		args = append(args, *input.OIDCSubject)
 		argIdx++
 	}
+	if input.SAMLProvider != nil {
+		setClauses = append(setClauses, fmt.Sprintf("saml_provider = $%d", argIdx))
+		args = append(args, *input.SAMLProvider)
+		argIdx++
+	}
+	if input.SAMLSubject != nil {
+		setClauses = append(setClauses, fmt.Sprintf("saml_subject = $%d", argIdx))
+		args = append(args, *input.SAMLSubject)
+		argIdx++
+	}
 
 	if len(setClauses) == 0 {
 		return r.GetByID(ctx, id)
@@ -217,9 +231,9 @@ func (r *AdminRepo) Delete(ctx context.Context, id string) (bool, error) {
 func (r *AdminRepo) GetByOIDC(ctx context.Context, provider, subject string) (*Admin, error) {
 	a := &Admin{}
 	err := r.db.QueryRow(ctx,
-		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, created_at, last_login_at
+		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, saml_provider, saml_subject, created_at, last_login_at
 		 FROM admins WHERE oidc_provider = $1 AND oidc_subject = $2`, provider, subject,
-	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.CreatedAt, &a.LastLoginAt)
+	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.SAMLProvider, &a.SAMLSubject, &a.CreatedAt, &a.LastLoginAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -246,6 +260,43 @@ func (r *AdminRepo) UnlinkOIDC(ctx context.Context, adminID string) error {
 		`UPDATE admins SET oidc_provider = NULL, oidc_subject = NULL WHERE id = $1`, adminID)
 	if err != nil {
 		return fmt.Errorf("unlink oidc: %w", err)
+	}
+	return nil
+}
+
+// GetBySAML fetches an admin by SAML provider and subject (NameID).
+func (r *AdminRepo) GetBySAML(ctx context.Context, provider, subject string) (*Admin, error) {
+	a := &Admin{}
+	err := r.db.QueryRow(ctx,
+		`SELECT id, email, password_hash, totp_secret, totp_enabled, role, oidc_provider, oidc_subject, saml_provider, saml_subject, created_at, last_login_at
+		 FROM admins WHERE saml_provider = $1 AND saml_subject = $2`, provider, subject,
+	).Scan(&a.ID, &a.Email, &a.PasswordHash, &a.TOTPSecret, &a.TOTPEnabled, &a.Role, &a.OIDCProvider, &a.OIDCSubject, &a.SAMLProvider, &a.SAMLSubject, &a.CreatedAt, &a.LastLoginAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get admin by saml: %w", err)
+	}
+	return a, nil
+}
+
+// LinkSAML sets the SAML provider and subject on an existing admin.
+func (r *AdminRepo) LinkSAML(ctx context.Context, adminID, provider, subject string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE admins SET saml_provider = $1, saml_subject = $2 WHERE id = $3`,
+		provider, subject, adminID)
+	if err != nil {
+		return fmt.Errorf("link saml: %w", err)
+	}
+	return nil
+}
+
+// UnlinkSAML clears the SAML provider and subject from an admin.
+func (r *AdminRepo) UnlinkSAML(ctx context.Context, adminID string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE admins SET saml_provider = NULL, saml_subject = NULL WHERE id = $1`, adminID)
+	if err != nil {
+		return fmt.Errorf("unlink saml: %w", err)
 	}
 	return nil
 }

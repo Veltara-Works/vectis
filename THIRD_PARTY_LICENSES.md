@@ -13,7 +13,7 @@ It covers three categories:
 3. **Container images** referenced by the deployment templates.
 
 All directly-compiled and bundled dependencies (categories 1 and 2) are under
-permissive licenses (MIT, BSD-3-Clause, Apache-2.0) — there is **no copyleft and
+permissive licenses (MIT, BSD-2-Clause, BSD-3-Clause, Apache-2.0) — there is **no copyleft and
 no unknown/unlicensed code linked into the Vectis binaries or the admin UI
 bundle**. The copyleft components in the stack (Roundcube, the optional Grafana
 observability profile, acme.sh) are independent upstream programs run in their
@@ -23,7 +23,10 @@ section for the analysis.
 > **How this file is generated.** Categories 1 and 2 are produced by tooling, not
 > by hand — see [Regenerating this file](#regenerating-this-file). Category 3 is
 > maintained manually and each entry was verified against the upstream license
-> file. Last generated **2026-05-29** (Go 1.25.10, `go-licenses` v1.6.0).
+> file. Last generated **2026-05-29** (Go 1.25.10, `go-licenses` v1.6.0);
+> incrementally updated **2026-06-08** for the Enterprise SAML SSO dependencies
+> (`crewjam/saml` + its compiled transitives), each license re-verified with
+> `go-licenses` v1.6.0.
 
 ---
 
@@ -35,17 +38,20 @@ unused graph dependencies are excluded). A few modules vendor a second component
 under its own license file (e.g. `go-jose/json`, the Prometheus internal `gddo`
 fork) and are listed separately to reflect that.
 
-**Summary:** 32 entries — 11 MIT, 11 BSD-3-Clause, 10 Apache-2.0.
+**Summary:** 38 entries — 12 MIT, 11 BSD-3-Clause, 13 Apache-2.0, 2 BSD-2-Clause.
 
 | Module / package | Version | License |
 |---|---|---|
+| `github.com/beevik/etree` | v1.6.0 | BSD-2-Clause |
 | `github.com/beorn7/perks/quantile` | v1.0.1 | MIT |
 | `github.com/boombuler/barcode` | 6c824513bacc | MIT |
 | `github.com/cespare/xxhash/v2` | v2.3.0 | MIT |
 | `github.com/coreos/go-oidc/v3/oidc` | v3.17.0 | Apache-2.0 |
+| `github.com/crewjam/saml` | v0.5.1 | BSD-2-Clause |
 | `github.com/go-chi/chi/v5` | v5.2.5 | MIT |
-| `github.com/go-jose/go-jose/v4` | v4.1.3 | Apache-2.0 |
-| `github.com/go-jose/go-jose/v4/json` | v4.1.3 | BSD-3-Clause |
+| `github.com/go-jose/go-jose/v4` | v4.1.4 | Apache-2.0 |
+| `github.com/go-jose/go-jose/v4/json` | v4.1.4 | BSD-3-Clause |
+| `github.com/golang-jwt/jwt/v4` | v4.5.2 | MIT |
 | `github.com/golang-migrate/migrate/v4` | v4.19.1 | MIT |
 | `github.com/google/uuid` | v1.6.0 | BSD-3-Clause |
 | `github.com/jackc/pgerrcode` | 469b46aa5efa | MIT |
@@ -53,6 +59,8 @@ fork) and are listed separately to reflect that.
 | `github.com/jackc/pgservicefile` | 5a60cdf6a761 | MIT |
 | `github.com/jackc/pgx/v5` | v5.9.2 | MIT |
 | `github.com/jackc/puddle/v2` | v2.2.2 | MIT |
+| `github.com/jonboulle/clockwork` | v0.5.0 | Apache-2.0 |
+| `github.com/mattermost/xml-roundtrip-validator` | v0.1.0 | Apache-2.0 |
 | `github.com/munnerz/goautoneg` | a7dc8b61c822 | BSD-3-Clause |
 | `github.com/pquerna/otp` | v1.5.0 | Apache-2.0 |
 | `github.com/prometheus/client_golang/internal/.../gddo/httputil` | v1.23.2 | BSD-3-Clause |
@@ -60,6 +68,7 @@ fork) and are listed separately to reflect that.
 | `github.com/prometheus/client_model/go` | v0.6.2 | Apache-2.0 |
 | `github.com/prometheus/common` | v0.66.1 | Apache-2.0 |
 | `github.com/prometheus/procfs` | v0.16.1 | Apache-2.0 |
+| `github.com/russellhaering/goxmldsig` | v1.6.0 | Apache-2.0 |
 | `github.com/spf13/cobra` | v1.9.1 | Apache-2.0 |
 | `github.com/spf13/pflag` | v1.0.6 | BSD-3-Clause |
 | `github.com/valkey-io/valkey-go` | v1.0.73 | Apache-2.0 |
