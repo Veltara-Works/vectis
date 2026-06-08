@@ -3,11 +3,13 @@ name: Trivy Image Scan
 # Container-image vulnerability scan (audit finding P2-M1).
 #
 # GATES ON CRITICAL: the SARIF + summary steps stay report-only (exit-code 0,
-# CRITICAL+HIGH) so the full picture still lands in the Security tab and run
-# summary, but a final gate step fails the build on any fixable CRITICAL. This
-# is stage one of the documented two-stage flip; stage two (also fail on HIGH)
-# is a one-line change to the gate step's `severity` once the HIGH baseline is
-# triaged.
+# CRITICAL+HIGH, fixable) so the fixable HIGH/CRITICAL picture still lands in the
+# Security tab and run summary, but a final gate step fails the build on any
+# fixable CRITICAL. This is stage one of the documented two-stage flip; stage
+# two (also fail on HIGH) is a one-line change to the gate step's `severity`
+# once the HIGH baseline is triaged. (All steps keep ignore-unfixed:true — we
+# don't fail or alert on a CVE with no available fix; drop it on the report
+# steps later if surfacing unfixable base-image CVEs becomes useful.)
 #
 # Each image is built from the current tree (not the published ghcr image) and
 # scanned, so the signal is "what would ship if we released this commit". The

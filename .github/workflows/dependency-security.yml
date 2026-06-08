@@ -8,7 +8,11 @@ name: Dependency Security
 on:
   push:
     branches: [main]
+    # Include **/*.go: a change that newly calls into an already-present
+    # vulnerable dependency symbol must re-run govulncheck even when the
+    # module graph (go.mod/go.sum) is unchanged.
     paths:
+      - '**/*.go'
       - 'go.mod'
       - 'go.sum'
       - 'web/package.json'
@@ -17,6 +21,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - '**/*.go'
       - 'go.mod'
       - 'go.sum'
       - 'web/package.json'
@@ -43,8 +48,10 @@ jobs:
 
       # Call-path aware: only flags advisories whose vulnerable symbols are
       # actually reachable from this module's code, so the signal is low-noise.
+      # Pinned (not @latest) for reproducible, supply-chain-safe gating;
+      # Dependabot's gomod updates will bump this in lockstep.
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
 
       - name: Run govulncheck
         run: govulncheck ./...
