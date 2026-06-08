@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -41,6 +42,37 @@ func TestNewScheduler(t *testing.T) {
 			t.Error("expected error for invalid schedule")
 		}
 	})
+}
+
+// TestSchedulerRunOnceUsesNilActor guards the v0.1.19 regression where scheduled
+// backups passed the sentinel string "scheduler" as the actor. backup_jobs
+// .triggered_by is a UUID FK to admins(id), so a non-UUID value fails the insert
+// ("invalid input syntax for type uuid") and silently kills every scheduled
+// backup. A system-triggered backup has no admin actor → triggered_by must be nil.
+func TestSchedulerRunOnceUsesNilActor(t *testing.T) {
+	mgr := NewManager(nil, quietLogger(), DefaultConfig())
+	s, err := NewScheduler(mgr, SchedulerConfig{Schedule: "0 2 * * *", RetainDays: 0}, quietLogger())
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+
+	called := false
+	sentinel := "set-by-test" // non-nil so "never called" is distinguishable from "passed nil"
+	gotTriggeredBy := &sentinel
+	s.createFn = func(_ context.Context, triggeredBy *string) (string, int64, error) {
+		called = true
+		gotTriggeredBy = triggeredBy
+		return "/var/vectis/backups/vectis-test.tar.gz.enc", 123, nil
+	}
+
+	s.RunOnce(context.Background())
+
+	if !called {
+		t.Fatal("RunOnce did not invoke the backup create function")
+	}
+	if gotTriggeredBy != nil {
+		t.Errorf("scheduled backup triggered_by = %q, want nil (NULL) — a non-UUID actor breaks the uuid insert", *gotTriggeredBy)
+	}
 }
 
 func TestSchedulerPruneOlderThan(t *testing.T) {
