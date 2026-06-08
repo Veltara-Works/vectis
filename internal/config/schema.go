@@ -243,6 +243,7 @@ type VectisSecrets struct {
 	Orchestrator OrchestratorSecrets `yaml:"orchestrator"`
 	DKIM         DKIMSecrets         `yaml:"dkim"`
 	OIDC         OIDCSecrets         `yaml:"oidc,omitempty"`
+	SAML         SAMLSecrets         `yaml:"saml,omitempty"`
 	Cloudflare   *CloudflareSecrets  `yaml:"cloudflare,omitempty"`
 	ValidonX     *ValidonXSecrets    `yaml:"validonx,omitempty"`
 }
@@ -332,6 +333,27 @@ type OIDCProviderConfig struct {
 	DiscoveryURL string   `yaml:"discovery_url"` // e.g. https://accounts.google.com
 	Scopes       []string `yaml:"scopes"`        // default: ["openid", "email", "profile"]
 	Enabled      bool     `yaml:"enabled"`
+}
+
+// SAMLSecrets holds the SAML 2.0 Service Provider keypair and per-provider
+// IdP configuration for Enterprise admin SSO. The SP keypair is shared across
+// all providers (one SP identity per install); generate it with
+// `vectis saml init-sp` or supply operator PEM.
+type SAMLSecrets struct {
+	SPEntityID    string `yaml:"sp_entity_id"`   // our SP entityID, e.g. https://mail.example.com/saml/metadata
+	SPPrivateKey  string `yaml:"sp_private_key"` // PEM-encoded RSA private key (signs AuthnRequests / decrypts)
+	SPCertificate string `yaml:"sp_certificate"` // PEM-encoded X.509 cert published in SP metadata
+
+	Providers map[string]SAMLProviderConfig `yaml:"providers"`
+}
+
+// SAMLProviderConfig holds the settings for a single SAML IdP. Supply the IdP
+// metadata either by URL (fetched at startup) or inline XML (air-gapped).
+type SAMLProviderConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	IDPMetadataURL string `yaml:"idp_metadata_url"`     // fetched at startup; preferred
+	IDPMetadataXML string `yaml:"idp_metadata_xml"`     // inline IdP metadata XML (air-gapped alternative)
+	EmailAttr      string `yaml:"email_attr,omitempty"` // attribute holding email if not in NameID; default "email"
 }
 
 // ValidonXSecrets holds credentials for the ValidonX licensing service.
