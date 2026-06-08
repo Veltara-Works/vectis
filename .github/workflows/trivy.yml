@@ -2,11 +2,12 @@ name: Trivy Image Scan
 
 # Container-image vulnerability scan (audit finding P2-M1).
 #
-# REPORT-ONLY for now: every Trivy step runs with exit-code 0, so this workflow
-# never fails a build or blocks a merge. Findings are published to the repo's
-# Security tab (code-scanning) via SARIF, and a per-image summary is written to
-# the run summary. Once the baseline is triaged we can flip the gate on in two
-# steps: first fail on CRITICAL, later on HIGH (change `exit-code` below).
+# GATES ON CRITICAL: the SARIF + summary steps stay report-only (exit-code 0,
+# CRITICAL+HIGH) so the full picture still lands in the Security tab and run
+# summary, but a final gate step fails the build on any fixable CRITICAL. This
+# is stage one of the documented two-stage flip; stage two (also fail on HIGH)
+# is a one-line change to the gate step's `severity` once the HIGH baseline is
+# triaged.
 #
 # Each image is built from the current tree (not the published ghcr image) and
 # scanned, so the signal is "what would ship if we released this commit". The
@@ -116,3 +117,17 @@ jobs:
             cat "trivy-${{ matrix.service }}.txt" 2>/dev/null || echo "(no report produced)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Gate: fail the build on any fixable CRITICAL. Runs last so the SARIF
+      # upload + run summary above (report-only) always complete first. To also
+      # gate on HIGH later, change `severity` to CRITICAL,HIGH.
+      - name: Trivy gate (fail on CRITICAL)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: vectis-${{ matrix.service }}:scan
+          scanners: vuln
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          exit-code: '1'        # gate — fixable CRITICAL fails the build
