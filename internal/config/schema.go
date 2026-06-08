@@ -6,32 +6,32 @@ package config
 
 // VectisConfig is the top-level configuration loaded from config.yaml.
 type VectisConfig struct {
-	Hostname     string              `yaml:"hostname"`
-	TLS          TLSConfig           `yaml:"tls"`
-	Resources    ResourceConfig      `yaml:"resources"`
-	ClamAV       ClamAVConfig        `yaml:"clamav"`
-	Rspamd       RspamdConfig        `yaml:"rspamd"`
-	Postfix      PostfixConfig       `yaml:"postfix"`
-	Dovecot      DovecotConfig       `yaml:"dovecot"`
-	Backup       BackupConfig        `yaml:"backup"`
-	Logging      LoggingConfig       `yaml:"logging"`
-	Admin        AdminConfig         `yaml:"admin"`
-	Orchestrator OrchestratorConfig  `yaml:"orchestrator"`
-	Alerts       AlertsConfig        `yaml:"alerts"`
-	Audit        AuditConfig         `yaml:"audit"`
-	Webmail      WebmailConfig       `yaml:"webmail"`
+	Hostname      string              `yaml:"hostname"`
+	TLS           TLSConfig           `yaml:"tls"`
+	Resources     ResourceConfig      `yaml:"resources"`
+	ClamAV        ClamAVConfig        `yaml:"clamav"`
+	Rspamd        RspamdConfig        `yaml:"rspamd"`
+	Postfix       PostfixConfig       `yaml:"postfix"`
+	Dovecot       DovecotConfig       `yaml:"dovecot"`
+	Backup        BackupConfig        `yaml:"backup"`
+	Logging       LoggingConfig       `yaml:"logging"`
+	Admin         AdminConfig         `yaml:"admin"`
+	Orchestrator  OrchestratorConfig  `yaml:"orchestrator"`
+	Alerts        AlertsConfig        `yaml:"alerts"`
+	Audit         AuditConfig         `yaml:"audit"`
+	Webmail       WebmailConfig       `yaml:"webmail"`
 	Observability ObservabilityConfig `yaml:"observability"`
-	RateLimits   RateLimitConfig     `yaml:"rate_limits"`
-	Tracking     TrackingConfig      `yaml:"tracking"`
-	Cluster      ClusterConfig       `yaml:"cluster"`
+	RateLimits    RateLimitConfig     `yaml:"rate_limits"`
+	Tracking      TrackingConfig      `yaml:"tracking"`
+	Cluster       ClusterConfig       `yaml:"cluster"`
 }
 
 // TLSConfig controls certificate provisioning.
 // Provider is "letsencrypt" or "custom".  When "custom", CertPath and KeyPath
 // must point to PEM files on disk.
 type TLSConfig struct {
-	Provider string `yaml:"provider"` // "letsencrypt" | "custom"
-	Email    string `yaml:"email"`    // ACME account email (letsencrypt)
+	Provider string `yaml:"provider"`            // "letsencrypt" | "custom"
+	Email    string `yaml:"email"`               // ACME account email (letsencrypt)
 	CertPath string `yaml:"cert_path,omitempty"` // PEM certificate  (custom)
 	KeyPath  string `yaml:"key_path,omitempty"`  // PEM private key  (custom)
 }
@@ -53,6 +53,19 @@ type RspamdConfig struct {
 	SpamThreshold   float64 `yaml:"spam_threshold"`   // default 15.0
 	RejectThreshold float64 `yaml:"reject_threshold"` // default 999 (effectively disabled)
 	GreylistEnabled bool    `yaml:"greylist_enabled"`
+	// FileSpamToJunk auto-files spam-tagged mail (rspamd's X-Spam: Yes, set at
+	// the add_header/spam threshold) into the Junk folder via a global
+	// sieve_before script, instead of leaving it in INBOX. Default ON — a nil
+	// pointer (key absent, e.g. on installs predating this field) means enabled.
+	// Set false to opt out and keep spam in INBOX.
+	FileSpamToJunk *bool `yaml:"file_spam_to_junk"`
+}
+
+// SpamToJunkEnabled reports whether spam should be auto-filed into Junk.
+// Absent (nil) means enabled — the default-on behaviour, so existing installs
+// that have no file_spam_to_junk key get the feature on upgrade.
+func (r RspamdConfig) SpamToJunkEnabled() bool {
+	return r.FileSpamToJunk == nil || *r.FileSpamToJunk
 }
 
 // PostfixConfig holds Postfix MTA knobs.
@@ -73,22 +86,22 @@ type DovecotConfig struct {
 // (set via the admin UI) takes precedence over these install-time defaults.
 type BackupConfig struct {
 	Enabled    bool   `yaml:"enabled"`
-	Schedule   string `yaml:"schedule"`    // cron expression, e.g. "0 3 * * *"
-	Timezone   string `yaml:"timezone"`    // IANA tz, e.g. "Australia/Sydney"; empty = UTC/container-local
+	Schedule   string `yaml:"schedule"` // cron expression, e.g. "0 3 * * *"
+	Timezone   string `yaml:"timezone"` // IANA tz, e.g. "Australia/Sydney"; empty = UTC/container-local
 	RetainDays int    `yaml:"retain_days"`
 }
 
 // LoggingConfig sets the logging driver and rotation policy for containers.
 type LoggingConfig struct {
-	Level    string `yaml:"level"`      // "debug" | "info" | "warn" | "error"
-	Driver   string `yaml:"driver"`     // Docker log driver, e.g. "json-file"
-	MaxSizeMB int   `yaml:"max_size_mb"`
-	MaxFiles  int   `yaml:"max_files"`
+	Level     string `yaml:"level"`  // "debug" | "info" | "warn" | "error"
+	Driver    string `yaml:"driver"` // Docker log driver, e.g. "json-file"
+	MaxSizeMB int    `yaml:"max_size_mb"`
+	MaxFiles  int    `yaml:"max_files"`
 }
 
 // AdminConfig governs the administrative HTTP interface.
 type AdminConfig struct {
-	ListenAddr      string `yaml:"listen_addr"`      // default ":8080"
+	ListenAddr      string `yaml:"listen_addr"`       // default ":8080"
 	SessionTTLHours int    `yaml:"session_ttl_hours"` // default 24
 }
 
@@ -138,15 +151,15 @@ type AuditConfig struct {
 
 // ObservabilityConfig controls optional Loki + Promtail log aggregation and Grafana.
 type ObservabilityConfig struct {
-	LokiEnabled     bool `yaml:"loki_enabled"`      // include Loki + Promtail containers; default false
-	LokiRetainDays  int  `yaml:"loki_retain_days"`  // log retention in days; default 30
-	GrafanaEnabled  bool `yaml:"grafana_enabled"`   // include Grafana container; default false
+	LokiEnabled    bool `yaml:"loki_enabled"`     // include Loki + Promtail containers; default false
+	LokiRetainDays int  `yaml:"loki_retain_days"` // log retention in days; default 30
+	GrafanaEnabled bool `yaml:"grafana_enabled"`  // include Grafana container; default false
 }
 
 // WebmailConfig controls the optional Roundcube webmail container.
 type WebmailConfig struct {
-	Enabled    bool   `yaml:"enabled"`               // include webmail container; default false
-	UploadMaxMB int   `yaml:"upload_max_mb,omitempty"` // max attachment size in MB; default 25
+	Enabled     bool `yaml:"enabled"`                 // include webmail container; default false
+	UploadMaxMB int  `yaml:"upload_max_mb,omitempty"` // max attachment size in MB; default 25
 }
 
 // RateLimitConfig controls Traefik rate limiting middleware for API endpoints.
@@ -171,23 +184,23 @@ type TrackingConfig struct {
 // ClusterConfig controls multi-node clustering (Phase 3).
 // When Enabled is false (default), the system runs in single-node mode.
 type ClusterConfig struct {
-	Enabled        bool     `yaml:"enabled"`                   // enable cluster mode; default false
-	NodeName       string   `yaml:"node_name,omitempty"`       // unique node name; defaults to hostname
-	AdvertiseAddr  string   `yaml:"advertise_addr,omitempty"`  // address other nodes use to reach this one (host:port)
-	SeedNodes      []string `yaml:"seed_nodes,omitempty"`      // initial nodes to contact for cluster join
-	Services       []string `yaml:"services,omitempty"`        // services this node runs: ["postfix","dovecot","api","rspamd"]
-	HeartbeatSec   int      `yaml:"heartbeat_sec,omitempty"`   // heartbeat interval in seconds; default 10
-	LeaderLeaseSec int      `yaml:"leader_lease_sec,omitempty"` // leader lease duration in seconds; default 30
+	Enabled        bool            `yaml:"enabled"`                    // enable cluster mode; default false
+	NodeName       string          `yaml:"node_name,omitempty"`        // unique node name; defaults to hostname
+	AdvertiseAddr  string          `yaml:"advertise_addr,omitempty"`   // address other nodes use to reach this one (host:port)
+	SeedNodes      []string        `yaml:"seed_nodes,omitempty"`       // initial nodes to contact for cluster join
+	Services       []string        `yaml:"services,omitempty"`         // services this node runs: ["postfix","dovecot","api","rspamd"]
+	HeartbeatSec   int             `yaml:"heartbeat_sec,omitempty"`    // heartbeat interval in seconds; default 10
+	LeaderLeaseSec int             `yaml:"leader_lease_sec,omitempty"` // leader lease duration in seconds; default 30
 	PgBouncer      PgBouncerConfig `yaml:"pgbouncer"`
 }
 
 // PgBouncerConfig controls the PgBouncer connection pooler (Phase 3.3).
 type PgBouncerConfig struct {
-	Enabled        bool   `yaml:"enabled"`                    // include PgBouncer container; default false
-	PoolMode       string `yaml:"pool_mode,omitempty"`        // "transaction" (default) or "session"
-	DefaultPoolSize int   `yaml:"default_pool_size,omitempty"` // default 20
-	MaxClientConn  int    `yaml:"max_client_conn,omitempty"`   // default 200
-	ListenPort     int    `yaml:"listen_port,omitempty"`       // default 6432
+	Enabled         bool   `yaml:"enabled"`                     // include PgBouncer container; default false
+	PoolMode        string `yaml:"pool_mode,omitempty"`         // "transaction" (default) or "session"
+	DefaultPoolSize int    `yaml:"default_pool_size,omitempty"` // default 20
+	MaxClientConn   int    `yaml:"max_client_conn,omitempty"`   // default 200
+	ListenPort      int    `yaml:"listen_port,omitempty"`       // default 6432
 }
 
 // DefaultClusterConfig returns sensible defaults for clustering.
@@ -197,11 +210,11 @@ func DefaultClusterConfig() ClusterConfig {
 		HeartbeatSec:   10,
 		LeaderLeaseSec: 30,
 		PgBouncer: PgBouncerConfig{
-			Enabled:        false,
-			PoolMode:       "transaction",
+			Enabled:         false,
+			PoolMode:        "transaction",
 			DefaultPoolSize: 20,
-			MaxClientConn:  200,
-			ListenPort:     6432,
+			MaxClientConn:   200,
+			ListenPort:      6432,
 		},
 	}
 }
@@ -224,14 +237,14 @@ func DefaultRateLimits() RateLimitConfig {
 
 // VectisSecrets is the top-level secrets structure loaded from secrets.yaml.
 type VectisSecrets struct {
-	Database     DatabaseSecrets      `yaml:"database"`
-	Valkey       ValkeySecrets        `yaml:"valkey"`
-	API          APISecrets           `yaml:"api"`
-	Orchestrator OrchestratorSecrets  `yaml:"orchestrator"`
-	DKIM         DKIMSecrets          `yaml:"dkim"`
-	OIDC         OIDCSecrets          `yaml:"oidc,omitempty"`
-	Cloudflare   *CloudflareSecrets   `yaml:"cloudflare,omitempty"`
-	ValidonX     *ValidonXSecrets     `yaml:"validonx,omitempty"`
+	Database     DatabaseSecrets     `yaml:"database"`
+	Valkey       ValkeySecrets       `yaml:"valkey"`
+	API          APISecrets          `yaml:"api"`
+	Orchestrator OrchestratorSecrets `yaml:"orchestrator"`
+	DKIM         DKIMSecrets         `yaml:"dkim"`
+	OIDC         OIDCSecrets         `yaml:"oidc,omitempty"`
+	Cloudflare   *CloudflareSecrets  `yaml:"cloudflare,omitempty"`
+	ValidonX     *ValidonXSecrets    `yaml:"validonx,omitempty"`
 }
 
 // DatabaseSecrets holds connection details and per-service credentials for
@@ -242,16 +255,16 @@ type VectisSecrets struct {
 // init-users.sh bootstrap script — application code always connects as one of
 // the three least-privilege users.
 type DatabaseSecrets struct {
-	Host               string `yaml:"host"`
-	Port               int    `yaml:"port"`
-	Name               string `yaml:"name"`
-	SuperuserPassword  string `yaml:"superuser_password"`
-	APIUser            string `yaml:"api_user"`
-	APIPassword        string `yaml:"api_password"`
-	PostfixUser        string `yaml:"postfix_user"`
-	PostfixPassword    string `yaml:"postfix_password"`
-	DovecotUser        string `yaml:"dovecot_user"`
-	DovecotPassword    string `yaml:"dovecot_password"`
+	Host              string `yaml:"host"`
+	Port              int    `yaml:"port"`
+	Name              string `yaml:"name"`
+	SuperuserPassword string `yaml:"superuser_password"`
+	APIUser           string `yaml:"api_user"`
+	APIPassword       string `yaml:"api_password"`
+	PostfixUser       string `yaml:"postfix_user"`
+	PostfixPassword   string `yaml:"postfix_password"`
+	DovecotUser       string `yaml:"dovecot_user"`
+	DovecotPassword   string `yaml:"dovecot_password"`
 
 	// Forward tolerates a field from a future schema version pre-staged in
 	// secrets.yaml on an older binary. Top-level decode is KnownFields(true),
@@ -270,9 +283,9 @@ type ValkeySecrets struct {
 // APISecrets holds the cookie-signing secret and the initial admin account
 // credentials seeded by the installer.
 type APISecrets struct {
-	Secret              string `yaml:"secret"`                         // cookie / JWT signing key
-	AdminEmail          string `yaml:"admin_email"`                    // initial admin, used by installer only
-	AdminPassword       string `yaml:"admin_password"`                 // initial admin, used by installer only
+	Secret              string `yaml:"secret"`                // cookie / JWT signing key
+	AdminEmail          string `yaml:"admin_email"`           // initial admin, used by installer only
+	AdminPassword       string `yaml:"admin_password"`        // initial admin, used by installer only
 	BackupEncryptionKey string `yaml:"backup_encryption_key"` // AES-256 encryption key for backups; required for production
 
 	// Forward tolerates a forward-staged field on an older binary; see
@@ -283,7 +296,7 @@ type APISecrets struct {
 // OrchestratorSecrets holds authentication credentials for internal HTTP calls
 // between the API server and the orchestrator.
 type OrchestratorSecrets struct {
-	Token       string `yaml:"token"`                  // bearer token (Phase 1 fallback)
+	Token       string `yaml:"token"`                   // bearer token (Phase 1 fallback)
 	MTLSCertDir string `yaml:"mtls_cert_dir,omitempty"` // directory containing internal CA + certs; enables mTLS when set
 }
 
@@ -325,10 +338,10 @@ type OIDCProviderConfig struct {
 // When nil, the system operates in free-tier mode with all basic features enabled.
 type ValidonXSecrets struct {
 	BaseURL        string `yaml:"base_url"`        // e.g. https://api.validonx.com
-	ServiceKey     string `yaml:"service_key"`      // service authentication key (sent as X-API-Key)
-	TenantID       string `yaml:"tenant_id"`        // this server's tenant ID
-	SubscriptionID string `yaml:"subscription_id"`  // this server's subscription ID
-	ServerID       string `yaml:"server_id"`        // unique server identifier
+	ServiceKey     string `yaml:"service_key"`     // service authentication key (sent as X-API-Key)
+	TenantID       string `yaml:"tenant_id"`       // this server's tenant ID
+	SubscriptionID string `yaml:"subscription_id"` // this server's subscription ID
+	ServerID       string `yaml:"server_id"`       // unique server identifier
 	// LicenseKey is the ValidonX-issued license string for this install.
 	// Sent on the wire as `data.license_key` to the licensing-resolve
 	// endpoint. Distinct from SubscriptionID in ValidonX's data model

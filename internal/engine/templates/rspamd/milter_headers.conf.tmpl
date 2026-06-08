@@ -19,6 +19,9 @@ use = [
     "x-spam-level",            # SpamAssassin-style score bar.
     "x-spam-status",           # SpamAssassin-style status string.
     "x-spamd-bar",             # Compact spam-score visual.
+{{- if .Rspamd.SpamToJunkEnabled }}
+    "spam-header",             # X-Spam: Yes on messages >= the add_header (spam) threshold — the unambiguous flag the global Junk sieve files on (rspamd.file_spam_to_junk).
+{{- end }}
 ];
 
 ## Strip any inbound auth-results from upstream relays so we always rewrite

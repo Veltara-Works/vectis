@@ -40,10 +40,14 @@ clamav:
 # reject_threshold — score at which a message is rejected outright
 #                    (999 = effectively disabled; recommended until tuned)
 # greylist_enabled — whether to enable greylisting for unknown senders
+# file_spam_to_junk — auto-file spam-tagged mail (X-Spam: Yes) into Junk via a
+#                     global sieve_before script instead of leaving it in INBOX.
+#                     Default on; set false to opt out (keeps spam in INBOX).
 rspamd:
   spam_threshold: 15.0
   reject_threshold: 999    # 999 = effectively disabled
   greylist_enabled: false
+  file_spam_to_junk: true
 
 # Postfix MTA settings.
 postfix:

@@ -1,0 +1,17 @@
+require ["fileinto", "mailbox"];
+
+# Vectis global spam-filing rule (sieve_before).
+#
+# rspamd's milter_headers "spam-header" routine stamps X-Spam: Yes on every
+# message scoring at or above the add_header (spam) threshold. This files those
+# into Junk and stops, so spam never reaches INBOX. Runs before any per-user
+# sieve script, so users can still add their own rules (including allowlisting a
+# sender back out of Junk) on top.
+#
+# Wired in via `sieve_before` in dovecot.conf only when rspamd.file_spam_to_junk
+# is enabled (the default). Mounted read-only at the path below; Pigeonhole
+# compiles the .svbin alongside it in the container's own writable layer.
+if header :is "X-Spam" "Yes" {
+    fileinto :create "Junk";
+    stop;
+}

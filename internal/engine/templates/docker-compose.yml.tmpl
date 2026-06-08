@@ -220,6 +220,10 @@ services:
     volumes:
       - /var/vectis/generated/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro
       - /var/vectis/generated/dovecot/dovecot-sql.conf.ext:/etc/dovecot/dovecot-sql.conf.ext:ro
+      # Global spam->Junk sieve (sieve_before). Always mounted (always rendered);
+      # only referenced by dovecot.conf when rspamd.file_spam_to_junk is on.
+      # Mounted :ro — Pigeonhole compiles the .svbin into the writable parent dir.
+      - /var/vectis/generated/dovecot/spam-to-junk.sieve:/etc/dovecot/sieve/spam-to-junk.sieve:ro
       - mail-data:/var/vectis/mail
       - mail-certs:/etc/ssl/mail:ro
     depends_on:
