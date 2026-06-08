@@ -47,8 +47,14 @@ func TestParseRSAPrivateKeyPEM(t *testing.T) {
 	}
 
 	// PKCS8-wrapped RSA key.
-	key, _ := rsa.GenerateKey(rand.Reader, 2048)
-	der, _ := x509.MarshalPKCS8PrivateKey(key)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal pkcs8: %v", err)
+	}
 	p8 := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 	if _, err := parseRSAPrivateKeyPEM(p8); err != nil {
 		t.Fatalf("PKCS8 PEM should parse: %v", err)

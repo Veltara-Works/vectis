@@ -203,7 +203,9 @@ func startFlow(t *testing.T, m *auth.SAMLManager, p *auth.SAMLProvider) (request
 	if err != nil {
 		t.Fatalf("decode SAMLRequest: %v", err)
 	}
-	raw, err := io.ReadAll(flate.NewReader(bytes.NewReader(deflated)))
+	fr := flate.NewReader(bytes.NewReader(deflated))
+	defer fr.Close()
+	raw, err := io.ReadAll(fr)
 	if err != nil {
 		t.Fatalf("inflate SAMLRequest: %v", err)
 	}
