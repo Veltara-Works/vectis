@@ -1,0 +1,44 @@
+# Dependabot version-update PRs (dependency-security follow-up).
+# Security *alerts* are enabled separately in repo settings; this file drives
+# scheduled version-bump PRs so dependencies don't silently rot between audits.
+version: 2
+updates:
+  # Go module graph (api, orchestrator, cert-extractor, monitor binaries).
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Admin UI (React/Vite). Keeps react-router et al. patched between releases.
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Pinned GitHub Actions (checkout, setup-go, trivy-action, ...).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "ci(deps)"
+
+  # Base images in every service Dockerfile (FROM lines).
+  - package-ecosystem: docker
+    directories:
+      - "/docker/*"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
