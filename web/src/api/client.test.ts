@@ -105,6 +105,29 @@ describe('api client', () => {
     )
   })
 
+  it('lists SAML providers', async () => {
+    vi.spyOn(globalThis, 'fetch').mockReturnValue(mockResponse({ providers: ['okta', 'entra'] }))
+
+    const result = await api.samlProviders()
+    expect(result).toEqual(['okta', 'entra'])
+  })
+
+  it('builds the SAML SP metadata URL with encoding', () => {
+    expect(api.samlMetadataUrl('okta')).toBe('/api/v1/auth/saml/metadata/okta')
+    expect(api.samlMetadataUrl('my idp')).toBe('/api/v1/auth/saml/metadata/my%20idp')
+  })
+
+  it('disconnects SAML via POST', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockReturnValue(mockResponse({ message: 'SAML provider disconnected' }))
+
+    const result = await api.samlDisconnect()
+    expect(spy).toHaveBeenCalledWith(
+      '/api/v1/auth/saml/disconnect',
+      expect.objectContaining({ method: 'POST', credentials: 'include' })
+    )
+    expect(result.message).toBe('SAML provider disconnected')
+  })
+
   it('includes credentials on all requests', async () => {
     const spy = vi.spyOn(globalThis, 'fetch').mockReturnValue(mockResponse([]))
 

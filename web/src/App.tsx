@@ -16,6 +16,7 @@ import LicensePage from './pages/License.tsx'
 import BillingPage from './pages/Billing.tsx'
 import BrandingPage from './pages/Branding.tsx'
 import SessionsPage from './pages/Sessions.tsx'
+import SSOPage from './pages/SSO.tsx'
 import FilterRulesPage from './pages/FilterRules.tsx'
 import LogSearchPage from './pages/LogSearch.tsx'
 import SetupWizardPage from './pages/SetupWizard.tsx'
@@ -108,6 +109,7 @@ export default function App() {
     { path: '/admin/license', label: 'License', show: isSuperAdmin },
     { path: '/admin/branding', label: 'Branding', show: isSuperAdmin },
     { path: '/admin/sessions', label: 'Sessions', show: true },
+    { path: '/admin/sso', label: 'Single Sign-On', show: true },
   ]
 
   const brand = branding?.effective ?? { product_name: 'Vectis Mail', primary_color: '#3b82f6', logo_url: '' }
@@ -157,6 +159,7 @@ export default function App() {
             {isSuperAdmin && <Route path="/admin/license" element={<LicensePage />} />}
             {isSuperAdmin && <Route path="/admin/branding" element={<BrandingPage features={admin?.features ?? []} onBrandingChanged={setBranding} />} />}
             <Route path="/admin/sessions" element={<SessionsPage />} />
+            <Route path="/admin/sso" element={<SSOPage />} />
             {/* Customer billing portal — auto-redirects to Stripe via ValidonX. */}
             {/* super_admin only on the API; gated here to match. */}
             {isSuperAdmin && <Route path="/account/billing" element={<BillingPage />} />}

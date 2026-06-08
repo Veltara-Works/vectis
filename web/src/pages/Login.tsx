@@ -15,9 +15,13 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [oidcProviders, setOidcProviders] = useState<string[]>([])
+  const [samlProviders, setSamlProviders] = useState<string[]>([])
 
   useEffect(() => {
     api.oidcProviders().then(p => setOidcProviders(p)).catch(() => {})
+    // SAML providers come back empty unless the install is entitled to
+    // saml_sso (Enterprise), so non-Enterprise logins show no SAML buttons.
+    api.samlProviders().then(p => setSamlProviders(p)).catch(() => {})
   }, [])
 
   const handleSubmit = async (e: FormEvent) => {
@@ -91,13 +95,21 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
               </button>
             )}
           </form>
-          {oidcProviders.length > 0 && !totpSession && (
+          {(oidcProviders.length > 0 || samlProviders.length > 0) && !totpSession && (
             <>
               <div style={{ textAlign: 'center', margin: '1.25rem 0 1rem', color: '#64748b', fontSize: '0.85rem' }}>
                 or sign in with
               </div>
               {oidcProviders.map(p => (
-                <a key={p} href={`/api/v1/auth/oidc/login/${p}`}
+                <a key={`oidc-${p}`} href={`/api/v1/auth/oidc/login/${p}`}
+                  className="btn" style={{ width: '100%', marginBottom: '0.5rem', textAlign: 'center', display: 'block', textDecoration: 'none' }}>
+                  {providerLabels[p] || p}
+                </a>
+              ))}
+              {/* SAML is SP-initiated: the GET /login/{provider} route builds a
+                  signed AuthnRequest and redirects the browser to the IdP. */}
+              {samlProviders.map(p => (
+                <a key={`saml-${p}`} href={`/api/v1/auth/saml/login/${p}`}
                   className="btn" style={{ width: '100%', marginBottom: '0.5rem', textAlign: 'center', display: 'block', textDecoration: 'none' }}>
                   {providerLabels[p] || p}
                 </a>

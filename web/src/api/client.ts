@@ -40,9 +40,18 @@ export const api = {
       'POST', '/auth/login',
       totp_session ? { totp_session, totp_code } : { email, password }
     ),
-  me: () => request<{ id: string; email: string; role: string; totp_enabled: boolean; oidc_provider?: string; tier: 'free' | 'pro' | 'enterprise'; features: string[] }>('GET', '/auth/me'),
+  me: () => request<{ id: string; email: string; role: string; totp_enabled: boolean; oidc_provider?: string; saml_provider?: string; tier: 'free' | 'pro' | 'enterprise'; features: string[] }>('GET', '/auth/me'),
   oidcProviders: () => request<{ providers: string[] }>('GET', '/auth/oidc/providers').then(r => r.providers),
   oidcDisconnect: () => request<{ message: string }>('DELETE', '/auth/oidc/disconnect'),
+  // SAML 2.0 SSO (Enterprise — saml_sso feature). The providers endpoint
+  // returns an empty list on installs not entitled to SAML, so the Login page
+  // and the SSO settings page render no SAML affordances there. The SP
+  // metadata is plain XML (not the JSON envelope), so it is fetched by direct
+  // browser navigation to samlMetadataUrl rather than through request().
+  // Disconnect is POST (mirrors the backend route; OIDC disconnect is DELETE).
+  samlProviders: () => request<{ providers: string[] }>('GET', '/auth/saml/providers').then(r => r.providers),
+  samlMetadataUrl: (provider: string) => `${BASE}/auth/saml/metadata/${encodeURIComponent(provider)}`,
+  samlDisconnect: () => request<{ message: string }>('POST', '/auth/saml/disconnect'),
   logout: () => request<void>('POST', '/auth/logout'),
   logoutAll: () => request<void>('POST', '/auth/logout-all'),
   sessions: () => request<Array<{ id: string; ip_address: string; user_agent: string; created_at: string }>>('GET', '/auth/sessions'),

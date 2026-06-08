@@ -38,6 +38,7 @@ type adminProfile struct {
 	Role         string     `json:"role"`
 	TOTPEnabled  bool       `json:"totp_enabled"`
 	OIDCProvider *string    `json:"oidc_provider,omitempty"`
+	SAMLProvider *string    `json:"saml_provider,omitempty"`
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
 	// Tier + Features expose just enough license state for the admin UI to
 	// render tier-aware affordances (e.g. priority-support link in the
@@ -365,6 +366,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		Role:         admin.Role,
 		TOTPEnabled:  admin.TOTPEnabled,
 		OIDCProvider: admin.OIDCProvider,
+		SAMLProvider: admin.SAMLProvider,
 		LastLoginAt:  admin.LastLoginAt,
 		Tier:         tier,
 		Features:     features,
