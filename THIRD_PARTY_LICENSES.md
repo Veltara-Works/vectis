@@ -42,7 +42,7 @@ fork) and are listed separately to reflect that.
 
 | Module / package | Version | License |
 |---|---|---|
-| `github.com/beevik/etree` | v1.5.0 | BSD-2-Clause |
+| `github.com/beevik/etree` | v1.6.0 | BSD-2-Clause |
 | `github.com/beorn7/perks/quantile` | v1.0.1 | MIT |
 | `github.com/boombuler/barcode` | 6c824513bacc | MIT |
 | `github.com/cespare/xxhash/v2` | v2.3.0 | MIT |
@@ -59,7 +59,7 @@ fork) and are listed separately to reflect that.
 | `github.com/jackc/pgservicefile` | 5a60cdf6a761 | MIT |
 | `github.com/jackc/pgx/v5` | v5.9.2 | MIT |
 | `github.com/jackc/puddle/v2` | v2.2.2 | MIT |
-| `github.com/jonboulle/clockwork` | v0.2.2 | Apache-2.0 |
+| `github.com/jonboulle/clockwork` | v0.5.0 | Apache-2.0 |
 | `github.com/mattermost/xml-roundtrip-validator` | v0.1.0 | Apache-2.0 |
 | `github.com/munnerz/goautoneg` | a7dc8b61c822 | BSD-3-Clause |
 | `github.com/pquerna/otp` | v1.5.0 | Apache-2.0 |
@@ -68,7 +68,7 @@ fork) and are listed separately to reflect that.
 | `github.com/prometheus/client_model/go` | v0.6.2 | Apache-2.0 |
 | `github.com/prometheus/common` | v0.66.1 | Apache-2.0 |
 | `github.com/prometheus/procfs` | v0.16.1 | Apache-2.0 |
-| `github.com/russellhaering/goxmldsig` | v1.4.0 | Apache-2.0 |
+| `github.com/russellhaering/goxmldsig` | v1.6.0 | Apache-2.0 |
 | `github.com/spf13/cobra` | v1.9.1 | Apache-2.0 |
 | `github.com/spf13/pflag` | v1.0.6 | BSD-3-Clause |
 | `github.com/valkey-io/valkey-go` | v1.0.73 | Apache-2.0 |
