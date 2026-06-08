@@ -1,6 +1,6 @@
 module github.com/Veltara-Works/vectis
 
-go 1.25.10
+go 1.25.11
 
 require (
 	github.com/coreos/go-oidc/v3 v3.17.0
