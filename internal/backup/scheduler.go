@@ -62,12 +62,13 @@ func NextScheduledRun(schedule, timezone string, from time.Time) (time.Time, err
 // It follows the same Start/Stop pattern as audit.Pruner. The scheduler only
 // creates FULL backups, so retention never orphans an incremental chain.
 type Scheduler struct {
-	mgr    *Manager
-	sched  cron.Schedule
-	cfg    SchedulerConfig
-	logger *slog.Logger
-	stopCh chan struct{}
-	now    func() time.Time // injectable for tests
+	mgr      *Manager
+	sched    cron.Schedule
+	cfg      SchedulerConfig
+	logger   *slog.Logger
+	stopCh   chan struct{}
+	now      func() time.Time                                                      // injectable for tests
+	createFn func(ctx context.Context, triggeredBy *string) (string, int64, error) // injectable for tests
 }
 
 // NewScheduler parses the cron schedule and returns a ready scheduler. It
@@ -79,12 +80,13 @@ func NewScheduler(mgr *Manager, cfg SchedulerConfig, logger *slog.Logger) (*Sche
 		return nil, err
 	}
 	return &Scheduler{
-		mgr:    mgr,
-		sched:  sched,
-		cfg:    cfg,
-		logger: logger,
-		stopCh: make(chan struct{}),
-		now:    time.Now,
+		mgr:      mgr,
+		sched:    sched,
+		cfg:      cfg,
+		logger:   logger,
+		stopCh:   make(chan struct{}),
+		now:      time.Now,
+		createFn: mgr.Create,
 	}, nil
 }
 
@@ -123,9 +125,13 @@ func (s *Scheduler) loop() {
 // RunOnce creates one full backup and applies retention. Exposed for manual
 // triggering and tests.
 func (s *Scheduler) RunOnce(ctx context.Context) {
-	by := "scheduler"
+	// System-triggered backups have no admin actor. backup_jobs.triggered_by is
+	// a UUID FK to admins(id); passing a sentinel string ("scheduler") fails the
+	// insert with "invalid input syntax for type uuid" and silently kills every
+	// scheduled backup. nil records NULL — the proven contract manual backups and
+	// the pre-regression scheduler both used.
 	s.logger.Info("scheduled backup starting")
-	path, size, err := s.mgr.Create(ctx, &by)
+	path, size, err := s.createFn(ctx, nil)
 	if err != nil {
 		s.logger.Error("scheduled backup failed", "error", err)
 		return
