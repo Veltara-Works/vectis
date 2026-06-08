@@ -25,9 +25,14 @@ func apiKeyRateLimitKey(apiKeyID string) string {
 // written the 429 response (with Retry-After + X-RateLimit-* headers).
 func (s *Server) enforceAPIKeyRateLimit(w http.ResponseWriter, r *http.Request, apiKey *repository.APIKey) bool {
 	if apiKey.RateLimit <= 0 {
-		return true // unlimited
+		return true // unlimited — no budget, so no rate-limit headers
 	}
 	key := apiKeyRateLimitKey(apiKey.ID)
+
+	// Advertise the configured ceiling on every budgeted-key response, including
+	// the fail-open path below where we can't compute the remaining count — so a
+	// budgeted key always carries at least X-RateLimit-Limit.
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(apiKey.RateLimit))
 
 	res, err := ratelimit.Allow(r.Context(), s.vk, key, apiKey.RateLimit, apiKeyRateLimitWindow)
 	if err != nil {
@@ -35,15 +40,13 @@ func (s *Server) enforceAPIKeyRateLimit(w http.ResponseWriter, r *http.Request, 
 		return true
 	}
 
-	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(res.Limit))
 	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
 
 	if !res.Allowed {
+		// RetryAfter is floored at 1s, so Retry-After and X-RateLimit-Reset
+		// (both derived from the same duration) always agree.
 		retry := ratelimit.RetryAfter(r.Context(), s.vk, key, apiKeyRateLimitWindow)
 		secs := int(retry.Seconds())
-		if secs < 1 {
-			secs = 1
-		}
 		w.Header().Set("Retry-After", strconv.Itoa(secs))
 		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(retry).Unix(), 10))
 		respondError(w, r, http.StatusTooManyRequests, "API_KEY_RATE_LIMITED",

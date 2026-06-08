@@ -136,7 +136,7 @@ func TestRetryAfter_WithinWindow(t *testing.T) {
 		t.Fatalf("seed Allow: %v", err)
 	}
 	d := ratelimit.RetryAfter(ctx, vk, key, window)
-	if d <= 0 || d > window {
-		t.Fatalf("RetryAfter = %v, want (0, %v]", d, window)
+	if d < time.Second || d > window {
+		t.Fatalf("RetryAfter = %v, want [1s, %v] (floored at 1s for header consistency)", d, window)
 	}
 }

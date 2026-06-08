@@ -63,11 +63,18 @@ func Allow(ctx context.Context, vk valkey.Client, key string, limit int, window 
 
 // RetryAfter returns the time until key's current window resets, for a
 // Retry-After header. It falls back to the full window on any TTL error or when
-// the key has no expiry set (which should not happen for an Allow'd key).
+// the key has no expiry set (TTL -1/-2, which should not happen for an Allow'd
+// key). The result is floored at one second so a sub-second TTL (Valkey rounds
+// TTL down, so a window with <1s left reports 0) can't yield a Retry-After /
+// X-RateLimit-Reset pair that disagrees about whether the client should wait.
 func RetryAfter(ctx context.Context, vk valkey.Client, key string, window time.Duration) time.Duration {
 	secs, err := vk.Do(ctx, vk.B().Ttl().Key(key).Build()).ToInt64()
 	if err != nil || secs < 0 {
 		return window
 	}
-	return time.Duration(secs) * time.Second
+	d := time.Duration(secs) * time.Second
+	if d < time.Second {
+		d = time.Second
+	}
+	return d
 }
