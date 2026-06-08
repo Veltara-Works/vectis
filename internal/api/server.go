@@ -28,11 +28,11 @@ import (
 	"github.com/Veltara-Works/vectis/internal/mail/postfixlog"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
 	"github.com/Veltara-Works/vectis/internal/monitor"
-	"github.com/Veltara-Works/vectis/internal/validonx"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	"github.com/Veltara-Works/vectis/internal/repository"
 	"github.com/Veltara-Works/vectis/internal/secretcrypto"
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
+	"github.com/Veltara-Works/vectis/internal/validonx"
 )
 
 // Server is the Vectis API server.
@@ -47,12 +47,12 @@ type Server struct {
 	sessions      *auth.SessionManager
 	hostname      string
 	internalToken string // shared secret for service-to-service calls (Postfix → API)
-	dkimBasePath string
-	webDir       string
-	genDir       string // directory for generated config files
-	cfg          *config.VectisConfig
-	secrets      *config.VectisSecrets
-	orchClient   *orchestrator.Client
+	dkimBasePath  string
+	webDir        string
+	genDir        string // directory for generated config files
+	cfg           *config.VectisConfig
+	secrets       *config.VectisSecrets
+	orchClient    *orchestrator.Client
 
 	// Repositories
 	domains      *repository.DomainRepo
@@ -82,6 +82,9 @@ type Server struct {
 
 	// OIDC
 	oidcManager *auth.OIDCManager
+
+	// SAML (Enterprise SSO)
+	samlManager *auth.SAMLManager
 
 	// Mail sending, webhooks, abuse detection
 	mailSender        *mail.Sender
@@ -117,21 +120,21 @@ type Server struct {
 
 // Config holds API server configuration.
 type Config struct {
-	ListenAddr   string
-	SessionTTL   int // hours
-	CookieSecret string
-	Hostname     string
-	DKIMBasePath string
-	WebDir            string // path to static UI files (optional)
-	GenDir            string // path to generated config output directory
-	VectisCfg         *config.VectisConfig
-	VectisSecrets     *config.VectisSecrets
-	OrchestratorURL      string // http://orchestrator:8081 or https://orchestrator:8081
-	OrchestratorToken    string // bearer token for orchestrator internal API (fallback)
-	OrchestratorCertDir  string // mTLS certificate directory; when set, upgrades to mTLS
-	CallbackBaseURL      string // base URL for OIDC callbacks (e.g. https://mail.example.com)
-	ServerIPs            []string // server IP addresses for RBL monitoring
-	PostfixLogPath       string   // path to Postfix mail log for delivery/bounce event tailing; empty disables
+	ListenAddr          string
+	SessionTTL          int // hours
+	CookieSecret        string
+	Hostname            string
+	DKIMBasePath        string
+	WebDir              string // path to static UI files (optional)
+	GenDir              string // path to generated config output directory
+	VectisCfg           *config.VectisConfig
+	VectisSecrets       *config.VectisSecrets
+	OrchestratorURL     string   // http://orchestrator:8081 or https://orchestrator:8081
+	OrchestratorToken   string   // bearer token for orchestrator internal API (fallback)
+	OrchestratorCertDir string   // mTLS certificate directory; when set, upgrades to mTLS
+	CallbackBaseURL     string   // base URL for OIDC callbacks (e.g. https://mail.example.com)
+	ServerIPs           []string // server IP addresses for RBL monitoring
+	PostfixLogPath      string   // path to Postfix mail log for delivery/bounce event tailing; empty disables
 }
 
 // New creates a new API server with all routes registered.
@@ -154,36 +157,36 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	webhookEncKey := secretcrypto.DeriveKey([]byte(cfg.CookieSecret), "vectis-webhook-secret-v1")
 
 	s := &Server{
-		logger:       logger,
-		db:           db,
-		vk:           vk,
+		logger:        logger,
+		db:            db,
+		vk:            vk,
 		sessions:      auth.NewSessionManager(db, vk, cfg.SessionTTL, cfg.CookieSecret),
 		hostname:      cfg.Hostname,
 		internalToken: cfg.CookieSecret, // reuse API secret as internal service token
-		dkimBasePath: cfg.DKIMBasePath,
-		webDir:       cfg.WebDir,
-		genDir:       cfg.GenDir,
-		cfg:          cfg.VectisCfg,
-		secrets:      cfg.VectisSecrets,
-		domains:      repository.NewDomainRepo(db),
-		mailboxes:    repository.NewMailboxRepo(db),
-		aliases:      repository.NewAliasRepo(db),
-		spamLists:    repository.NewSpamListRepo(db),
-		admins:       repository.NewAdminRepo(db),
-		adminDomains: repository.NewAdminDomainRepo(db),
-		apiKeys:      repository.NewAPIKeyRepo(db),
-		webhooks:     repository.NewWebhookRepo(db, webhookEncKey),
-		abuseEvents:  repository.NewAbuseRepo(db),
-		audit:        repository.NewAuditRepo(db),
-		alerts:       repository.NewAlertRepo(db),
-		messages:     repository.NewMessageRepo(db),
-		mailStats:    repository.NewMailStatsRepo(db),
-		emailEvents:  repository.NewEmailEventRepo(db),
-		ipWarmup:     repository.NewIPWarmupRepo(db),
-		rblChecks:    repository.NewRBLCheckRepo(db),
-		fblReports:   repository.NewFBLReportRepo(db),
-		resetTokens:  repository.NewPasswordResetRepo(db),
-		totpManager:  auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
+		dkimBasePath:  cfg.DKIMBasePath,
+		webDir:        cfg.WebDir,
+		genDir:        cfg.GenDir,
+		cfg:           cfg.VectisCfg,
+		secrets:       cfg.VectisSecrets,
+		domains:       repository.NewDomainRepo(db),
+		mailboxes:     repository.NewMailboxRepo(db),
+		aliases:       repository.NewAliasRepo(db),
+		spamLists:     repository.NewSpamListRepo(db),
+		admins:        repository.NewAdminRepo(db),
+		adminDomains:  repository.NewAdminDomainRepo(db),
+		apiKeys:       repository.NewAPIKeyRepo(db),
+		webhooks:      repository.NewWebhookRepo(db, webhookEncKey),
+		abuseEvents:   repository.NewAbuseRepo(db),
+		audit:         repository.NewAuditRepo(db),
+		alerts:        repository.NewAlertRepo(db),
+		messages:      repository.NewMessageRepo(db),
+		mailStats:     repository.NewMailStatsRepo(db),
+		emailEvents:   repository.NewEmailEventRepo(db),
+		ipWarmup:      repository.NewIPWarmupRepo(db),
+		rblChecks:     repository.NewRBLCheckRepo(db),
+		fblReports:    repository.NewFBLReportRepo(db),
+		resetTokens:   repository.NewPasswordResetRepo(db),
+		totpManager:   auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
 	}
 
 	// Self-heal: encrypt any webhook signing secret still stored as plaintext
@@ -300,6 +303,18 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		} else if oidcMgr.HasProviders() {
 			s.oidcManager = oidcMgr
 			logger.Info("OIDC SSO enabled", "providers", oidcMgr.ListProviders())
+		}
+	}
+
+	// Initialize SAML manager if providers are configured (Enterprise SSO).
+	if cfg.VectisSecrets != nil && len(cfg.VectisSecrets.SAML.Providers) > 0 && cfg.CallbackBaseURL != "" {
+		ctx := context.Background()
+		samlMgr, err := auth.NewSAMLManager(ctx, vk, cfg.VectisSecrets.SAML, cfg.CallbackBaseURL)
+		if err != nil {
+			logger.Error("failed to initialize SAML providers", "error", err)
+		} else if samlMgr.HasProviders() {
+			s.samlManager = samlMgr
+			logger.Info("SAML SSO enabled", "providers", samlMgr.ListProviders())
 		}
 	}
 
@@ -706,6 +721,23 @@ func (s *Server) buildRouter() chi.Router {
 		r.With(oidcGate).Get("/auth/oidc/login/{provider}", s.handleOIDCLogin)
 		r.With(oidcGate).Get("/auth/oidc/callback/{provider}", s.handleOIDCCallback)
 
+		// SAML 2.0 SSO (Enterprise — public browser redirects, SP-initiated).
+		// providers handler filters its own list against HasFeature(saml_sso);
+		// login + ACS carry the content-negotiated gate as defence in depth.
+		// The ACS is POST (HTTP-POST binding) — its authenticity proof is the
+		// signed assertion + RelayState, so it sits outside any session-CSRF
+		// group, exactly like the OIDC GET callback. Metadata is public (no
+		// secrets: entityID + ACS URL + SP cert).
+		r.Get("/auth/saml/providers", s.handleSAMLProviders)
+		r.Get("/auth/saml/metadata/{provider}", s.handleSAMLMetadata)
+		samlGate := s.featureGate.FeatureGateBrowser(
+			validonx.FeatureSAMLSSO,
+			"SAML single sign-on",
+			"https://vectismail.com/pricing",
+		)
+		r.With(samlGate).Get("/auth/saml/login/{provider}", s.handleSAMLLogin)
+		r.With(samlGate).Post("/auth/saml/acs/{provider}", s.handleSAMLACS)
+
 		// Authenticated endpoints.
 		r.Group(func(r chi.Router) {
 			r.Use(s.authMiddleware)
@@ -724,6 +756,7 @@ func (s *Server) buildRouter() chi.Router {
 
 			// OIDC management — all authenticated roles.
 			r.Delete("/auth/oidc/disconnect", s.handleOIDCDisconnect)
+			r.Post("/auth/saml/disconnect", s.handleSAMLDisconnect)
 
 			// Domains — all roles (domain_admin scoped in handlers).
 			r.Get("/domains", s.handleListDomains)
