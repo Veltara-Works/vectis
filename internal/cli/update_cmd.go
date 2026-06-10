@@ -214,8 +214,29 @@ func runUpdateApply(cmd *cobra.Command, args []string) error {
 
 	switch result.Status {
 	case "success":
+		// Keep the host CLI in lockstep with the freshly-deployed containers.
+		// `update apply` swaps the container images but NOT this host binary, so
+		// without this a cutover leaves /usr/local/bin/vectis stale until the
+		// operator remembers to run `vectis update self` — the gap that left a
+		// v0.5.0-dev stray driving prod cutovers. Best-effort, reusing the same
+		// refreshCLIBinary mechanism as `update self` step 1: it sha256-verifies,
+		// only touches /usr/local/bin/vectis (skips custom installs), no-ops when
+		// already current, and the atomic rename only affects the NEXT invocation
+		// — so it can never disrupt the apply that just succeeded.
+		//
+		// Run in BOTH human and --json modes: automation that drives apply with
+		// --json is exactly where a silently-stale host CLI bites. The ApplyResult
+		// JSON was already emitted above, so in --json mode we refresh silently;
+		// only human mode prints a status line.
+		cliMsg, cliErr := refreshCLIBinary()
 		if !jsonOutput {
 			fmt.Fprintln(cmd.OutOrStdout(), "\nUpdate applied successfully.")
+			fmt.Fprint(cmd.OutOrStdout(), "Refreshing host CLI binary... ")
+			if cliErr != nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "skipped (%s)\n", cliErr.Error())
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), cliMsg)
+			}
 		}
 		return nil
 	case "rolled_back":
