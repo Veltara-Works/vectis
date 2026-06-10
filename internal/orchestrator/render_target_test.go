@@ -123,13 +123,47 @@ func TestSanitizeForPath(t *testing.T) {
 	}
 }
 
-func TestFirstSorted(t *testing.T) {
-	if got := firstSorted(map[string]bool{}); got != "" {
+func TestPickRenderNetwork(t *testing.T) {
+	if got := pickRenderNetwork(map[string]bool{}); got != "" {
 		t.Errorf("empty set = %q, want \"\"", got)
 	}
-	got := firstSorted(map[string]bool{"vectis-frontend": true, "vectis-data": true, "vectis-orchestrator": true})
+	// Deterministic smallest among user-defined networks.
+	got := pickRenderNetwork(map[string]bool{"vectis-frontend": true, "vectis-data": true, "vectis-orchestrator": true})
 	if got != "vectis-data" {
-		t.Errorf("firstSorted = %q, want vectis-data", got)
+		t.Errorf("pickRenderNetwork = %q, want vectis-data", got)
+	}
+	// Built-in networks must be skipped even though "bridge" sorts first.
+	got = pickRenderNetwork(map[string]bool{"bridge": true, "host": true, "none": true, "vectis-data": true})
+	if got != "vectis-data" {
+		t.Errorf("pickRenderNetwork with built-ins = %q, want vectis-data", got)
+	}
+	// Only built-ins → nothing usable.
+	if got := pickRenderNetwork(map[string]bool{"bridge": true, "host": true}); got != "" {
+		t.Errorf("pickRenderNetwork builtins-only = %q, want \"\"", got)
+	}
+}
+
+func TestCollectRenderedConfigs_SkipsSymlinks(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "postfix", "main.cf"), "ok\n", 0o644)
+	// A symlink pointing outside the scratch dir must NOT be read/followed.
+	secret := filepath.Join(t.TempDir(), "host-secret")
+	mustWrite(t, secret, "TOPSECRET\n", 0o600)
+	if err := os.Symlink(secret, filepath.Join(root, "evil.cf")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	got, err := collectRenderedConfigs(root)
+	if err != nil {
+		t.Fatalf("collectRenderedConfigs: %v", err)
+	}
+	for _, f := range got {
+		if f.RelPath == "evil.cf" {
+			t.Fatalf("symlink was followed/included: %q -> %q", f.RelPath, string(f.Content))
+		}
+	}
+	if len(got) != 1 || got[0].RelPath != "postfix/main.cf" {
+		t.Errorf("expected only postfix/main.cf, got %+v", got)
 	}
 }
 

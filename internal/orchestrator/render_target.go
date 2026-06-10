@@ -116,6 +116,14 @@ func collectRenderedConfigs(root string) ([]ConfigFile, error) {
 		if info.IsDir() {
 			return nil
 		}
+		// Only read regular files. engine.WriteFiles only ever emits regular
+		// files, so a symlink / FIFO / device / socket under the scratch dir is
+		// anomalous and unsafe to read: filepath.Walk does not follow symlinks
+		// (it lstats), but os.ReadFile WOULD follow one to an arbitrary host
+		// path, and reading a FIFO could block. Skip anything non-regular.
+		if !info.Mode().IsRegular() {
+			return nil
+		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
@@ -216,9 +224,9 @@ func (dm *DockerManager) RenderConfigsViaImage(ctx context.Context, req RenderRe
 	if err != nil {
 		return fmt.Errorf("discover %s network: %w", pgName, err)
 	}
-	network := firstSorted(nets)
+	network := pickRenderNetwork(nets)
 	if network == "" {
-		return fmt.Errorf("no network found for %s; cannot reach Postgres for render", pgName)
+		return fmt.Errorf("no usable network found for %s; cannot reach Postgres for render", pgName)
 	}
 
 	dbHost := req.DBHost
@@ -253,14 +261,22 @@ func (dm *DockerManager) RenderConfigsViaImage(ctx context.Context, req RenderRe
 	return nil
 }
 
-// firstSorted returns the lexicographically smallest key of the set, or "" if
-// empty. Deterministic pick when a container is on multiple networks.
-func firstSorted(set map[string]bool) string {
-	first := ""
+// pickRenderNetwork chooses the network the throwaway render container should
+// join to reach Postgres. It skips Docker's built-in networks (bridge/host/
+// none): those don't provide the user-defined embedded DNS that --db-host
+// resolution relies on, so joining one would force a needless render failure +
+// fallback. Among the remaining (user-defined) networks it returns the
+// lexicographically smallest for a deterministic pick. Returns "" if none qualify.
+func pickRenderNetwork(set map[string]bool) string {
+	builtin := map[string]bool{"bridge": true, "host": true, "none": true}
+	best := ""
 	for k := range set {
-		if first == "" || k < first {
-			first = k
+		if builtin[k] {
+			continue
+		}
+		if best == "" || k < best {
+			best = k
 		}
 	}
-	return first
+	return best
 }
