@@ -114,6 +114,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	srv.StartMonitor()
 	srv.StartAuditPruner()
 	srv.StartRetentionSweeper()
+	srv.ReconcileErasureTombstones() // re-apply DSAR erasures that a restore may have resurrected
 	srv.StartSessionCleaner()
 	srv.StartBackupScheduler()
 	srv.StartWebhookDispatcher()

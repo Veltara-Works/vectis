@@ -37,6 +37,7 @@ const (
 	FeatureMultiTenant     = "multi_tenant"            // Enterprise: multi-tenant
 	FeatureDeliverability  = "advanced_deliverability" // Enterprise: advanced deliverability
 	FeatureSLA             = "sla"                     // Enterprise: SLA guarantees
+	FeatureDSAR            = "dsar"                    // Enterprise: data-subject access + erasure (GDPR Art.15/17)
 )
 
 // FreeTierFeatures are always available without a license.
@@ -66,6 +67,7 @@ var EnterpriseFeatures = []string{
 	FeatureMultiTenant,
 	FeatureDeliverability,
 	FeatureSLA,
+	FeatureDSAR,
 }
 
 // isFreeTierFeature returns true if the feature is available on the free tier.
@@ -192,7 +194,7 @@ func tierFromFeatures(features []string) string {
 	hasPro := false
 	for _, f := range features {
 		switch f {
-		case FeatureSAMLSSO, FeatureMultiTenant, FeatureDeliverability, FeatureSLA:
+		case FeatureSAMLSSO, FeatureMultiTenant, FeatureDeliverability, FeatureSLA, FeatureDSAR:
 			hasEnterprise = true
 		case FeatureAnalytics, FeatureOIDCSSO, FeatureCustomBranding,
 			FeatureAdvancedSpam, FeaturePrioritySupport:
