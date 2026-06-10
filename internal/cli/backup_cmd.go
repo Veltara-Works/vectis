@@ -20,11 +20,16 @@ var backupCmd = &cobra.Command{
 
 var backupCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "Create a full backup",
-	Long: "Creates a full backup of the database, mail data, configuration, and DKIM keys.\n\n" +
+	Short: "Create a backup (database, config, DKIM; mailboxes only inside the container)",
+	Long: "Creates a backup of the database, configuration, and DKIM keys.\n\n" +
 		"By default the database is dumped via `docker exec` into the vectis-postgres\n" +
 		"container. Use --db-host to dump over TCP from a directly-reachable Postgres\n" +
-		"instead (requires pg_dump on the host).",
+		"instead (requires pg_dump on the host).\n\n" +
+		"IMPORTANT: run on the host this does NOT include mailboxes — the mail-data\n" +
+		"Docker volume is mounted only inside the containers, so the host can't read it\n" +
+		"and the command warns when it produces a partial archive. For a FULL backup\n" +
+		"(including mail) use the in-app scheduler or POST /api/v1/backup/create, which\n" +
+		"run inside the api container.",
 	RunE: runBackupCreate,
 }
 
@@ -96,6 +101,26 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 		cfg.EncryptionKey = secrets.API.Secret
 	}
 
+	// A host-run backup can only archive what lives on the host filesystem. The
+	// maildirs live in the `mail-data` Docker volume, mounted only INSIDE the
+	// containers at cfg.MailDataDir — so a host backup captures no mail, the
+	// half-right-is-wrong footgun that bites during a restore. The full-coverage
+	// backup runs inside the api container (the scheduler, or
+	// POST /api/v1/backup/create), where the volume is mounted and the DB is
+	// dumped over TCP.
+	//
+	// Detection is by CONTENT, not mere existence: `vectis install` does
+	// `mkdir -p /var/vectis/mail` on the host (install.sh), and the named volume
+	// then shadows that dir inside the containers — so on a standard install the
+	// host path EXISTS but is an empty shadow. os.Stat would give a false
+	// "included"; we instead treat "no entries" (absent OR empty) as "no mail
+	// captured". A non-Docker install with real mail on the host has entries and
+	// correctly does not warn.
+	mailIncluded := false
+	if entries, readErr := os.ReadDir(cfg.MailDataDir); readErr == nil && len(entries) > 0 {
+		mailIncluded = true
+	}
+
 	mgr := backup.NewManager(nil, logger, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -129,13 +154,31 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	if jsonOutput {
-		out, _ := json.MarshalIndent(map[string]any{
-			"path": path,
-			"size": size,
-		}, "", "  ")
+		result := map[string]any{
+			"path":          path,
+			"size":          size,
+			"mail_included": mailIncluded,
+		}
+		if !mailIncluded {
+			result["warning"] = "maildirs not included — a host-run backup cannot access the mail-data volume; use the in-app scheduler or POST /api/v1/backup/create for a full backup"
+		}
+		out, _ := json.MarshalIndent(result, "", "  ")
 		fmt.Fprintln(cmd.OutOrStdout(), string(out))
 	} else if !quiet {
 		fmt.Fprintf(cmd.OutOrStdout(), "\nBackup saved: %s (%s)\n", path, formatBytes(size))
+	}
+
+	// Always surface the partial-backup warning (even under --quiet): an operator
+	// must never mistake a host-run config/DB-only archive for a full backup.
+	if !mailIncluded {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"\nWARNING: PARTIAL backup — no mailboxes captured.\n"+
+				"  %s holds no mail on the host: it is the mail-data Docker volume, mounted\n"+
+				"  only inside the containers (the host path is absent or an empty shadow), so\n"+
+				"  this archive holds the database, config and DKIM keys but no mail. For a FULL\n"+
+				"  backup use the in-app scheduler or POST /api/v1/backup/create, which run\n"+
+				"  inside the api container.\n",
+			cfg.MailDataDir)
 	}
 
 	return nil
