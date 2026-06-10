@@ -34,6 +34,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+      # start_period keeps boot-time probe failures from tripping
+      # "unhealthy" before the service is ready — the orchestrator's
+      # WaitHealthy aborts the rollout the instant a container reports
+      # unhealthy, so every healthcheck needs a start grace window.
+      start_period: 10s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -74,9 +79,13 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/api/v1/health"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 3
+      # API runs schema migrations + opens its DB/valkey pools on startup;
+      # a 30s grace covers that before the orchestrator's WaitHealthy
+      # (default 120s) would treat early misses as a hard failure.
+      start_period: 30s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -142,9 +151,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8081/internal/health"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 3
+      start_period: 20s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -187,9 +197,14 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "postfix status || exit 1"]
-      interval: 30s
+      # interval shortened from 30s so the first probe fires inside the
+      # apply window; with no start_period a 30s interval meant the first
+      # check landed too late and the orchestrator's recreate race could
+      # time out or read a transient boot failure as unhealthy.
+      interval: 5s
       timeout: 10s
       retries: 3
+      start_period: 30s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -231,9 +246,17 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "doveadm", "service", "status"]
-      interval: 30s
+      # Root cause of the v0.1.23 canary auto-rollback: with interval=30s
+      # and no start_period, dovecot's first health probe fell outside the
+      # apply recreate window, so the orchestrator timed out waiting and
+      # rolled back even though dovecot 2.4 was fully functional (~1s ready,
+      # doveconf -n clean). Verified fix: start_period=30s + interval=5s
+      # makes the container report healthy at ~t+10s. See
+      # project_v0.1.23_release_canary.md.
+      interval: 5s
       timeout: 10s
       retries: 3
+      start_period: 30s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -279,9 +302,12 @@ services:
     # 4 workers + passing configtest; only the healthcheck was broken.
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:11334/ping"]
-      interval: 30s
+      interval: 5s
       timeout: 10s
       retries: 3
+      # rspamd loads Lua plugins + Bayes statfiles before the controller
+      # worker answers /ping; 30s grace covers a cold start.
+      start_period: 30s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -344,9 +370,12 @@ services:
     # in a row "wget: not found" and marked the container unhealthy.
     healthcheck:
       test: ["CMD-SHELL", "curl -sfo /dev/null http://localhost/ || exit 1"]
-      interval: 30s
+      interval: 5s
       timeout: 10s
       retries: 3
+      # Apache + mod_php cold start; grace before the orchestrator's
+      # default WaitHealthy window would count early misses as failures.
+      start_period: 30s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -371,9 +400,10 @@ services:
       - loki-data:/loki
     healthcheck:
       test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:3100/ready"]
-      interval: 15s
+      interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 20s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -432,9 +462,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:3000/api/health"]
-      interval: 15s
+      interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 30s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -565,6 +596,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+      # First-boot init (createdb + init-users.sh) can run for tens of
+      # seconds against a socket-only temp server before the TCP listener
+      # is up; the grace keeps those expected early misses out of the
+      # failure count. retries=20 already gives a long ceiling thereafter.
+      start_period: 30s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -588,9 +624,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h localhost -p {{ if .Cluster.PgBouncer.ListenPort }}{{ .Cluster.PgBouncer.ListenPort }}{{ else }}6432{{ end }}"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 3
+      start_period: 15s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -630,9 +667,10 @@ services:
       - valkeydata:/data
     healthcheck:
       test: ["CMD-SHELL", "valkey-cli -a \"$$(cat /run/secrets/valkey_password)\" ping"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 5
+      start_period: 15s
     logging:
       driver: {{ .Logging.Driver }}
       options:
