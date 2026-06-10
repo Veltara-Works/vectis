@@ -15,21 +15,21 @@ import (
 
 // Message represents stored message metadata.
 type Message struct {
-	ID        string          `json:"id"`
-	DomainID  string          `json:"domain_id"`
-	MailboxID *string         `json:"mailbox_id,omitempty"`
-	MessageID string          `json:"message_id"`
-	Direction string          `json:"direction"` // "inbound" or "outbound"
-	Sender    string          `json:"sender"`
-	Recipients []string       `json:"recipients"`
-	Subject   string          `json:"subject,omitempty"`
-	SizeBytes int             `json:"size_bytes"`
-	Status    string          `json:"status"` // queued, sent, delivered, bounced, failed, spam
-	SpamScore *float64        `json:"spam_score,omitempty"`
-	SpamAction *string        `json:"spam_action,omitempty"`
-	QueueID   *string         `json:"queue_id,omitempty"`
-	Headers   json.RawMessage `json:"headers,omitempty"`
-	CreatedAt time.Time       `json:"created_at"`
+	ID         string          `json:"id"`
+	DomainID   string          `json:"domain_id"`
+	MailboxID  *string         `json:"mailbox_id,omitempty"`
+	MessageID  string          `json:"message_id"`
+	Direction  string          `json:"direction"` // "inbound" or "outbound"
+	Sender     string          `json:"sender"`
+	Recipients []string        `json:"recipients"`
+	Subject    string          `json:"subject,omitempty"`
+	SizeBytes  int             `json:"size_bytes"`
+	Status     string          `json:"status"` // queued, sent, delivered, bounced, failed, spam
+	SpamScore  *float64        `json:"spam_score,omitempty"`
+	SpamAction *string         `json:"spam_action,omitempty"`
+	QueueID    *string         `json:"queue_id,omitempty"`
+	Headers    json.RawMessage `json:"headers,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
 }
 
 // MessageFilter holds filters for listing/searching messages.
@@ -183,6 +183,19 @@ func (r *MessageRepo) UpdateStatus(ctx context.Context, id, status string) error
 		return fmt.Errorf("update message status: %w", err)
 	}
 	return nil
+}
+
+// DeleteOlderThan removes message metadata rows created before the given time
+// and returns the number deleted. Used by the retention sweeper. This purges
+// only the metadata index (sender/recipients/subject/headers); it does not
+// touch the on-disk mail store, which Dovecot owns.
+func (r *MessageRepo) DeleteOlderThan(ctx context.Context, before time.Time) (int64, error) {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM messages WHERE created_at < $1`, before)
+	if err != nil {
+		return 0, fmt.Errorf("delete old messages: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func scanMessage(row pgx.Row, m *Message) error {

@@ -30,6 +30,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/monitor"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	"github.com/Veltara-Works/vectis/internal/repository"
+	"github.com/Veltara-Works/vectis/internal/retention"
 	"github.com/Veltara-Works/vectis/internal/secretcrypto"
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
 	"github.com/Veltara-Works/vectis/internal/validonx"
@@ -105,12 +106,13 @@ type Server struct {
 	clusterHealth *cluster.HealthChecker
 
 	// Background services
-	monitor         *monitor.Monitor
-	auditPruner     *audit.Pruner
-	sessionCleaner  *auth.SessionCleaner
-	backupScheduler *backup.Scheduler
-	backupSchedMu   sync.Mutex // serialises Start/Stop/Reload of backupScheduler
-	usageReporter   *validonx.UsageReporter
+	monitor          *monitor.Monitor
+	auditPruner      *audit.Pruner
+	retentionSweeper *retention.Sweeper
+	sessionCleaner   *auth.SessionCleaner
+	backupScheduler  *backup.Scheduler
+	backupSchedMu    sync.Mutex // serialises Start/Stop/Reload of backupScheduler
+	usageReporter    *validonx.UsageReporter
 	// featureGate is always non-nil. When ValidonX is not configured the
 	// install runs as Free tier — only free-tier features pass; Pro/Enterprise
 	// gates deny with 403 / 402. Pre-v0.1.6 the unconfigured branch was an
@@ -415,6 +417,36 @@ func (s *Server) StopAuditPruner() {
 	}
 }
 
+// StartRetentionSweeper initialises and starts the data-retention sweeper,
+// which purges engagement events + message metadata past their window. It is a
+// no-op when no retention window is configured (config.yaml retention:).
+func (s *Server) StartRetentionSweeper() {
+	// Opt-in by design: a retention window applies only when the operator sets it
+	// in config.yaml (retention:). 0 or absent = keep forever, so an unconfigured
+	// install never deletes data — no surprise purges on upgrade. (Audit-log
+	// retention is separate, owned by the audit pruner.)
+	cfg := retention.Config{RunInterval: 24 * time.Hour}
+	if s.cfg != nil {
+		cfg.TrackingEventDays = s.cfg.Retention.TrackingEventDays
+		cfg.MessageMetadataDays = s.cfg.Retention.MessageMetadataDays
+		if s.cfg.Retention.RunIntervalHours > 0 {
+			cfg.RunInterval = time.Duration(s.cfg.Retention.RunIntervalHours) * time.Hour
+		}
+	}
+	s.retentionSweeper = retention.NewSweeper(
+		s.emailEvents, s.messages, s.audit, cfg,
+		s.logger.With("component", "retention-sweeper"),
+	)
+	s.retentionSweeper.Start()
+}
+
+// StopRetentionSweeper stops the retention sweeper if it is running.
+func (s *Server) StopRetentionSweeper() {
+	if s.retentionSweeper != nil {
+		s.retentionSweeper.Stop()
+	}
+}
+
 // effectiveBackupSettings returns the runtime backup settings: the
 // backup_config DB row when present, otherwise the file config (config.yaml
 // `backup:`). Mirrors how validonx_config / branding_config overlay their
@@ -617,6 +649,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("shutting down API server")
 	s.StopMonitor()
 	s.StopAuditPruner()
+	s.StopRetentionSweeper()
 	s.StopSessionCleaner()
 	s.StopBackupScheduler()
 	s.StopWebhookDispatcher()
