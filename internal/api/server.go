@@ -421,18 +421,14 @@ func (s *Server) StopAuditPruner() {
 // which purges engagement events + message metadata past their window. It is a
 // no-op when no retention window is configured (config.yaml retention:).
 func (s *Server) StartRetentionSweeper() {
-	// Mirror the audit pruner: a sensible default applies unless config overrides
-	// it with a positive value. Tracking events (IP/user-agent PII) default to a
-	// 90-day window — consistent with audit pruning, which is already default-on.
-	// Message metadata defaults to keep (0); operators opt in to purge it.
-	cfg := retention.DefaultConfig()
+	// Opt-in by design: a retention window applies only when the operator sets it
+	// in config.yaml (retention:). 0 or absent = keep forever, so an unconfigured
+	// install never deletes data — no surprise purges on upgrade. (Audit-log
+	// retention is separate, owned by the audit pruner.)
+	cfg := retention.Config{RunInterval: 24 * time.Hour}
 	if s.cfg != nil {
-		if s.cfg.Retention.TrackingEventDays > 0 {
-			cfg.TrackingEventDays = s.cfg.Retention.TrackingEventDays
-		}
-		if s.cfg.Retention.MessageMetadataDays > 0 {
-			cfg.MessageMetadataDays = s.cfg.Retention.MessageMetadataDays
-		}
+		cfg.TrackingEventDays = s.cfg.Retention.TrackingEventDays
+		cfg.MessageMetadataDays = s.cfg.Retention.MessageMetadataDays
 		if s.cfg.Retention.RunIntervalHours > 0 {
 			cfg.RunInterval = time.Duration(s.cfg.Retention.RunIntervalHours) * time.Hour
 		}

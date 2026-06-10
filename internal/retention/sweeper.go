@@ -20,16 +20,6 @@ type Config struct {
 	RunInterval         time.Duration // how often to sweep; default 24h
 }
 
-// DefaultConfig returns sensible defaults: keep engagement events ~90 days,
-// keep message metadata indefinitely (operationally useful; opt in to purge).
-func DefaultConfig() Config {
-	return Config{
-		TrackingEventDays:   90,
-		MessageMetadataDays: 0,
-		RunInterval:         24 * time.Hour,
-	}
-}
-
 // Result reports what a single sweep deleted.
 type Result struct {
 	TrackingEvents  int64
@@ -124,12 +114,16 @@ func (s *Sweeper) RunOnce(ctx context.Context) Result {
 			"message_metadata_deleted", res.MessageMetadata)
 		// Record the sweep in the audit trail. System action → nil actor:
 		// audit_log.admin_id is a UUID FK and a sentinel string fails the insert
-		// (the same non-UUID-actor trap that broke scheduled backups).
+		// (the same non-UUID-actor trap that broke scheduled backups). A logging
+		// failure must not be silent — a sweep that purges data with no audit
+		// record is exactly what an operator needs to notice.
 		if s.audit != nil {
-			_ = s.audit.Log(ctx, nil, "retention.sweep", "system", nil, map[string]any{
+			if err := s.audit.Log(ctx, nil, "retention.sweep", "system", nil, map[string]any{
 				"tracking_events_deleted":  res.TrackingEvents,
 				"message_metadata_deleted": res.MessageMetadata,
-			}, nil)
+			}, nil); err != nil {
+				s.logger.Warn("retention: failed to record sweep in audit log", "error", err)
+			}
 		}
 	}
 	return res

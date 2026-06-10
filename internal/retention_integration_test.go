@@ -48,7 +48,12 @@ func TestRetentionSweeper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create domain: %v", err)
 	}
-	t.Cleanup(func() { _, _ = domains.Delete(context.Background(), dom.ID) })
+	// Use defer, not t.Cleanup: t.Cleanup runs after the test function returns,
+	// by which point the deferred pool.Close() has already fired, so cleanup
+	// would hit a closed pool and leak the domain (breaking the next run on the
+	// unique name). This defer is registered after defer pool.Close(), so LIFO
+	// runs it first — while the pool is still open.
+	defer func() { _, _ = domains.Delete(context.Background(), dom.ID) }()
 
 	old := time.Now().UTC().AddDate(0, 0, -200) // well past a 90-day window
 	recent := time.Now().UTC().AddDate(0, 0, -1)

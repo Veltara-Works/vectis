@@ -155,9 +155,12 @@ type AuditConfig struct {
 // (IP + user-agent) and message metadata. Audit-log retention is handled
 // separately by the audit pruner (see AuditConfig); this sweeper deliberately
 // does not touch the audit trail. Each *_days knob is 0 = keep forever.
+// Opt-in: every window defaults to 0 = keep forever, so an unconfigured install
+// never deletes data. Set a positive value to enable a purge (recommended for
+// tracking events: 90).
 type RetentionConfig struct {
-	TrackingEventDays   int `yaml:"tracking_event_days"`   // purge email_events (opens/clicks) older than this; default 90, 0 = keep
-	MessageMetadataDays int `yaml:"message_metadata_days"` // purge messages metadata older than this; default 0 = keep
+	TrackingEventDays   int `yaml:"tracking_event_days"`   // purge email_events (opens/clicks) older than this; 0 = keep (recommended: 90)
+	MessageMetadataDays int `yaml:"message_metadata_days"` // purge messages metadata older than this; 0 = keep
 	RunIntervalHours    int `yaml:"run_interval_hours"`    // how often the sweep runs; default 24
 }
 
