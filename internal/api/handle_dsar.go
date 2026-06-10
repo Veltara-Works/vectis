@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -77,7 +76,7 @@ type dsarEraseRequest struct {
 // (dsar) gated at the route. Body: {"subject":"<email>","confirm":true}.
 func (s *Server) handleDSARErase(w http.ResponseWriter, r *http.Request) {
 	var req dsarEraseRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Invalid JSON body")
 		return
 	}

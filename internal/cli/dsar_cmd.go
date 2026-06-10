@@ -25,6 +25,14 @@ import (
 // the mail-data volume the export streams message bodies from. (Run on the bare
 // host it will fail to connect to the DB, the same constraint backup works
 // around with docker exec.)
+//
+// Unlike the HTTP routes, the CLI does NOT consult the ValidonX `dsar`
+// entitlement. That gate guards the remote API surface; the CLI is operator
+// break-glass tooling that already requires shell access to the box, which by
+// itself grants full Postgres + Maildir access (the operator could run the
+// equivalent SQL/`rm` by hand — see the manual path in operator-dsar-runbook).
+// This matches the other operator CLIs (e.g. `vectis saml init-sp`), which are
+// likewise unlicensed. The entitlement is enforced where it's a real boundary.
 
 var dsarCmd = &cobra.Command{
 	Use:   "dsar",

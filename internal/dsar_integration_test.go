@@ -80,10 +80,9 @@ func TestDSARExportEraseReconcile(t *testing.T) {
 		_, _ = domains.Delete(bg, dom.ID)
 	}()
 
-	mb, err := mailboxes.Create(ctx, repository.MailboxCreate{
+	if _, err := mailboxes.Create(ctx, repository.MailboxCreate{
 		DomainID: dom.ID, LocalPart: localPart, PasswordHash: "x",
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("create mailbox: %v", err)
 	}
 
@@ -93,15 +92,17 @@ func TestDSARExportEraseReconcile(t *testing.T) {
 		t.Fatalf("create alias: %v", err)
 	}
 
-	// One inbound (to the mailbox) and one outbound (from the subject).
-	mkMsg := func(mailboxID *string, sender string, dir string) {
+	// Mirror production message shapes (see handle_inbound.go / handle_send.go):
+	// inbound rows are stored with mailbox_id NULL and the subject only in
+	// recipients, so the DSAR filter must match on recipients, not mailbox_id.
+	mkMsg := func(sender string, recipients []string, dir string) {
 		m := &repository.Message{
 			DomainID:   dom.ID,
-			MailboxID:  mailboxID,
+			MailboxID:  nil, // inbound never sets it; outbound here exercises the same path
 			MessageID:  "<" + types.NewUUIDv7() + "@" + domainName + ">",
 			Direction:  dir,
 			Sender:     sender,
-			Recipients: []string{subject},
+			Recipients: recipients,
 			Status:     "received",
 			CreatedAt:  time.Now().UTC(),
 		}
@@ -109,8 +110,8 @@ func TestDSARExportEraseReconcile(t *testing.T) {
 			t.Fatalf("create message: %v", err)
 		}
 	}
-	mkMsg(&mb.ID, "outsider@other.example", "inbound")
-	mkMsg(nil, subject, "outbound")
+	mkMsg("outsider@other.example", []string{subject}, "inbound")  // matched via recipients (mailbox_id NULL)
+	mkMsg(subject, []string{"outsider@other.example"}, "outbound") // matched via sender
 
 	// Real Maildir on disk: two stored messages.
 	mailRoot := t.TempDir()
@@ -151,7 +152,7 @@ func TestDSARExportEraseReconcile(t *testing.T) {
 		t.Fatalf("read export zip: %v", err)
 	}
 	want := map[string]bool{
-		"account.json":                  false,
+		"account.json":                        false,
 		"messages/cur/1700000000.M1.host.eml": false,
 		"messages/new/1700000001.M2.host.eml": false,
 	}
@@ -202,13 +203,12 @@ func TestDSARExportEraseReconcile(t *testing.T) {
 
 	// --- Reconcile after a simulated restore ---
 	// Resurrect the mailbox + a message + the maildir, then reconcile.
-	mb3, err := mailboxes.Create(ctx, repository.MailboxCreate{
+	if _, err := mailboxes.Create(ctx, repository.MailboxCreate{
 		DomainID: dom.ID, LocalPart: localPart, PasswordHash: "x",
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("re-create mailbox (restore sim): %v", err)
 	}
-	mkMsg(&mb3.ID, "outsider@other.example", "inbound")
+	mkMsg("outsider@other.example", []string{subject}, "inbound") // inbound shape: mailbox_id NULL
 	if err := os.MkdirAll(filepath.Join(maildir, "new"), 0o755); err != nil {
 		t.Fatalf("recreate maildir: %v", err)
 	}

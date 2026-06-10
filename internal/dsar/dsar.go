@@ -62,6 +62,9 @@ func NewService(domains *repository.DomainRepo, mailboxes *repository.MailboxRep
 	if mailRoot == "" {
 		mailRoot = "/var/vectis/mail"
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Service{
 		domains: domains, mailboxes: mailboxes, aliases: aliases, admins: admins,
 		messages: messages, audit: audit, tombstones: tombstones,

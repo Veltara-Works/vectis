@@ -29,4 +29,4 @@ CREATE INDEX idx_erasure_tombstones_domain_local
 
 COMMENT ON TABLE  erasure_tombstones IS 'GDPR Art.17 suppression list — re-applies erasure after a backup restore. No message content.';
 COMMENT ON COLUMN erasure_tombstones.subject_email  IS 'Erased data subject (full email). Minimal identifier needed to honour the erasure across restores.';
-COMMENT ON COLUMN erasure_tombstones.reconcile_runs IS 'How many times the startup reconciler re-purged resurrected data for this subject.';
+COMMENT ON COLUMN erasure_tombstones.reconcile_runs IS 'Number of reconcile passes that have re-checked this subject (bumped every pass, not only when data was re-purged).';

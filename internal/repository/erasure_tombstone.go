@@ -56,11 +56,15 @@ func (r *ErasureTombstoneRepo) Upsert(ctx context.Context, subjectEmail, domain,
 		ErasedAt:     time.Now().UTC(),
 		ErasedBy:     erasedBy,
 	}
+	// On a re-erasure (same subject) reset the reconcile state too: this is a
+	// fresh erase, so the prior reconciled_at / run count no longer describe it
+	// (otherwise a brand-new erasure could look "already reconciled").
 	err := r.db.QueryRow(ctx,
 		`INSERT INTO erasure_tombstones (id, subject_email, domain, local_part, erased_at, erased_by, reconcile_runs)
 		 VALUES ($1, $2, $3, $4, $5, $6, 0)
 		 ON CONFLICT (subject_email) DO UPDATE
-		   SET erased_at = EXCLUDED.erased_at, erased_by = EXCLUDED.erased_by
+		   SET erased_at = EXCLUDED.erased_at, erased_by = EXCLUDED.erased_by,
+		       reconciled_at = NULL, reconcile_runs = 0
 		 RETURNING `+erasureTombstoneCols, t.ID, t.SubjectEmail, t.Domain, t.LocalPart, t.ErasedAt, t.ErasedBy,
 	).Scan(&t.ID, &t.SubjectEmail, &t.Domain, &t.LocalPart, &t.ErasedAt, &t.ErasedBy, &t.ReconciledAt, &t.ReconcileRuns)
 	if err != nil {

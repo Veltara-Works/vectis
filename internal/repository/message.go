@@ -199,13 +199,17 @@ func (r *MessageRepo) DeleteOlderThan(ctx context.Context, before time.Time) (in
 }
 
 // ListBySubject returns message metadata belonging to a single data subject:
-// messages delivered to their mailbox (mailbox_id) plus messages they sent
-// (sender). Used by the DSAR exporter to assemble the Art.15 record. Ordered
-// oldest-first for a stable export.
+// messages they sent (sender), messages they received (the subject is in
+// recipients), and any row still linked to their mailbox (mailbox_id). The
+// recipients match is essential: inbound mail is stored with mailbox_id NULL
+// and the recipient only in recipients (see handle_inbound.go), so a
+// mailbox_id/sender-only filter would miss every received message. Used by the
+// DSAR exporter; ordered oldest-first for a stable export.
 func (r *MessageRepo) ListBySubject(ctx context.Context, mailboxID, email string) ([]Message, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT id, domain_id, mailbox_id, message_id, direction, sender, recipients, subject, size_bytes, status, spam_score, spam_action, queue_id, headers, created_at
-		 FROM messages WHERE mailbox_id = $1 OR sender = $2 ORDER BY created_at ASC`, mailboxID, email)
+		 FROM messages WHERE ($1 <> '' AND mailbox_id = $1::uuid) OR sender = $2 OR $2 = ANY(recipients)
+		 ORDER BY created_at ASC`, mailboxID, email)
 	if err != nil {
 		return nil, fmt.Errorf("list messages by subject: %w", err)
 	}
@@ -225,17 +229,22 @@ func (r *MessageRepo) ListBySubject(ctx context.Context, mailboxID, email string
 }
 
 // DeleteBySubject removes message metadata belonging to a single data subject:
-// messages delivered to their mailbox (mailbox_id) plus messages they sent
-// (sender). Used by DSAR erasure. Must run BEFORE the mailbox row is deleted —
-// messages.mailbox_id is ON DELETE SET NULL, so deleting the mailbox first
-// would orphan the inbound rows out of this filter. Returns the count deleted.
+// messages they sent (sender), messages they received (subject in recipients),
+// and any row still linked to their mailbox (mailbox_id). The recipients match
+// is essential — inbound mail is stored with mailbox_id NULL and the recipient
+// only in recipients (handle_inbound.go), so a mailbox_id/sender-only filter
+// would leave every received message behind on erasure. Used by DSAR erasure.
 //
-// mailboxID may be "" (e.g. the reconciler running after a restore that brought
-// back message rows but not the mailbox): the guard skips the uuid branch so the
-// empty string is never cast to uuid, and matching falls back to sender alone.
+// mailboxID may be "" (e.g. the reconciler after a restore that brought back
+// message rows but not the mailbox): the guard skips the uuid branch so the
+// empty string is never cast to uuid, and matching falls back to sender +
+// recipients. The mailbox_id branch is largely belt-and-suspenders today
+// (outbound rows that carry it) since the sender/recipients clauses already
+// cover both directions regardless of the mailbox link. Returns the count.
 func (r *MessageRepo) DeleteBySubject(ctx context.Context, mailboxID, email string) (int64, error) {
 	tag, err := r.db.Exec(ctx,
-		`DELETE FROM messages WHERE ($1 <> '' AND mailbox_id = $1::uuid) OR sender = $2`, mailboxID, email)
+		`DELETE FROM messages WHERE ($1 <> '' AND mailbox_id = $1::uuid) OR sender = $2 OR $2 = ANY(recipients)`,
+		mailboxID, email)
 	if err != nil {
 		return 0, fmt.Errorf("delete messages by subject: %w", err)
 	}
