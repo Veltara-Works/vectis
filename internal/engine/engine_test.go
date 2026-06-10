@@ -118,13 +118,19 @@ func TestDovecotSQL(t *testing.T) {
 		t.Fatal("dovecot-sql.conf.ext not found")
 	}
 
+	// Dovecot 2.4 inline SQL form: named pgsql{} connection filter + passdb/userdb
+	// sql{} blocks, %{user} variables, and the quota_storage_size userdb field.
 	checks := []string{
-		"driver = pgsql",
-		"host=postgres",
-		"user=vectis_dovecot",
-		"password=secret_dovecot",
-		"default_pass_scheme = ARGON2ID",
-		"userdb_quota_rule",
+		"sql_driver = pgsql",
+		"pgsql main {",
+		"host = postgres",
+		"user = vectis_dovecot",
+		"password = secret_dovecot",
+		"passdb sql {",
+		"default_password_scheme = ARGON2ID",
+		"userdb sql {",
+		"quota_storage_size",
+		"'%{user}'",
 	}
 	for _, check := range checks {
 		if !strings.Contains(sqlConf, check) {
@@ -953,7 +959,7 @@ func TestComposeMemLimitsRendered(t *testing.T) {
 
 // TestSpamToJunkSieve verifies the global spam->Junk filing feature
 // (rspamd.file_spam_to_junk). When enabled (the default, nil pointer),
-// dovecot.conf wires the sieve_before script, the milter_headers use-list adds
+// dovecot.conf wires the 2.4 spam_to_junk sieve_script (type = before), the milter_headers use-list adds
 // the spam-header routine, and the sieve script renders; when explicitly
 // disabled, none of those wire up (but the sieve file is still rendered, since
 // the compose mount is unconditional).
@@ -972,8 +978,10 @@ func TestSpamToJunkSieve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate (default): %v", err)
 	}
-	if !strings.Contains(get(on, "dovecot/dovecot.conf"), "sieve_before = /etc/dovecot/sieve/spam-to-junk.sieve") {
-		t.Error("default: dovecot.conf missing sieve_before wiring")
+	if dc := get(on, "dovecot/dovecot.conf"); !strings.Contains(dc, "sieve_script spam_to_junk {") ||
+		!strings.Contains(dc, "type = before") ||
+		!strings.Contains(dc, "path = /etc/dovecot/sieve/spam-to-junk.sieve") {
+		t.Error("default: dovecot.conf missing the 2.4 sieve_script spam_to_junk (type = before) wiring")
 	}
 	if !strings.Contains(get(on, "rspamd/milter_headers.conf"), `"spam-header"`) {
 		t.Error("default: milter_headers.conf missing spam-header routine")
@@ -985,10 +993,11 @@ func TestSpamToJunkSieve(t *testing.T) {
 	if !strings.Contains(get(on, "rspamd/milter_headers.conf"), "visual.\n    \"spam-header\",") {
 		t.Errorf("default: spam-header not on its own line (template trimming bug); got:\n%s", get(on, "rspamd/milter_headers.conf"))
 	}
-	// Same guard for dovecot: the comment/sieve_before block must start on a new
-	// line after the per-user `sieve = ...` setting, not be folded onto it.
-	if !strings.Contains(get(on, "dovecot/dovecot.conf"), "active=~/.dovecot.sieve\n    # Global spam-filing") {
-		t.Errorf("default: sieve_before block folded onto the sieve= line (template trimming bug); got dovecot.conf plugin section")
+	// Same guard for dovecot: the conditional spam_to_junk sieve_script block must
+	// start on its own line after the personal sieve_script block closes, not be
+	// folded onto the closing brace by the {{- if }} trimming.
+	if !strings.Contains(get(on, "dovecot/dovecot.conf"), "active_path = ~/.dovecot.sieve\n}\n\n# Global spam-filing") {
+		t.Errorf("default: spam_to_junk block folded onto the personal block (template trimming bug); got dovecot.conf sieve section")
 	}
 	if sieve := get(on, "dovecot/spam-to-junk.sieve"); !strings.Contains(sieve, `fileinto :create "Junk"`) {
 		t.Errorf("default: spam-to-junk.sieve missing fileinto rule; got:\n%s", sieve)
@@ -1002,8 +1011,8 @@ func TestSpamToJunkSieve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate (disabled): %v", err)
 	}
-	if strings.Contains(get(gen, "dovecot/dovecot.conf"), "sieve_before") {
-		t.Error("disabled: dovecot.conf still wires sieve_before")
+	if strings.Contains(get(gen, "dovecot/dovecot.conf"), "sieve_script spam_to_junk") {
+		t.Error("disabled: dovecot.conf still wires the spam_to_junk sieve_script")
 	}
 	if strings.Contains(get(gen, "rspamd/milter_headers.conf"), `"spam-header"`) {
 		t.Error("disabled: milter_headers.conf still adds spam-header")

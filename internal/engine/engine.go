@@ -307,12 +307,35 @@ type GeneratedFile struct {
 	Mode os.FileMode
 }
 
+// dovecotMailVars converts legacy Dovecot 2.3 %d/%n/%u variables to the
+// 2.4 %{user|...} expansion syntax (all one-letter variables were removed in 2.4).
+func dovecotMailVars(s string) string {
+	s = strings.ReplaceAll(s, "%d", "%{user | domain}")
+	s = strings.ReplaceAll(s, "%n", "%{user | username}")
+	s = strings.ReplaceAll(s, "%u", "%{user}")
+	return s
+}
+
+// splitMailLocation splits a legacy mail_location ("maildir:/path/%d/%n/Maildir")
+// into its driver ("maildir") and path. Dovecot 2.4 replaced the combined
+// mail_location with separate mail_driver and mail_path settings.
+func splitMailLocation(loc string) (driver, path string) {
+	if i := strings.Index(loc, ":"); i >= 0 {
+		return loc[:i], loc[i+1:]
+	}
+	return loc, ""
+}
+
 // funcMap provides custom template functions.
 var funcMap = template.FuncMap{
 	"upper": strings.ToUpper,
 	"lower": strings.ToLower,
 	"hasFloat": func(p *float64) bool { return p != nil },
 	"hasBool":  func(p *bool) bool { return p != nil },
+	// Dovecot 2.4 mail_location → mail_driver/mail_path/mail_home conversion.
+	"mailDriver": func(loc string) string { d, _ := splitMailLocation(loc); return d },
+	"mailPath":   func(loc string) string { _, p := splitMailLocation(loc); return dovecotMailVars(p) },
+	"mailHome":   func(loc string) string { _, p := splitMailLocation(loc); return dovecotMailVars(strings.TrimSuffix(p, "/Maildir")) },
 	"derefFloat": func(p *float64) float64 {
 		if p == nil {
 			return 0
