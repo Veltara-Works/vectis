@@ -139,6 +139,47 @@ func TestDovecotSQL(t *testing.T) {
 	}
 }
 
+// TestDovecotMailLocation verifies the 2.4 mail_location → mail_driver/mail_path/
+// mail_home split (a key migration risk): the combined mail_location is gone and
+// the maildir path is rendered with the 2.4 %{user | ...} expansion syntax derived
+// from .Dovecot.MailLocation (testData sets "maildir:/var/vectis/mail/%d/%n/Maildir").
+func TestDovecotMailLocation(t *testing.T) {
+	files, _ := Generate(testData())
+	var dc string
+	for _, f := range files {
+		if f.RelPath == "dovecot/dovecot.conf" {
+			dc = string(f.Content)
+			break
+		}
+	}
+	if dc == "" {
+		t.Fatal("dovecot.conf not found")
+	}
+
+	// The combined 2.3 setting must be gone (silently ignored by 2.4 -> no
+	// delivery). Match the directive form ("mail_location =") so the explanatory
+	// comment that mentions the word doesn't trip the assertion.
+	if strings.Contains(dc, "mail_location =") {
+		t.Error("dovecot.conf still contains the legacy mail_location setting")
+	}
+	want := []string{
+		"mail_driver = maildir",
+		"mail_path = /var/vectis/mail/%{user | domain}/%{user | username}/Maildir",
+		"mail_home = /var/vectis/mail/%{user | domain}/%{user | username}",
+	}
+	for _, w := range want {
+		if !strings.Contains(dc, w) {
+			t.Errorf("dovecot.conf missing 2.4 mail setting: %q", w)
+		}
+	}
+	// No legacy one-letter variables should survive the conversion.
+	for _, bad := range []string{"%d/", "/%n/", "%u"} {
+		if strings.Contains(dc, bad) {
+			t.Errorf("dovecot.conf still contains legacy 2.3 variable %q (should be %%{user | ...})", bad)
+		}
+	}
+}
+
 // TestAdvancedSpamConfig verifies the Pro per-domain advanced spam pipeline
 // (settings.conf overrides + Lua extension + four allow/block map files)
 // renders end-to-end from TemplateData. Empty-state coverage lives in
