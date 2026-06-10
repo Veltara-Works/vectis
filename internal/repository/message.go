@@ -198,6 +198,50 @@ func (r *MessageRepo) DeleteOlderThan(ctx context.Context, before time.Time) (in
 	return tag.RowsAffected(), nil
 }
 
+// ListBySubject returns message metadata belonging to a single data subject:
+// messages delivered to their mailbox (mailbox_id) plus messages they sent
+// (sender). Used by the DSAR exporter to assemble the Art.15 record. Ordered
+// oldest-first for a stable export.
+func (r *MessageRepo) ListBySubject(ctx context.Context, mailboxID, email string) ([]Message, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT id, domain_id, mailbox_id, message_id, direction, sender, recipients, subject, size_bytes, status, spam_score, spam_action, queue_id, headers, created_at
+		 FROM messages WHERE mailbox_id = $1 OR sender = $2 ORDER BY created_at ASC`, mailboxID, email)
+	if err != nil {
+		return nil, fmt.Errorf("list messages by subject: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.DomainID, &m.MailboxID, &m.MessageID, &m.Direction,
+			&m.Sender, &m.Recipients, &m.Subject, &m.SizeBytes, &m.Status,
+			&m.SpamScore, &m.SpamAction, &m.QueueID, &m.Headers, &m.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		messages = append(messages, m)
+	}
+	return messages, nil
+}
+
+// DeleteBySubject removes message metadata belonging to a single data subject:
+// messages delivered to their mailbox (mailbox_id) plus messages they sent
+// (sender). Used by DSAR erasure. Must run BEFORE the mailbox row is deleted —
+// messages.mailbox_id is ON DELETE SET NULL, so deleting the mailbox first
+// would orphan the inbound rows out of this filter. Returns the count deleted.
+//
+// mailboxID may be "" (e.g. the reconciler running after a restore that brought
+// back message rows but not the mailbox): the guard skips the uuid branch so the
+// empty string is never cast to uuid, and matching falls back to sender alone.
+func (r *MessageRepo) DeleteBySubject(ctx context.Context, mailboxID, email string) (int64, error) {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM messages WHERE ($1 <> '' AND mailbox_id = $1::uuid) OR sender = $2`, mailboxID, email)
+	if err != nil {
+		return 0, fmt.Errorf("delete messages by subject: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 func scanMessage(row pgx.Row, m *Message) error {
 	return row.Scan(&m.ID, &m.DomainID, &m.MailboxID, &m.MessageID, &m.Direction,
 		&m.Sender, &m.Recipients, &m.Subject, &m.SizeBytes, &m.Status,

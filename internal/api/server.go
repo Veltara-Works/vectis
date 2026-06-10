@@ -75,6 +75,8 @@ type Server struct {
 	fblReports   *repository.FBLReportRepo
 	resetTokens  *repository.PasswordResetRepo
 
+	erasureTombstones *repository.ErasureTombstoneRepo
+
 	// Notifications
 	notifications *mail.NotificationSender
 
@@ -159,36 +161,37 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	webhookEncKey := secretcrypto.DeriveKey([]byte(cfg.CookieSecret), "vectis-webhook-secret-v1")
 
 	s := &Server{
-		logger:        logger,
-		db:            db,
-		vk:            vk,
-		sessions:      auth.NewSessionManager(db, vk, cfg.SessionTTL, cfg.CookieSecret),
-		hostname:      cfg.Hostname,
-		internalToken: cfg.CookieSecret, // reuse API secret as internal service token
-		dkimBasePath:  cfg.DKIMBasePath,
-		webDir:        cfg.WebDir,
-		genDir:        cfg.GenDir,
-		cfg:           cfg.VectisCfg,
-		secrets:       cfg.VectisSecrets,
-		domains:       repository.NewDomainRepo(db),
-		mailboxes:     repository.NewMailboxRepo(db),
-		aliases:       repository.NewAliasRepo(db),
-		spamLists:     repository.NewSpamListRepo(db),
-		admins:        repository.NewAdminRepo(db),
-		adminDomains:  repository.NewAdminDomainRepo(db),
-		apiKeys:       repository.NewAPIKeyRepo(db),
-		webhooks:      repository.NewWebhookRepo(db, webhookEncKey),
-		abuseEvents:   repository.NewAbuseRepo(db),
-		audit:         repository.NewAuditRepo(db),
-		alerts:        repository.NewAlertRepo(db),
-		messages:      repository.NewMessageRepo(db),
-		mailStats:     repository.NewMailStatsRepo(db),
-		emailEvents:   repository.NewEmailEventRepo(db),
-		ipWarmup:      repository.NewIPWarmupRepo(db),
-		rblChecks:     repository.NewRBLCheckRepo(db),
-		fblReports:    repository.NewFBLReportRepo(db),
-		resetTokens:   repository.NewPasswordResetRepo(db),
-		totpManager:   auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
+		logger:            logger,
+		db:                db,
+		vk:                vk,
+		sessions:          auth.NewSessionManager(db, vk, cfg.SessionTTL, cfg.CookieSecret),
+		hostname:          cfg.Hostname,
+		internalToken:     cfg.CookieSecret, // reuse API secret as internal service token
+		dkimBasePath:      cfg.DKIMBasePath,
+		webDir:            cfg.WebDir,
+		genDir:            cfg.GenDir,
+		cfg:               cfg.VectisCfg,
+		secrets:           cfg.VectisSecrets,
+		domains:           repository.NewDomainRepo(db),
+		mailboxes:         repository.NewMailboxRepo(db),
+		aliases:           repository.NewAliasRepo(db),
+		spamLists:         repository.NewSpamListRepo(db),
+		admins:            repository.NewAdminRepo(db),
+		adminDomains:      repository.NewAdminDomainRepo(db),
+		apiKeys:           repository.NewAPIKeyRepo(db),
+		webhooks:          repository.NewWebhookRepo(db, webhookEncKey),
+		abuseEvents:       repository.NewAbuseRepo(db),
+		audit:             repository.NewAuditRepo(db),
+		alerts:            repository.NewAlertRepo(db),
+		messages:          repository.NewMessageRepo(db),
+		mailStats:         repository.NewMailStatsRepo(db),
+		emailEvents:       repository.NewEmailEventRepo(db),
+		ipWarmup:          repository.NewIPWarmupRepo(db),
+		rblChecks:         repository.NewRBLCheckRepo(db),
+		fblReports:        repository.NewFBLReportRepo(db),
+		resetTokens:       repository.NewPasswordResetRepo(db),
+		erasureTombstones: repository.NewErasureTombstoneRepo(db),
+		totpManager:       auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
 	}
 
 	// Self-heal: encrypt any webhook signing secret still stored as plaintext
@@ -845,6 +848,14 @@ func (s *Server) buildRouter() chi.Router {
 			// Audit log — super_admin only (handler returns platform-wide entries unfiltered).
 			r.With(requireSuperAdmin()).Get("/audit", s.handleListAudit)
 			r.With(requireSuperAdmin()).Get("/audit/export", s.handleExportAudit)
+
+			// DSAR — GDPR Art.15 access + Art.17 erasure. Super_admin only AND
+			// Enterprise-gated (the dsar feature). Erasure is irreversible and
+			// writes a restore-surviving tombstone.
+			dsarGate := s.featureGate.FeatureGate(validonx.FeatureDSAR)
+			r.With(requireSuperAdmin(), dsarGate).Get("/dsar/export", s.handleDSARExport)
+			r.With(requireSuperAdmin(), dsarGate).Post("/dsar/erase", s.handleDSARErase)
+			r.With(requireSuperAdmin(), dsarGate).Get("/dsar/erasures", s.handleDSARListErasures)
 
 			// Sieve filter management — all roles (domain scoping in handler).
 			r.Get("/mailboxes/{mailboxID}/sieve", s.handleListSieveScripts)

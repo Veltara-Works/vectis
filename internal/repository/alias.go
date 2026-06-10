@@ -204,3 +204,42 @@ func (r *AliasRepo) Delete(ctx context.Context, id string) (bool, error) {
 	}
 	return result.RowsAffected() > 0, nil
 }
+
+// ListBySubject returns aliases that are personal data of a single subject:
+// aliases they own (domain_id + source_local_part) and aliases that forward to
+// them (destination = their email). Used by the DSAR exporter.
+func (r *AliasRepo) ListBySubject(ctx context.Context, domainID, localPart, email string) ([]Alias, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT id, domain_id, source_local_part, destination, active, created_at, updated_at
+		 FROM aliases WHERE (domain_id = $1 AND source_local_part = $2) OR destination = $3
+		 ORDER BY source_local_part`, domainID, localPart, email)
+	if err != nil {
+		return nil, fmt.Errorf("list aliases by subject: %w", err)
+	}
+	defer rows.Close()
+
+	var aliases []Alias
+	for rows.Next() {
+		var a Alias
+		if err := rows.Scan(&a.ID, &a.DomainID, &a.SourceLocalPart, &a.Destination, &a.Active, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan alias: %w", err)
+		}
+		aliases = append(aliases, a)
+	}
+	return aliases, nil
+}
+
+// DeleteBySubject removes aliases that are personal data of a single subject:
+// aliases they own (domain_id + source_local_part) and aliases that forward to
+// them (destination = their email). Used by DSAR erasure. domainID may be ""
+// (reconcile with no surviving domain row): the guard skips the uuid branch so
+// only destination matches apply. Returns the count deleted.
+func (r *AliasRepo) DeleteBySubject(ctx context.Context, domainID, localPart, email string) (int64, error) {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM aliases WHERE ($1 <> '' AND domain_id = $1::uuid AND source_local_part = $2) OR destination = $3`,
+		domainID, localPart, email)
+	if err != nil {
+		return 0, fmt.Errorf("delete aliases by subject: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
