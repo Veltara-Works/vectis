@@ -143,3 +143,15 @@ func (r *EmailEventRepo) ListByMessage(ctx context.Context, messageID string, li
 	}
 	return events, nil
 }
+
+// DeleteOlderThan removes engagement events created before the given time and
+// returns the number of rows deleted. Used by the retention sweeper to purge
+// IP/user-agent PII once it is no longer needed for analytics.
+func (r *EmailEventRepo) DeleteOlderThan(ctx context.Context, before time.Time) (int64, error) {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM email_events WHERE created_at < $1`, before)
+	if err != nil {
+		return 0, fmt.Errorf("delete old email_events: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

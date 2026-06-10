@@ -113,6 +113,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Start background services.
 	srv.StartMonitor()
 	srv.StartAuditPruner()
+	srv.StartRetentionSweeper()
 	srv.StartSessionCleaner()
 	srv.StartBackupScheduler()
 	srv.StartWebhookDispatcher()
