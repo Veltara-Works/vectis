@@ -190,6 +190,31 @@ func (dm *DockerManager) pullImage(ctx context.Context, service string) error {
 	return nil
 }
 
+// PullImageRef pulls an explicit image reference (e.g. the target release's api
+// image for render-from-target), independent of the compose file — at the point
+// of use the compose file may still carry the OLD tags, so `docker compose pull`
+// can't reach the new image. Uses a plain `docker pull` with its own timeout.
+func (dm *DockerManager) PullImageRef(ctx context.Context, imageRef string, timeout time.Duration) error {
+	if imageRef == "" {
+		return fmt.Errorf("PullImageRef: empty image reference")
+	}
+	pullCtx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		pullCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	dm.logger.Info("pulling image ref", "image", imageRef)
+	cmd := exec.CommandContext(pullCtx, "docker", "pull", imageRef)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker pull %s: %w: %s", imageRef, err, strings.TrimSpace(string(output)))
+	}
+	dm.logger.Info("image ref pulled", "image", imageRef)
+	return nil
+}
+
 // StopServices stops containers in the given order (should be reverse dependency order).
 // Each container is stopped gracefully with a 30-second timeout.
 func (dm *DockerManager) StopServices(ctx context.Context, order []string) error {
@@ -584,8 +609,17 @@ func (dm *DockerManager) ApplyComposeServices(ctx context.Context, services []st
 	dm.logger.Info("applying docker compose for specific services",
 		"paths", dm.cfg.ComposePaths, "services", filtered)
 
+	// --no-deps: don't let compose's own `depends_on: condition: service_healthy`
+	// gate hard-fail this command. During a rolling recreate a dependency (e.g.
+	// dovecot) is briefly "starting"/"unhealthy"; without --no-deps `compose up`
+	// aborts with "dependency failed to start: container vectis-dovecot is
+	// unhealthy" and the whole Apply rolls back. Ordered, health-gated startup is
+	// Phase 5's job (StartServices + WaitHealthy, which tolerates "starting"); the
+	// data-layer deps these services need are already running. Reproduced on the
+	// mx1 v0.1.24 canary (webmail→dovecot). Matches StartServices's per-service
+	// `up -d --no-deps`.
 	args := append([]string{"compose"}, dm.cfg.composeFileArgs()...)
-	args = append(args, "up", "-d")
+	args = append(args, "up", "-d", "--no-deps")
 	args = append(args, filtered...)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 

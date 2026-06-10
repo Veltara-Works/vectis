@@ -529,7 +529,7 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 				o.failApply(applyCtx, opID, jobID, fmt.Sprintf("migration failed and rollback also failed: migrate=%v, rollback=%v", err, rollbackErr))
 				return "", fmt.Errorf("migration and rollback both failed: %w", rollbackErr)
 			}
-			_ = o.sm.CompleteOperation(applyCtx, opID, "rolled_back", snapshotPath, fmt.Sprintf("migration failed: %v", err))
+			o.completeRollback(opID, snapshotPath, fmt.Sprintf("migration failed: %v", err))
 			return jobID, fmt.Errorf("migration failed, rolled back: %w", err)
 		}
 	}
@@ -560,6 +560,35 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 	// rollback can find it without a new persisted field.
 	o.logger.Info("phase 3.5: rewriting compose with target tags", "job_id", jobID)
 
+	// Select the renderer for this Apply. Default = the in-process generators
+	// wired by main.go, which render from THIS (running) orchestrator's embedded
+	// templates. When render-from-target is enabled and a release tag is known,
+	// render the desired compose + configs from the TARGET release image's own
+	// `vectis config generate` instead — so a template/healthcheck change shipped
+	// in the target release lands during the very Apply that delivers it, instead
+	// of being invisible until the next one (GH #47 bootstrap deadlock).
+	//
+	// On ANY render-from-target failure we log loudly and fall back to the
+	// embedded-template generators: the Apply is then no worse than before this
+	// change (it just can't pick up target-only template changes), rather than
+	// failing outright.
+	composeGen := o.composeGen
+	configGen := o.configGen
+	renderMode := "embedded-templates"
+	if o.cfg.RenderFromTargetImage && plan.ReleaseTag != "" {
+		composeYAML, cfgFiles, rErr := o.renderViaTargetImage(applyCtx, plan.ReleaseTag, jobID)
+		if rErr != nil {
+			o.logger.Warn("render-from-target failed; falling back to embedded templates (target-only template changes will NOT land this Apply)",
+				"job_id", jobID, "release_tag", plan.ReleaseTag, "error", rErr)
+		} else {
+			renderMode = "target-image"
+			composeGen = staticComposeGenerator(composeYAML)
+			configGen = staticConfigGenerator(cfgFiles)
+			o.logger.Info("rendered desired state from target release image",
+				"job_id", jobID, "release_tag", plan.ReleaseTag, "config_files", len(cfgFiles))
+		}
+	}
+
 	composePath := ""
 	if len(o.cfg.ComposePaths) > 0 {
 		composePath = o.cfg.ComposePaths[0]
@@ -570,9 +599,9 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		var rewriteErr error
 		var mode string
 
-		if o.composeGen != nil && plan.ReleaseTag != "" {
-			mode = "regenerate"
-			rewritten, rewriteErr = RegenerateCompose(applyCtx, composePath, backupPath, plan.ReleaseTag, o.composeGen)
+		if composeGen != nil && plan.ReleaseTag != "" {
+			mode = renderMode
+			rewritten, rewriteErr = RegenerateCompose(applyCtx, composePath, backupPath, plan.ReleaseTag, composeGen)
 		} else {
 			mode = "tag-rewrite"
 			rewritten, rewriteErr = RewriteComposeTags(composePath, plan.Changes, backupPath)
@@ -585,7 +614,7 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 				o.failApply(applyCtx, opID, jobID, fmt.Sprintf("compose rewrite failed and rollback also failed: mode=%s rewrite=%v, rollback=%v", mode, rewriteErr, rollbackErr))
 				return "", fmt.Errorf("compose rewrite and rollback both failed: %w", rollbackErr)
 			}
-			_ = o.sm.CompleteOperation(applyCtx, opID, "rolled_back", snapshotPath, fmt.Sprintf("compose rewrite failed (%s): %v", mode, rewriteErr))
+			o.completeRollback(opID, snapshotPath, fmt.Sprintf("compose rewrite failed (%s): %v", mode, rewriteErr))
 			return jobID, fmt.Errorf("compose rewrite failed, rolled back: %w", rewriteErr)
 		}
 		if rewritten {
@@ -630,15 +659,15 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 	// Skip path: configGen unset (legacy installs whose main.go didn't wire
 	// SetConfigGenerator) — same fallback as Phase 3.5's compose path. The
 	// regen is best-effort additive; configs simply stay where they are.
-	if o.configGen != nil && len(o.cfg.GeneratedConfigDir) > 0 {
-		o.logger.Info("phase 3.6: regenerating per-service configs", "job_id", jobID)
+	if configGen != nil && len(o.cfg.GeneratedConfigDir) > 0 {
+		o.logger.Info("phase 3.6: regenerating per-service configs", "job_id", jobID, "render_mode", renderMode)
 		configBackupDir := configBackupDirFor(snapshotPath)
 		_, configsChanged, regenErr := RegenerateConfigs(
 			applyCtx,
 			o.cfg.GeneratedConfigDir,
 			configBackupDir,
 			plan.ReleaseTag,
-			o.configGen,
+			configGen,
 		)
 		if regenErr != nil {
 			o.logger.Error("config regen failed, initiating rollback", "error", regenErr)
@@ -647,7 +676,7 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 				o.failApply(applyCtx, opID, jobID, fmt.Sprintf("config regen failed and rollback also failed: regen=%v, rollback=%v", regenErr, rollbackErr))
 				return "", fmt.Errorf("config regen and rollback both failed: %w", rollbackErr)
 			}
-			_ = o.sm.CompleteOperation(applyCtx, opID, "rolled_back", snapshotPath, fmt.Sprintf("config regen failed: %v", regenErr))
+			o.completeRollback(opID, snapshotPath, fmt.Sprintf("config regen failed: %v", regenErr))
 			return jobID, fmt.Errorf("config regen failed, rolled back: %w", regenErr)
 		}
 		if len(configsChanged) > 0 {
@@ -677,7 +706,7 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 			o.failApply(applyCtx, opID, jobID, fmt.Sprintf("pull failed and rollback also failed: pull=%v, rollback=%v", err, rollbackErr))
 			return "", fmt.Errorf("pull and rollback both failed: %w", rollbackErr)
 		}
-		_ = o.sm.CompleteOperation(applyCtx, opID, "rolled_back", snapshotPath, fmt.Sprintf("image pull failed: %v", err))
+		o.completeRollback(opID, snapshotPath, fmt.Sprintf("image pull failed: %v", err))
 		return jobID, fmt.Errorf("image pull failed, rolled back: %w", err)
 	}
 
@@ -694,7 +723,7 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 			o.failApply(applyCtx, opID, jobID, fmt.Sprintf("stop failed and rollback also failed: stop=%v, rollback=%v", err, rollbackErr))
 			return "", fmt.Errorf("stop and rollback both failed: %w", rollbackErr)
 		}
-		_ = o.sm.CompleteOperation(applyCtx, opID, "rolled_back", snapshotPath, fmt.Sprintf("stop services failed: %v", err))
+		o.completeRollback(opID, snapshotPath, fmt.Sprintf("stop services failed: %v", err))
 		return jobID, fmt.Errorf("stop services failed, rolled back: %w", err)
 	}
 
@@ -711,7 +740,7 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 			o.failApply(applyCtx, opID, jobID, fmt.Sprintf("compose apply failed and rollback also failed: compose=%v, rollback=%v", err, rollbackErr))
 			return "", fmt.Errorf("compose apply and rollback both failed: %w", rollbackErr)
 		}
-		_ = o.sm.CompleteOperation(applyCtx, opID, "rolled_back", snapshotPath, fmt.Sprintf("compose apply failed: %v", err))
+		o.completeRollback(opID, snapshotPath, fmt.Sprintf("compose apply failed: %v", err))
 		return jobID, fmt.Errorf("compose apply failed, rolled back: %w", err)
 	}
 
@@ -728,8 +757,7 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 			o.failApply(applyCtx, opID, jobID, fmt.Sprintf("health check failed and rollback also failed: health=%v, rollback=%v", err, rollbackErr))
 			return "", fmt.Errorf("health check and rollback both failed: %w", rollbackErr)
 		}
-		_ = o.sm.CompleteOperation(applyCtx, opID, "rolled_back", snapshotPath, fmt.Sprintf("health check failed: %v", err))
-		_ = o.sm.Transition(applyCtx, StateIdle)
+		o.completeRollback(opID, snapshotPath, fmt.Sprintf("health check failed: %v", err))
 		return jobID, fmt.Errorf("health check failed, rolled back: %w", err)
 	}
 
@@ -1007,6 +1035,51 @@ func (o *Orchestrator) failApply(ctx context.Context, opID, jobID, errMsg string
 		o.lastOp.Error = errMsg
 	}
 	o.mu.Unlock()
+}
+
+// completeRollback records the "rolled_back" history row and returns the
+// orchestrator to a usable terminal state after a successful rollback.
+//
+// Two reasons it does NOT reuse applyCtx (GH #48):
+//
+//  1. By the time a rollback finishes, applyCtx may already be past its
+//     deadline (a slow rollback, or the orchestrator self-update handoff timing
+//     out the CLI). A transition issued on an expired context skips the Valkey
+//     mirror sync, leaving orchestrator:state stale at "applying"/"rolling_back".
+//
+//  2. Several Apply rollback paths (Phase 3.5/3.6/4.1/4.2/4.3) never transitioned
+//     the in-memory state out of "applying" at all — they only recorded the
+//     history row — so the live process stayed wedged in "applying" until a
+//     manual orchestrator restart, blocking every subsequent plan/apply with
+//     409 STATE_CONFLICT. (Reproduced on the mx1 v0.1.24 canary: the Phase-4.3
+//     compose depends_on health gate hard-failed and rolled back, then plan
+//     returned STATE_CONFLICT until restart.)
+//
+// Using a fresh context + SetState (which bypasses transition validation, so it
+// lands "idle" from either "applying" or "rolling_back") makes the terminal
+// transition always stick: in memory AND in the Valkey mirror.
+func (o *Orchestrator) completeRollback(opID, snapshotPath, reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := o.sm.CompleteOperation(ctx, opID, "rolled_back", snapshotPath, reason); err != nil {
+		o.logger.Error("failed to record rolled_back history row", "op_id", opID, "error", err)
+	}
+	// SetState (no transition validation) + fresh ctx so both the in-memory
+	// state and the Valkey mirror land on idle regardless of the prior state or
+	// the original apply context's deadline.
+	o.sm.SetState(ctx, StateIdle)
+
+	o.mu.Lock()
+	now := time.Now().UTC()
+	if o.lastOp != nil {
+		o.lastOp.State = StateIdle
+		o.lastOp.EndedAt = &now
+		o.lastOp.Error = reason
+	}
+	o.mu.Unlock()
+
+	o.logger.Info("rollback complete; orchestrator returned to idle", "op_id", opID, "reason", reason)
 }
 
 // runMigrations runs pending forward-only database migrations using golang-migrate.

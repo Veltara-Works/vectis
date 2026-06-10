@@ -19,6 +19,20 @@ type Config struct {
 	DBName             string        // Postgres database name
 	DBUser             string        // Postgres user for dump/restore
 	DBPassword         string        // Postgres password for dump/restore
+
+	// ConfigDirHost is the HOST path of the config dir (config.yaml/secrets.yaml),
+	// mounted read-only into the throwaway render container at /etc/vectis. It is
+	// the host-side path (not the orchestrator container's view); on standard
+	// installs the orchestrator mounts /etc/vectis:/etc/vectis so the two match.
+	// Empty disables render-from-target (Phase 3.5 falls back to embedded templates).
+	ConfigDirHost string
+
+	// RenderFromTargetImage enables Phase 3.5/3.6 rendering the desired compose +
+	// configs from the TARGET release image's `vectis config generate` instead of
+	// the running orchestrator's embedded templates (GH #47 bootstrap-deadlock fix).
+	// On any failure the Apply falls back to the embedded-template path, so the
+	// upgrade is never worse than before. Defaults on; settable via env.
+	RenderFromTargetImage bool
 }
 
 // DefaultConfig returns a Config with production defaults per Spec D.5.
@@ -37,6 +51,9 @@ func DefaultConfig() Config {
 		DBPort:             5432,
 		DBName:             "vectis",
 		DBUser:             "vectis_api",
+
+		ConfigDirHost:         "/etc/vectis",
+		RenderFromTargetImage: true,
 	}
 }
 

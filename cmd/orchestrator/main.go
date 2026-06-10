@@ -170,6 +170,30 @@ func run(logger *slog.Logger) error {
 	orchCfg.DBUser = secrets.Database.APIUser
 	orchCfg.DBPassword = secrets.Database.APIPassword
 
+	// ConfigDirHost is the HOST path of the config dir, bind-mounted read-only
+	// into the throwaway render container during render-from-target (GH #47).
+	// On standard installs the orchestrator mounts /etc/vectis:/etc/vectis so the
+	// host path equals the container's configDir. VECTIS_ORCH_CONFIG_DIR_HOST
+	// overrides it for installs whose host config dir differs (mirrors the
+	// VECTIS_ORCH_COMPOSE_PATHS escape hatch for the compose file).
+	orchCfg.ConfigDirHost = configDir
+	if raw := os.Getenv("VECTIS_ORCH_CONFIG_DIR_HOST"); strings.TrimSpace(raw) != "" {
+		orchCfg.ConfigDirHost = strings.TrimSpace(raw)
+		logger.Info("overriding config dir host path from env", "config_dir_host", orchCfg.ConfigDirHost)
+	}
+
+	// VECTIS_ORCH_RENDER_FROM_TARGET=0/false disables render-from-target and
+	// forces Phase 3.5/3.6 to use the embedded-template generators (the pre-GH-#47
+	// behaviour). Kept as a kill switch in case the target-image render path
+	// misbehaves on an install we can't immediately debug.
+	if raw := strings.TrimSpace(os.Getenv("VECTIS_ORCH_RENDER_FROM_TARGET")); raw != "" {
+		switch strings.ToLower(raw) {
+		case "0", "false", "no", "off":
+			orchCfg.RenderFromTargetImage = false
+			logger.Info("render-from-target disabled via env; using embedded templates")
+		}
+	}
+
 	// VECTIS_ORCH_COMPOSE_PATHS lets the operator point the orchestrator at the
 	// actually-deployed compose files. Useful when prod runs from a two-file
 	// setup (e.g. /opt/vectis/docker-compose.yml + docker-compose.mail.yml) that
