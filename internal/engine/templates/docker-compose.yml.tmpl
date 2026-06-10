@@ -82,10 +82,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 3
-      # API runs schema migrations + opens its DB/valkey pools on startup;
-      # a 30s grace covers that before the orchestrator's WaitHealthy
-      # (default 120s) would treat early misses as a hard failure.
-      start_period: 30s
+      # API opens its DB/valkey pools on startup; the grace keeps those
+      # early misses out of the failure count. Kept under the per-service
+      # window — ServiceHealthTimeouts["api"] = 30s, NOT the 120s default —
+      # so a genuinely failed start still surfaces as unhealthy in time.
+      start_period: 15s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -251,8 +252,8 @@ services:
       # apply recreate window, so the orchestrator timed out waiting and
       # rolled back even though dovecot 2.4 was fully functional (~1s ready,
       # doveconf -n clean). Verified fix: start_period=30s + interval=5s
-      # makes the container report healthy at ~t+10s. See
-      # project_v0.1.23_release_canary.md.
+      # makes the container report healthy at ~t+10s, well under the 60s
+      # ServiceHealthTimeouts["dovecot"] window.
       interval: 5s
       timeout: 10s
       retries: 3
@@ -596,11 +597,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
-      # First-boot init (createdb + init-users.sh) can run for tens of
-      # seconds against a socket-only temp server before the TCP listener
-      # is up; the grace keeps those expected early misses out of the
-      # failure count. retries=20 already gives a long ceiling thereafter.
-      start_period: 30s
+      # First-boot init (createdb + init-users.sh) runs against a
+      # socket-only temp server before the TCP listener is up; the grace
+      # keeps those expected early misses out of the failure count, and
+      # retries=20 carries the rest. Kept under the 30s per-service
+      # ServiceHealthTimeouts["postgres"] window. On upgrades the data dir
+      # already exists, so postgres is healthy in a few seconds.
+      start_period: 20s
     logging:
       driver: {{ .Logging.Driver }}
       options:
@@ -670,7 +673,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      # Under the 15s ServiceHealthTimeouts["valkey"] window so a failed
+      # start can still surface as unhealthy rather than only timing out.
+      start_period: 10s
     logging:
       driver: {{ .Logging.Driver }}
       options:
