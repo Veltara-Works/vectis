@@ -14,10 +14,87 @@ for a copy of all personal data the service holds about them.
 > is entitled to, and any exemptions are jurisdiction-specific. Run
 > the response by your privacy counsel before sending.
 
-Closes audit finding **2026-05-17-P5-M1** (target: v0.1.13). The
-lower-effort MVP of the two options the audit recommends; the higher-
-effort option is the dedicated `GET /api/v1/mailboxes/{id}/dsar-export`
-endpoint, deferred to a later release.
+Closes audit finding **2026-05-17-P5-M1** (target: v0.1.13). Originally
+the lower-effort MVP of the two options the audit recommends (the manual
+SQL/Maildir path documented below). The higher-effort option — a built-in
+per-subject export + erasure — **now ships as the Enterprise DSAR feature**;
+see the next section. The manual path remains the route for Free/Pro
+installs (which don't have the `dsar` feature) and as a cross-check of what
+the automated path does under the hood.
+
+---
+
+## Automated path (Enterprise) — `vectis dsar`
+
+Enterprise installs (the `dsar` feature entitlement) get built-in,
+super-admin-only DSAR export and erasure. It reads message bodies straight
+from the Maildir the `api` container mounts read-write, so there is no
+manual tarball/`psql` assembly.
+
+> **Gating.** Both surfaces require `super_admin` **and** the Enterprise
+> `dsar` entitlement. On Free/Pro installs they return 403/402 — use the
+> manual path below instead.
+
+### Export (GDPR Art. 15)
+
+Produces a single `.zip`: the subject's full messages as raw `.eml` under
+`messages/`, plus `account.json` (the Art. 15 metadata record — mailbox
+identity, message metadata, aliases, and a processing disclosure).
+
+```bash
+# CLI — run INSIDE the api container (it has both the DB host and the
+# mail volume). --output is written inside the container; copy it out after.
+docker exec vectis-api vectis dsar export \
+    --subject subject@example.com --output /tmp/subject.zip
+docker cp vectis-api:/tmp/subject.zip ./subject.zip
+
+# Or via the API (streams the zip):
+curl -fsS -H "X-API-Key: $ADMIN_KEY" \
+    "https://mail.example.com/api/v1/admin/dsar/export?subject=subject@example.com" \
+    -o subject.zip
+```
+
+Engagement tracking events are **excluded by design** — the IP/user-agent
+rows in `email_events` are the *recipients'* personal data, not the
+subject's. (The manual Step 3c is the same data; include it only if your
+legal advice specifically calls for it.)
+
+### Erasure (GDPR Art. 17)
+
+Hard-deletes the live **mailbox, its on-disk mail, message metadata and
+aliases** in one operation, then records an `erasure_tombstone`.
+
+```bash
+docker exec vectis-api vectis dsar erase \
+    --subject subject@example.com --confirm
+
+# Or via the API:
+curl -fsS -X POST -H "X-API-Key: $ADMIN_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"subject":"subject@example.com","confirm":true}' \
+    "https://mail.example.com/api/v1/admin/dsar/erase"
+```
+
+Key behaviours, all visible in the `dsar.erase` audit entry:
+
+- **Restore survival.** The tombstone is re-applied on every server start
+  (and on demand): if a backup restore resurrects the subject's
+  mailbox/mail/metadata, it is re-purged the moment the server boots. This
+  is the EDPB Feb-2026 coordinated-enforcement top finding. List recorded
+  erasures with `vectis dsar erasures` (or `GET …/admin/dsar/erasures`).
+- **Audit + billing retained** under Art. 17(3) — the erasure does not
+  touch the audit trail or billing records. Document this in your response.
+- **Backups are never edited** (ICO "beyond use + overwrite on schedule")
+  — the tombstone is what enforces erasure against restores instead.
+- **Operator/admin accounts are NOT auto-deleted.** If a `super_admin`/
+  admin account shares the address, erasure leaves it in place (deleting it
+  could lock you out of your own install) and flags
+  `admin_account_retained: true`. Remove that account by hand if the
+  request requires it.
+
+The manual right-to-be-forgotten SQL at the end of this runbook is the
+Free/Pro fallback and the reference for exactly which tables the automated
+erasure clears.
 
 ---
 
@@ -302,6 +379,11 @@ mailbox-related PII:
 A separate but related request: the data subject asks for their data
 to be **deleted**, not just disclosed.
 
+> **Enterprise installs:** use `vectis dsar erase` (see _Automated path_
+> above). It performs steps 1–5 below in one operation, records a
+> restore-surviving tombstone, and audits the outcome. The manual sequence
+> here is the Free/Pro fallback.
+
 As of **v0.1.16** (audit finding **P5-H1**), deleting a mailbox is a
 complete on-disk erasure: after removing the DB row, the API resolves
 the domain and `os.RemoveAll`s the per-mailbox directory under
@@ -355,10 +437,10 @@ $PSQL -c "DELETE FROM messages WHERE mailbox_id IS NULL
 #    by domain + manual filter). abuse_events are gone via CASCADE.
 ```
 
-A higher-effort future option — a dedicated
-`DELETE /api/v1/mailboxes/{id}?purge=true` that also sweeps the
-SET-NULL tables (steps 3–5) in one transaction — remains on the
-backlog. Until then, steps 3–5 are manual.
+This one-shot purge is exactly what the Enterprise `vectis dsar erase`
+automates (sweeping the SET-NULL `messages`/aliases that survive a plain
+mailbox delete, then recording a restore-surviving tombstone). On Free/Pro
+installs, steps 3–5 remain manual.
 
 ---
 
