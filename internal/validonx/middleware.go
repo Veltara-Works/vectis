@@ -34,7 +34,10 @@ const (
 	FeatureAdvancedSpam    = "advanced_spam"           // Pro: advanced spam config
 	FeaturePrioritySupport = "priority_support"        // Pro: priority support
 	FeatureSAMLSSO         = "saml_sso"                // Enterprise: SAML 2.0 single sign-on
-	FeatureMultiTenant     = "multi_tenant"            // Enterprise: multi-tenant
+	// NOTE: multi_tenant (tenant isolation) is intentionally omitted. It is
+	// unbuilt and belongs to the future Vectis Cloud managed-platform tier, not
+	// self-host Enterprise. Re-introduce the constant + tier mapping if/when
+	// Vectis Cloud ships it. See project_vectis_cloud_concept.
 	FeatureDeliverability  = "advanced_deliverability" // Enterprise: advanced deliverability
 	FeatureSLA             = "sla"                     // Enterprise: SLA guarantees
 	FeatureDSAR            = "dsar"                    // Enterprise: data-subject access + erasure (GDPR Art.15/17)
@@ -64,7 +67,6 @@ var EnterpriseFeatures = []string{
 	FeatureAdvancedSpam,
 	FeaturePrioritySupport,
 	FeatureSAMLSSO,
-	FeatureMultiTenant,
 	FeatureDeliverability,
 	FeatureSLA,
 	FeatureDSAR,
@@ -151,7 +153,7 @@ func (fgs *FeatureGateService) Cache() *LicenseCache {
 // Returns:
 //   - TierFree: ValidonX not configured, or cached license has no Pro/Enterprise features
 //   - TierPro: cached license has any Pro feature (custom_branding, analytics, etc.)
-//   - TierEnterprise: cached license has any Enterprise feature (multi_tenant, etc.)
+//   - TierEnterprise: cached license has any Enterprise feature (saml_sso, dsar, etc.)
 //
 // On cache miss, performs a single live refresh to populate the cache. On any
 // hard failure (no cache, no live answer) returns TierFree as the safe default.
@@ -194,7 +196,7 @@ func tierFromFeatures(features []string) string {
 	hasPro := false
 	for _, f := range features {
 		switch f {
-		case FeatureSAMLSSO, FeatureMultiTenant, FeatureDeliverability, FeatureSLA, FeatureDSAR:
+		case FeatureSAMLSSO, FeatureDeliverability, FeatureSLA, FeatureDSAR:
 			hasEnterprise = true
 		case FeatureAnalytics, FeatureOIDCSSO, FeatureCustomBranding,
 			FeatureAdvancedSpam, FeaturePrioritySupport:

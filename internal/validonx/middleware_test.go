@@ -21,11 +21,12 @@ func TestTierFromFeatures(t *testing.T) {
 		{"pro: advanced_spam", []string{FeatureBasicMail, FeatureAdvancedSpam}, TierPro},
 		{"pro: priority_support", []string{FeatureBasicMail, FeaturePrioritySupport}, TierPro},
 		{"pro: full set", ProFeatures, TierPro},
-		{"enterprise: multi_tenant", []string{FeatureMultiTenant}, TierEnterprise},
+		{"enterprise: saml_sso", []string{FeatureSAMLSSO}, TierEnterprise},
+		{"enterprise: dsar", []string{FeatureDSAR}, TierEnterprise},
 		{"enterprise: deliverability", []string{FeatureDeliverability}, TierEnterprise},
 		{"enterprise: sla", []string{FeatureSLA}, TierEnterprise},
 		{"enterprise: full set", EnterpriseFeatures, TierEnterprise},
-		{"enterprise wins over pro", []string{FeatureCustomBranding, FeatureMultiTenant}, TierEnterprise},
+		{"enterprise wins over pro", []string{FeatureCustomBranding, FeatureSLA}, TierEnterprise},
 	}
 
 	for _, tt := range tests {
@@ -68,7 +69,7 @@ func TestIsFreeTierFeature(t *testing.T) {
 	if isFreeTierFeature(FeatureOIDCSSO) {
 		t.Error("oidc_sso must NOT be a free-tier feature (Pro-only)")
 	}
-	if isFreeTierFeature(FeatureMultiTenant) {
-		t.Error("multi_tenant must NOT be a free-tier feature (Enterprise-only)")
+	if isFreeTierFeature(FeatureSLA) {
+		t.Error("sla must NOT be a free-tier feature (Enterprise-only)")
 	}
 }
