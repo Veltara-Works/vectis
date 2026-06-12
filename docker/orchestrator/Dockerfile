@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 go build -tags netgo,osusergo \
     -ldflags="-s -w -X github.com/Veltara-Works/vectis/internal/version.Version=${VERSION}" \
     -o /orchestrator ./cmd/orchestrator/
 
-FROM alpine:3.23
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata docker-cli docker-cli-compose postgresql17-client
 
