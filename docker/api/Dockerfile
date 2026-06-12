@@ -1,4 +1,4 @@
-FROM node:22 AS web-builder
+FROM node:24 AS web-builder
 
 # Debian-based image (not alpine) so native modules like lightningcss
 # get their glibc binary from npm's optionalDependencies. The Alpine

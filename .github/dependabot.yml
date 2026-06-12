@@ -42,3 +42,11 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # node Docker tags are build-only stages. Stay on the Active LTS line
+      # (24.x) and manage major jumps by hand — Dependabot kept proposing the
+      # pre-LTS "Current" major (26, not LTS until Oct 2026). Drop this ignore
+      # once the desired major reaches Active LTS. (#11/#12 closed in favour of
+      # the node:24 retarget.)
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
