@@ -127,7 +127,7 @@ the upstream copyleft program's source.
 | `postgres:17-alpine` | PostgreSQL License (permissive, BSD-style) | Database | |
 | `valkey/valkey:8-alpine` | BSD-3-Clause | Cache / key-value store | |
 | `golang:1.25-alpine` | BSD-3-Clause (Go) | **Build-time only** (multi-stage builder) | Discarded; not shipped in final images. |
-| `node:22` / `node:22-alpine` | MIT (Node.js) | **Build-time only** (admin UI builder) | Discarded; not shipped in final images. |
+| `node:24` / `node:24-alpine` | MIT (Node.js) | **Build-time only** (admin UI builder) | Discarded; not shipped in final images. |
 
 ### Optional profiles (not in the default `small` runtime profile)
 
