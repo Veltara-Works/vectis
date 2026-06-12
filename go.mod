@@ -1,6 +1,6 @@
 module github.com/Veltara-Works/vectis
 
-go 1.25.11
+go 1.26.4
 
 require (
 	github.com/beevik/etree v1.6.0
