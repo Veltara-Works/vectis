@@ -217,8 +217,10 @@ type ClamAVKnobs struct {
 }
 
 // resolveClamAVKnobs maps a clamav.profile string to concrete clamd.conf
-// settings + compose mem_limit. The "none" profile returns zero-value knobs
-// (template gates already skip rendering when profile == "none").
+// settings + compose mem_limit. The "none" profile returns zero-value knobs:
+// clamd.conf is still rendered (Generate walks every template), but the
+// clamd.conf template omits each knob line when its value is zero/empty so
+// the file stays parseable even though the container is never started (#44).
 func resolveClamAVKnobs(profile string) ClamAVKnobs {
 	switch profile {
 	case "dev":

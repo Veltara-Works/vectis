@@ -26,7 +26,9 @@ section for the analysis.
 > file. Last generated **2026-05-29** (Go 1.25.10, `go-licenses` v1.6.0);
 > incrementally updated **2026-06-08** for the Enterprise SAML SSO dependencies
 > (`crewjam/saml` + its compiled transitives), each license re-verified with
-> `go-licenses` v1.6.0.
+> `go-licenses` v1.6.0. Build toolchain bumped to **Go 1.26.4** on **2026-06-12**
+> (`golang:1.26-alpine` builders); the module graph is unchanged, so the section-1
+> license inventory below remains valid as last generated.
 
 ---
 
@@ -126,7 +128,7 @@ the upstream copyleft program's source.
 | `traefik:v3.3` | MIT | Reverse proxy / TLS | |
 | `postgres:17-alpine` | PostgreSQL License (permissive, BSD-style) | Database | |
 | `valkey/valkey:8-alpine` | BSD-3-Clause | Cache / key-value store | |
-| `golang:1.25-alpine` | BSD-3-Clause (Go) | **Build-time only** (multi-stage builder) | Discarded; not shipped in final images. |
+| `golang:1.26-alpine` | BSD-3-Clause (Go) | **Build-time only** (multi-stage builder) | Discarded; not shipped in final images. |
 | `node:24` / `node:24-alpine` | MIT (Node.js) | **Build-time only** (admin UI builder) | Discarded; not shipped in final images. |
 
 ### Optional profiles (not in the default `small` runtime profile)
@@ -174,9 +176,9 @@ or a compose template.
 # go-licenses v1.6.0 needs a real SDK GOROOT (not the toolchain-cache GOROOT
 # that GOTOOLCHAIN=auto produces), or it fails to resolve the standard library.
 go install github.com/google/go-licenses@latest
-go install golang.org/dl/go1.25.10@latest && go1.25.10 download   # -> ~/sdk/go1.25.10
+go install golang.org/dl/go1.26.4@latest && go1.26.4 download   # -> ~/sdk/go1.26.4
 
-GOROOT="$HOME/sdk/go1.25.10" PATH="$HOME/sdk/go1.25.10/bin:$(go env GOPATH)/bin:$PATH" \
+GOROOT="$HOME/sdk/go1.26.4" PATH="$HOME/sdk/go1.26.4/bin:$(go env GOPATH)/bin:$PATH" \
   GOTOOLCHAIN=local \
   go-licenses csv ./... --ignore github.com/Veltara-Works/vectis
 ```

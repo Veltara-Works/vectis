@@ -731,11 +731,13 @@ func TestWebmailHealthcheckIsNotPhpFpmHealthcheck(t *testing.T) {
 
 func TestClamAVNoneOmitsContainer(t *testing.T) {
 	files, _ := Generate(testData()) // ClamAV profile is "none"
-	var compose, antivirusConf string
+	var compose, clamdConf, antivirusConf string
 	for _, f := range files {
 		switch f.RelPath {
 		case "docker-compose.yml":
 			compose = string(f.Content)
+		case "clamav/clamd.conf":
+			clamdConf = string(f.Content)
 		case "rspamd/antivirus.conf":
 			antivirusConf = string(f.Content)
 		}
@@ -751,6 +753,21 @@ func TestClamAVNoneOmitsContainer(t *testing.T) {
 	// path stable), but must contain no live clamav rules in profile=none.
 	if strings.Contains(antivirusConf, "type = \"clamav\"") {
 		t.Error("rspamd/antivirus.conf should be empty/disabled when profile is 'none'")
+	}
+	// clamd.conf is rendered even under profile "none" (Generate walks every
+	// template); the container just never starts. The file must still be a
+	// valid config — no bare directive whose profile-resolved knob is empty,
+	// which clamd rejects as "Missing argument for option" (#44). Assert each
+	// zero-valued knob is omitted rather than emitted with no argument.
+	if clamdConf == "" {
+		t.Fatal("clamav/clamd.conf was not rendered")
+	}
+	for _, knob := range []string{"MaxThreads", "StreamMaxLength", "MaxScanSize", "MaxFileSize"} {
+		for _, line := range strings.Split(clamdConf, "\n") {
+			if strings.TrimSpace(line) == knob || strings.TrimSpace(line) == knob+" " {
+				t.Errorf("clamav/clamd.conf emits bare %q directive (no argument) under profile 'none' — clamd would refuse to start (#44)", knob)
+			}
+		}
 	}
 }
 
