@@ -119,12 +119,42 @@ func licGatePool(t *testing.T, ctx context.Context, logger *slog.Logger) *pgxpoo
 }
 
 // licStubResolve stands in for ValidonX, answering the licensing-resolve
-// endpoint with the given status + feature set.
+// endpoint with the given status + feature set. It also asserts the request
+// CONTRACT (method, path, X-API-Key auth, and license_key in the body) so the
+// E2E fails if the client ever regresses its call shape — a wrong verb, a
+// dropped auth header, or a missing license_key would all fail against the real
+// ValidonX, and must fail here too. Assertions use t.Error (safe from the
+// handler goroutine) plus an error status so the gate call surfaces the failure.
 func licStubResolve(t *testing.T, status string, features []string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("resolve called with method %s, want POST", r.Method)
+			http.Error(w, "bad method", http.StatusMethodNotAllowed)
+			return
+		}
 		if r.URL.Path != "/api/v1/integration/licensing/resolve" {
-			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
+			t.Errorf("unexpected resolve path %q", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("X-API-Key") == "" {
+			t.Error("resolve request missing X-API-Key header")
+			http.Error(w, "missing api key", http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			LicenseKey string   `json:"license_key"`
+			Features   []string `json:"features"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode resolve body: %v", err)
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		if body.LicenseKey == "" {
+			t.Error("resolve request missing license_key in body")
+			http.Error(w, "missing license_key", http.StatusBadRequest)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -160,13 +190,24 @@ func licConfiguredGate(t *testing.T, pool *pgxpool.Pool, baseURL, tenantID strin
 }
 
 // licResetCache clears any cached row for the tenant before and after the
-// subtest, so runs are independent of each other and of prior CI runs.
+// subtest, so runs are independent of each other and of prior CI runs. It fails
+// loudly on a clear error: a DeleteCached failure means schema drift or DB
+// connectivity trouble, which would otherwise let the test pass/fail for the
+// wrong reasons.
 func licResetCache(t *testing.T, ctx context.Context, gate *validonx.FeatureGateService, tenantID string) {
 	t.Helper()
-	if c := gate.Cache(); c != nil {
-		_ = c.DeleteCached(ctx, tenantID)
-		t.Cleanup(func() { _ = c.DeleteCached(ctx, tenantID) })
+	c := gate.Cache()
+	if c == nil {
+		t.Fatal("feature gate has no cache (nil DB pool) — cannot run the gate E2E")
 	}
+	if err := c.DeleteCached(ctx, tenantID); err != nil {
+		t.Fatalf("clear cache for tenant %q: %v", tenantID, err)
+	}
+	t.Cleanup(func() {
+		if err := c.DeleteCached(ctx, tenantID); err != nil {
+			t.Errorf("cleanup cache for tenant %q: %v", tenantID, err)
+		}
+	})
 }
 
 // licAssertGate runs a request through the middleware and asserts allow (next
