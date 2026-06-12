@@ -34,11 +34,24 @@ ScanPDF yes
 ScanHTML yes
 
 # Per-profile resource knobs (resolved by config engine from clamav.profile).
+# Each is emitted only when the resolved profile actually sets it. A bare
+# directive with no argument (e.g. `StreamMaxLength ` under profile "none",
+# whose knobs are zero-valued) is a fatal clamd parse error — so when a knob
+# is unset we omit the line and let clamd fall back to its built-in default
+# rather than render an unparseable config (#44).
+{{- if .ClamAV.MaxThreads }}
 MaxThreads {{ .ClamAV.MaxThreads }}
+{{- end }}
 MaxConnectionQueueLength 30
+{{- if .ClamAV.StreamMaxLength }}
 StreamMaxLength {{ .ClamAV.StreamMaxLength }}
+{{- end }}
+{{- if .ClamAV.MaxScanSize }}
 MaxScanSize {{ .ClamAV.MaxScanSize }}
+{{- end }}
+{{- if .ClamAV.MaxFileSize }}
 MaxFileSize {{ .ClamAV.MaxFileSize }}
+{{- end }}
 
 # Re-check signatures every 10 min — freshclam in the entrypoint refreshes
 # the on-disk DB; SelfCheck makes clamd reload them in-process without a
