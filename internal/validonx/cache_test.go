@@ -53,7 +53,7 @@ func TestCachedLicenseHasFeature(t *testing.T) {
 		{FeatureBasicMail, true},     // in Features
 		{FeatureAnalytics, true},     // in Features
 		{FeatureCustomBranding, true}, // in LicenseData.AllowedFeatures (alt list)
-		{FeatureMultiTenant, false},  // not in either
+		{FeatureSLA, false}, // enterprise feature, not in either list
 		{"unknown_feature", false},
 	}
 

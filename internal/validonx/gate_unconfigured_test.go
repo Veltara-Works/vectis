@@ -65,9 +65,9 @@ func TestFeatureGate_Unconfigured_EnterpriseFeature_Denies(t *testing.T) {
 	gate := NewFeatureGateService(nil, nil, testLogger())
 
 	next := &allowingHandler{}
-	mw := gate.FeatureGate(FeatureMultiTenant)(next)
+	mw := gate.FeatureGate(FeatureSLA)(next)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/tenants", nil)
+	req := httptest.NewRequest(http.MethodPost, "/admin/enterprise", nil)
 	rec := httptest.NewRecorder()
 	mw.ServeHTTP(rec, req)
 

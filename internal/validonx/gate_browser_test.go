@@ -67,8 +67,8 @@ func TestHasFeature_Unconfigured(t *testing.T) {
 	if gate.HasFeature(context.Background(), FeatureAnalytics) {
 		t.Error("unconfigured gate must NOT report analytics as available — Free tier has no Pro features")
 	}
-	if gate.HasFeature(context.Background(), FeatureMultiTenant) {
-		t.Error("unconfigured gate must NOT report multi_tenant as available — Free tier has no Enterprise features")
+	if gate.HasFeature(context.Background(), FeatureSLA) {
+		t.Error("unconfigured gate must NOT report sla as available — Free tier has no Enterprise features")
 	}
 }
 
