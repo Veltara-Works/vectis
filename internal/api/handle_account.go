@@ -204,14 +204,16 @@ func (s *Server) handleUpgradeCheckoutSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Resolve the Vx base URL — the keyless checkout endpoint is served on the
-	// same host the box already uses for licensing (confirmed live on both
-	// validonx.com and api.validonx.com), so we reuse the configured base_url.
-	secrets := s.secretsValidonX()
-	baseURL := ""
-	if secrets != nil {
-		baseURL = strings.TrimRight(secrets.BaseURL, "/")
-	}
+	// Resolve the Vx base URL using the same DB-row > secrets.yaml precedence as
+	// licensing and the billing-portal handler above — the keyless checkout
+	// endpoint is served on the same host the box uses for licensing (confirmed
+	// live on both validonx.com and api.validonx.com). Reading the runtime config
+	// (not secrets-only) means an install configured purely via the admin License
+	// page is honoured instead of silently falling back to the default host.
+	cfgCtx, cfgCancel := context.WithTimeout(r.Context(), 5*time.Second)
+	runtimeCfg, _ := validonx.LoadRuntimeConfig(cfgCtx, s.db, s.secretsValidonX())
+	cfgCancel()
+	baseURL := strings.TrimRight(runtimeCfg.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = validonx.DefaultBaseURL
 	}

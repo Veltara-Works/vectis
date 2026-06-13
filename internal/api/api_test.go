@@ -29,6 +29,13 @@ type testEnv struct {
 	adminID string
 }
 
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 func setupTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -36,16 +43,33 @@ func setupTestEnv(t *testing.T) *testEnv {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	pool, err := database.NewPool(ctx, database.Config{
-		Host: "127.0.0.1", Port: 5432, Name: "vectis",
-		User: "postgres", Password: "vectis_dev_super",
-	}, logger)
+	// Defaults match the CI service containers; override via VECTIS_TEST_PG_*
+	// when running against a disposable DB on a host with another Postgres on
+	// :5432 (e.g. the build VPS).
+	dbCfg := database.Config{
+		Host:     envOr("VECTIS_TEST_PG_HOST", "127.0.0.1"),
+		Port:     5432,
+		Name:     envOr("VECTIS_TEST_PG_DB", "vectis"),
+		User:     envOr("VECTIS_TEST_PG_USER", "postgres"),
+		Password: envOr("VECTIS_TEST_PG_PASSWORD", "vectis_dev_super"),
+	}
+	pool, err := database.NewPool(ctx, dbCfg, logger)
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)
 	}
 
+	// Apply migrations so this package is self-sufficient. `go test
+	// ./internal/...` runs package binaries against the shared test DB with no
+	// ordering guarantee, so api_test cannot assume the root integration suite
+	// has already created the schema. Idempotent — no-ops once applied.
+	if err := database.RunMigrations(dbCfg.DSN(), logger); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
 	vk, err := database.NewValkeyClient(database.ValkeyConfig{
-		Host: "127.0.0.1", Port: 6379, Password: "vectis_dev_valkey",
+		Host:     envOr("VECTIS_TEST_VK_HOST", "127.0.0.1"),
+		Port:     6379,
+		Password: envOr("VECTIS_TEST_VK_PASSWORD", "vectis_dev_valkey"),
 	}, logger)
 	if err != nil {
 		t.Fatalf("connect valkey: %v", err)

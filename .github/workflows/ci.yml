@@ -99,7 +99,15 @@ jobs:
           PGPASSWORD: vectis_dev_super
 
       - name: Integration tests
-        run: go test -tags integration ./internal/ -v -count=1 -timeout 120s
+        # Whole internal/ tree, NOT just ./internal/ (non-recursive) — the old
+        # form silently skipped internal/api's integration suite (and any other
+        # sub-package), letting it rot. internal/backup is excluded here because
+        # its round-trip needs a pg_dump matching the PG17 server; it runs in the
+        # dedicated "Backup & Restore" job which installs the v17 client. The
+        # `go list -tags integration` is required so the root internal package
+        # (test-only files) is included. -p 1 serialises package binaries against
+        # the shared test DB.
+        run: go test -tags integration $(go list -tags integration ./internal/... | grep -v '/internal/backup') -p 1 -v -count=1 -timeout 300s
 
   frontend-build:
     name: Frontend Build
