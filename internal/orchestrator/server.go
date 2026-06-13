@@ -298,6 +298,7 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 
 	results := engine.ExecuteActions(req.Actions)
 	s.respondJSON(w, http.StatusOK, map[string]any{
+		"state": s.orch.State(),
 		"data": map[string]any{
 			"results": results,
 		},
