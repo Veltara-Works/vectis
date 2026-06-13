@@ -222,8 +222,17 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		}
 	}
 
-	// Register Prometheus metrics collector.
-	prometheus.MustRegister(vectismetrics.NewCollector(db, logger.With("component", "metrics")))
+	// Register Prometheus metrics collector on the default registry. In
+	// production New is constructed once, but integration tests build many
+	// Servers in a single process; a plain MustRegister panics on the second
+	// call. An AlreadyRegisteredError means an equivalent collector (identical
+	// Descs) is already present — harmless, so tolerate it. Any other error is
+	// a genuine misconfiguration and still fails fast, matching MustRegister.
+	if err := prometheus.Register(vectismetrics.NewCollector(db, logger.With("component", "metrics"))); err != nil {
+		if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+			panic(err)
+		}
+	}
 
 	// Initialize mail sender, notification sender, webhook dispatcher, and abuse detector.
 	s.mailSender = mail.NewSender("vectis-postfix:25", cfg.Hostname, logger.With("component", "mail-sender"))
