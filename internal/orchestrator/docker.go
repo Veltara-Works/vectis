@@ -237,10 +237,15 @@ const (
 // failures rather than aborting the upgrade.
 func (dm *DockerManager) MigrateLegacyDKIMVolume(ctx context.Context) error {
 	// Gate on the volume existing — `docker run -v <name>:...` would otherwise
-	// CREATE a stray empty volume on fresh installs.
-	if err := exec.CommandContext(ctx, "docker", "volume", "inspect", legacyDKIMVolume).Run(); err != nil {
-		dm.logger.Info("dkim migration: no legacy volume, nothing to migrate", "volume", legacyDKIMVolume)
-		return nil
+	// CREATE a stray empty volume on fresh installs. Only a genuine "No such
+	// volume" means absent; any other error (daemon down, permission denied) is
+	// returned so the caller's warning fires instead of silently skipping.
+	if out, err := exec.CommandContext(ctx, "docker", "volume", "inspect", legacyDKIMVolume).CombinedOutput(); err != nil {
+		if strings.Contains(string(out), "No such volume") {
+			dm.logger.Info("dkim migration: no legacy volume, nothing to migrate", "volume", legacyDKIMVolume)
+			return nil
+		}
+		return fmt.Errorf("dkim migration: inspect %s: %w: %s", legacyDKIMVolume, err, strings.TrimSpace(string(out)))
 	}
 
 	// Ensure the tiny copy image is present (avoids a network round-trip when
@@ -258,7 +263,10 @@ func (dm *DockerManager) MigrateLegacyDKIMVolume(ctx context.Context) error {
 		"-v", legacyDKIMVolume + ":/from:ro",
 		"-v", dkimHostPath + ":/to",
 		dkimMigrationImage,
-		"sh", "-c", "cp -an /from/. /to/ 2>/dev/null || true",
+		// `cp -an` (archive, no-clobber) copies volume keys missing from the
+		// host path and leaves existing ones untouched. No `|| true` — a real
+		// copy failure must surface so the caller's warning fires.
+		"sh", "-c", "cp -an /from/. /to/",
 	}
 	if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("dkim volume migration: %w: %s", err, strings.TrimSpace(string(out)))
