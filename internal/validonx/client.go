@@ -167,11 +167,69 @@ type authResponse struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// apiErrorResponse is the ValidonX error envelope.
+// ErrCodePortalNoStripeCustomer is the ValidonX error code returned by the
+// billing portal-session endpoint when the tenant has no Stripe customer —
+// i.e. a free-tier install or a manually-issued (no-Stripe) Enterprise
+// license. Callers branch on it to render "no self-serve billing portal"
+// instead of surfacing a raw upstream error.
+const ErrCodePortalNoStripeCustomer = "BILLING.PORTAL_SESSION_NO_STRIPE_CUSTOMER"
+
+// APIError is a structured error returned by a ValidonX API call when the
+// response carries an error code. Callers use errors.As to branch on Code /
+// StatusCode (e.g. the billing portal's no-Stripe-customer 409). The Error()
+// string preserves the prior "CODE: message (HTTP N)" format so existing logs
+// are unchanged.
+type APIError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	if e.Code == "" {
+		return fmt.Sprintf("validonx error (HTTP %d)", e.StatusCode)
+	}
+	return fmt.Sprintf("%s: %s (HTTP %d)", e.Code, e.Message, e.StatusCode)
+}
+
+// apiErrorResponse models ValidonX's error envelopes. Current ValidonX nests
+// the error as {"error": {"code","message","type","status"}}; older/flat
+// responses place code/message at the top level (and may carry a string
+// "error"). The Error field is decoded as raw JSON so the top-level unmarshal
+// never fails on its shape; resolved() prefers the nested form.
 type apiErrorResponse struct {
-	Error   string `json:"error"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string          `json:"code"`    // flat (legacy) shape
+	Message string          `json:"message"` // flat (legacy) shape
+	Error   json.RawMessage `json:"error"`   // nested object OR legacy string
+}
+
+// resolved returns the best available (code, message), preferring the nested
+// `error` object over the flat top-level fields, and tolerating a legacy
+// string `error`.
+func (e apiErrorResponse) resolved() (code, message string) {
+	code, message = e.Code, e.Message
+	if len(e.Error) == 0 {
+		return code, message
+	}
+	var obj struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(e.Error, &obj) == nil && (obj.Code != "" || obj.Message != "") {
+		if obj.Code != "" {
+			code = obj.Code
+		}
+		if obj.Message != "" {
+			message = obj.Message
+		}
+		return code, message
+	}
+	// Legacy `"error": "some message"` string form.
+	var s string
+	if json.Unmarshal(e.Error, &s) == nil && s != "" && message == "" {
+		message = s
+	}
+	return code, message
 }
 
 // ---------------------------------------------------------------------------
@@ -485,8 +543,10 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, dest
 
 	if resp.StatusCode >= 400 {
 		var errResp apiErrorResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Code != "" {
-			return fmt.Errorf("%s: %s (HTTP %d)", errResp.Code, errResp.Message, resp.StatusCode)
+		if json.Unmarshal(respBody, &errResp) == nil {
+			if code, msg := errResp.resolved(); code != "" {
+				return &APIError{StatusCode: resp.StatusCode, Code: code, Message: msg}
+			}
 		}
 		return fmt.Errorf("validonx error (HTTP %d): %s", resp.StatusCode, string(respBody))
 	}

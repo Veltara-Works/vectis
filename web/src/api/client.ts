@@ -18,6 +18,21 @@ export interface BrandingResponse {
   }
 }
 
+// ApiError carries the structured error code + HTTP status alongside the
+// message, so callers can branch on the code (e.g. BILLING_PORTAL_UNAVAILABLE)
+// rather than string-matching the message. Extends Error, so existing
+// `e instanceof Error` / `e.message` handling keeps working unchanged.
+export class ApiError extends Error {
+  code: string
+  status: number
+  constructor(code: string, message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.code = code
+    this.status = status
+  }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const opts: RequestInit = {
     method,
@@ -29,7 +44,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const res = await fetch(`${BASE}${path}`, opts)
   const json: ApiResponse<T> = await res.json()
 
-  if (json.error) throw new Error(json.error.message)
+  if (json.error) throw new ApiError(json.error.code, json.error.message, res.status)
   return json.data as T
 }
 

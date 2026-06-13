@@ -179,3 +179,63 @@ func TestSubscriptionStatusEnum_PathTwoSet(t *testing.T) {
 		t.Errorf("scheduled_for_cancellation must not be considered usable post-path-2")
 	}
 }
+
+// TestAPIErrorResponseResolved locks the error-envelope parsing across the
+// shapes ValidonX emits: the current NESTED form ({"error": {"code","message"}}),
+// a flat top-level form, and a legacy string `error`. doJSON relies on resolved()
+// to surface the structured code that callers (e.g. the billing portal's
+// NO_STRIPE_CUSTOMER 409) branch on.
+func TestAPIErrorResponseResolved(t *testing.T) {
+	cases := []struct {
+		name, body, wantCode, wantMsg string
+	}{
+		{
+			name:     "nested object (current ValidonX)",
+			body:     `{"error":{"code":"BILLING.PORTAL_SESSION_NO_STRIPE_CUSTOMER","message":"no stripe customer","type":"billing","status":409}}`,
+			wantCode: "BILLING.PORTAL_SESSION_NO_STRIPE_CUSTOMER",
+			wantMsg:  "no stripe customer",
+		},
+		{
+			name:     "flat top-level",
+			body:     `{"code":"SOME_CODE","message":"flat message"}`,
+			wantCode: "SOME_CODE",
+			wantMsg:  "flat message",
+		},
+		{
+			name:     "legacy string error, no code",
+			body:     `{"error":"just a string"}`,
+			wantCode: "",
+			wantMsg:  "just a string",
+		},
+		{
+			name:     "nested wins over flat",
+			body:     `{"code":"FLAT","message":"flat","error":{"code":"NESTED","message":"nested"}}`,
+			wantCode: "NESTED",
+			wantMsg:  "nested",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var e apiErrorResponse
+			if err := json.Unmarshal([]byte(c.body), &e); err != nil {
+				t.Fatalf("unmarshal must not fail on any error shape: %v", err)
+			}
+			code, msg := e.resolved()
+			if code != c.wantCode {
+				t.Errorf("code = %q, want %q", code, c.wantCode)
+			}
+			if msg != c.wantMsg {
+				t.Errorf("message = %q, want %q", msg, c.wantMsg)
+			}
+		})
+	}
+}
+
+// TestAPIErrorString locks the APIError.Error() format (preserves the prior
+// "CODE: message (HTTP N)" string so existing logs/string-matchers are unchanged).
+func TestAPIErrorString(t *testing.T) {
+	e := &APIError{StatusCode: 409, Code: "X.Y", Message: "boom"}
+	if got, want := e.Error(), "X.Y: boom (HTTP 409)"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}

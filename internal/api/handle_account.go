@@ -94,6 +94,19 @@ func (s *Server) handleBillingPortalSession(w http.ResponseWriter, r *http.Reque
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
 	if err != nil {
+		// A tenant with no Stripe customer — free tier, or a manually-issued
+		// (no-Stripe) Enterprise license — can't have a self-serve billing
+		// portal. ValidonX signals this with a structured 409; surface a clean,
+		// non-retryable response so the admin UI hides/disables "Manage Billing"
+		// rather than showing a 502 with raw upstream JSON.
+		var apiErr *validonx.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == validonx.ErrCodePortalNoStripeCustomer {
+			s.audit.Log(r.Context(), &adminID, "billing.portal.unavailable", "billing", nil,
+				map[string]string{"tenant_id": runtimeCfg.TenantID}, &ip)
+			respondError(w, r, http.StatusConflict, "BILLING_PORTAL_UNAVAILABLE",
+				"This plan is billed directly — there's no self-serve billing portal. Contact us to change your subscription.")
+			return
+		}
 		s.logger.Warn("billing portal session failed", "error", err, "tenant_id", runtimeCfg.TenantID)
 		s.audit.Log(r.Context(), &adminID, "billing.portal.mint_failed", "billing", nil,
 			map[string]string{"tenant_id": runtimeCfg.TenantID, "error": err.Error()}, &ip)

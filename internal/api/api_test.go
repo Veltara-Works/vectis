@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -742,6 +743,74 @@ func TestBillingPortalSession_HappyPath(t *testing.T) {
 	}
 	if billingHits != 1 {
 		t.Errorf("expected exactly 1 hit on portal-session endpoint, got %d", billingHits)
+	}
+}
+
+// TestBillingPortalSession_NoStripeCustomer covers a tenant with no Stripe
+// customer (free tier, or a manually-issued no-Stripe Enterprise license).
+// ValidonX answers portal-session with a structured 409 in its NESTED error
+// envelope ({"error": {"code", ...}}); the handler must translate that into a
+// clean 409 BILLING_PORTAL_UNAVAILABLE — not a 502 with raw upstream JSON — so
+// the admin UI can hide/disable "Manage Billing". Regression guard for the
+// nested-vs-flat error-envelope parsing in validonx.doJSON.
+func TestBillingPortalSession_NoStripeCustomer(t *testing.T) {
+	env := setupTestEnv(t)
+
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/integration/licensing/resolve":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"data": {"valid": true, "status": "active", "allowed_features": ["basic_mail"], "grace_period_ends_at": null, "expires_at": null},
+				"meta": {"request_id": "rid", "api_version": "1"}
+			}`))
+		case "/api/v1/integration/billing/portal-session":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{
+				"error": {
+					"code": "BILLING.PORTAL_SESSION_NO_STRIPE_CUSTOMER",
+					"message": "Tenant has no Stripe customer ID — cannot open the billing portal until a paid subscription exists",
+					"type": "billing",
+					"status": 409,
+					"details": {"tenant_id": "x"}
+				},
+				"meta": {"request_id": "rid", "api_version": "1"}
+			}`))
+		default:
+			t.Errorf("unexpected mock path: %q", r.URL.Path)
+			http.Error(w, "unexpected", http.StatusNotFound)
+		}
+	}))
+	defer mock.Close()
+
+	body, _ := json.Marshal(map[string]string{
+		"base_url":        mock.URL,
+		"service_key":     "test-service-key",
+		"tenant_id":       fmt.Sprintf("billing-nostripe-%d", time.Now().UnixNano()),
+		"subscription_id": "sub_nostripe_test",
+		"license_key":     "VLDX-VECTIS-FREE-NOSTRIPE-001",
+	})
+	if r := env.doRequest(t, "POST", "/api/v1/license", string(body)); r.StatusCode != 200 {
+		raw, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		t.Fatalf("license activation prereq failed: %d (body: %s)", r.StatusCode, raw)
+	}
+	defer deactivateLicense(t, env)
+
+	resp := env.doRequest(t, "POST", "/api/v1/account/billing-portal-session", `{"return_url":"http://example.com/admin/license"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 409, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	parsed := parseBody(t, resp)
+	errObj, _ := parsed["error"].(map[string]any)
+	if errObj == nil {
+		t.Fatalf("expected error envelope, got %v", parsed)
+	}
+	if code, _ := errObj["code"].(string); code != "BILLING_PORTAL_UNAVAILABLE" {
+		t.Errorf("expected code BILLING_PORTAL_UNAVAILABLE, got %q (full: %v)", code, parsed)
 	}
 }
 
