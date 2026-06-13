@@ -227,24 +227,44 @@ func (o *Orchestrator) SelfHealComposeOnVersionTransition(
 			"version", binaryVersion)
 	}
 
+	// One-time DKIM key migration. The dkim dir moved from a named volume to a
+	// host bind mount; copy any volume-only keys to the host path so no domain
+	// loses its signing key. This MUST run on EVERY self-heal pass, regardless
+	// of whether compose/config drifted — hence it sits BEFORE the no-action
+	// early-return below, not inside the drift path. Reason: with
+	// render-from-target upgrades (v0.1.25+), apply Phase 3.5 already rewrote
+	// the compose to the host-mount form and recreated rspamd/postfix against it
+	// BEFORE this (new) orchestrator booted. So composeRewritten is false here,
+	// yet the keys can still be stranded in the legacy volume while the running
+	// services read an empty/partial host mount. Idempotent, no-op once the
+	// legacy volume is gone, best-effort (never blocks the upgrade).
+	// (Bug found by the v0.1.27 mx1 canary, 2026-06-13: vectiscloud.com lost
+	// signing because this previously ran only when drift was detected.)
+	dkimCopied, err := o.docker.MigrateLegacyDKIMVolume(ctx)
+	if err != nil {
+		o.logger.Warn("self-heal: legacy DKIM volume migration failed — api-added domains may sign unsigned until keys are copied to /var/vectis/dkim manually",
+			"error", err)
+	}
+
 	if !composeRewritten && !configsRewritten {
+		// Apply Phase 3.5 already recreated the signing services onto the host
+		// mount. If we just copied stranded keys into it, those running services
+		// don't see them yet — restart rspamd + postfix to close the unsigned
+		// window. When nothing was copied this whole branch is a pure no-op pass.
+		if dkimCopied {
+			signing := []string{containerName("rspamd"), containerName("postfix")}
+			o.logger.Info("self-heal: migrated stranded DKIM keys to host; restarting signing services to pick them up",
+				"containers", signing)
+			if rerr := o.docker.RestartContainers(ctx, signing); rerr != nil {
+				o.logger.Warn("self-heal: signing-service restart after DKIM migration failed (manual `docker restart vectis-rspamd vectis-postfix` may be needed)",
+					"error", rerr)
+			}
+		}
 		o.logger.Info("self-heal: on-disk compose+configs already match templates, no action needed")
 		if writeErr := o.writeLastSeenVersion(ctx, binaryVersion); writeErr != nil {
 			o.logger.Warn("self-heal: failed to update last-seen version", "error", writeErr)
 		}
 		return
-	}
-
-	// One-time DKIM key migration, before recreating rspamd/api below. The dkim
-	// dir moved from a named volume to a host bind mount; copy any volume-only
-	// keys to the host path so no domain loses its signing key. Run whenever
-	// self-heal is about to recreate services (not only on composeRewritten) —
-	// keys can be stuck in the legacy volume even when the compose already
-	// matches (e.g. an operator hand-edited it first). Idempotent, no-op once
-	// the legacy volume is gone, best-effort (never blocks the upgrade).
-	if err := o.docker.MigrateLegacyDKIMVolume(ctx); err != nil {
-		o.logger.Warn("self-heal: legacy DKIM volume migration failed — api-added domains may sign unsigned until keys are copied to /var/vectis/dkim manually",
-			"error", err)
 	}
 
 	o.logger.Info("self-heal: drift fixed, recreating non-data services to pick up changes",
@@ -275,23 +295,41 @@ func (o *Orchestrator) SelfHealComposeOnVersionTransition(
 	}
 
 	// `compose up -d` is a no-op when the image and compose-defined config are
-	// unchanged, so containers keep their old bind-mount inodes for any
-	// single-file config we atomically replaced (postfix main.cf,
-	// dovecot.conf, rspamd maps, etc). `docker container restart` re-resolves
-	// bind-mount inodes at start time. We restart only the services whose
-	// configs actually changed — minimising blast radius. Restart failure is
-	// non-fatal: the configs are written, just inactive until a future
-	// container restart picks them up.
-	// (Found by 2026-05-10 v0.1.11-rc2 sa1001 walkthrough.)
+	// unchanged, so containers keep their old bind-mount inodes / cached state.
+	// `docker container restart` re-resolves them at start time. Two reasons to
+	// restart a service here:
+	//   - its single-file config was atomically replaced (postfix main.cf,
+	//     dovecot.conf, rspamd maps, etc) — compose up -d above no-op'd it; and
+	//   - rspamd+postfix when we just copied stranded DKIM keys into the host
+	//     bind dir: ApplyComposeServices may have no-op'd them too (image +
+	//     compose-config unchanged), so they wouldn't pick the keys up without
+	//     an explicit restart. Restart whenever dkimCopied, regardless of which
+	//     services drifted.
+	// Deduped so a service that qualifies on both counts restarts once. Restart
+	// failure is non-fatal: the changes are written, just inactive until a
+	// future restart. (config restart: 2026-05-10 v0.1.11-rc2 sa1001 walkthrough;
+	// DKIM restart: v0.1.27 mx1 canary 2026-06-13.)
+	restartSet := map[string]struct{}{}
 	if configsRewritten && len(configsChanged) > 0 {
-		targets := containerNamesForConfigPaths(configsChanged)
-		if len(targets) > 0 {
-			o.logger.Info("self-heal: restarting containers to pick up new bind-mounted configs",
-				"containers", targets, "configs", configsChanged)
-			if err := o.docker.RestartContainers(ctx, targets); err != nil {
-				o.logger.Warn("self-heal: container restart failed (configs written, manual `docker restart` may be required)",
-					"error", err, "containers", targets)
-			}
+		for _, c := range containerNamesForConfigPaths(configsChanged) {
+			restartSet[c] = struct{}{}
+		}
+	}
+	if dkimCopied {
+		restartSet[containerName("rspamd")] = struct{}{}
+		restartSet[containerName("postfix")] = struct{}{}
+	}
+	if len(restartSet) > 0 {
+		targets := make([]string, 0, len(restartSet))
+		for c := range restartSet {
+			targets = append(targets, c)
+		}
+		sort.Strings(targets)
+		o.logger.Info("self-heal: restarting containers to pick up new bind-mounted configs/keys",
+			"containers", targets, "configs_changed", configsChanged, "dkim_copied", dkimCopied)
+		if err := o.docker.RestartContainers(ctx, targets); err != nil {
+			o.logger.Warn("self-heal: container restart failed (changes written, manual `docker restart` may be required)",
+				"error", err, "containers", targets)
 		}
 	}
 
