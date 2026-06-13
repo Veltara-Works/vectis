@@ -73,7 +73,7 @@ type configResponse struct {
 }
 
 type configValidateResponse struct {
-	Valid    bool              `json:"valid"`
+	Valid    bool             `json:"valid"`
 	Errors   []validationItem `json:"errors,omitempty"`
 	Warnings []validationItem `json:"warnings,omitempty"`
 }
@@ -286,9 +286,10 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine and execute service actions.
+	// Determine and execute service actions (via the orchestrator — the api
+	// container has no docker socket of its own).
 	actions := engine.DetermineActions(diffs)
-	results := engine.ExecuteActions(actions)
+	results := s.reloadServices(r.Context(), actions)
 
 	allSuccess := true
 	for _, res := range results {

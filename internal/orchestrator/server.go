@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+
+	"github.com/Veltara-Works/vectis/internal/engine"
 )
 
 // Server is the orchestrator's internal HTTP API server.
@@ -98,6 +101,7 @@ func (s *Server) buildRouter() chi.Router {
 			r.Post("/plan", s.handlePlan)
 			r.Post("/apply", s.handleApply)
 			r.Post("/rollback", s.handleRollback)
+			r.Post("/reload", s.handleReload)
 			r.Get("/status", s.handleStatus)
 		})
 	})
@@ -274,6 +278,29 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		"state": StateRollingBack,
 		"data": map[string]any{
 			"job_id": jobID,
+		},
+	})
+}
+
+// handleReload runs best-effort service reload/restart actions on behalf of
+// callers that lack docker access — notably the api container, which has no
+// docker socket of its own (only the orchestrator mounts /var/run/docker.sock).
+// Reload is independent of the apply state machine: it is a lightweight signal
+// (e.g. SIGHUP to rspamd) and is safe to run in any state.
+func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Actions []engine.ServiceAction `json:"actions"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		s.respondError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid reload request body")
+		return
+	}
+
+	results := engine.ExecuteActions(req.Actions)
+	s.respondJSON(w, http.StatusOK, map[string]any{
+		"state": s.orch.State(),
+		"data": map[string]any{
+			"results": results,
 		},
 	})
 }

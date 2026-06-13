@@ -115,7 +115,7 @@ func tierFromCachedFeatures(features []string) string {
 	hasPro := false
 	for _, f := range features {
 		switch f {
-		case validonx.FeatureSAMLSSO, validonx.FeatureDeliverability, validonx.FeatureSLA, validonx.FeatureDSAR:
+		case validonx.FeatureSAMLSSO, validonx.FeatureSLA, validonx.FeatureDSAR:
 			hasEnterprise = true
 		case validonx.FeatureAnalytics, validonx.FeatureOIDCSSO, validonx.FeatureCustomBranding,
 			validonx.FeatureAdvancedSpam, validonx.FeaturePrioritySupport:

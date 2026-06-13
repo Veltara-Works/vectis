@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -8,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/Veltara-Works/vectis/internal/engine"
 )
 
 // Client communicates with the orchestrator's internal HTTP API.
@@ -86,12 +89,12 @@ type RollbackResult struct {
 
 // StatusResult contains the current orchestrator status.
 type StatusResult struct {
-	State       string       `json:"state"` // "idle", "planning", "applying", "rolling_back"
-	CurrentStep string       `json:"current_step,omitempty"`
-	PlanID      string       `json:"plan_id,omitempty"`
-	Steps       []ApplyStep  `json:"steps,omitempty"`
-	Error       string       `json:"error,omitempty"`
-	LastApply   *time.Time   `json:"last_apply,omitempty"`
+	State       string      `json:"state"` // "idle", "planning", "applying", "rolling_back"
+	CurrentStep string      `json:"current_step,omitempty"`
+	PlanID      string      `json:"plan_id,omitempty"`
+	Steps       []ApplyStep `json:"steps,omitempty"`
+	Error       string      `json:"error,omitempty"`
+	LastApply   *time.Time  `json:"last_apply,omitempty"`
 	// SelfUpgradeUntil is set during the rc36+ orchestrator self-replace
 	// window (the ~30s between Apply recording "completed" and the helper
 	// container actually firing `docker compose up -d orchestrator`). The UI
@@ -178,6 +181,29 @@ func (c *Client) Rollback(ctx context.Context) (*RollbackResult, error) {
 	return &RollbackResult{Status: "running", JobID: env.Data.JobID}, nil
 }
 
+// reloadEnvelope is the response shape for /internal/reload.
+type reloadEnvelope struct {
+	Data struct {
+		Results []engine.ReloadResult `json:"results"`
+	} `json:"data"`
+}
+
+// Reload asks the orchestrator to run service reload/restart actions on the
+// caller's behalf. The api container uses this because it has no docker socket
+// of its own — only the orchestrator mounts /var/run/docker.sock. Reload is
+// best-effort and synchronous (it does not go through the apply state machine).
+func (c *Client) Reload(ctx context.Context, actions []engine.ServiceAction) ([]engine.ReloadResult, error) {
+	body, err := json.Marshal(map[string]any{"actions": actions})
+	if err != nil {
+		return nil, fmt.Errorf("reload: marshal: %w", err)
+	}
+	var env reloadEnvelope
+	if err := c.doJSONWithBody(ctx, http.MethodPost, "/internal/reload", bytes.NewReader(body), &env); err != nil {
+		return nil, fmt.Errorf("reload: %w", err)
+	}
+	return env.Data.Results, nil
+}
+
 // Status returns the current orchestrator state machine status.
 func (c *Client) Status(ctx context.Context) (*StatusResult, error) {
 	var env statusEnvelope
@@ -232,14 +258,23 @@ func (c *Client) setAuth(req *http.Request) {
 	}
 }
 
-// doJSON performs an HTTP request and decodes the JSON response into dest.
+// doJSON performs a body-less HTTP request and decodes the JSON response into dest.
 func (c *Client) doJSON(ctx context.Context, method, path string, dest any) error {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, nil)
+	return c.doJSONWithBody(ctx, method, path, nil, dest)
+}
+
+// doJSONWithBody performs an HTTP request with an optional request body and
+// decodes the JSON response into dest.
+func (c *Client) doJSONWithBody(ctx context.Context, method, path string, reqBody io.Reader, dest any) error {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
 	if err != nil {
 		return err
 	}
 	c.setAuth(req)
 	req.Header.Set("Accept", "application/json")
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

@@ -13,8 +13,8 @@ import (
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/dkim"
 	"github.com/Veltara-Works/vectis/internal/engine"
-	"github.com/Veltara-Works/vectis/internal/validonx"
 	"github.com/Veltara-Works/vectis/internal/repository"
+	"github.com/Veltara-Works/vectis/internal/validonx"
 )
 
 var validDomainRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$`)
@@ -373,6 +373,36 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 	respond(w, r, http.StatusOK, map[string]string{"message": "Domain deleted"})
 }
 
+// reloadServices applies service reload/restart actions. The api container has
+// no docker socket of its own, so it delegates to the orchestrator (which
+// mounts /var/run/docker.sock). When no orchestrator client is configured —
+// e.g. host/CLI contexts or unit tests — it falls back to executing the actions
+// directly. Best-effort: a delegation failure is surfaced as unsuccessful
+// ReloadResults so callers' existing per-service logging still fires.
+func (s *Server) reloadServices(ctx context.Context, actions []engine.ServiceAction) []engine.ReloadResult {
+	if s.orchClient == nil {
+		return engine.ExecuteActions(actions)
+	}
+	results, err := s.orchClient.Reload(ctx, actions)
+	if err != nil {
+		s.logger.Warn("orchestrator reload request failed", "error", err)
+		var rs []engine.ReloadResult
+		for _, a := range actions {
+			if a.Action == "none" {
+				continue
+			}
+			rs = append(rs, engine.ReloadResult{
+				Service: a.Service,
+				Action:  a.Action,
+				Success: false,
+				Error:   err.Error(),
+			})
+		}
+		return rs
+	}
+	return results
+}
+
 // regenerateRspamdDKIMConfig regenerates the Rspamd DKIM signing config from
 // the current domain list and triggers an Rspamd reload (ADR-023).
 func (s *Server) regenerateRspamdDKIMConfig() {
@@ -401,8 +431,8 @@ func (s *Server) regenerateRspamdDKIMConfig() {
 		}
 	}
 
-	// Reload Rspamd.
-	results := engine.ExecuteActions([]engine.ServiceAction{
+	// Reload Rspamd (via the orchestrator — the api has no docker socket).
+	results := s.reloadServices(ctx, []engine.ServiceAction{
 		{Service: "rspamd", Action: "reload", Reason: "DKIM config updated"},
 	})
 	for _, r := range results {
@@ -496,7 +526,7 @@ func (s *Server) regenerateRspamdSpamConfig() {
 		return
 	}
 
-	results := engine.ExecuteActions([]engine.ServiceAction{
+	results := s.reloadServices(ctx, []engine.ServiceAction{
 		{Service: "rspamd", Action: "reload", Reason: "spam list / per-domain spam config updated"},
 	})
 	for _, r := range results {

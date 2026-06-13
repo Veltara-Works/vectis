@@ -48,7 +48,7 @@ func TestEnterpriseLicenseGateE2E(t *testing.T) {
 		validonx.FeatureAdvancedSpam, validonx.FeaturePrioritySupport,
 	}
 	enterpriseFeatures := append(append([]string{}, proFeatures...),
-		validonx.FeatureSAMLSSO, validonx.FeatureDeliverability, validonx.FeatureSLA, validonx.FeatureDSAR,
+		validonx.FeatureSAMLSSO, validonx.FeatureSLA, validonx.FeatureDSAR,
 	)
 
 	t.Run("enterprise_license_opens_saml_and_dsar", func(t *testing.T) {
