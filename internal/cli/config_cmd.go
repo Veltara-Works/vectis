@@ -66,8 +66,56 @@ Exit codes:
 	RunE: runApply,
 }
 
-// defaultOutputDir is the default directory for generated config files.
+// defaultOutputDir is the default directory for generated config files
+// (per-service configs, bind-mounted into containers).
 const defaultOutputDir = "/var/vectis/generated"
+
+// composeRelPath is the generated file that is the docker-compose.yml.
+const composeRelPath = "docker-compose.yml"
+
+// splitCompose partitions generated files into the docker-compose.yml and the
+// rest (per-service configs).
+func splitCompose(files []engine.GeneratedFile) (compose, rest []engine.GeneratedFile) {
+	for _, f := range files {
+		if f.RelPath == composeRelPath {
+			compose = append(compose, f)
+		} else {
+			rest = append(rest, f)
+		}
+	}
+	return compose, rest
+}
+
+// diffAllFiles diffs per-service configs against the bind-mounted genDir and
+// the docker-compose.yml against configDir (where `vectis install` and the
+// orchestrator keep the LIVE compose). Diffing the compose against the genDir
+// copy was the bug behind the two-compose-path split-brain: the running stack
+// reads {configDir}/docker-compose.yml, never {genDir}/docker-compose.yml, so
+// apply's compose changes were invisible. See
+// feedback_vectis_cli_db_and_sidecar_compose_gaps (gap #3).
+func diffAllFiles(genDir, configDir string, files []engine.GeneratedFile) ([]engine.FileDiff, error) {
+	compose, rest := splitCompose(files)
+	diffs, err := engine.DiffFiles(genDir, rest)
+	if err != nil {
+		return nil, err
+	}
+	composeDiffs, err := engine.DiffFiles(configDir, compose)
+	if err != nil {
+		return nil, err
+	}
+	return append(diffs, composeDiffs...), nil
+}
+
+// writeAllFiles writes per-service configs to genDir and the docker-compose.yml
+// to BOTH genDir (back-compat for tools/readers that still look there) and
+// configDir (the canonical, LIVE compose the running stack actually uses).
+func writeAllFiles(genDir, configDir string, files []engine.GeneratedFile) error {
+	if err := engine.WriteFiles(genDir, files); err != nil {
+		return err
+	}
+	compose, _ := splitCompose(files)
+	return engine.WriteFiles(configDir, compose)
+}
 
 // validateResult is the JSON-serialisable output of the validate command.
 type validateResult struct {
@@ -377,8 +425,8 @@ func validateSecrets(secrets *config.VectisSecrets) []validateError {
 
 // diffResult is the JSON-serialisable output of the diff command.
 type diffResult struct {
-	HasChanges bool                  `json:"has_changes"`
-	Files      []engine.FileDiff     `json:"files"`
+	HasChanges bool                   `json:"has_changes"`
+	Files      []engine.FileDiff      `json:"files"`
 	Actions    []engine.ServiceAction `json:"actions"`
 }
 
@@ -426,8 +474,9 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Compare against disk.
-	diffs, err := engine.DiffFiles(outputDir, files)
+	// Compare against disk (compose against configDir, configs against genDir).
+	configDir, _ := cmd.Flags().GetString("config-dir")
+	diffs, err := diffAllFiles(outputDir, configDir, files)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
 		os.Exit(1)
@@ -539,16 +588,19 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Diff first to know what changed.
-	diffs, err := engine.DiffFiles(outputDir, files)
+	// Diff first to know what changed (compose against configDir, configs
+	// against genDir — see diffAllFiles).
+	configDir, _ := cmd.Flags().GetString("config-dir")
+	diffs, err := diffAllFiles(outputDir, configDir, files)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
 		os.Exit(1)
 		return nil
 	}
 
-	// Write files.
-	if err := engine.WriteFiles(outputDir, files); err != nil {
+	// Write files: per-service configs to genDir; docker-compose.yml to the
+	// canonical configDir (and genDir) so apply updates the LIVE compose.
+	if err := writeAllFiles(outputDir, configDir, files); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: write failed: %s\n", err)
 		os.Exit(1)
 		return nil
