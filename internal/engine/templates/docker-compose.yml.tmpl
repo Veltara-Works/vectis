@@ -61,7 +61,11 @@ services:
     volumes:
       - /etc/vectis:/etc/vectis:ro
       - mail-data:/var/vectis/mail
-      - dkim-keys:/var/vectis/dkim
+      # DKIM keys bind-mount from the host (NOT a named volume): the host CLI
+      # `vectis domain add` writes keys to the host /var/vectis/dkim and the api
+      # writes here too — a named volume hides host-written keys from rspamd, so
+      # outbound goes unsigned. See feedback_named_volumes_hide_configs.
+      - /var/vectis/dkim:/var/vectis/dkim
       - postfix-logs:/var/log/postfix:ro
       # Advanced Spam (Pro): api writes per-domain rspamd settings + spam-list
       # map files here; rspamd reads them via its own bind mounts on the same
@@ -290,7 +294,9 @@ services:
       - /var/vectis/generated/rspamd/settings.conf:/etc/rspamd/local.d/settings.conf:ro
       - /var/vectis/generated/rspamd/rspamd.local.lua:/etc/rspamd/rspamd.local.lua:ro
       - /var/vectis/generated/rspamd/maps:/etc/rspamd/local.d/maps:ro
-      - dkim-keys:/var/vectis/dkim:ro
+      # DKIM keys bind-mount from the host (see api service note) so rspamd
+      # signs with keys written by either the host CLI or the api.
+      - /var/vectis/dkim:/var/vectis/dkim:ro
     depends_on:
       valkey:
         condition: service_healthy
@@ -713,7 +719,6 @@ volumes:
   valkeydata:
   mail-data:
   mail-certs:
-  dkim-keys:
   postfix-logs:
   traefik-acme:
   snapshots:

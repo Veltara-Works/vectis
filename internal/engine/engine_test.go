@@ -492,6 +492,9 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 		// Rspamd scoring + DKIM signing.
 		`/var/vectis/generated/rspamd/dkim_signing.conf:/etc/rspamd/local.d/dkim_signing.conf:ro`,
 		`/var/vectis/generated/rspamd/milter_headers.conf:/etc/rspamd/local.d/milter_headers.conf:ro`,
+		// DKIM keys MUST be a host bind mount (not a named volume) so keys
+		// written by the host CLI `vectis domain add` are visible to rspamd.
+		`/var/vectis/dkim:/var/vectis/dkim:ro`,
 	}
 	for _, m := range requiredMounts {
 		if !strings.Contains(compose, m) {

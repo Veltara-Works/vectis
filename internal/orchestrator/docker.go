@@ -215,6 +215,66 @@ func (dm *DockerManager) PullImageRef(ctx context.Context, imageRef string, time
 	return nil
 }
 
+// Legacy DKIM migration constants. Before the dkim dir became a host bind
+// mount, rspamd + api mounted it from this named volume; keys written via the
+// api landed in the volume while host-CLI `vectis domain add` wrote to the host
+// path — the two diverged (outbound could go unsigned). See
+// feedback_vectis_cli_db_and_sidecar_compose_gaps gap #4.
+const (
+	legacyDKIMVolume   = "vectis_dkim-keys"
+	dkimHostPath       = "/var/vectis/dkim"
+	dkimMigrationImage = "alpine:3.24" // already a stack dependency (rspamd/clamav base)
+)
+
+// MigrateLegacyDKIMVolume copies DKIM keys from the legacy named volume into
+// the host bind path that rspamd + api now share. Runs a one-shot container
+// (the orchestrator can't mount the volume itself) that `cp -an`s volume → host
+// path. Must run BEFORE rspamd is recreated against the new bind mount so no
+// key goes missing.
+//
+// Idempotent: `cp -an` never clobbers; safe to re-run. No-op when the legacy
+// volume is absent (fresh installs never created it). Best-effort — callers log
+// failures rather than aborting the upgrade.
+func (dm *DockerManager) MigrateLegacyDKIMVolume(ctx context.Context) error {
+	// Gate on the volume existing — `docker run -v <name>:...` would otherwise
+	// CREATE a stray empty volume on fresh installs. Only a genuine "No such
+	// volume" means absent; any other error (daemon down, permission denied) is
+	// returned so the caller's warning fires instead of silently skipping.
+	if out, err := exec.CommandContext(ctx, "docker", "volume", "inspect", legacyDKIMVolume).CombinedOutput(); err != nil {
+		if strings.Contains(string(out), "No such volume") {
+			dm.logger.Info("dkim migration: no legacy volume, nothing to migrate", "volume", legacyDKIMVolume)
+			return nil
+		}
+		return fmt.Errorf("dkim migration: inspect %s: %w: %s", legacyDKIMVolume, err, strings.TrimSpace(string(out)))
+	}
+
+	// Ensure the tiny copy image is present (avoids a network round-trip when
+	// it already is — alpine is the rspamd/clamav base, usually cached).
+	if err := exec.CommandContext(ctx, "docker", "image", "inspect", dkimMigrationImage).Run(); err != nil {
+		if err := dm.PullImageRef(ctx, dkimMigrationImage, 2*time.Minute); err != nil {
+			return fmt.Errorf("pull %s for dkim migration: %w", dkimMigrationImage, err)
+		}
+	}
+
+	dm.logger.Info("dkim migration: copying keys from legacy volume to host bind path",
+		"volume", legacyDKIMVolume, "dest", dkimHostPath)
+	args := []string{
+		"run", "--rm",
+		"-v", legacyDKIMVolume + ":/from:ro",
+		"-v", dkimHostPath + ":/to",
+		dkimMigrationImage,
+		// `cp -an` (archive, no-clobber) copies volume keys missing from the
+		// host path and leaves existing ones untouched. No `|| true` — a real
+		// copy failure must surface so the caller's warning fires.
+		"sh", "-c", "cp -an /from/. /to/",
+	}
+	if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("dkim volume migration: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	dm.logger.Info("dkim migration: complete (legacy volume kept; remove with `docker volume rm vectis_dkim-keys` once verified)")
+	return nil
+}
+
 // StopServices stops containers in the given order (should be reverse dependency order).
 // Each container is stopped gracefully with a 30-second timeout.
 func (dm *DockerManager) StopServices(ctx context.Context, order []string) error {
