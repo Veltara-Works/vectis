@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api } from '../api/client.ts'
+import { api, ApiError } from '../api/client.ts'
 
 // BillingPage is the customer-facing entrance to subscription management.
 // It does NOT show subscription details itself — those live on the License
@@ -17,17 +17,27 @@ import { api } from '../api/client.ts'
 // configured, ValidonX unreachable, etc.).
 export default function BillingPage() {
   const [error, setError] = useState('')
+  const [unavailable, setUnavailable] = useState(false)
   const [redirecting, setRedirecting] = useState(true)
 
   const startSession = async () => {
     setError('')
+    setUnavailable(false)
     setRedirecting(true)
     try {
       const { url } = await api.createBillingPortalSession(window.location.origin + '/admin/license')
       window.location.assign(url)
     } catch (e: unknown) {
       setRedirecting(false)
-      setError(e instanceof Error ? e.message : 'Failed to start billing session')
+      // No Stripe customer behind this tenant (free tier or a manually-issued
+      // Enterprise license): there is no self-serve billing portal. Show a
+      // clean, non-retryable message rather than a "Try again" loop.
+      if (e instanceof ApiError && e.code === 'BILLING_PORTAL_UNAVAILABLE') {
+        setUnavailable(true)
+        setError(e.message)
+      } else {
+        setError(e instanceof Error ? e.message : 'Failed to start billing session')
+      }
     }
   }
 
@@ -42,7 +52,13 @@ export default function BillingPage() {
           {' '}<button onClick={startSession} style={{ padding: 0, background: 'none', border: 'none', color: 'var(--brand-primary, #3b82f6)', cursor: 'pointer', textDecoration: 'underline' }}>click here</button>.
         </p>
       )}
-      {error && (
+      {error && unavailable && (
+        <div style={{ marginTop: '1rem' }}>
+          <p style={{ color: '#94a3b8', marginBottom: '1rem' }}>{error}</p>
+          <a href="/admin/license" className="btn">Back to License</a>
+        </div>
+      )}
+      {error && !unavailable && (
         <div style={{ marginTop: '1rem' }}>
           <p style={{ color: '#ef4444', marginBottom: '1rem' }}>{error}</p>
           <button onClick={startSession} className="btn btn-primary" style={{ marginRight: '0.5rem' }}>Try again</button>
