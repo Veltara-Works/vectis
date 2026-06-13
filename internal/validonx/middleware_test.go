@@ -23,7 +23,6 @@ func TestTierFromFeatures(t *testing.T) {
 		{"pro: full set", ProFeatures, TierPro},
 		{"enterprise: saml_sso", []string{FeatureSAMLSSO}, TierEnterprise},
 		{"enterprise: dsar", []string{FeatureDSAR}, TierEnterprise},
-		{"enterprise: deliverability", []string{FeatureDeliverability}, TierEnterprise},
 		{"enterprise: sla", []string{FeatureSLA}, TierEnterprise},
 		{"enterprise: full set", EnterpriseFeatures, TierEnterprise},
 		{"enterprise wins over pro", []string{FeatureCustomBranding, FeatureSLA}, TierEnterprise},

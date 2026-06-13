@@ -27,20 +27,26 @@ const (
 
 // Feature constants for use with FeatureGate middleware.
 const (
-	FeatureBasicMail       = "basic_mail"              // domains, mailboxes, aliases
-	FeatureAnalytics       = "analytics"               // Pro: per-domain analytics dashboard
-	FeatureOIDCSSO         = "oidc_sso"                // Pro: OIDC single sign-on
-	FeatureCustomBranding  = "custom_branding"         // Pro: custom branding
-	FeatureAdvancedSpam    = "advanced_spam"           // Pro: advanced spam config
-	FeaturePrioritySupport = "priority_support"        // Pro: priority support
-	FeatureSAMLSSO         = "saml_sso"                // Enterprise: SAML 2.0 single sign-on
-	// NOTE: multi_tenant (tenant isolation) is intentionally omitted. It is
-	// unbuilt and belongs to the future Vectis Cloud managed-platform tier, not
-	// self-host Enterprise. Re-introduce the constant + tier mapping if/when
-	// Vectis Cloud ships it. See project_vectis_cloud_concept.
-	FeatureDeliverability  = "advanced_deliverability" // Enterprise: advanced deliverability
-	FeatureSLA             = "sla"                     // Enterprise: SLA guarantees
-	FeatureDSAR            = "dsar"                    // Enterprise: data-subject access + erasure (GDPR Art.15/17)
+	FeatureBasicMail       = "basic_mail"       // domains, mailboxes, aliases
+	FeatureAnalytics       = "analytics"        // Pro: per-domain analytics dashboard
+	FeatureOIDCSSO         = "oidc_sso"         // Pro: OIDC single sign-on
+	FeatureCustomBranding  = "custom_branding"  // Pro: custom branding
+	FeatureAdvancedSpam    = "advanced_spam"    // Pro: advanced spam config
+	FeaturePrioritySupport = "priority_support" // Pro: priority support
+	FeatureSAMLSSO         = "saml_sso"         // Enterprise: SAML 2.0 single sign-on
+	FeatureSLA             = "sla"              // Enterprise: SLA guarantees
+	FeatureDSAR            = "dsar"             // Enterprise: data-subject access + erasure (GDPR Art.15/17)
+	// NOTE: two would-be Enterprise features are intentionally omitted because
+	// they are unbuilt:
+	//   - multi_tenant (tenant isolation): belongs to the future Vectis Cloud
+	//     managed-platform tier, not self-host Enterprise. See
+	//     project_vectis_cloud_concept.
+	//   - advanced_deliverability (deliverability monitoring): a Roadmap item on
+	//     the marketing pricing/features tables, with no shipped code path. The
+	//     /domains/{id}/deliverability endpoint is a basic DNS-readiness check
+	//     open to all tiers, NOT this feature.
+	// Re-introduce the constant + EnterpriseFeatures + tierFromFeatures mapping
+	// if/when either ships.
 )
 
 // FreeTierFeatures are always available without a license.
@@ -67,7 +73,6 @@ var EnterpriseFeatures = []string{
 	FeatureAdvancedSpam,
 	FeaturePrioritySupport,
 	FeatureSAMLSSO,
-	FeatureDeliverability,
 	FeatureSLA,
 	FeatureDSAR,
 }
@@ -196,7 +201,7 @@ func tierFromFeatures(features []string) string {
 	hasPro := false
 	for _, f := range features {
 		switch f {
-		case FeatureSAMLSSO, FeatureDeliverability, FeatureSLA, FeatureDSAR:
+		case FeatureSAMLSSO, FeatureSLA, FeatureDSAR:
 			hasEnterprise = true
 		case FeatureAnalytics, FeatureOIDCSSO, FeatureCustomBranding,
 			FeatureAdvancedSpam, FeaturePrioritySupport:

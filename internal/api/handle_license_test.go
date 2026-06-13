@@ -24,7 +24,6 @@ func TestTierFromCachedFeatures(t *testing.T) {
 		{"enterprise: saml_sso", []string{validonx.FeatureSAMLSSO}, validonx.TierEnterprise},
 		{"enterprise: dsar", []string{validonx.FeatureDSAR}, validonx.TierEnterprise},
 		{"enterprise: sla", []string{validonx.FeatureSLA}, validonx.TierEnterprise},
-		{"enterprise: deliverability", []string{validonx.FeatureDeliverability}, validonx.TierEnterprise},
 		{"enterprise wins over pro", []string{validonx.FeatureCustomBranding, validonx.FeatureDSAR}, validonx.TierEnterprise},
 	}
 	for _, tt := range tests {
