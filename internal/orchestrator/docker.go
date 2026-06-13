@@ -228,14 +228,18 @@ const (
 
 // MigrateLegacyDKIMVolume copies DKIM keys from the legacy named volume into
 // the host bind path that rspamd + api now share. Runs a one-shot container
-// (the orchestrator can't mount the volume itself) that `cp -an`s volume → host
-// path. Must run BEFORE rspamd is recreated against the new bind mount so no
-// key goes missing.
+// (the orchestrator can't mount the volume itself) that copies, per domain,
+// volume → host path. Must run BEFORE rspamd is recreated against the new bind
+// mount (or, on render-from-target upgrades where the recreate already
+// happened, BEFORE rspamd/postfix are restarted) so no key goes missing.
 //
-// Idempotent: `cp -an` never clobbers; safe to re-run. No-op when the legacy
-// volume is absent (fresh installs never created it). Best-effort — callers log
-// failures rather than aborting the upgrade.
-func (dm *DockerManager) MigrateLegacyDKIMVolume(ctx context.Context) error {
+// Returns whether it actually copied any keys, so the caller can decide whether
+// the running signing services need a restart to pick them up.
+//
+// Idempotent: never clobbers an existing host key; safe to re-run. No-op when
+// the legacy volume is absent (fresh installs never created it). Best-effort —
+// callers log failures rather than aborting the upgrade.
+func (dm *DockerManager) MigrateLegacyDKIMVolume(ctx context.Context) (bool, error) {
 	// Gate on the volume existing — `docker run -v <name>:...` would otherwise
 	// CREATE a stray empty volume on fresh installs. Only a genuine "No such
 	// volume" means absent; any other error (daemon down, permission denied) is
@@ -243,16 +247,16 @@ func (dm *DockerManager) MigrateLegacyDKIMVolume(ctx context.Context) error {
 	if out, err := exec.CommandContext(ctx, "docker", "volume", "inspect", legacyDKIMVolume).CombinedOutput(); err != nil {
 		if strings.Contains(string(out), "No such volume") {
 			dm.logger.Info("dkim migration: no legacy volume, nothing to migrate", "volume", legacyDKIMVolume)
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("dkim migration: inspect %s: %w: %s", legacyDKIMVolume, err, strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("dkim migration: inspect %s: %w: %s", legacyDKIMVolume, err, strings.TrimSpace(string(out)))
 	}
 
 	// Ensure the tiny copy image is present (avoids a network round-trip when
 	// it already is — alpine is the rspamd/clamav base, usually cached).
 	if err := exec.CommandContext(ctx, "docker", "image", "inspect", dkimMigrationImage).Run(); err != nil {
 		if err := dm.PullImageRef(ctx, dkimMigrationImage, 2*time.Minute); err != nil {
-			return fmt.Errorf("pull %s for dkim migration: %w", dkimMigrationImage, err)
+			return false, fmt.Errorf("pull %s for dkim migration: %w", dkimMigrationImage, err)
 		}
 	}
 
@@ -263,16 +267,29 @@ func (dm *DockerManager) MigrateLegacyDKIMVolume(ctx context.Context) error {
 		"-v", legacyDKIMVolume + ":/from:ro",
 		"-v", dkimHostPath + ":/to",
 		dkimMigrationImage,
-		// `cp -an` (archive, no-clobber) copies volume keys missing from the
-		// host path and leaves existing ones untouched. No `|| true` — a real
-		// copy failure must surface so the caller's warning fires.
-		"sh", "-c", "cp -an /from/. /to/",
+		// Per-domain, no-clobber copy. We deliberately do NOT use the obvious
+		// `cp -an /from/. /to/`: under busybox (this alpine image) that form
+		// silently copies NOTHING once /to already holds any entry — it bails at
+		// the existing top-level dir instead of merging per-file like GNU cp.
+		// (Verified the hard way on the v0.1.27 mx1 canary, 2026-06-13.) Instead
+		// loop over each domain dir, skip any that already exists on the host
+		// (never clobber a live host key), copy the rest, and echo each copied
+		// domain so the Go side can tell whether anything actually moved.
+		"sh", "-c",
+		`set -e; for d in /from/*/; do [ -e "$d" ] || continue; n=$(basename "$d"); if [ ! -e "/to/$n" ]; then cp -a "/from/$n" "/to/$n" && echo "copied:$n"; fi; done`,
 	}
-	if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("dkim volume migration: %w: %s", err, strings.TrimSpace(string(out)))
+	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("dkim volume migration: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	dm.logger.Info("dkim migration: complete (legacy volume kept; remove with `docker volume rm vectis_dkim-keys` once verified)")
-	return nil
+	copied := strings.Contains(string(out), "copied:")
+	if copied {
+		dm.logger.Info("dkim migration: copied volume-only keys to host",
+			"detail", strings.TrimSpace(string(out)))
+	}
+	dm.logger.Info("dkim migration: complete (legacy volume kept; remove with `docker volume rm vectis_dkim-keys` once verified)",
+		"copied", copied)
+	return copied, nil
 }
 
 // StopServices stops containers in the given order (should be reverse dependency order).

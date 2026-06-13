@@ -227,24 +227,44 @@ func (o *Orchestrator) SelfHealComposeOnVersionTransition(
 			"version", binaryVersion)
 	}
 
+	// One-time DKIM key migration. The dkim dir moved from a named volume to a
+	// host bind mount; copy any volume-only keys to the host path so no domain
+	// loses its signing key. This MUST run on EVERY self-heal pass, regardless
+	// of whether compose/config drifted — hence it sits BEFORE the no-action
+	// early-return below, not inside the drift path. Reason: with
+	// render-from-target upgrades (v0.1.25+), apply Phase 3.5 already rewrote
+	// the compose to the host-mount form and recreated rspamd/postfix against it
+	// BEFORE this (new) orchestrator booted. So composeRewritten is false here,
+	// yet the keys can still be stranded in the legacy volume while the running
+	// services read an empty/partial host mount. Idempotent, no-op once the
+	// legacy volume is gone, best-effort (never blocks the upgrade).
+	// (Bug found by the v0.1.27 mx1 canary, 2026-06-13: vectiscloud.com lost
+	// signing because this previously ran only when drift was detected.)
+	dkimCopied, err := o.docker.MigrateLegacyDKIMVolume(ctx)
+	if err != nil {
+		o.logger.Warn("self-heal: legacy DKIM volume migration failed — api-added domains may sign unsigned until keys are copied to /var/vectis/dkim manually",
+			"error", err)
+	}
+
 	if !composeRewritten && !configsRewritten {
+		// Apply Phase 3.5 already recreated the signing services onto the host
+		// mount. If we just copied stranded keys into it, those running services
+		// don't see them yet — restart rspamd + postfix to close the unsigned
+		// window. When nothing was copied this whole branch is a pure no-op pass.
+		if dkimCopied {
+			signing := []string{containerName("rspamd"), containerName("postfix")}
+			o.logger.Info("self-heal: migrated stranded DKIM keys to host; restarting signing services to pick them up",
+				"containers", signing)
+			if rerr := o.docker.RestartContainers(ctx, signing); rerr != nil {
+				o.logger.Warn("self-heal: signing-service restart after DKIM migration failed (manual `docker restart vectis-rspamd vectis-postfix` may be needed)",
+					"error", rerr)
+			}
+		}
 		o.logger.Info("self-heal: on-disk compose+configs already match templates, no action needed")
 		if writeErr := o.writeLastSeenVersion(ctx, binaryVersion); writeErr != nil {
 			o.logger.Warn("self-heal: failed to update last-seen version", "error", writeErr)
 		}
 		return
-	}
-
-	// One-time DKIM key migration, before recreating rspamd/api below. The dkim
-	// dir moved from a named volume to a host bind mount; copy any volume-only
-	// keys to the host path so no domain loses its signing key. Run whenever
-	// self-heal is about to recreate services (not only on composeRewritten) —
-	// keys can be stuck in the legacy volume even when the compose already
-	// matches (e.g. an operator hand-edited it first). Idempotent, no-op once
-	// the legacy volume is gone, best-effort (never blocks the upgrade).
-	if err := o.docker.MigrateLegacyDKIMVolume(ctx); err != nil {
-		o.logger.Warn("self-heal: legacy DKIM volume migration failed — api-added domains may sign unsigned until keys are copied to /var/vectis/dkim manually",
-			"error", err)
 	}
 
 	o.logger.Info("self-heal: drift fixed, recreating non-data services to pick up changes",
