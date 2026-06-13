@@ -267,16 +267,20 @@ func (dm *DockerManager) MigrateLegacyDKIMVolume(ctx context.Context) (bool, err
 		"-v", legacyDKIMVolume + ":/from:ro",
 		"-v", dkimHostPath + ":/to",
 		dkimMigrationImage,
-		// Per-domain, no-clobber copy. We deliberately do NOT use the obvious
+		// Per-KEY-FILE, no-clobber copy. We deliberately do NOT use the obvious
 		// `cp -an /from/. /to/`: under busybox (this alpine image) that form
 		// silently copies NOTHING once /to already holds any entry — it bails at
 		// the existing top-level dir instead of merging per-file like GNU cp.
-		// (Verified the hard way on the v0.1.27 mx1 canary, 2026-06-13.) Instead
-		// loop over each domain dir, skip any that already exists on the host
-		// (never clobber a live host key), copy the rest, and echo each copied
-		// domain so the Go side can tell whether anything actually moved.
+		// (Verified the hard way on the v0.1.27 mx1 canary, 2026-06-13.) We go
+		// per file rather than per domain dir so a domain whose dir already
+		// exists on the host but is missing a newer selector key (e.g. created
+		// via host CLI, then DKIM-rotated by the pre-migration API into the
+		// legacy volume) still gets that key copied. `mkdir -p` the dest domain
+		// dir, never clobber an existing host key, and echo each copied key so
+		// the Go side can tell whether anything actually moved. Keys live at
+		// /from/<domain>/<selector>.key — exactly two levels.
 		"sh", "-c",
-		`set -e; for d in /from/*/; do [ -e "$d" ] || continue; n=$(basename "$d"); if [ ! -e "/to/$n" ]; then cp -a "/from/$n" "/to/$n" && echo "copied:$n"; fi; done`,
+		`set -e; for f in /from/*/*; do [ -e "$f" ] || continue; rel=${f#/from/}; if [ ! -e "/to/$rel" ]; then mkdir -p "/to/$(dirname "$rel")"; cp -a "$f" "/to/$rel" && echo "copied:$rel"; fi; done`,
 	}
 	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 	if err != nil {
