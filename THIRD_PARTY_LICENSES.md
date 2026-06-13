@@ -122,7 +122,7 @@ the upstream copyleft program's source.
 
 | Image | License | Role | Notes |
 |---|---|---|---|
-| `alpine:3.21` | MIT (Alpine), **GPL-2.0-only** (BusyBox), MIT (musl libc) | Runtime base for most Vectis images | We redistribute derived images; BusyBox/musl sources are provided by Alpine upstream. |
+| `alpine:3.24` | MIT (Alpine), **GPL-2.0-only** (BusyBox), MIT (musl libc) | Runtime base for most Vectis images | We redistribute derived images; BusyBox/musl sources are provided by Alpine upstream. |
 | `nginx:alpine` | BSD-2-Clause | Static asset server (admin UI) | |
 | `roundcube/roundcubemail:1.7.1-apache` | **GPL-3.0-or-later** | Webmail | Used unmodified; only skin/config supplied. Roundcube's plugin/skin exception explicitly excludes such add-ons from copyleft. |
 | `traefik:v3.3` | MIT | Reverse proxy / TLS | |
