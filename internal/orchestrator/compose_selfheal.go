@@ -235,6 +235,18 @@ func (o *Orchestrator) SelfHealComposeOnVersionTransition(
 		return
 	}
 
+	// One-time DKIM key migration. When the compose changed, it may be the
+	// upgrade that switches the dkim dir from a named volume to a host bind
+	// mount. Copy any volume-only keys to the host path BEFORE recreating
+	// rspamd/api below, so no domain loses its signing key. Idempotent + no-op
+	// once the legacy volume is gone; best-effort (never blocks the upgrade).
+	if composeRewritten {
+		if err := o.docker.MigrateLegacyDKIMVolume(ctx); err != nil {
+			o.logger.Warn("self-heal: legacy DKIM volume migration failed — api-added domains may sign unsigned until keys are copied to /var/vectis/dkim manually",
+				"error", err)
+		}
+	}
+
 	o.logger.Info("self-heal: drift fixed, recreating non-data services to pick up changes",
 		"compose_rewritten", composeRewritten,
 		"configs_rewritten", configsRewritten,
