@@ -39,14 +39,14 @@ func DefaultConfig() Config {
 // Monitor runs periodic health checks against all Vectis services and
 // dispatches alerts when thresholds are exceeded.
 type Monitor struct {
-	db           *pgxpool.Pool
-	vk           valkey.Client
-	alerter      *Alerter
-	logger       *slog.Logger
-	cfg          Config
-	stopCh       chan struct{}
-	dockerCLI    bool // whether the `docker` CLI is on PATH
-	postfixExec  bool // whether `docker exec vectis-postfix` is viable (implies dockerCLI)
+	db          *pgxpool.Pool
+	vk          valkey.Client
+	alerter     *Alerter
+	logger      *slog.Logger
+	cfg         Config
+	stopCh      chan struct{}
+	dockerCLI   bool // whether the `docker` CLI is on PATH
+	postfixExec bool // whether `docker exec vectis-postfix` is viable (implies dockerCLI)
 }
 
 // New creates a new health monitor.
@@ -310,10 +310,18 @@ func diskUsagePercent(ctx context.Context, path string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("df %s: %w", path, err)
 	}
+	return parseDfPercent(out)
+}
 
-	// Output is like:
-	// Use%
-	//  42%
+// parseDfPercent extracts the usage percentage from `df --output=pcent` output,
+// which looks like:
+//
+//	Use%
+//	 42%
+//
+// Split out from diskUsagePercent so the parsing can be unit-tested without
+// shelling out to df.
+func parseDfPercent(out []byte) (int, error) {
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) < 2 {
 		return 0, fmt.Errorf("unexpected df output: %s", string(out))
@@ -337,7 +345,14 @@ func mailQueueSize(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("postqueue -p: %w", err)
 	}
+	return parsePostqueueCount(out)
+}
 
+// parsePostqueueCount counts queued messages from `postqueue -p` output. It
+// prefers the trailing "-- <size> <unit> in <count> Requests." summary line and
+// falls back to counting hex-prefixed queue-entry lines. Split out from
+// mailQueueSize so the parsing can be unit-tested without a running Postfix.
+func parsePostqueueCount(out []byte) (int, error) {
 	output := strings.TrimSpace(string(out))
 
 	// Empty queue says "Mail queue is empty".
