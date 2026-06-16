@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -13,6 +16,11 @@ import (
 	"github.com/Veltara-Works/vectis/internal/logging"
 )
 
+// apiContainerName is the container that mounts both the mail-data volume and
+// can reach Postgres over the Docker network — the only place a FULL backup
+// (including mail) can run.
+const apiContainerName = "vectis-api"
+
 var backupCmd = &cobra.Command{
 	Use:   "backup",
 	Short: "Backup and restore commands",
@@ -20,16 +28,20 @@ var backupCmd = &cobra.Command{
 
 var backupCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "Create a backup (database, config, DKIM; mailboxes only inside the container)",
-	Long: "Creates a backup of the database, configuration, and DKIM keys.\n\n" +
-		"By default the database is dumped via `docker exec` into the vectis-postgres\n" +
-		"container. Use --db-host to dump over TCP from a directly-reachable Postgres\n" +
-		"instead (requires pg_dump on the host).\n\n" +
-		"IMPORTANT: run on the host this does NOT include mailboxes — the mail-data\n" +
-		"Docker volume is mounted only inside the containers, so the host can't read it\n" +
-		"and the command warns when it produces a partial archive. For a FULL backup\n" +
-		"(including mail) use the in-app scheduler or POST /api/v1/backup/create, which\n" +
-		"run inside the api container.",
+	Short: "Create a backup (full when the stack is up; database/config/DKIM otherwise)",
+	Long: "Creates a backup of the database, mailboxes, configuration, and DKIM keys.\n\n" +
+		"By default, when the vectis-api container is running, this delegates to it via\n" +
+		"`docker exec` for a FULL backup — the api container mounts the mail-data volume\n" +
+		"and reaches Postgres over the Docker network, so the archive includes mail. The\n" +
+		"file is written to /var/vectis/backups (bind-mounted from the host, so it shows\n" +
+		"up in `vectis backup list`).\n\n" +
+		"When the stack is down (a DR situation), it falls back to a host-local backup of\n" +
+		"the database (dumped via `docker exec` into vectis-postgres as the superuser),\n" +
+		"config, and DKIM keys — but NOT mail, which lives in a Docker volume the host\n" +
+		"cannot read; it warns when it produces such a partial archive.\n\n" +
+		"Use --db-host to force a host-side DB dump over TCP from a directly-reachable\n" +
+		"Postgres (requires pg_dump on the host); this is always a host-local, partial\n" +
+		"(no-mail) archive.",
 	RunE: runBackupCreate,
 }
 
@@ -54,9 +66,74 @@ var (
 )
 
 func runBackupCreate(cmd *cobra.Command, args []string) error {
-	// Create runs as a host CLI operation. By default the host cannot resolve the
-	// Docker-internal "postgres" hostname and may not have pg_dump installed, so
-	// the Manager dumps the DB via `docker exec` as the superuser (nil pool, no
+	quiet := isQuiet(cmd)
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+
+	// Prefer a FULL backup. A host-run backup can only archive what lives on the
+	// host filesystem; the maildirs live in the `mail-data` Docker volume,
+	// mounted only INSIDE the containers, so a host-side run silently drops mail
+	// — the half-right-is-wrong footgun. The full-coverage backup runs inside the
+	// api container (it has the mail volume AND reaches Postgres over the Docker
+	// network). When the operator hasn't explicitly opted into the host-side
+	// direct-DB path (--db-host) and the api container is up, delegate to it via
+	// `docker exec`. The archive lands in /var/vectis/backups, which the api
+	// service bind-mounts from the host, so the file is visible on the host (and
+	// to `vectis backup list`) afterwards. Only fall back to the host-local
+	// config/DB/DKIM path when the stack is down — the DR case, where a host-side
+	// capture is exactly what's wanted, and which warns it is partial. If
+	// delegation is attempted but FAILS, surface the error rather than silently
+	// producing a partial archive.
+	if backupDBHost == "" && apiContainerRunning() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+
+		if !quiet {
+			fmt.Fprintln(cmd.OutOrStdout(), "Creating full backup (via the vectis-api container)...")
+		}
+
+		res, err := delegateContainerBackup(ctx)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: full backup failed: %s\n", err)
+			os.Exit(1)
+		}
+
+		path, size := res.Path, res.Size
+		// Honour --output on the host: the archive lives under /var/vectis/backups
+		// (bind-mounted at the same path on the host), so it is reachable here.
+		if backupOutput != "" {
+			if err := os.Rename(path, backupOutput); err != nil {
+				if cpErr := copyBackupFile(path, backupOutput); cpErr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Error: failed to move backup to %s: %s\n", backupOutput, cpErr)
+					os.Exit(1)
+				}
+				os.Remove(path)
+			}
+			path = backupOutput
+			if info, _ := os.Stat(path); info != nil {
+				size = info.Size()
+			}
+		}
+
+		if jsonOutput {
+			out, _ := json.MarshalIndent(map[string]any{
+				"path":          path,
+				"size":          size,
+				"mail_included": res.MailIncluded,
+			}, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(out))
+		} else if !quiet {
+			fmt.Fprintf(cmd.OutOrStdout(), "\nBackup saved: %s (%s)\n", path, formatBytes(size))
+			if !res.MailIncluded {
+				fmt.Fprintln(cmd.OutOrStdout(), "Note: no mail captured — the mail-data volume is empty (no mailboxes have received mail yet).")
+			}
+		}
+		return nil
+	}
+
+	// Host-local path: reached when the operator chose --db-host (a deliberate
+	// host-side DB dump) or the stack is down. By default the host cannot resolve
+	// the Docker-internal "postgres" hostname and may not have pg_dump installed,
+	// so the Manager dumps the DB via `docker exec` as the superuser (nil pool, no
 	// DB-backed job tracking). --db-host overrides this for operators whose
 	// Postgres is directly reachable: it dumps over TCP as the app user instead.
 	// The in-app/API scheduler keeps using the pool path. (Finding B follow-up —
@@ -67,9 +144,6 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
 		os.Exit(1)
 	}
-
-	quiet := isQuiet(cmd)
-	jsonOutput, _ := cmd.Flags().GetBool("json")
 
 	logLevel := "info"
 	if quiet {
@@ -338,6 +412,52 @@ func copyBackupFile(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+// apiContainerRunning reports whether the vectis-api container is up. A FULL
+// backup (including mail) can only run inside that container.
+func apiContainerRunning() bool {
+	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", apiContainerName).Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+// containerBackupArgs builds the `docker exec` argv that triggers a full backup
+// inside the api container. --db-host postgres forces the TCP dump path (the
+// in-container CLI has no docker socket of its own to exec into Postgres);
+// --json --quiet keep stdout to pure JSON we can parse.
+func containerBackupArgs() []string {
+	return []string{"exec", apiContainerName, "vectis", "backup", "create", "--db-host", "postgres", "--json", "--quiet"}
+}
+
+// containerBackupResult mirrors the JSON emitted by `vectis backup create --json`.
+type containerBackupResult struct {
+	Path         string `json:"path"`
+	Size         int64  `json:"size"`
+	MailIncluded bool   `json:"mail_included"`
+}
+
+// delegateContainerBackup triggers a FULL backup inside the vectis-api
+// container via `docker exec`. The api container has both the mail-data volume
+// and the database (over the Docker network), so unlike a host-run backup it
+// captures mail. The archive is written to /var/vectis/backups, which the api
+// service bind-mounts from the host, so the file is visible on the host
+// afterwards.
+func delegateContainerBackup(ctx context.Context) (*containerBackupResult, error) {
+	cmd := exec.CommandContext(ctx, "docker", containerBackupArgs()...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("in-container backup failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	var res containerBackupResult
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &res); err != nil {
+		return nil, fmt.Errorf("parsing in-container backup output: %w (got: %q)", err, strings.TrimSpace(stdout.String()))
+	}
+	if res.Path == "" {
+		return nil, fmt.Errorf("in-container backup returned no path (output: %q)", strings.TrimSpace(stdout.String()))
+	}
+	return &res, nil
 }
 
 func init() {
