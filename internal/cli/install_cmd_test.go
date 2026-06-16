@@ -154,3 +154,51 @@ func TestIsPlaceholderEmail(t *testing.T) {
 		})
 	}
 }
+
+func TestPickAPIImage(t *testing.T) {
+	const compose = `services:
+  traefik:
+    image: traefik:v3.3
+  api:
+    image: ghcr.io/veltara-works/vectis-api:v0.1.28
+    container_name: vectis-api
+  orchestrator:
+    image: ghcr.io/veltara-works/vectis-orchestrator:v0.1.28
+  postfix:
+    image: ghcr.io/veltara-works/vectis-postfix:v0.1.28
+`
+	got := pickAPIImage(compose)
+	want := "ghcr.io/veltara-works/vectis-api:v0.1.28"
+	if got != want {
+		t.Errorf("pickAPIImage() = %q, want %q", got, want)
+	}
+
+	// Must not match the orchestrator/postfix lines if api is absent.
+	const noAPI = `services:
+  orchestrator:
+    image: ghcr.io/veltara-works/vectis-orchestrator:v0.1.28
+`
+	if got := pickAPIImage(noAPI); got != "" {
+		t.Errorf("pickAPIImage(noAPI) = %q, want empty", got)
+	}
+}
+
+func TestDockerRunAPI(t *testing.T) {
+	got := dockerRunAPI("ghcr.io/veltara-works/vectis-api:v0.1.28", "vectis", "migrate", "up")
+	want := []string{
+		"docker", "run", "--rm",
+		"--network", "vectis_vectis-data",
+		"-v", "/etc/vectis:/etc/vectis:ro",
+		"--entrypoint", "vectis",
+		"ghcr.io/veltara-works/vectis-api:v0.1.28",
+		"migrate", "up",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("dockerRunAPI()\n got: %v\nwant: %v", got, want)
+	}
+
+	// It must never shell out to `docker compose run` (the detach footgun).
+	if strings.Contains(strings.Join(got, " "), "compose run") {
+		t.Error("dockerRunAPI() must not use `docker compose run`")
+	}
+}
