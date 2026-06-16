@@ -226,9 +226,15 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	// vectis-data network. The host cannot reach Postgres directly because
 	// vectis-data is `internal: true` — Docker silently drops any port
 	// publish from internal networks, so all DB-touching bootstrap work
-	// runs in-container where `postgres` resolves over Docker DNS.
+	// runs in-container where `postgres` resolves over Docker DNS. We use
+	// `docker run` (NOT `docker compose run`) so a re-run against a live
+	// stack can never detach the running api container — see dockerRunAPI.
 	printStep("Running database migrations")
-	migrateArgs := composeRunAPI(composeDst, "vectis", "migrate", "up")
+	apiImage, err := apiImageFromComposeFile(composeDst)
+	if err != nil {
+		fail("could not determine api image from %s: %s", composeDst, err)
+	}
+	migrateArgs := dockerRunAPI(apiImage, "vectis", "migrate", "up")
 	runMigrate := exec.Command(migrateArgs[0], migrateArgs[1:]...)
 	runMigrate.Stdout = os.Stdout
 	runMigrate.Stderr = os.Stderr
@@ -244,7 +250,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	// password out, and surface it in the final banner so operators using
 	// scrollback-less web terminals don't lose it.
 	printStep("Creating initial admin account")
-	adminArgs := composeRunAPI(composeDst, "vectis", "admin", "init")
+	adminArgs := dockerRunAPI(apiImage, "vectis", "admin", "init")
 	runAdmin := exec.Command(adminArgs[0], adminArgs[1:]...)
 	var adminOut bytes.Buffer
 	runAdmin.Stdout = &adminOut
@@ -611,25 +617,70 @@ func reverseDNSMatches(ip, hostname string) bool {
 	return got == want
 }
 
-// composeRunAPI returns the `docker compose run` invocation that executes
-// the given command inside a transient api container on the same networks
-// as the running stack. The api image's entrypoint is `vectis`, so args[0]
-// must be "vectis" or a sibling binary baked into the image.
+// apiOneShotNetwork is the Docker network a one-shot api container must join
+// to reach Postgres during bootstrap. It is `<compose project>_<network>` =
+// `vectis_vectis-data` (the install always uses the `vectis` project name).
+// Mirrors the manual-recovery command printed below and in admin_cmd.go.
+const apiOneShotNetwork = "vectis_vectis-data"
+
+// apiImageFromComposeFile reads the rendered compose file and returns the
+// fully-qualified vectis-api image ref, including the version tag that was
+// rendered into it. The compose file on disk is the single source of truth
+// for the version being installed, so we never have to thread the version
+// through here separately.
+func apiImageFromComposeFile(composePath string) (string, error) {
+	data, err := os.ReadFile(composePath)
+	if err != nil {
+		return "", err
+	}
+	img := pickAPIImage(string(data))
+	if img == "" {
+		return "", fmt.Errorf("no vectis-api image line found in %s", composePath)
+	}
+	return img, nil
+}
+
+// pickAPIImage scans rendered compose YAML for the api service's image ref.
+// It is pure (no I/O) so it can be unit-tested. It matches the `image:` line
+// whose value contains "/vectis-api:" — unique to the api service (the
+// orchestrator is "/vectis-orchestrator:", postfix "/vectis-postfix:", etc).
+func pickAPIImage(composeYAML string) string {
+	for _, line := range strings.Split(composeYAML, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "image:") {
+			continue
+		}
+		ref := strings.TrimSpace(strings.TrimPrefix(t, "image:"))
+		if strings.Contains(ref, "/vectis-api:") {
+			return ref
+		}
+	}
+	return ""
+}
+
+// dockerRunAPI returns the `docker run` invocation that executes the given
+// command inside a one-shot api container attached to the vectis-data network,
+// with the host config dir mounted read-only. The api image's entrypoint is
+// `vectis`, so args[0] must be "vectis" (or a sibling binary baked into the
+// image) and args[1:] are its arguments.
 //
-// SAFE AT INSTALL TIME ONLY. Compose v5.x has a bug where `compose run`
-// against a service whose live container is already on an `internal: true`
-// network silently detaches that live container's network attachment and
-// fails to restore it. During install the api service container does not
-// exist yet (only postgres has been brought up at the call sites in steps
-// 9 and 10), so there is nothing to disconnect. Do NOT add a new caller
-// from any post-install path — use `docker run --network <net> --entrypoint
-// vectis <image> <args>` instead. See deferred-items.md §12.
-func composeRunAPI(composePath string, args ...string) []string {
+// Why `docker run` and NOT `docker compose run`: compose's transient run
+// container takes the api service's network aliases, which forces compose to
+// temporarily DETACH the live vectis-api container from its `internal: true`
+// networks. If the transient container then fails to re-attach (alias races,
+// among others), compose exits WITHOUT restoring the live container, leaving
+// vectis-api stranded off vectis_vectis-data and unable to reach Postgres
+// until `docker network connect` is run by hand (confirmed live on prod
+// 2026-04-27). `docker run` joins the named network directly and never touches
+// the live container, so it is safe to run against a live stack and safe to
+// repeat. See internal/cli/admin_cmd.go for the operator-facing equivalent.
+func dockerRunAPI(image string, args ...string) []string {
 	return append([]string{
-		"docker", "compose", "-f", composePath,
-		"run", "--rm", "--no-deps",
+		"docker", "run", "--rm",
+		"--network", apiOneShotNetwork,
+		"-v", "/etc/vectis:/etc/vectis:ro",
 		"--entrypoint", args[0],
-		"api",
+		image,
 	}, args[1:]...)
 }
 
