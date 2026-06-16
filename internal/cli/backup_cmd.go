@@ -98,8 +98,26 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 		}
 
 		path, size := res.Path, res.Size
-		// Honour --output on the host: the archive lives under /var/vectis/backups
-		// (bind-mounted at the same path on the host), so it is reachable here.
+
+		// The archive was written inside the api container. On current installs
+		// the api service bind-mounts /var/vectis/backups from the host (enforced
+		// by engine_test), so the file is already here at the same path. On older
+		// installs generated without that bind-mount it is NOT — copy it out so
+		// the reported path is genuinely host-accessible (and shows up in
+		// `vectis backup list`). Without this we would report success for a file
+		// the operator cannot reach. No-op on installs that already bind-mount.
+		if _, statErr := os.Stat(path); statErr != nil {
+			if cpErr := dockerCopyFromAPI(path, path); cpErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"Error: full backup was created inside the vectis-api container at %s, "+
+						"but it is not visible on the host (the api service does not bind-mount "+
+						"/var/vectis/backups) and could not be copied out: %s\n", path, cpErr)
+				os.Exit(1)
+			}
+		}
+
+		// Honour --output on the host: the archive now lives under
+		// /var/vectis/backups on the host, so it is reachable here.
 		if backupOutput != "" {
 			if err := os.Rename(path, backupOutput); err != nil {
 				if cpErr := copyBackupFile(path, backupOutput); cpErr != nil {
@@ -427,6 +445,22 @@ func apiContainerRunning() bool {
 // --json --quiet keep stdout to pure JSON we can parse.
 func containerBackupArgs() []string {
 	return []string{"exec", apiContainerName, "vectis", "backup", "create", "--db-host", "postgres", "--json", "--quiet"}
+}
+
+// dockerCopyArgs builds the `docker cp` argv used to retrieve a backup archive
+// from inside the api container to the host (for older installs that don't
+// bind-mount /var/vectis/backups).
+func dockerCopyArgs(containerPath, hostPath string) []string {
+	return []string{"cp", apiContainerName + ":" + containerPath, hostPath}
+}
+
+// dockerCopyFromAPI copies a file out of the api container onto the host.
+func dockerCopyFromAPI(containerPath, hostPath string) error {
+	out, err := exec.Command("docker", dockerCopyArgs(containerPath, hostPath)...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // containerBackupResult mirrors the JSON emitted by `vectis backup create --json`.

@@ -21,6 +21,17 @@ func TestContainerBackupArgs(t *testing.T) {
 	}
 }
 
+// TestDockerCopyArgs locks down the `docker cp` argv used to retrieve a backup
+// from inside the api container on installs that don't bind-mount the backups
+// dir — the fix for reporting a success path the operator can't reach.
+func TestDockerCopyArgs(t *testing.T) {
+	got := strings.Join(dockerCopyArgs("/var/vectis/backups/b.tar.gz.enc", "/var/vectis/backups/b.tar.gz.enc"), " ")
+	want := "cp vectis-api:/var/vectis/backups/b.tar.gz.enc /var/vectis/backups/b.tar.gz.enc"
+	if got != want {
+		t.Fatalf("dockerCopyArgs() = %q, want %q", got, want)
+	}
+}
+
 // TestContainerBackupResultParsing confirms the JSON shape we expect from the
 // in-container `vectis backup create --json` round-trips into the result struct
 // the host side consumes — including mail_included, which is the whole point of
