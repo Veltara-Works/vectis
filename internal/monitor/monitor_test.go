@@ -6,22 +6,26 @@ import (
 )
 
 // TestNew_Defaults verifies that New() fills zero/negative tuning knobs with the
-// documented defaults and preserves explicit values. The db/vk handles are only
-// stored (not dialled) by New, so nil is safe here.
+// documented defaults and preserves explicit values. Expected values come from
+// DefaultConfig() rather than duplicated constants, so this also pins New() and
+// DefaultConfig() to the same defaults. The db/vk handles are only stored (not
+// dialled) by New, so nil is safe here.
 func TestNew_Defaults(t *testing.T) {
+	def := DefaultConfig()
+
 	t.Run("zero config gets defaults", func(t *testing.T) {
 		m := New(nil, nil, nil, Config{}, mustLogger())
-		if m.cfg.CheckInterval != 60*time.Second {
-			t.Errorf("CheckInterval = %v, want 60s", m.cfg.CheckInterval)
+		if m.cfg.CheckInterval != def.CheckInterval {
+			t.Errorf("CheckInterval = %v, want %v", m.cfg.CheckInterval, def.CheckInterval)
 		}
-		if m.cfg.DiskWarnPercent != 80 {
-			t.Errorf("DiskWarnPercent = %d, want 80", m.cfg.DiskWarnPercent)
+		if m.cfg.DiskWarnPercent != def.DiskWarnPercent {
+			t.Errorf("DiskWarnPercent = %d, want %d", m.cfg.DiskWarnPercent, def.DiskWarnPercent)
 		}
-		if m.cfg.QueueWarnSize != 100 {
-			t.Errorf("QueueWarnSize = %d, want 100", m.cfg.QueueWarnSize)
+		if m.cfg.QueueWarnSize != def.QueueWarnSize {
+			t.Errorf("QueueWarnSize = %d, want %d", m.cfg.QueueWarnSize, def.QueueWarnSize)
 		}
-		if m.cfg.CertWarnDays != 14 {
-			t.Errorf("CertWarnDays = %d, want 14", m.cfg.CertWarnDays)
+		if m.cfg.CertWarnDays != def.CertWarnDays {
+			t.Errorf("CertWarnDays = %d, want %d", m.cfg.CertWarnDays, def.CertWarnDays)
 		}
 	})
 
@@ -32,8 +36,8 @@ func TestNew_Defaults(t *testing.T) {
 			QueueWarnSize:   -5,
 			CertWarnDays:    -5,
 		}, mustLogger())
-		if m.cfg.CheckInterval != 60*time.Second || m.cfg.DiskWarnPercent != 80 ||
-			m.cfg.QueueWarnSize != 100 || m.cfg.CertWarnDays != 14 {
+		if m.cfg.CheckInterval != def.CheckInterval || m.cfg.DiskWarnPercent != def.DiskWarnPercent ||
+			m.cfg.QueueWarnSize != def.QueueWarnSize || m.cfg.CertWarnDays != def.CertWarnDays {
 			t.Errorf("negative config not defaulted: %+v", m.cfg)
 		}
 	})

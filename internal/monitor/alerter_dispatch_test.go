@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Veltara-Works/vectis/internal/config"
 )
@@ -67,7 +68,15 @@ func TestSendWebhook(t *testing.T) {
 	}
 	a.sendWebhook(context.Background(), "WARN", "disk", "Disk usage at 85%", "Free disk space")
 
-	got := <-gotCh
+	// Receive with a timeout rather than a bare <-gotCh so the test fails fast
+	// if sendWebhook returns early (e.g. an unexpected marshal/request error)
+	// instead of hanging until the suite times out.
+	var got capture
+	select {
+	case got = <-gotCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("webhook handler was not called within 2s")
+	}
 	if got.method != http.MethodPost {
 		t.Errorf("method = %q, want POST", got.method)
 	}
