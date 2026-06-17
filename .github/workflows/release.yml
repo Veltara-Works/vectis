@@ -60,6 +60,19 @@ jobs:
           sha256sum vectis-linux-amd64 | tee vectis-linux-amd64.sha256
           echo "sha256=$(awk '{print $1}' vectis-linux-amd64.sha256)" >> "$GITHUB_OUTPUT"
 
+      # Generate a Software Bill of Materials for the shipped binary. Syft's
+      # go-module-binary cataloger reads the build info embedded by the Go
+      # toolchain (same source as `go version -m`), so the SBOM lists the exact
+      # module graph compiled into vectis-linux-amd64 — not just go.mod.
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0.24.0
+
+      - name: Generate binary SBOM (SPDX JSON)
+        run: |
+          set -euo pipefail
+          syft scan file:vectis-linux-amd64 -o spdx-json=vectis-linux-amd64.spdx.json
+          test -s vectis-linux-amd64.spdx.json   # fail fast on an empty doc
+
       - uses: sigstore/cosign-installer@v4.1.2
         with:
           cosign-release: 'v3.0.6'   # pin the signing tool for reproducibility
@@ -72,7 +85,9 @@ jobs:
           # Sign the byte-identical root copy of install.sh so the published
           # artifact, the GitHub Release asset, and the signed blob all match.
           cp scripts/install.sh install.sh
-          for blob in vectis-linux-amd64 vectis-linux-amd64.sha256 install.sh; do
+          # SBOM is signed alongside the binary it describes so consumers can
+          # verify provenance of the bill of materials itself.
+          for blob in vectis-linux-amd64 vectis-linux-amd64.sha256 vectis-linux-amd64.spdx.json install.sh; do
             cosign sign-blob --bundle "${blob}.cosign.bundle" "$blob"
           done
           ls -la ./*.cosign.bundle
@@ -87,10 +102,12 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           set -euo pipefail
-          # Binary + checksum + their cosign bundles
+          # Binary + checksum + SBOM + their cosign bundles
           for obj in vectis-linux-amd64 vectis-linux-amd64.sha256 \
                      vectis-linux-amd64.cosign.bundle \
-                     vectis-linux-amd64.sha256.cosign.bundle; do
+                     vectis-linux-amd64.sha256.cosign.bundle \
+                     vectis-linux-amd64.spdx.json \
+                     vectis-linux-amd64.spdx.json.cosign.bundle; do
             aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
               "$obj" "s3://$R2_BUCKET/${VERSION}/$obj"
             aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
@@ -124,6 +141,8 @@ jobs:
             vectis-linux-amd64.sha256
             vectis-linux-amd64.cosign.bundle
             vectis-linux-amd64.sha256.cosign.bundle
+            vectis-linux-amd64.spdx.json
+            vectis-linux-amd64.spdx.json.cosign.bundle
             install.sh
             install.sh.cosign.bundle
           retention-days: 7
@@ -211,6 +230,26 @@ jobs:
           set -euo pipefail
           cosign sign "${IMAGE}@${DIGEST}"
 
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0.24.0
+
+      # Generate an SPDX SBOM for the pushed image and attach it as a keyless
+      # cosign attestation, pinned to the same immutable digest as the signature
+      # (so it covers every tag pointing at this digest). Verifiable with
+      # `cosign verify-attestation --type spdxjson` under the same release.yml
+      # workflow identity as the image signature.
+      - name: Generate & attest image SBOM (SPDX, keyless / Sigstore OIDC)
+        env:
+          COSIGN_YES: "true"
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/vectis-${{ matrix.service }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SVC: ${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          syft scan "${IMAGE}@${DIGEST}" -o spdx-json="sbom-${SVC}.spdx.json"
+          test -s "sbom-${SVC}.spdx.json"
+          cosign attest --type spdxjson --predicate "sbom-${SVC}.spdx.json" "${IMAGE}@${DIGEST}"
+
   github-release:
     name: Create GitHub Release
     runs-on: ubuntu-24.04
@@ -274,6 +313,20 @@ jobs:
             echo '```'
             echo ""
             echo "See [docs/notes/verifying-downloads.md](https://github.com/Veltara-Works/vectis/blob/${GITHUB_REF_NAME}/docs/notes/verifying-downloads.md)."
+            echo ""
+            echo "## Software Bill of Materials (SBOM)"
+            echo ""
+            echo "An SPDX-JSON SBOM is published for the binary (cosign-signed,"
+            echo "alongside it on the release + at \`dl.vectismail.com\`), and each"
+            echo "container image carries an SPDX SBOM as a keyless cosign attestation."
+            echo "Inspect an image's SBOM (same identity flags as image verification):"
+            echo ""
+            echo '```bash'
+            echo "cosign verify-attestation --type spdxjson \\"
+            echo "  --certificate-identity-regexp '^https://github.com/Veltara-Works/vectis/.github/workflows/release.yml@refs/tags/' \\"
+            echo "  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\"
+            echo "  ghcr.io/veltara-works/vectis-api:${GITHUB_REF_NAME}"
+            echo '```'
             echo ""
             echo "## Changes"
             echo ""
@@ -339,6 +392,8 @@ jobs:
             vectis-linux-amd64.sha256
             vectis-linux-amd64.cosign.bundle
             vectis-linux-amd64.sha256.cosign.bundle
+            vectis-linux-amd64.spdx.json
+            vectis-linux-amd64.spdx.json.cosign.bundle
             install.sh
             install.sh.cosign.bundle
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
