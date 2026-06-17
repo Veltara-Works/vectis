@@ -132,3 +132,64 @@ func TestContainerNamesForConfigPaths(t *testing.T) {
 		})
 	}
 }
+
+func TestServicesForConfigPaths(t *testing.T) {
+	// Same filtering as containerNamesForConfigPaths but returns service names
+	// (no vectis- prefix), and the container version must stay derivable from it.
+	got := servicesForConfigPaths([]string{"postfix/main.cf", "webmail/nginx.conf", "orchestrator/x.conf", "postgres/init.sh"})
+	want := []string{"postfix", "webmail"} // orchestrator + data services dropped, sorted
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("servicesForConfigPaths = %v, want %v", got, want)
+	}
+}
+
+func TestConfigRestartTargets(t *testing.T) {
+	tests := []struct {
+		name           string
+		configsChanged []string
+		imageBumped    map[string]bool
+		want           []string
+	}{
+		{
+			name:           "config-only services restart; image-bumped excluded",
+			configsChanged: []string{"postfix/main.cf", "webmail/nginx.conf", "cert-extractor/run.sh"},
+			imageBumped:    map[string]bool{"postfix": true}, // postfix recreated by the bump already
+			want:           []string{"cert-extractor", "webmail"},
+		},
+		{
+			name:           "all changed services were image-bumped → nothing extra to restart",
+			configsChanged: []string{"rspamd/local.d/options.inc", "dovecot/dovecot.conf"},
+			imageBumped:    map[string]bool{"rspamd": true, "dovecot": true},
+			want:           []string{},
+		},
+		{
+			name:           "no image bumps → every config-changed service restarts",
+			configsChanged: []string{"webmail/nginx.conf", "postfix/main.cf"},
+			imageBumped:    map[string]bool{},
+			want:           []string{"postfix", "webmail"},
+		},
+		{
+			name:           "orchestrator + data services never targeted even if changed",
+			configsChanged: []string{"orchestrator/x.conf", "postgres/init.sh", "valkey/valkey.conf"},
+			imageBumped:    nil,
+			want:           []string{},
+		},
+		{
+			name:           "no config changes → empty",
+			configsChanged: nil,
+			imageBumped:    map[string]bool{"postfix": true},
+			want:           []string{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := configRestartTargets(tc.configsChanged, tc.imageBumped)
+			if len(got) == 0 && len(tc.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("configRestartTargets(%v, %v) = %v, want %v", tc.configsChanged, tc.imageBumped, got, tc.want)
+			}
+		})
+	}
+}

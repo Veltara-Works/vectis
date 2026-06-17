@@ -659,10 +659,15 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 	// Skip path: configGen unset (legacy installs whose main.go didn't wire
 	// SetConfigGenerator) — same fallback as Phase 3.5's compose path. The
 	// regen is best-effort additive; configs simply stay where they are.
+	// Captured at function scope so Phase 5.5 can restart the services whose
+	// configs changed but that compose-up no-op'd (no image bump → stale
+	// single-file bind-mount inodes). See configRestartTargets.
+	var configsChanged []string
 	if configGen != nil && len(o.cfg.GeneratedConfigDir) > 0 {
 		o.logger.Info("phase 3.6: regenerating per-service configs", "job_id", jobID, "render_mode", renderMode)
 		configBackupDir := configBackupDirFor(snapshotPath)
-		_, configsChanged, regenErr := RegenerateConfigs(
+		var regenErr error
+		_, configsChanged, regenErr = RegenerateConfigs(
 			applyCtx,
 			o.cfg.GeneratedConfigDir,
 			configBackupDir,
@@ -759,6 +764,61 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		}
 		o.completeRollback(opID, snapshotPath, fmt.Sprintf("health check failed: %v", err))
 		return jobID, fmt.Errorf("health check failed, rolled back: %w", err)
+	}
+
+	// ===== PHASE 5.5: RESTART CONFIG-ONLY-CHANGED SERVICES =====
+	//
+	// `docker compose up -d` (Phase 4.3) is a no-op for a service whose image
+	// and compose entry are unchanged — it keeps the running container, which
+	// holds the OLD inode of any single-file bind-mounted config (postfix
+	// main.cf, dovecot.conf, rspamd maps, …) even though Phase 3.6 atomically
+	// replaced the file on the host. Services Phase 4.2 stopped get a fresh
+	// start, but ones it never stops (webmail, cert-extractor) stay on stale
+	// config; an image bump would have recreated them, a pure config-only delta
+	// does not. Mirror self-heal: `docker restart` re-resolves the bind mounts.
+	// Image-bumped services were already recreated in 4.3, so they're excluded.
+	// See feedback_bind_mount_edits.md.
+	imageBumped := make(map[string]bool, len(plan.Changes))
+	for _, c := range plan.Changes {
+		imageBumped[c.Service] = true
+	}
+	if restartServices := configRestartTargets(configsChanged, imageBumped); len(restartServices) > 0 {
+		o.logger.Info("phase 5.5: restarting config-only-changed services to pick up new bind-mounted configs",
+			"job_id", jobID, "services", restartServices)
+		containers := make([]string, len(restartServices))
+		for i, svc := range restartServices {
+			containers[i] = containerName(svc)
+		}
+		if err := o.docker.RestartContainers(applyCtx, containers); err != nil {
+			o.logger.Error("config restart failed, initiating rollback", "error", err)
+			o.sm.Transition(applyCtx, StateRollingBack) //nolint:errcheck
+			rollbackErr := o.doRollback(applyCtx, snapshotPath)
+			if rollbackErr != nil {
+				o.failApply(applyCtx, opID, jobID, fmt.Sprintf("config restart failed and rollback also failed: restart=%v, rollback=%v", err, rollbackErr))
+				return "", fmt.Errorf("config restart and rollback both failed: %w", rollbackErr)
+			}
+			o.completeRollback(opID, snapshotPath, fmt.Sprintf("config restart failed: %v", err))
+			return jobID, fmt.Errorf("config restart failed, rolled back: %w", err)
+		}
+		// Re-verify health: a freshly-applied config can be invalid, which would
+		// otherwise leave the service crash-looping while Apply reports success.
+		for _, svc := range restartServices {
+			timeout, ok := ServiceHealthTimeouts[svc]
+			if !ok {
+				timeout = o.cfg.HealthCheckTimeout
+			}
+			if err := o.docker.WaitHealthy(applyCtx, svc, timeout); err != nil {
+				o.logger.Error("config restart health check failed, initiating rollback", "service", svc, "error", err)
+				o.sm.Transition(applyCtx, StateRollingBack) //nolint:errcheck
+				rollbackErr := o.doRollback(applyCtx, snapshotPath)
+				if rollbackErr != nil {
+					o.failApply(applyCtx, opID, jobID, fmt.Sprintf("config restart health check failed and rollback also failed: health=%v, rollback=%v", err, rollbackErr))
+					return "", fmt.Errorf("config restart health check and rollback both failed: %w", rollbackErr)
+				}
+				o.completeRollback(opID, snapshotPath, fmt.Sprintf("config restart health check failed for %s: %v", svc, err))
+				return jobID, fmt.Errorf("config restart health check failed for %s, rolled back: %w", svc, err)
+			}
+		}
 	}
 
 	// ===== PHASE 6: COMPLETE =====
