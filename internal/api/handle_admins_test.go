@@ -20,9 +20,14 @@ const subAdminPassword = "sub-admin-password-123"
 
 // createAdmin creates an admin with the given role via POST /admins (acting as
 // the seeded super_admin) and returns its id and email. Fails the test if the
-// create does not return 201.
+// create does not return 201. Only roles that do not require domain assignments
+// (super_admin, admin) are supported — domain_admin needs domain_ids, which
+// this helper deliberately does not supply.
 func createAdmin(t *testing.T, env *testEnv, role string) (id, email string) {
 	t.Helper()
+	if role == "domain_admin" {
+		t.Fatalf("createAdmin does not support domain_admin (requires domain_ids)")
+	}
 	email = fmt.Sprintf("sub-%s-%d@example.com", role, time.Now().UnixNano())
 	body := fmt.Sprintf(`{"email":%q,"password":%q,"role":%q}`, email, subAdminPassword, role)
 	resp := env.doRequest(t, "POST", "/api/v1/admins", body)

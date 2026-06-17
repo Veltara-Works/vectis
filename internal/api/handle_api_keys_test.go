@@ -47,14 +47,17 @@ func TestAPIKeyCRUD(t *testing.T) {
 		t.Fatalf("create: expected 201, got %d", resp.StatusCode)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read create response body: %v", err)
+	}
 	if strings.Contains(string(raw), "key_hash") {
 		t.Error("key_hash leaked in create response")
 	}
 	body := decodeJSONBytes(t, raw)
 	data := body["data"].(map[string]any)
-	if data["key"] == nil || data["key"] == "" {
-		t.Fatal("expected one-time raw key in create response")
+	if key, ok := data["key"].(string); !ok || key == "" {
+		t.Fatal("expected one-time raw key (string) in create response")
 	}
 	apiKey := data["api_key"].(map[string]any)
 	keyID := apiKey["id"].(string)
