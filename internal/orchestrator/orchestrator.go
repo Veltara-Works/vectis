@@ -659,10 +659,15 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 	// Skip path: configGen unset (legacy installs whose main.go didn't wire
 	// SetConfigGenerator) — same fallback as Phase 3.5's compose path. The
 	// regen is best-effort additive; configs simply stay where they are.
+	// Captured at function scope so Phase 5.5 can restart the services whose
+	// configs changed but that compose-up no-op'd (no image bump → stale
+	// single-file bind-mount inodes). See configRestartTargets.
+	var configsChanged []string
 	if configGen != nil && len(o.cfg.GeneratedConfigDir) > 0 {
 		o.logger.Info("phase 3.6: regenerating per-service configs", "job_id", jobID, "render_mode", renderMode)
 		configBackupDir := configBackupDirFor(snapshotPath)
-		_, configsChanged, regenErr := RegenerateConfigs(
+		var regenErr error
+		_, configsChanged, regenErr = RegenerateConfigs(
 			applyCtx,
 			o.cfg.GeneratedConfigDir,
 			configBackupDir,
@@ -759,6 +764,46 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		}
 		o.completeRollback(opID, snapshotPath, fmt.Sprintf("health check failed: %v", err))
 		return jobID, fmt.Errorf("health check failed, rolled back: %w", err)
+	}
+
+	// ===== PHASE 5.5: RESTART CONFIG-ONLY-CHANGED SIDECARS =====
+	//
+	// `docker compose up -d` (Phase 4.3) is a no-op for a service whose image +
+	// compose entry are unchanged and that is already RUNNING — it keeps the
+	// container, which holds the OLD inode of any single-file bind-mounted config
+	// (Phase 3.6 atomically replaced the file on the host, allocating a new
+	// inode). Two sets of services are already covered: those Phase 4.2 stopped
+	// get a fresh start in 4.3 (a `docker start` re-resolves the bind mount —
+	// verified empirically), and image-bumped services are recreated. The gap is
+	// services upped while still running and never stopped — webmail,
+	// cert-extractor — on a pure config-only delta. Mirror self-heal: `docker
+	// restart` re-resolves their mounts.
+	//
+	// Best-effort (non-fatal), like self-heal: the regenerated config is already
+	// on disk, so a rare restart failure is logged with a remediation hint rather
+	// than rolling back an otherwise-healthy Apply. These sidecars carry no
+	// HEALTHCHECK (they're absent from ServiceStartOrder/ServiceHealthTimeouts),
+	// so there's nothing to health-gate — WaitHealthy would just time out.
+	// See feedback_bind_mount_edits.md.
+	cycled := make(map[string]bool, len(NonDataStopOrder()))
+	for _, s := range NonDataStopOrder() {
+		cycled[s] = true
+	}
+	imageBumped := make(map[string]bool, len(plan.Changes))
+	for _, c := range plan.Changes {
+		imageBumped[c.Service] = true
+	}
+	if restartServices := configRestartTargets(configsChanged, imageBumped, cycled); len(restartServices) > 0 {
+		containers := make([]string, len(restartServices))
+		for i, svc := range restartServices {
+			containers[i] = containerName(svc)
+		}
+		o.logger.Info("phase 5.5: restarting config-only-changed sidecars to pick up new bind-mounted configs",
+			"job_id", jobID, "services", restartServices)
+		if err := o.docker.RestartContainers(applyCtx, containers); err != nil {
+			o.logger.Warn("phase 5.5: sidecar restart failed (config is on disk; a manual `docker restart` may be needed to activate it)",
+				"job_id", jobID, "services", restartServices, "error", err)
+		}
 	}
 
 	// ===== PHASE 6: COMPLETE =====

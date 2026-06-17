@@ -359,17 +359,17 @@ func (o *Orchestrator) writeLastSeenVersion(ctx context.Context, v string) error
 	return o.vk.Do(ctx, cmd).Error()
 }
 
-// containerNamesForConfigPaths maps configsChanged rel-paths to the
-// vectis-* container names that need restarting. RegenerateConfigs writes
-// files like "postfix/main.cf", "rspamd/maps/allow_domain.map",
-// "dovecot/dovecot.conf" — first path segment is always the service name.
-// Result is deduplicated, sorted (deterministic for tests + log lines),
-// and filtered to vectis-* image services *excluding* orchestrator (we
-// never self-restart) and excluding postgres/valkey (data services live
-// outside VectisImageServices anyway). Any first-segment that isn't a
-// known vectis-* service is silently dropped — we'd rather miss a niche
-// config-touched service than restart something unexpected.
-func containerNamesForConfigPaths(paths []string) []string {
+// servicesForConfigPaths maps configsChanged rel-paths to the vectis-*
+// SERVICE names whose bind-mounted configs were touched. RegenerateConfigs
+// writes files like "postfix/main.cf", "rspamd/maps/allow_domain.map",
+// "dovecot/dovecot.conf" — the first path segment is always the service name.
+// Result is deduplicated, sorted (deterministic for tests + log lines), and
+// filtered to vectis-* image services *excluding* orchestrator (we never
+// self-restart) and excluding postgres/valkey (data services live outside
+// VectisImageServices anyway). Any first-segment that isn't a known vectis-*
+// service is silently dropped — we'd rather miss a niche config-touched
+// service than restart something unexpected.
+func servicesForConfigPaths(paths []string) []string {
 	known := make(map[string]struct{}, len(VectisImageServicesExcludingSelf()))
 	for _, s := range VectisImageServicesExcludingSelf() {
 		known[s] = struct{}{}
@@ -383,12 +383,47 @@ func containerNamesForConfigPaths(paths []string) []string {
 		if _, ok := known[first]; !ok {
 			continue
 		}
-		seen["vectis-"+first] = struct{}{}
+		seen[first] = struct{}{}
 	}
 	out := make([]string, 0, len(seen))
-	for n := range seen {
-		out = append(out, n)
+	for s := range seen {
+		out = append(out, s)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// containerNamesForConfigPaths is servicesForConfigPaths mapped to container
+// names (vectis-<service>), for callers that drive `docker container restart`.
+func containerNamesForConfigPaths(paths []string) []string {
+	svcs := servicesForConfigPaths(paths)
+	out := make([]string, len(svcs))
+	for i, s := range svcs {
+		out[i] = containerName(s)
+	}
+	return out
+}
+
+// configRestartTargets returns the services whose bind-mounted configs changed
+// during Apply's Phase 3.6 but that were NEITHER recreated by an image bump
+// (Phase 4.3 already re-resolved their mounts) NOR stopped+started by Phase 4.2
+// (`cycled`). A fresh start re-resolves single-file bind-mount inodes — verified
+// empirically: a stopped container picks up an atomically-replaced config file
+// on `docker start`, exactly as `docker restart` does. So the only services
+// left holding the OLD inode are the ones Phase 4.3 upped WHILE RUNNING and
+// never stopped (webmail, cert-extractor); those need an explicit `docker
+// restart`. Returns service names, sorted (inherited from servicesForConfigPaths).
+//
+// This ports self-heal's `configsChanged → RestartContainers` step to Apply
+// while avoiding a redundant second bounce of the mail daemons (which Phase
+// 4.2/4.3's stop+start already reloaded). See feedback_bind_mount_edits.md.
+func configRestartTargets(configsChanged []string, imageBumped, cycled map[string]bool) []string {
+	out := make([]string, 0, len(configsChanged))
+	for _, svc := range servicesForConfigPaths(configsChanged) {
+		if imageBumped[svc] || cycled[svc] {
+			continue
+		}
+		out = append(out, svc)
+	}
 	return out
 }
