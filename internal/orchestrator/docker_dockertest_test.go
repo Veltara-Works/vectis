@@ -32,7 +32,9 @@ import (
 )
 
 const (
-	probeImage = "alpine:latest"
+	// Pinned (not :latest) for reproducibility; alpine:3.24 is already a stack
+	// dependency (dkimMigrationImage in docker.go), so it's typically cached.
+	probeImage = "alpine:3.24"
 	probeLabel = "vectis-itest=1"
 )
 
@@ -49,11 +51,24 @@ func TestMain(m *testing.M) {
 }
 
 func sweep() {
-	if out, err := exec.Command("docker", "ps", "-aq", "--filter", "label="+probeLabel).Output(); err == nil {
+	// Only sweep NON-running labelled containers. A force-remove of every
+	// labelled container would kill the live probes of a dockertest run executing
+	// concurrently on the same host. Per-test t.Cleanup removes this run's own
+	// (running) probes; the finite `sleep` lifetime means any leftover from an
+	// aborted run eventually exits and is collected by a later sweep. The status
+	// filters OR together to mean "anything but running".
+	if out, err := exec.Command("docker", "ps", "-aq",
+		"--filter", "label="+probeLabel,
+		"--filter", "status=exited",
+		"--filter", "status=created",
+		"--filter", "status=dead",
+	).Output(); err == nil {
 		for _, id := range strings.Fields(string(out)) {
 			_ = exec.Command("docker", "rm", "-f", id).Run()
 		}
 	}
+	// `network rm` no-ops (errors, ignored) if a concurrent run still has a
+	// container attached, so this is safe to attempt unconditionally.
 	if out, err := exec.Command("docker", "network", "ls", "-q", "--filter", "label="+probeLabel).Output(); err == nil {
 		for _, id := range strings.Fields(string(out)) {
 			_ = exec.Command("docker", "network", "rm", id).Run()
