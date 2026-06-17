@@ -144,6 +144,13 @@ func TestServicesForConfigPaths(t *testing.T) {
 }
 
 func TestConfigRestartTargets(t *testing.T) {
+	// `cycled` is the real Phase 4.2 stop set — those services get a fresh start
+	// in 4.3 which re-resolves their bind mounts, so they must NEVER be targeted
+	// for a redundant second restart (the regression Copilot flagged).
+	cycled := map[string]bool{}
+	for _, s := range NonDataStopOrder() { // api/clamav/rspamd/dovecot/postfix
+		cycled[s] = true
+	}
 	tests := []struct {
 		name           string
 		configsChanged []string
@@ -151,22 +158,22 @@ func TestConfigRestartTargets(t *testing.T) {
 		want           []string
 	}{
 		{
-			name:           "config-only services restart; image-bumped excluded",
+			name:           "only never-stopped sidecars restart; cycled mail daemons excluded",
 			configsChanged: []string{"postfix/main.cf", "webmail/nginx.conf", "cert-extractor/run.sh"},
-			imageBumped:    map[string]bool{"postfix": true}, // postfix recreated by the bump already
-			want:           []string{"cert-extractor", "webmail"},
-		},
-		{
-			name:           "all changed services were image-bumped → nothing extra to restart",
-			configsChanged: []string{"rspamd/local.d/options.inc", "dovecot/dovecot.conf"},
-			imageBumped:    map[string]bool{"rspamd": true, "dovecot": true},
-			want:           []string{},
-		},
-		{
-			name:           "no image bumps → every config-changed service restarts",
-			configsChanged: []string{"webmail/nginx.conf", "postfix/main.cf"},
 			imageBumped:    map[string]bool{},
-			want:           []string{"postfix", "webmail"},
+			want:           []string{"cert-extractor", "webmail"}, // postfix cycled → already reloaded
+		},
+		{
+			name:           "image-bumped sidecar excluded (recreated in 4.3)",
+			configsChanged: []string{"webmail/nginx.conf", "cert-extractor/run.sh"},
+			imageBumped:    map[string]bool{"webmail": true},
+			want:           []string{"cert-extractor"},
+		},
+		{
+			name:           "all changes are cycled mail daemons → nothing extra to restart",
+			configsChanged: []string{"rspamd/local.d/options.inc", "dovecot/dovecot.conf", "postfix/main.cf"},
+			imageBumped:    map[string]bool{},
+			want:           []string{},
 		},
 		{
 			name:           "orchestrator + data services never targeted even if changed",
@@ -177,13 +184,13 @@ func TestConfigRestartTargets(t *testing.T) {
 		{
 			name:           "no config changes → empty",
 			configsChanged: nil,
-			imageBumped:    map[string]bool{"postfix": true},
+			imageBumped:    map[string]bool{"webmail": true},
 			want:           []string{},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := configRestartTargets(tc.configsChanged, tc.imageBumped)
+			got := configRestartTargets(tc.configsChanged, tc.imageBumped, cycled)
 			if len(got) == 0 && len(tc.want) == 0 {
 				return
 			}

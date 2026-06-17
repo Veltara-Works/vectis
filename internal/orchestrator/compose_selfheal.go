@@ -405,22 +405,22 @@ func containerNamesForConfigPaths(paths []string) []string {
 }
 
 // configRestartTargets returns the services whose bind-mounted configs changed
-// during Apply's Phase 3.6 but that were NOT recreated by an image bump in
-// Phase 4.3 — i.e. the ones `docker compose up -d` no-op'd (unchanged image +
-// compose), so they still hold the OLD single-file bind-mount inodes and need
-// an explicit `docker restart` to pick up the regenerated config. Image-bumped
-// services are excluded because their recreate already re-resolved the mounts;
-// restarting them again would be a redundant bounce. Returns service names,
-// sorted (inherited from servicesForConfigPaths).
+// during Apply's Phase 3.6 but that were NEITHER recreated by an image bump
+// (Phase 4.3 already re-resolved their mounts) NOR stopped+started by Phase 4.2
+// (`cycled`). A fresh start re-resolves single-file bind-mount inodes — verified
+// empirically: a stopped container picks up an atomically-replaced config file
+// on `docker start`, exactly as `docker restart` does. So the only services
+// left holding the OLD inode are the ones Phase 4.3 upped WHILE RUNNING and
+// never stopped (webmail, cert-extractor); those need an explicit `docker
+// restart`. Returns service names, sorted (inherited from servicesForConfigPaths).
 //
-// This ports self-heal's `configsChanged → RestartContainers` step to Apply,
-// closing the gap where a pure config-only delta (no image bump) — e.g. webmail
-// or cert-extractor, which Phase 4.2 never stops — silently kept stale config.
-// See feedback_bind_mount_edits.md.
-func configRestartTargets(configsChanged []string, imageBumped map[string]bool) []string {
+// This ports self-heal's `configsChanged → RestartContainers` step to Apply
+// while avoiding a redundant second bounce of the mail daemons (which Phase
+// 4.2/4.3's stop+start already reloaded). See feedback_bind_mount_edits.md.
+func configRestartTargets(configsChanged []string, imageBumped, cycled map[string]bool) []string {
 	out := make([]string, 0, len(configsChanged))
 	for _, svc := range servicesForConfigPaths(configsChanged) {
-		if imageBumped[svc] {
+		if imageBumped[svc] || cycled[svc] {
 			continue
 		}
 		out = append(out, svc)
