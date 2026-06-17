@@ -207,3 +207,24 @@ jobs:
           VECTIS_TEST_PG_DB: vectis
           VECTIS_TEST_PG_USER: postgres
           VECTIS_TEST_PG_PASSWORD: vectis_dev_super
+
+  orchestrator-docker:
+    # Exercises DockerManager's inspect/health/network output parsers against
+    # the REAL docker CLI — the layer that has drifted across docker versions
+    # (phantom containers, lying healthchecks). Build-tagged `dockertest` so it
+    # is excluded from the main "Go Lint & Test" integration job (which has no
+    # docker contract); ubuntu runners ship docker usable without sudo. The
+    # tests only ever create label-tagged, uniquely-named vectis-itest-*
+    # throwaway resources and clean them up, so they are safe alongside any
+    # real stack.
+    name: Orchestrator Docker
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Orchestrator docker-integration tests
+        run: go test -tags dockertest ./internal/orchestrator/ -run TestDockerManager -count=1 -v -timeout 240s
