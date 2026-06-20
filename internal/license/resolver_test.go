@@ -11,7 +11,7 @@ import (
 
 // validJWKS is a parseable Ed25519 keyset (the sandbox key) used as the live
 // and cache payload in resolver tests.
-const validJWKS = `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"atURRxq1FNAsX4KrElpyHLRr0JzQrmcWCOYHb-cNPmw","kid":"validonx-sandbox-2026-06","use":"sig","alg":"EdDSA"}]}`
+const validJWKS = `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"LvAtCOvfezCFW63fq4Y_u3cDgnXrB7makiTVS2BjYBY","kid":"validonx-sandbox-2026-06","use":"sig","alg":"EdDSA"}]}`
 
 func TestResolveEmbeddedFallback(t *testing.T) {
 	// No live URL, no cache -> embedded keyset (the compiled-in prod key).
