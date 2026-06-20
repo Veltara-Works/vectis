@@ -281,8 +281,12 @@ func TestAlert_LogResolve(t *testing.T) {
 		t.Error("new alert not found in active list")
 	}
 
-	if err := repo.Resolve(ctx, dedup); err != nil {
+	n, err := repo.Resolve(ctx, dedup)
+	if err != nil {
 		t.Fatalf("resolve: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("resolve transitioned %d rows, want 1", n)
 	}
 
 	// After resolve, FindRecent still returns the row but with ResolvedAt set.
@@ -292,6 +296,16 @@ func TestAlert_LogResolve(t *testing.T) {
 	}
 	if after.ResolvedAt == nil {
 		t.Error("ResolvedAt should be set after Resolve")
+	}
+
+	// Resolving again is a no-op: nothing is still firing, so 0 rows transition.
+	// The monitor relies on this to suppress repeat recovery notifications.
+	n, err = repo.Resolve(ctx, dedup)
+	if err != nil {
+		t.Fatalf("resolve (idempotent): %v", err)
+	}
+	if n != 0 {
+		t.Errorf("second resolve transitioned %d rows, want 0", n)
 	}
 }
 
