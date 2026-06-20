@@ -1,129 +1,119 @@
 {
-  "_about": "Pharlux licensing-verifier conformance vectors (v1, frozen Phase-1 contract). Each vector is (token, keyset, now_unix) -> expected verdict. Sandbox-signed tokens (kid=validonx-sandbox-2026-06); NOT production keys; payloads carry no production data. A conforming verifier must reproduce every 'expect' below. See LICENSE_TOKEN_CONTRACT.md for the algorithm.",
+  "_about": "Pharlux licensing-verifier conformance vectors (v2, frozen Phase-1 contract). Each vector is (token, keyset, now_unix) -> expected verdict. Sandbox-signed tokens (kid=validonx-sandbox-2026-06); NOT production keys; payloads carry no production data. A conforming verifier must reproduce every 'expect' below. See LICENSE_TOKEN_CONTRACT.md for the algorithm.",
+  "_v2_note": "v2 (2026-06-20): the SANDBOX key was rotated by ValidonX (the v1 ephemeral key was not retained). Same kid (validonx-sandbox-2026-06), NEW public x below. All signature-bearing tokens were re-signed; positive-token CLAIMS are byte-identical to v1, only signatures changed. The OLD x (atURRxq1FNAsX4KrElpyHLRr0JzQrmcWCOYHb-cNPmw) is DEAD — discard any v1 pack. The production key (validonx-2026-05) is unaffected. All 7 ValidonX-signed tokens here were re-verified against the new x with Ed25519 before shipping.",
   "keysets": {
-    "sandbox": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "atURRxq1FNAsX4KrElpyHLRr0JzQrmcWCOYHb-cNPmw", "kid": "validonx-sandbox-2026-06", "use": "sig", "alg": "EdDSA"}]},
+    "sandbox": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "LvAtCOvfezCFW63fq4Y_u3cDgnXrB7makiTVS2BjYBY", "kid": "validonx-sandbox-2026-06", "use": "sig", "alg": "EdDSA"}]},
     "production": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "guvdOblwtwbfLMKIX0FhHdb7BDv0xh0UyrzOH-hWhd8", "kid": "validonx-2026-05", "use": "sig", "alg": "EdDSA"}]}
   },
   "vectors": [
     {
       "id": "valid_both_axes",
-      "desc": "tier=team with both limit axes overridden; verified LIVE.",
+      "desc": "tier=team, both limit axes overridden (~10yr TTL); LIVE.",
       "keyset": "sandbox",
       "now_unix": 1781090747,
-      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDQ",
-      "expect": {
-        "verdict": "ACCEPT",
-        "grace_state": "LIVE",
-        "internal_tier": "Professional",
-        "entitlements": {
-          "pharlux.tier": "team",
-          "pharlux.features.commercial-use": "true",
-          "pharlux.features.binary-distribution": "false",
-          "pharlux.limits.hosts.max": "25",
-          "pharlux.limits.retention.days": "45"
-        }
-      }
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.tLHssuD5fgfv38fArlPBzf7vlfmyu0tYMS7IjiKgEFPCI6A7mn2n3BRJX167aZcVqeqj2sENlaif04X50CxUDA",
+      "expect": {"verdict": "ACCEPT", "grace_state": "LIVE", "internal_tier": "Professional",
+        "entitlements": {"pharlux.tier": "team", "pharlux.features.commercial-use": "true", "pharlux.features.binary-distribution": "false", "pharlux.limits.hosts.max": "25", "pharlux.limits.retention.days": "45"}}
     },
     {
       "id": "valid_single_axis",
-      "desc": "tier=team with only hosts overridden; retention falls back to team default 30; verified LIVE.",
+      "desc": "tier=team, only hosts overridden (~10yr TTL); retention falls back to team default 30; LIVE.",
       "keyset": "sandbox",
       "now_unix": 1781090747,
-      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiJmNDI3NmQ5Zi1mYmQ4LTQzYTQtOTQ1OS0yZDcyNTgyYmNhNDYiLCJpYXQiOjE3ODEwODA3NDcuMjUwODk3LCJleHAiOjIwOTY0NDA3NDcuMjUwODk3LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNX19.iGqalZLtz6S2m_kaMuNeF097ofx3Wy_nuHJmeMmcmK6QGg98Ggk0m8n8d3Nc4M4kNomDjTzpcfPCeiLfefrDCA",
-      "expect": {
-        "verdict": "ACCEPT",
-        "grace_state": "LIVE",
-        "internal_tier": "Professional",
-        "entitlements": {
-          "pharlux.tier": "team",
-          "pharlux.features.commercial-use": "true",
-          "pharlux.features.binary-distribution": "false",
-          "pharlux.limits.hosts.max": "25",
-          "pharlux.limits.retention.days": "30"
-        }
-      }
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiJmNDI3NmQ5Zi1mYmQ4LTQzYTQtOTQ1OS0yZDcyNTgyYmNhNDYiLCJpYXQiOjE3ODEwODA3NDcuMjUwODk3LCJleHAiOjIwOTY0NDA3NDcuMjUwODk3LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNX19.YIdLUx-0EdRZVWtLcrx27pjM1E80pE5FUsGbNa17DNeXRoDdDARCCpRCLtz5Mm15We5gA-O11EhLWV2I_CRnCA",
+      "expect": {"verdict": "ACCEPT", "grace_state": "LIVE", "internal_tier": "Professional",
+        "entitlements": {"pharlux.tier": "team", "pharlux.features.commercial-use": "true", "pharlux.features.binary-distribution": "false", "pharlux.limits.hosts.max": "25", "pharlux.limits.retention.days": "30"}}
+    },
+    {
+      "id": "valid_96h_both_live",
+      "desc": "tier=team, both axes, 96h prod-TTL token (exp=1781426347); LIVE at now.",
+      "keyset": "sandbox",
+      "now_unix": 1781090747,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiIyMWVhMjlhNS03MGNkLTQyODEtYTRjZC02M2I0ZTEwMjQ0ZWMiLCJpYXQiOjE3ODEwODA3NDcuMjUwOTg1LCJleHAiOjE3ODE0MjYzNDcuMjUwOTg1LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.fO3vmJ2kFrb5hAXQtRjlXw6YPRBr2G_dGA9xmzAAPwxKVsRi6nUcKFvfQkO2q3M8pcUY62wtoUtVZN155EYkAw",
+      "expect": {"verdict": "ACCEPT", "grace_state": "LIVE", "internal_tier": "Professional",
+        "entitlements": {"pharlux.tier": "team", "pharlux.features.commercial-use": "true", "pharlux.features.binary-distribution": "false", "pharlux.limits.hosts.max": "25", "pharlux.limits.retention.days": "45"}}
+    },
+    {
+      "id": "valid_96h_single_live",
+      "desc": "tier=team, only hosts, 96h prod-TTL token; retention falls back to 30; LIVE at now.",
+      "keyset": "sandbox",
+      "now_unix": 1781090747,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiJlYzE4YWY0MC02MGU5LTRjMzgtYjMyMC03YmI2MTNjNThkNTEiLCJpYXQiOjE3ODEwODA3NDcuMjUxMDI3LCJleHAiOjE3ODE0MjYzNDcuMjUxMDI3LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNX19.MMs7TqB3g1PJELBi7i4rwY8UI1ngbCVAUcTNN0w96UEU_mOzvXK5GVzX1eac_Cj8MPb8wdEk2iSMzNdr89o5CQ",
+      "expect": {"verdict": "ACCEPT", "grace_state": "LIVE", "internal_tier": "Professional",
+        "entitlements": {"pharlux.tier": "team", "pharlux.features.commercial-use": "true", "pharlux.features.binary-distribution": "false", "pharlux.limits.hosts.max": "25", "pharlux.limits.retention.days": "30"}}
     },
     {
       "id": "in_grace_preserves_paid_tier",
-      "desc": "Same valid token, evaluated 100s AFTER exp (within the 24h grace) -> paid tier preserved.",
+      "desc": "The 96h both-axes token evaluated 100s after its exp (within the 24h grace) -> paid tier preserved.",
       "keyset": "sandbox",
-      "now_unix": 2096440847,
-      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDQ",
-      "expect": {
-        "verdict": "ACCEPT",
-        "grace_state": "IN_GRACE",
-        "internal_tier": "Professional",
-        "entitlements": {
-          "pharlux.tier": "team",
-          "pharlux.features.commercial-use": "true",
-          "pharlux.features.binary-distribution": "false",
-          "pharlux.limits.hosts.max": "25",
-          "pharlux.limits.retention.days": "45"
-        }
-      }
+      "now_unix": 1781426447,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiIyMWVhMjlhNS03MGNkLTQyODEtYTRjZC02M2I0ZTEwMjQ0ZWMiLCJpYXQiOjE3ODEwODA3NDcuMjUwOTg1LCJleHAiOjE3ODE0MjYzNDcuMjUwOTg1LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.fO3vmJ2kFrb5hAXQtRjlXw6YPRBr2G_dGA9xmzAAPwxKVsRi6nUcKFvfQkO2q3M8pcUY62wtoUtVZN155EYkAw",
+      "expect": {"verdict": "ACCEPT", "grace_state": "IN_GRACE", "internal_tier": "Professional",
+        "entitlements": {"pharlux.tier": "team", "pharlux.features.commercial-use": "true", "pharlux.features.binary-distribution": "false", "pharlux.limits.hosts.max": "25", "pharlux.limits.retention.days": "45"}}
     },
     {
       "id": "past_grace_downgrades_to_community",
-      "desc": "Same valid token, evaluated 86500s AFTER exp (>24h past grace) -> downgrade to Community, empty entitlements.",
+      "desc": "The 96h both-axes token evaluated 86500s after its exp (>24h past grace) -> downgrade to Community, empty entitlements.",
       "keyset": "sandbox",
-      "now_unix": 2096527247,
-      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDQ",
-      "expect": {
-        "verdict": "ACCEPT",
-        "grace_state": "PAST_GRACE",
-        "internal_tier": "Community",
-        "entitlements": {}
-      }
+      "now_unix": 1781512847,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiIyMWVhMjlhNS03MGNkLTQyODEtYTRjZC02M2I0ZTEwMjQ0ZWMiLCJpYXQiOjE3ODEwODA3NDcuMjUwOTg1LCJleHAiOjE3ODE0MjYzNDcuMjUwOTg1LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.fO3vmJ2kFrb5hAXQtRjlXw6YPRBr2G_dGA9xmzAAPwxKVsRi6nUcKFvfQkO2q3M8pcUY62wtoUtVZN155EYkAw",
+      "expect": {"verdict": "ACCEPT", "grace_state": "PAST_GRACE", "internal_tier": "Community", "entitlements": {}}
     },
     {
       "id": "tampered_signature",
-      "desc": "valid_both_axes with the final signature character flipped (Q->R). Ed25519 verification must fail.",
+      "desc": "valid_both_axes with the final signature character flipped (A->R). Ed25519 verification must fail.",
       "keyset": "sandbox",
       "now_unix": 1781090747,
-      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDR",
-      "expect": {
-        "verdict": "REJECT",
-        "reason": "bad signature"
-      }
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.tLHssuD5fgfv38fArlPBzf7vlfmyu0tYMS7IjiKgEFPCI6A7mn2n3BRJX167aZcVqeqj2sENlaif04X50CxUDR",
+      "expect": {"verdict": "REJECT", "reason": "bad signature"}
     },
     {
       "id": "wrong_key_unknown_kid",
       "desc": "Genuine sandbox token verified against the PRODUCTION keyset (lacks the sandbox kid). Key selection must fail closed.",
       "keyset": "production",
       "now_unix": 1781090747,
-      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDQ",
-      "expect": {
-        "verdict": "REJECT",
-        "reason": "UnknownKid: validonx-sandbox-2026-06"
-      }
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.tLHssuD5fgfv38fArlPBzf7vlfmyu0tYMS7IjiKgEFPCI6A7mn2n3BRJX167aZcVqeqj2sENlaif04X50CxUDA",
+      "expect": {"verdict": "REJECT", "reason": "UnknownKid: validonx-sandbox-2026-06"}
     },
     {
       "id": "missing_kid",
-      "desc": "Header omits 'kid'. Rejected at the kid presence check, BEFORE signature verification, so issuer-signing is moot (payload/sig reused from valid_both_axes).",
+      "desc": "Header omits 'kid'. Rejected at the kid presence check, BEFORE signature verification (payload/sig reused from valid_both_axes).",
       "keyset": "sandbox",
       "now_unix": 1781090747,
-      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDQ",
-      "expect": {
-        "verdict": "REJECT",
-        "reason": "MissingKid"
-      }
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.tLHssuD5fgfv38fArlPBzf7vlfmyu0tYMS7IjiKgEFPCI6A7mn2n3BRJX167aZcVqeqj2sENlaif04X50CxUDA",
+      "expect": {"verdict": "REJECT", "reason": "MissingKid"}
     },
     {
       "id": "wrong_alg",
-      "desc": "Header alg=HS256 (kid present). Rejected at the EdDSA algorithm pin, BEFORE signature verification, so issuer-signing is moot. This is the algorithm-confusion guard: a verifier MUST pin EdDSA and never honour the token's alg.",
+      "desc": "Header alg=HS256 (kid present). Rejected at the EdDSA algorithm pin, BEFORE signature verification. Algorithm-confusion guard: a verifier MUST pin EdDSA and never honour the token's alg.",
       "keyset": "sandbox",
       "now_unix": 1781090747,
-      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDR",
-      "expect": {
-        "verdict": "REJECT",
-        "reason": "algorithm not allowed (alg != EdDSA)"
-      }
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.tLHssuD5fgfv38fArlPBzf7vlfmyu0tYMS7IjiKgEFPCI6A7mn2n3BRJX167aZcVqeqj2sENlaif04X50CxUDA",
+      "expect": {"verdict": "REJECT", "reason": "algorithm not allowed (alg != EdDSA)"}
+    },
+    {
+      "id": "wrong_issuer",
+      "desc": "Validly sandbox-signed, but iss='not-validonx'. Rejected at the issuer check (after signature passes).",
+      "keyset": "sandbox",
+      "now_unix": 1781090747,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJub3QtdmFsaWRvbngiLCJhdWQiOiJwaGFybHV4Iiwic3ViIjoiYmYzMzZmMGEtOTMxOC00OTZmLWJiMGQtNmM2NTU2OGNiM2M4IiwianRpIjoiMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIiwiaWF0IjoxNzgxMDgwNzQ3LCJleHAiOjIwOTY0NDA3NDcsInRpZXIiOiJ0ZWFtIn0.Qzx4NU7PYKwAUM9gs83rXQpQi8PKqZDs0L_28R6_Mg6QmWx5bHhexMdUTYp5qdTGXLNfH84Xbmp-CBk4DshZDA",
+      "expect": {"verdict": "REJECT", "reason": "issuer mismatch"}
+    },
+    {
+      "id": "wrong_audience",
+      "desc": "Validly sandbox-signed, but aud='not-pharlux'. Rejected at the audience check.",
+      "keyset": "sandbox",
+      "now_unix": 1781090747,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6Im5vdC1waGFybHV4Iiwic3ViIjoiYmYzMzZmMGEtOTMxOC00OTZmLWJiMGQtNmM2NTU2OGNiM2M4IiwianRpIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiaWF0IjoxNzgxMDgwNzQ3LCJleHAiOjIwOTY0NDA3NDcsInRpZXIiOiJ0ZWFtIn0.pczfaHVH2gB_2_kfoNdYTqh7blX3j3zbzPr1m5JC6JxGfQ5fld-H9z5n_fv8it_AMzREkN-7egN-_rwqEOkdBg",
+      "expect": {"verdict": "REJECT", "reason": "audience mismatch"}
+    },
+    {
+      "id": "unknown_tier",
+      "desc": "Validly sandbox-signed, but tier='enterprise-plus'. Rejected at the tier mapping.",
+      "keyset": "sandbox",
+      "now_unix": 1781090747,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiIzMzMzMzMzMy0zMzMzLTQzMzMtODMzMy0zMzMzMzMzMzMzMzMiLCJpYXQiOjE3ODEwODA3NDcsImV4cCI6MjA5NjQ0MDc0NywidGllciI6ImVudGVycHJpc2UtcGx1cyJ9.VwgmfD128AqVCmX-e6d47XY2ukciCP3V8RUxjOzJFQ7x52RNY-BNcHEGTeri0C6yt-oMhcZV_TThoPtfErkfCQ",
+      "expect": {"verdict": "REJECT", "reason": "UnknownTierClaim"}
     }
-  ],
-  "_pending_issuer_minted_vectors": {
-    "_note": "These three need a token MINTED by the ValidonX sandbox signer: each must carry a VALID sandbox signature so it passes signature verification and is rejected specifically at the claim check (an invalidly-signed token would be rejected for the signature instead, demonstrating the wrong thing). Mint spec in MINT_REQUEST_VALIDONX.md. (missing_kid and wrong_alg are now concrete above — they are rejected before signature verification, so no issuer signature is required for them.)",
-    "wrong_issuer": {"desc": "validly sandbox-signed, but iss != 'validonx'", "expect": {"verdict": "REJECT", "reason": "issuer mismatch"}},
-    "wrong_audience": {"desc": "validly sandbox-signed, but aud not containing 'pharlux'", "expect": {"verdict": "REJECT", "reason": "audience mismatch"}},
-    "unknown_tier": {"desc": "validly sandbox-signed, but tier not in {team,business,scale,commercial-license-only}", "expect": {"verdict": "REJECT", "reason": "UnknownTierClaim"}}
-  }
+  ]
 }
