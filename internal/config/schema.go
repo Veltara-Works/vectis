@@ -261,6 +261,7 @@ type VectisSecrets struct {
 	SAML         SAMLSecrets         `yaml:"saml,omitempty"`
 	Cloudflare   *CloudflareSecrets  `yaml:"cloudflare,omitempty"`
 	ValidonX     *ValidonXSecrets    `yaml:"validonx,omitempty"`
+	License      *LicenseSecrets     `yaml:"license,omitempty"`
 }
 
 // DatabaseSecrets holds connection details and per-service credentials for
@@ -416,4 +417,65 @@ type ValidonXSecrets struct {
 // ValidonXConfigured returns true if ValidonX licensing secrets are present.
 func (s *VectisSecrets) ValidonXConfigured() bool {
 	return s != nil && s.ValidonX != nil && s.ValidonX.BaseURL != "" && s.ValidonX.ServiceKey != ""
+}
+
+// DefaultJWKSCachePath is where a successful live JWKS fetch is persisted for
+// offline reuse when no override is given. It sits in /var/vectis/license/,
+// which the vectis-api service bind-mounts from the host (see the api volumes
+// in docker-compose.yml.tmpl and the install mkdir list). The api container
+// does NOT bind-mount /var/vectis as a whole — only specific subpaths — so a
+// bare /var/vectis/jwks.json would land on the container's ephemeral layer and
+// be lost on every recreate, making the resolver's cache layer dead weight.
+// (The 2026-05-13 plan doc wrote /var/lib/vectis, which is wrong on both
+// counts.) The host dir is created by `vectis install`.
+const DefaultJWKSCachePath = "/var/vectis/license/jwks.json"
+
+// LicenseSecrets configures the offline, Pharlux-pattern license verifier: an
+// Ed25519-signed JWT minted by ValidonX (aud="vectis-mail"), verified locally
+// with no per-request network call. It is ADDITIVE to the ValidonX HTTP-resolve
+// path (ValidonXSecrets): when a Token is present and verifies, its verdict
+// takes precedence in the feature gate (JWT-wins-when-present); when absent, the
+// install behaves exactly as before (HTTP-resolve, or Free tier).
+//
+// The whole block is optional. NOTE: because top-level secrets.yaml decoding is
+// strict (KnownFields(true)), pre-staging a `license:` block on a binary that
+// predates this field crashes on reboot — deploy this binary before adding the
+// block (the "don't pre-stage secrets ahead of the binary" rule). Sub-fields
+// are tolerated forward via Forward below.
+type LicenseSecrets struct {
+	// Token is the ValidonX-issued license JWT (compact JWS). Headless/operator
+	// entry path; the Phase-2 admin dashboard will also accept one. Empty leaves
+	// the offline verifier inert (the gate falls through to HTTP-resolve/Free).
+	Token string `yaml:"token"`
+	// JWKSURL is the live JWKS endpoint (https only; http is refused). Empty
+	// disables the live layer — resolution then uses the on-disk cache, then the
+	// key embedded in the binary, so an air-gapped install still verifies.
+	JWKSURL string `yaml:"jwks_url"`
+	// JWKSCachePath is where a successful live fetch is persisted and read back
+	// offline. Empty uses DefaultJWKSCachePath.
+	JWKSCachePath string `yaml:"jwks_cache_path"`
+	// WebhookSecret is the HMAC-SHA256 key for the license-revoke webhook
+	// (POST /api/v1/admin/license/revoke). Consumed in a later phase; carried
+	// here so operators can provision it in the same block.
+	WebhookSecret string `yaml:"webhook_secret"`
+
+	// Forward tolerates a forward-staged sub-field on an older binary; see
+	// ValidonXSecrets.Forward for the rationale.
+	Forward map[string]any `yaml:",inline"`
+}
+
+// CachePath returns the configured JWKS cache path, or DefaultJWKSCachePath
+// when unset.
+func (l *LicenseSecrets) CachePath() string {
+	if l == nil || l.JWKSCachePath == "" {
+		return DefaultJWKSCachePath
+	}
+	return l.JWKSCachePath
+}
+
+// OfflineConfigured reports whether an offline license token is present. The
+// JWKS layers (live/cache/embedded) are always available; only a Token makes
+// the verifier do anything.
+func (s *VectisSecrets) OfflineConfigured() bool {
+	return s != nil && s.License != nil && s.License.Token != ""
 }

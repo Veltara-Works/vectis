@@ -150,6 +150,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		"/var/vectis/backups",
 		"/var/vectis/snapshots",
 		"/var/vectis/certs",
+		"/var/vectis/license", // offline license JWKS cache (bind-mounted into vectis-api)
 	} {
 		os.MkdirAll(dir, 0755)
 	}

@@ -107,6 +107,14 @@ type FeatureGateService struct {
 	client atomic.Pointer[Client]
 	cache  *LicenseCache
 	logger *slog.Logger
+
+	// offline is the optional Pharlux-pattern offline JWT verifier. When set
+	// and it produces an ACCEPT verdict, its entitlements take precedence over
+	// the HTTP-resolve path (JWT-wins-when-present). nil means "no offline
+	// license configured" — the gate behaves exactly as the HTTP-resolve-only
+	// design did. Set once at construction (single-threaded startup); a Phase-2
+	// hot-swap on dashboard token entry can make this atomic if needed.
+	offline *OfflineLicense
 }
 
 // NewFeatureGateService creates a FeatureGateService.
@@ -128,6 +136,46 @@ func NewFeatureGateService(client *Client, db *pgxpool.Pool, logger *slog.Logger
 // use Configured() to test usability before calling other methods.
 func (fgs *FeatureGateService) currentClient() *Client {
 	return fgs.client.Load()
+}
+
+// SetOfflineLicense installs the offline JWT verifier as a precedence source
+// for entitlement decisions. Called once at server construction when a license
+// token is configured in secrets.yaml; pass nil to leave the gate on the
+// HTTP-resolve-only path.
+func (fgs *FeatureGateService) SetOfflineLicense(o *OfflineLicense) {
+	fgs.offline = o
+}
+
+// offlineFeatures returns (features, true) when an offline JWT license is
+// configured AND currently verifies to an ACCEPT verdict, with the feature list
+// derived from the verdict's resolved tier (already grace-adjusted by Verify).
+// It returns (nil, false) — meaning "no offline authority, fall through" — when
+// no token is configured, the keyset has not loaded yet, or the token is
+// REJECTED (tampered/wrong-issuer/malformed). A rejection is logged at Debug
+// rather than Warn to avoid hot-path log spam; `vectis license verify` is the
+// loud operator diagnostic.
+func (fgs *FeatureGateService) offlineFeatures() ([]string, bool) {
+	v, ok := fgs.offline.verdict()
+	if !ok {
+		return nil, false
+	}
+	if !v.Accepted {
+		fgs.logger.Debug("offline license token rejected; falling through to http-resolve",
+			"reason", v.Reason)
+		return nil, false
+	}
+	return featuresForTier(v.InternalTier), true
+}
+
+// offlineDecision consults the offline license for a non-free feature. ok=false
+// means "no offline authority — fall through to the HTTP-resolve path"; when
+// ok=true, allowed is the authoritative decision (JWT-wins-when-present).
+func (fgs *FeatureGateService) offlineDecision(feature string) (allowed, ok bool) {
+	feats, present := fgs.offlineFeatures()
+	if !present {
+		return false, false
+	}
+	return featureInList(feats, feature), true
 }
 
 // SwapClient atomically replaces the underlying Client. Used by the License
@@ -166,6 +214,11 @@ func (fgs *FeatureGateService) Cache() *LicenseCache {
 // for caps want a current view, not a 30-day-stale one. Use FeatureGate for
 // access enforcement; ResolveTier for tier-aware UX/limits.
 func (fgs *FeatureGateService) ResolveTier(ctx context.Context) (string, error) {
+	// Offline JWT license wins when present and valid (no network, no cache).
+	if feats, ok := fgs.offlineFeatures(); ok {
+		return tierFromFeatures(feats), nil
+	}
+
 	client := fgs.currentClient()
 	if !client.Configured() {
 		return TierFree, nil
@@ -239,6 +292,18 @@ func (fgs *FeatureGateService) FeatureGate(feature string) func(http.Handler) ht
 				return
 			}
 
+			// Step 1.5: offline JWT license takes precedence when present and
+			// valid — its verdict is authoritative with no network or cache.
+			if allowed, ok := fgs.offlineDecision(feature); ok {
+				if allowed {
+					next.ServeHTTP(w, r)
+					return
+				}
+				writeFeatureError(w, http.StatusForbidden, ErrFeatureNotAvailable,
+					"Your current license does not include this feature: "+feature)
+				return
+			}
+
 			// Step 2: ValidonX not configured → Free tier → deny non-free
 			// features. Pre-v0.1.6 this branch allowed everything; that silently
 			// exposed every Pro/Enterprise endpoint on Free installs (see
@@ -302,6 +367,10 @@ func (fgs *FeatureGateService) HasFeature(ctx context.Context, feature string) b
 	if isFreeTierFeature(feature) {
 		return true
 	}
+	// Offline JWT license takes precedence when present and valid.
+	if allowed, ok := fgs.offlineDecision(feature); ok {
+		return allowed
+	}
 	client := fgs.currentClient()
 	if !client.Configured() {
 		// Free tier — non-free features are not available. Pre-v0.1.6 this
@@ -336,6 +405,21 @@ func (fgs *FeatureGateService) FeatureGateBrowser(feature, featureLabel, upgrade
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if isFreeTierFeature(feature) {
 				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Offline JWT license takes precedence when present and valid.
+			if allowed, ok := fgs.offlineDecision(feature); ok {
+				if allowed {
+					next.ServeHTTP(w, r)
+					return
+				}
+				if wantsJSON(r) {
+					writeFeatureError(w, http.StatusForbidden, ErrFeatureNotAvailable,
+						"Your current license does not include this feature: "+feature)
+					return
+				}
+				writeFeatureUpgradeHTML(w, featureLabel, upgradeURL, false)
 				return
 			}
 
