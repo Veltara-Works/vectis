@@ -97,6 +97,40 @@ func TestResolveRefusesNonHTTPS(t *testing.T) {
 	}
 }
 
+func TestResolveRefusesRedirectToHTTP(t *testing.T) {
+	// An HTTPS endpoint that 302s to http:// must not be followed onto
+	// cleartext; the live layer fails and resolution falls back.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, "http://127.0.0.1:1/jwks.json", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	r := NewResolver(srv.URL, "")
+	r.HTTPClient = srv.Client()
+	_, src, err := r.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if src != SourceEmbedded {
+		t.Fatalf("source: got %q, want embedded (cleartext redirect refused)", src)
+	}
+}
+
+func TestResolveSkipsOversizedCache(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "jwks.json")
+	if err := os.WriteFile(cachePath, make([]byte, maxJWKSBytes+10), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &Resolver{CachePath: cachePath, Embedded: embeddedJWKS}
+	_, src, err := r.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if src != SourceEmbedded {
+		t.Fatalf("source: got %q, want embedded (oversized cache skipped)", src)
+	}
+}
+
 func TestResolveAllLayersFail(t *testing.T) {
 	r := &Resolver{LiveURL: "", CachePath: "", Embedded: nil}
 	if _, _, err := r.Resolve(context.Background()); err == nil {

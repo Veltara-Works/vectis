@@ -87,9 +87,10 @@ func (r *Resolver) Resolve(ctx context.Context) (*KeySet, Source, error) {
 		}
 	}
 
-	// 2. On-disk cache.
+	// 2. On-disk cache (size-bounded read, so an oversized cache file or
+	// symlink can't defeat maxJWKSBytes).
 	if r.CachePath != "" {
-		if raw, err := os.ReadFile(r.CachePath); err != nil {
+		if raw, err := readFileCapped(r.CachePath); err != nil {
 			errs = append(errs, "cache: "+err.Error())
 		} else if ks, perr := ParseJWKS(raw); perr != nil {
 			errs = append(errs, "cache: "+perr.Error())
@@ -98,15 +99,15 @@ func (r *Resolver) Resolve(ctx context.Context) (*KeySet, Source, error) {
 		}
 	}
 
-	// 3. Embedded fallback.
-	if len(r.Embedded) > 0 {
-		if ks, err := ParseJWKS(r.Embedded); err != nil {
-			errs = append(errs, "embedded: "+err.Error())
-		} else {
-			return ks, SourceEmbedded, nil
-		}
-	} else {
+	// 3. Embedded fallback (capped too: Embedded is an exported field).
+	if len(r.Embedded) == 0 {
 		errs = append(errs, "embedded: no keys compiled in")
+	} else if len(r.Embedded) > maxJWKSBytes {
+		errs = append(errs, fmt.Sprintf("embedded: exceeds %d bytes", maxJWKSBytes))
+	} else if ks, err := ParseJWKS(r.Embedded); err != nil {
+		errs = append(errs, "embedded: "+err.Error())
+	} else {
+		return ks, SourceEmbedded, nil
 	}
 
 	return nil, "", fmt.Errorf("jwks resolution failed (%s)", strings.Join(errs, "; "))
@@ -126,7 +127,18 @@ func (r *Resolver) fetchLive(ctx context.Context) ([]byte, error) {
 	if client == nil {
 		client = &http.Client{Timeout: defaultFetchTimeout}
 	}
-	resp, err := client.Do(req)
+	// Enforce HTTPS across redirects too: a hostile or misconfigured endpoint
+	// could 30x to http:// and slip the JWKS fetch onto cleartext despite the
+	// initial scheme check. Copy the client so we don't mutate the caller's,
+	// and refuse any redirect to a non-HTTPS target.
+	c := *client
+	c.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing redirect to non-https url %q", req.URL.String())
+		}
+		return nil
+	}
+	resp, err := c.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +152,24 @@ func (r *Resolver) fetchLive(ctx context.Context) ([]byte, error) {
 	}
 	if len(raw) > maxJWKSBytes {
 		return nil, fmt.Errorf("jwks body exceeds %d bytes", maxJWKSBytes)
+	}
+	return raw, nil
+}
+
+// readFileCapped reads at most maxJWKSBytes from path, failing if the file
+// exceeds the cap rather than loading it wholesale into memory.
+func readFileCapped(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, maxJWKSBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxJWKSBytes {
+		return nil, fmt.Errorf("cache jwks exceeds %d bytes", maxJWKSBytes)
 	}
 	return raw, nil
 }
