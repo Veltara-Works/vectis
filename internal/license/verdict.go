@@ -40,7 +40,7 @@ type Verdict struct {
 	// the canonical verifier's reason strings closely enough to drive the
 	// conformance vectors (e.g. "bad signature", "UnknownKid: <kid>",
 	// "UnknownTierClaim", "issuer mismatch", "audience mismatch",
-	// "MissingKid", "algorithm not allowed", "malformed").
+	// "MissingKid", "algorithm not allowed (alg != EdDSA)", "malformed").
 	Reason string
 
 	// GraceState is the classification used to resolve the effective tier.
