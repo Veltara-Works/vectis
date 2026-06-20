@@ -68,17 +68,20 @@ func (r *AlertRepo) FindRecent(ctx context.Context, dedupKey string, within time
 	return a, nil
 }
 
-// Resolve marks all unresolved alerts with the given dedup key as resolved.
-func (r *AlertRepo) Resolve(ctx context.Context, dedupKey string) error {
-	_, err := r.db.Exec(ctx,
+// Resolve marks all unresolved alerts with the given dedup key as resolved and
+// returns how many rows actually transitioned. A return of 0 means there was no
+// active alert for this key — callers use that to avoid logging or sending a
+// spurious recovery notification on every healthy monitor cycle.
+func (r *AlertRepo) Resolve(ctx context.Context, dedupKey string) (int64, error) {
+	tag, err := r.db.Exec(ctx,
 		`UPDATE alert_history SET resolved_at = $1
 		 WHERE dedup_key = $2 AND resolved_at IS NULL`,
 		time.Now().UTC(), dedupKey,
 	)
 	if err != nil {
-		return fmt.Errorf("resolve alert: %w", err)
+		return 0, fmt.Errorf("resolve alert: %w", err)
 	}
-	return nil
+	return tag.RowsAffected(), nil
 }
 
 // ListActive returns all unresolved alerts ordered by most recent first.

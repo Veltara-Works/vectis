@@ -110,8 +110,17 @@ func (a *Alerter) Send(ctx context.Context, severity, service, message string) {
 // Resolve marks an alert condition as resolved and sends a recovery
 // notification through configured channels.
 func (a *Alerter) Resolve(ctx context.Context, dedupKey string) {
-	if err := a.alerts.Resolve(ctx, dedupKey); err != nil {
+	resolved, err := a.alerts.Resolve(ctx, dedupKey)
+	if err != nil {
 		a.logger.Error("failed to resolve alert", "dedup_key", dedupKey, "error", err)
+		return
+	}
+
+	// Nothing was actually firing for this key — the monitor calls Resolve on
+	// every healthy check cycle (every 60s), so without this guard we'd log
+	// "alert resolved" and fire a recovery email/webhook every minute for a
+	// service that never alerted. Only notify on a real firing→resolved edge.
+	if resolved == 0 {
 		return
 	}
 
