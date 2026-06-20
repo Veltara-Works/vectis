@@ -141,6 +141,17 @@ func TestRejectsMalformed(t *testing.T) {
 	}
 }
 
+func TestRejectsMisconfigured(t *testing.T) {
+	// nil keyset
+	if got := Verify("a.b.c", nil, time.Unix(1781090747, 0), PharluxPolicy()); got.Accepted || got.Reason != "misconfigured verifier" {
+		t.Fatalf("nil keyset: got %+v, want REJECT misconfigured verifier", got)
+	}
+	// policy with no MapTier
+	if got := Verify("a.b.c", mustSandbox(t), time.Unix(1781090747, 0), Policy{Audience: "pharlux"}); got.Accepted || got.Reason != "misconfigured verifier" {
+		t.Fatalf("nil MapTier: got %+v, want REJECT misconfigured verifier", got)
+	}
+}
+
 func mustSandbox(t *testing.T) *KeySet {
 	t.Helper()
 	pack := loadPack(t)

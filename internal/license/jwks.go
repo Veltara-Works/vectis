@@ -46,7 +46,7 @@ func ParseJWKS(raw []byte) (*KeySet, error) {
 		if k.Kid == "" {
 			continue // unusable without a key id
 		}
-		pub, err := base64.RawURLEncoding.DecodeString(k.X)
+		pub, err := base64.RawURLEncoding.Strict().DecodeString(k.X)
 		if err != nil {
 			return nil, fmt.Errorf("jwks kid %q: decode x: %w", k.Kid, err)
 		}

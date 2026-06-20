@@ -51,6 +51,13 @@ type claims struct {
 //  5. map tier (unknown -> UnknownTierClaim) and apply limits overrides;
 //  6. apply the grace state machine to resolve the effective tier.
 func Verify(token string, ks *KeySet, now time.Time, policy Policy) Verdict {
+	// Guard the exported surface: a nil keyset or an incompletely-built
+	// Policy is operator misconfiguration, not a valid token. Fail closed
+	// with a REJECT rather than panicking the calling process.
+	if ks == nil || policy.MapTier == nil {
+		return reject("misconfigured verifier")
+	}
+
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return reject("malformed")
@@ -113,6 +120,15 @@ func Verify(token string, ks *KeySet, now time.Time, policy Policy) Verdict {
 		return reject("audience mismatch")
 	}
 
+	// Time-based claim validation (contract §8 step 4): a token issued more
+	// than Leeway into the future relative to our clock is not yet valid.
+	// `exp` is deliberately NOT hard-checked here — the grace state machine
+	// (step 6) owns expiry. nowUnix is reused for that classification.
+	nowUnix := now.Unix()
+	if int64(*c.Iat) > nowUnix+int64(Leeway/time.Second) {
+		return reject("issued in the future")
+	}
+
 	// 5. Tier + limits.
 	limits := Limits{}
 	if c.Limits != nil {
@@ -125,7 +141,6 @@ func Verify(token string, ks *KeySet, now time.Time, policy Policy) Verdict {
 	}
 
 	// 6. Grace.
-	nowUnix := now.Unix()
 	expUnix := int64(*c.Exp) // truncate fractional seconds
 	state := policy.Grace.classify(nowUnix, expUnix)
 	if state == GracePastGrace {
