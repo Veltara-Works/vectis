@@ -23,6 +23,10 @@ type licenseStateResponse struct {
 	LastCheckAt        time.Time `json:"last_check_at,omitempty"`
 	ExpiresAt          time.Time `json:"expires_at,omitempty"`
 	GraceRemainingDays int       `json:"grace_remaining_days,omitempty"`
+	// Offline is the offline JWT verifier's snapshot (the resilience layer).
+	// Configured=false on installs with no [license].token — the UI then omits
+	// the offline panel. Display-only; entitlement decisions are unaffected.
+	Offline validonx.OfflineStatus `json:"offline"`
 }
 
 type setLicenseRequest struct {
@@ -70,6 +74,8 @@ func (s *Server) buildLicenseStateResponse(ctx context.Context) licenseStateResp
 		resp.ServerID = runtimeCfg.ServerID
 		resp.BaseURL = runtimeCfg.BaseURL
 	}
+
+	resp.Offline = s.featureGate.OfflineLicenseStatus()
 
 	if cache := s.featureGate.Cache(); cache != nil && resp.TenantID != "" {
 		if cached, err := cache.GetCached(ctx, resp.TenantID); err == nil && cached != nil {

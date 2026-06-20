@@ -241,6 +241,15 @@ export const api = {
       last_check_at?: string;
       expires_at?: string;
       grace_remaining_days?: number;
+      offline?: {
+        configured: boolean;
+        active: boolean;
+        accepted: boolean;
+        tier?: string;
+        grace_state?: string;
+        jwks_source?: string;
+        reason?: string;
+      };
     }>('GET', '/license'),
   setLicense: (body: {
     license_key?: string;
