@@ -290,9 +290,12 @@ func TestDockerManager_PullImages_Filtering(t *testing.T) {
 // rather than no-op'ing.
 func containerStartedAt(t *testing.T, name string) string {
 	t.Helper()
-	out, err := exec.Command("docker", "inspect", "-f", "{{.State.StartedAt}}", name).Output()
+	// CombinedOutput so a docker failure surfaces the CLI's stderr (e.g. "No such
+	// object"), not just the bare "exit status 1" — dockertest failures are
+	// otherwise painful to debug.
+	out, err := exec.Command("docker", "inspect", "-f", "{{.State.StartedAt}}", name).CombinedOutput()
 	if err != nil {
-		t.Fatalf("inspect StartedAt for %s: %v", name, err)
+		t.Fatalf("inspect StartedAt for %s: %v: %s", name, err, strings.TrimSpace(string(out)))
 	}
 	return strings.TrimSpace(string(out))
 }
