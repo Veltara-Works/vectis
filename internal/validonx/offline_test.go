@@ -156,7 +156,18 @@ func TestOfflineLicense_TamperedToken_FallsThrough(t *testing.T) {
 	p, priv := newTestProvider(t)
 	now := time.Unix(1_700_000_000, 0)
 	token := signVMToken(t, priv, "pro", now.Add(-time.Hour), now.Add(72*time.Hour))
-	tampered := token[:len(token)-2] + "AA" // corrupt the signature tail
+	// Deterministically corrupt the final signature character. A fixed
+	// replacement (e.g. "AA") would equal the original tail ~1/4096 of the time
+	// since the signing key is random per run, making the "tamper" a no-op and
+	// the test flaky. Swapping to a guaranteed-different base64url char with
+	// zero padding bits ('A'=0 / 'Q'=16, both strict-decodable) keeps the
+	// failure mode a clean signature mismatch.
+	last := token[len(token)-1]
+	swap := byte('A')
+	if last == 'A' {
+		swap = 'Q'
+	}
+	tampered := token[:len(token)-1] + string(swap)
 
 	gate := gateWithOffline(t, tampered, p, now)
 
