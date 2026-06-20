@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/license"
 )
 
@@ -41,13 +42,15 @@ var licenseVerifyCmd = &cobra.Command{
 	Use:   "verify",
 	Short: "Verify the offline license token and report tier, grace state, and entitlements",
 	Long: `Verify a ValidonX-issued license token (Ed25519 JWT, aud="vectis-mail")
-against the trusted JWKS, fully offline.
+against the trusted JWKS.
 
 The token verified is, in order of precedence: the --token flag, else the
-[license].token from secrets.yaml. The JWKS is resolved live → on-disk cache →
-embedded key (use --offline to skip the live fetch); the layer that satisfied
-the lookup is reported so an operator can tell when an install is running on the
-build-time embedded key.
+[license].token from secrets.yaml. Signature + claim verification is offline (no
+network), but resolving the JWKS may fetch it live over HTTPS first (then on-disk
+cache, then the embedded key) — pass --offline to skip the live fetch and verify
+against the cache/embedded key only. The layer that satisfied the lookup is
+reported so an operator can tell when an install is running on the build-time
+embedded key.
 
 Exit codes: 0 = valid and entitled (LIVE or IN_GRACE); 1 = a token is present
 but does not entitle (rejected, or expired past the grace window); 2 = operator
@@ -83,7 +86,11 @@ func runLicenseVerify(cmd *cobra.Command, args []string) error {
 	out, errw := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 
-	secrets, err := loadSecrets(cmd)
+	// Load secrets directly (not via loadSecrets, which os.Exit(1)s on failure)
+	// so an unreadable/invalid secrets.yaml maps to the documented operator
+	// exit code 2, not 1.
+	configDir, _ := cmd.Flags().GetString("config-dir")
+	secrets, err := config.LoadSecrets(configDir + "/secrets.yaml")
 	if err != nil {
 		fmt.Fprintf(errw, "Error: %s\n", err)
 		os.Exit(exitLicenseOperator)
