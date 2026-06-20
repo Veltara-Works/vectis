@@ -420,12 +420,15 @@ func (s *VectisSecrets) ValidonXConfigured() bool {
 }
 
 // DefaultJWKSCachePath is where a successful live JWKS fetch is persisted for
-// offline reuse when no override is given. It sits under the VM data root
-// (/var/vectis), which is the bind-mounted, writable volume the api container
-// already uses for mail, DKIM keys, and generated config — NOT /var/lib (which
-// is container-local and lost on recreate). The 2026-05-13 plan doc wrote
-// /var/lib/vectis; this corrects it to the real data root.
-const DefaultJWKSCachePath = "/var/vectis/jwks.json"
+// offline reuse when no override is given. It sits in /var/vectis/license/,
+// which the vectis-api service bind-mounts from the host (see the api volumes
+// in docker-compose.yml.tmpl and the install mkdir list). The api container
+// does NOT bind-mount /var/vectis as a whole — only specific subpaths — so a
+// bare /var/vectis/jwks.json would land on the container's ephemeral layer and
+// be lost on every recreate, making the resolver's cache layer dead weight.
+// (The 2026-05-13 plan doc wrote /var/lib/vectis, which is wrong on both
+// counts.) The host dir is created by `vectis install`.
+const DefaultJWKSCachePath = "/var/vectis/license/jwks.json"
 
 // LicenseSecrets configures the offline, Pharlux-pattern license verifier: an
 // Ed25519-signed JWT minted by ValidonX (aud="vectis-mail"), verified locally

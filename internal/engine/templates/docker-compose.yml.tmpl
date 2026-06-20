@@ -76,6 +76,13 @@ services:
       # compose down/up. Host path matches the DR runbook §8 + off-host rsync
       # (§5). See docs/notes/dr-drill-2026-05-30.md (finding F1).
       - /var/vectis/backups:/var/vectis/backups
+      # License JWKS cache MUST persist on the host: the offline license
+      # verifier write-throughs a successful live JWKS fetch here so an
+      # air-gapped restart re-resolves from a fresh cache rather than the
+      # (possibly older) embedded key. Without this bind it lands on the
+      # container's ephemeral layer and is lost on every cutover, leaving the
+      # cache layer dead. See DefaultJWKSCachePath in internal/config/schema.go.
+      - /var/vectis/license:/var/vectis/license
     depends_on:
       postgres:
         condition: service_healthy

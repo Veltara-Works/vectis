@@ -358,6 +358,33 @@ func TestBackupsCompose_APIBindMount(t *testing.T) {
 	}
 }
 
+// The api service must persist /var/vectis/license on the host so the offline
+// license verifier's JWKS write-through cache survives container recreate.
+// /var/vectis is NOT mounted as a whole — only specific subpaths — so without
+// this dedicated bind the cache lands on the ephemeral layer and the
+// resolver's cache layer is dead. See DefaultJWKSCachePath in
+// internal/config/schema.go (Copilot review, PR #96).
+func TestLicenseCacheCompose_APIBindMount(t *testing.T) {
+	files, _ := Generate(testData())
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if compose == "" {
+		t.Fatal("docker-compose.yml not generated")
+	}
+	apiBlock := serviceBlock(compose, "api")
+	if apiBlock == "" {
+		t.Fatal("api service block not found in compose")
+	}
+	if !strings.Contains(apiBlock, "/var/vectis/license:/var/vectis/license") {
+		t.Errorf("api service must bind-mount /var/vectis/license so the JWKS cache survives container recreate; got:\n%s", apiBlock)
+	}
+}
+
 // serviceBlock returns the compose service block for `name`, ending at the
 // next top-level `  <name>:` line (or end of file). A service header is
 // exactly `  ` + word + `:` at the start of a line; continuation lines for
