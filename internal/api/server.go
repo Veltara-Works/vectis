@@ -24,6 +24,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/cluster"
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/dkim"
+	"github.com/Veltara-Works/vectis/internal/license"
 	"github.com/Veltara-Works/vectis/internal/mail"
 	"github.com/Veltara-Works/vectis/internal/mail/postfixlog"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
@@ -115,6 +116,10 @@ type Server struct {
 	backupScheduler  *backup.Scheduler
 	backupSchedMu    sync.Mutex // serialises Start/Stop/Reload of backupScheduler
 	usageReporter    *validonx.UsageReporter
+	// licenseRefresher keeps the offline JWT verifier's keyset current in the
+	// background. nil when no license token is configured in secrets.yaml — the
+	// offline path is then inert and the gate runs HTTP-resolve/Free only.
+	licenseRefresher *license.Refresher
 	// featureGate is always non-nil. When ValidonX is not configured the
 	// install runs as Free tier — only free-tier features pass; Pro/Enterprise
 	// gates deny with 403 / 402. Pre-v0.1.6 the unconfigured branch was an
@@ -287,6 +292,27 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		} else {
 			logger.Info("validonx licensing not configured — running in free-tier mode")
 		}
+	}
+
+	// Initialize the offline license verifier (Pharlux-pattern Ed25519 JWT).
+	//
+	// Additive to the ValidonX HTTP-resolve path above: when a license token is
+	// configured in secrets.yaml, its offline verdict takes precedence in the
+	// feature gate (JWT-wins-when-present). The JWKS layers (live HTTPS → cache
+	// → embedded) are always available, so the verifier works air-gapped. The
+	// Refresher's StartLicenseRefresher/StopLicenseRefresher lifecycle keeps the
+	// keyset fresh; the verification hot path never touches the network.
+	//
+	// Inert when no token is configured — s.licenseRefresher stays nil and the
+	// gate's offline source is unset, so behaviour is unchanged.
+	if cfg.VectisSecrets != nil && cfg.VectisSecrets.OfflineConfigured() {
+		lic := cfg.VectisSecrets.License
+		resolver := license.NewResolver(lic.JWKSURL, lic.CachePath())
+		provider := license.NewProvider(resolver)
+		s.licenseRefresher = license.NewRefresher(provider, 0, logger.With("component", "license-refresher"))
+		s.featureGate.SetOfflineLicense(validonx.NewOfflineLicense(provider, lic.Token, license.VMPolicy()))
+		logger.Info("offline license verifier configured",
+			"jwks_url", lic.JWKSURL, "jwks_cache_path", lic.CachePath())
 	}
 
 	// Initialize clustering if enabled.
@@ -607,6 +633,30 @@ func (s *Server) StopUsageReporter() {
 	}
 }
 
+// StartLicenseRefresher performs the synchronous initial JWKS load and starts
+// the background refresh loop for the offline license verifier. No-op when no
+// license token is configured. A start failure (every JWKS layer including the
+// embedded key fails — a build/config fault, not a transient outage) is logged
+// and the offline path is left inert: Provider.Current() stays nil, so the gate
+// falls through to the HTTP-resolve/Free path. It never aborts server startup.
+func (s *Server) StartLicenseRefresher() {
+	if s.licenseRefresher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	if err := s.licenseRefresher.Start(ctx); err != nil {
+		s.logger.Error("license jwks refresher failed to start; offline license inert", "error", err)
+	}
+}
+
+// StopLicenseRefresher halts the background JWKS refresh loop.
+func (s *Server) StopLicenseRefresher() {
+	if s.licenseRefresher != nil {
+		s.licenseRefresher.Stop()
+	}
+}
+
 // StartCluster registers this node and starts the heartbeat/leader election loop.
 func (s *Server) StartCluster() {
 	if s.nodeMgr != nil {
@@ -667,6 +717,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.StopWebhookDispatcher()
 	s.StopPostfixLogTailer()
 	s.StopUsageReporter()
+	s.StopLicenseRefresher()
 	s.StopRBLMonitor()
 	s.StopWarmupManager()
 	s.StopCluster()

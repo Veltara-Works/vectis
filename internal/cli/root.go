@@ -120,6 +120,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	srv.StartWebhookDispatcher()
 	srv.StartPostfixLogTailer()
 	srv.StartUsageReporter()
+	srv.StartLicenseRefresher()
 	srv.EnsureRspamdConfigFresh()
 
 	// Graceful shutdown.
