@@ -49,6 +49,47 @@ func (o *OfflineLicense) verdict() (license.Verdict, bool) {
 	return license.Verify(o.token, ks, o.now(), o.policy), true
 }
 
+// OfflineStatus is a read-only snapshot of the offline JWT verifier's current
+// view, for operator display on the admin License page. It never affects an
+// entitlement decision — it just reports what the resilience layer sees.
+type OfflineStatus struct {
+	Configured bool   `json:"configured"`            // a token is present in secrets.yaml
+	Active     bool   `json:"active"`                // currently entitling (ACCEPT + LIVE or IN_GRACE)
+	Accepted   bool   `json:"accepted"`              // signature + claims verified
+	Tier       string `json:"tier,omitempty"`        // resolved internal tier (e.g. "Pro")
+	GraceState string `json:"grace_state,omitempty"` // LIVE | IN_GRACE | PAST_GRACE
+	JWKSSource string `json:"jwks_source,omitempty"` // live | cache | embedded
+	Reason     string `json:"reason,omitempty"`      // rejection reason when !Accepted
+}
+
+// Status returns a read-only snapshot of the offline verifier. Nil-safe: a nil
+// receiver (or an empty token) reports Configured=false, the same as an install
+// with no offline license, so the admin UI simply omits the offline panel.
+func (o *OfflineLicense) Status() OfflineStatus {
+	if o == nil || o.token == "" {
+		return OfflineStatus{}
+	}
+	st := OfflineStatus{Configured: true}
+	if o.provider != nil {
+		st.JWKSSource = string(o.provider.Source())
+	}
+	v, ok := o.verdict()
+	if !ok {
+		// Token configured but the keyset has not loaded yet — report it as
+		// configured-but-not-yet-active rather than fabricating a verdict.
+		return st
+	}
+	st.Accepted = v.Accepted
+	if v.Accepted {
+		st.Tier = v.InternalTier
+		st.GraceState = string(v.GraceState)
+		st.Active = v.GraceState != license.GracePastGrace
+	} else {
+		st.Reason = v.Reason
+	}
+	return st
+}
+
 // featuresForTier maps a verifier-resolved internal tier name to the VM feature
 // list the rest of the gate already reasons over (so the offline path reuses
 // tierFromFeatures, HasFeature, etc. unchanged). VMPolicy emits "Pro" for a

@@ -178,6 +178,13 @@ func (fgs *FeatureGateService) offlineDecision(feature string) (allowed, ok bool
 	return featureInList(feats, feature), true
 }
 
+// OfflineLicenseStatus returns a read-only snapshot of the offline JWT verifier
+// for operator display on the admin License page. Reports Configured=false when
+// no offline license is installed (nil-safe).
+func (fgs *FeatureGateService) OfflineLicenseStatus() OfflineStatus {
+	return fgs.offline.Status()
+}
+
 // SwapClient atomically replaces the underlying Client. Used by the License
 // admin API when an admin saves new credentials. Pass nil to deactivate
 // (revert to free-tier behaviour).

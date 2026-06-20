@@ -17,6 +17,23 @@ interface LicenseState {
   last_check_at?: string
   expires_at?: string
   grace_remaining_days?: number
+  // Offline JWT verifier snapshot (the resilience layer). Present and
+  // configured=true only when a [license].token is set in secrets.yaml.
+  offline?: OfflineState
+}
+
+// OfflineState mirrors the `offline` block of GET /api/v1/license — a
+// read-only view of the offline JWT verifier for operator visibility. It does
+// not drive entitlement (the HTTP-resolve path is primary); it just shows what
+// the air-gap/outage resilience layer currently sees.
+interface OfflineState {
+  configured: boolean
+  active: boolean
+  accepted: boolean
+  tier?: string
+  grace_state?: string
+  jwks_source?: string
+  reason?: string
 }
 
 // Displayed Pro price — single source of truth for this page. $39 is the live
@@ -134,6 +151,19 @@ export default function LicensePage() {
     }
   }
 
+  const handleManageBilling = async () => {
+    // Open the ValidonX-backed Stripe Customer Portal so a past_due customer
+    // can update their card / renew. The portal handles the actual payment;
+    // entitlements refresh on the next resolve once Stripe reports active.
+    setError('')
+    try {
+      const { url } = await api.createBillingPortalSession()
+      window.location.assign(url)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Could not open billing portal')
+    }
+  }
+
   const handleRemove = async () => {
     if (!confirm('Remove this license? Pro/Enterprise features will be locked. Existing data is preserved.')) return
     setRemoving(true)
@@ -166,6 +196,20 @@ export default function LicensePage() {
 
       {error && <div className="alert alert-error" role="alert">{error}</div>}
       {success && <div className="alert alert-success" role="status">{success}</div>}
+
+      {state?.status === 'past_due' && (
+        <div className="alert alert-error" role="alert">
+          <strong>Subscription past due — renew now.</strong> Your Vectis Mail
+          Pro subscription is past due. Pro features stay active during the grace
+          window, but will be locked if it isn't renewed. Update your billing to
+          keep Pro.
+          <div style={{ marginTop: '0.5rem' }}>
+            <button className="btn btn-sm" onClick={handleManageBilling}>
+              Renew now
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <h3 className="mb-1">Current tier</h3>
@@ -250,6 +294,46 @@ export default function LicensePage() {
           </>
         )}
       </div>
+
+      {state?.offline?.configured && (
+        <div className="card">
+          <h3 className="mb-1">Offline license token</h3>
+          <p className="text-muted">
+            The offline license token is a <strong>resilience layer</strong>: it
+            keeps this install entitled if ValidonX is unreachable or
+            air-gapped, verified locally against ValidonX's signing key with no
+            network call. Your tier is normally resolved online — this is the
+            fallback, so it not being active is not a problem while ValidonX is
+            reachable.
+          </p>
+          <p>
+            Status:{' '}
+            {state.offline.active ? (
+              <span className="badge badge-success">
+                ACTIVE{state.offline.tier ? ` · ${state.offline.tier.toUpperCase()}` : ''}
+              </span>
+            ) : state.offline.accepted ? (
+              <span className="badge badge-muted">EXPIRED (past grace)</span>
+            ) : (
+              <span className="badge badge-muted">NOT ACTIVE</span>
+            )}
+            {state.offline.grace_state && (
+              <>{' '}<span className="badge">{state.offline.grace_state}</span></>
+            )}
+          </p>
+          {state.offline.jwks_source && (
+            <p className="text-muted">
+              Signing key source: <span className="mono">{state.offline.jwks_source}</span>
+              {state.offline.jwks_source === 'embedded' && ' (built-in fallback — no live key fetched yet)'}
+            </p>
+          )}
+          {!state.offline.accepted && state.offline.reason && (
+            <p className="text-muted">
+              Token not accepted: <span className="mono">{state.offline.reason}</span>
+            </p>
+          )}
+        </div>
+      )}
 
       {showForm && (
         <div className="card">

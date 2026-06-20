@@ -179,6 +179,69 @@ func TestOfflineLicense_TamperedToken_FallsThrough(t *testing.T) {
 	}
 }
 
+// TestOfflineLicense_Status reports the read-only snapshot used by the admin
+// License page across the meaningful states: nil/unconfigured, live-active,
+// past-grace (accepted but not active), and rejected (with reason).
+func TestOfflineLicense_Status(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+
+	t.Run("nil offline is unconfigured", func(t *testing.T) {
+		var o *OfflineLicense
+		if st := o.Status(); st.Configured {
+			t.Errorf("nil offline must report Configured=false, got %+v", st)
+		}
+	})
+
+	t.Run("live pro token is active", func(t *testing.T) {
+		p, priv := newTestProvider(t)
+		token := signVMToken(t, priv, "pro", now.Add(-time.Hour), now.Add(72*time.Hour))
+		o := NewOfflineLicense(p, token, license.VMPolicy())
+		o.now = func() time.Time { return now }
+		st := o.Status()
+		if !st.Configured || !st.Accepted || !st.Active {
+			t.Fatalf("live token: want configured+accepted+active, got %+v", st)
+		}
+		if st.Tier != "Pro" || st.GraceState != string(license.GraceLive) {
+			t.Errorf("live token: tier=%q grace=%q, want Pro/LIVE", st.Tier, st.GraceState)
+		}
+		if st.JWKSSource == "" {
+			t.Error("live token: expected a JWKS source")
+		}
+	})
+
+	t.Run("past-grace token is accepted but not active", func(t *testing.T) {
+		p, priv := newTestProvider(t)
+		token := signVMToken(t, priv, "pro", now.Add(-96*time.Hour), now.Add(-48*time.Hour))
+		o := NewOfflineLicense(p, token, license.VMPolicy())
+		o.now = func() time.Time { return now }
+		st := o.Status()
+		if !st.Accepted || st.Active {
+			t.Errorf("past-grace: want accepted+inactive, got %+v", st)
+		}
+		if st.GraceState != string(license.GracePastGrace) {
+			t.Errorf("past-grace: grace=%q, want PAST_GRACE", st.GraceState)
+		}
+	})
+
+	t.Run("rejected token carries reason", func(t *testing.T) {
+		p, priv := newTestProvider(t)
+		token := signVMToken(t, priv, "pro", now.Add(-time.Hour), now.Add(72*time.Hour))
+		tampered := token[:len(token)-1] + "A"
+		if token[len(token)-1] == 'A' {
+			tampered = token[:len(token)-1] + "Q"
+		}
+		o := NewOfflineLicense(p, tampered, license.VMPolicy())
+		o.now = func() time.Time { return now }
+		st := o.Status()
+		if !st.Configured || st.Accepted || st.Active {
+			t.Errorf("rejected: want configured+!accepted+!active, got %+v", st)
+		}
+		if st.Reason == "" {
+			t.Error("rejected: expected a rejection reason")
+		}
+	})
+}
+
 // TestOfflineLicense_KeysetNotLoaded_FallsThrough: before the provider has any
 // keyset, the offline source must report no authority rather than mis-deny.
 func TestOfflineLicense_KeysetNotLoaded_FallsThrough(t *testing.T) {
