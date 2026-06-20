@@ -19,9 +19,10 @@ import (
 // unbounded body at us.
 const licenseRevokeMaxBody = 64 << 10
 
-// Revoke-webhook rate limit: 10 requests/minute. The JWKS refresh it triggers
-// is coalesced, so this is a safety valve against a misbehaving (but
-// authenticated) sender, not a correctness requirement.
+// Revoke-webhook rate limit: 10 requests/minute (fixed-window, per
+// internal/ratelimit). The JWKS refresh it triggers is coalesced, so this is a
+// safety valve against a misbehaving (but authenticated) sender, not a
+// correctness requirement.
 const (
 	licenseRevokeRateLimit  = 10
 	licenseRevokeRateWindow = time.Minute
@@ -61,6 +62,15 @@ func (s *Server) handleLicenseRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fail fast on a missing/malformed signature header before reading the body,
+	// matching the documented order (header check -> HMAC verify) and avoiding
+	// work on obviously-invalid requests.
+	provided, ok := parseSHA256Signature(r.Header.Get("X-Vectis-Signature"))
+	if !ok {
+		unauthorized()
+		return
+	}
+
 	// Read the raw body (capped) — needed verbatim for the HMAC.
 	body, err := io.ReadAll(io.LimitReader(r.Body, licenseRevokeMaxBody+1))
 	if err != nil || len(body) > licenseRevokeMaxBody {
@@ -68,7 +78,7 @@ func (s *Server) handleLicenseRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !verifyRevokeSignature(secret, body, r.Header.Get("X-Vectis-Signature")) {
+	if !validRevokeMAC(secret, body, provided) {
 		unauthorized()
 		return
 	}
@@ -91,16 +101,11 @@ func (s *Server) handleLicenseRevoke(w http.ResponseWriter, r *http.Request) {
 	respond(w, r, http.StatusAccepted, map[string]string{"status": "refresh_triggered"})
 }
 
-// verifyRevokeSignature reports whether header carries a valid "sha256=<hex>"
-// HMAC-SHA256 of body keyed by secret. An empty secret always fails (probe
-// resistance: an unconfigured webhook behaves identically to a wrong key). The
-// comparison is constant-time.
-func verifyRevokeSignature(secret string, body []byte, header string) bool {
+// validRevokeMAC reports whether provided is the HMAC-SHA256 of body keyed by
+// secret. An empty secret always fails (probe resistance: an unconfigured
+// webhook behaves identically to a wrong key). The comparison is constant-time.
+func validRevokeMAC(secret string, body, provided []byte) bool {
 	if secret == "" {
-		return false
-	}
-	provided, ok := parseSHA256Signature(header)
-	if !ok {
 		return false
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
