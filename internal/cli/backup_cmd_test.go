@@ -15,9 +15,13 @@ import (
 // superuser-owned objects like the pgcrypto extension (DR drill Finding B).
 func TestRestoreDBConfig(t *testing.T) {
 	t.Run("no db-host keeps docker-exec superuser path", func(t *testing.T) {
-		cfg := restoreDBConfig(backup.DefaultConfig(), "", 5432, "superpass")
+		// Seed DirectDB=true to prove the empty-host path explicitly clears it
+		// (idempotent if a mutated Config is passed in).
+		seeded := backup.DefaultConfig()
+		seeded.DirectDB = true
+		cfg := restoreDBConfig(seeded, "", 5432, "superpass")
 		if cfg.DirectDB {
-			t.Fatalf("DirectDB should be false without --db-host")
+			t.Fatalf("DirectDB should be cleared without --db-host")
 		}
 		if cfg.SuperuserPassword != "superpass" {
 			t.Fatalf("SuperuserPassword = %q, want superpass", cfg.SuperuserPassword)

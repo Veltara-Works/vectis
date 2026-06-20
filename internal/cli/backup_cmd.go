@@ -363,6 +363,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 // leaves the Config default (5432). Pure for testability.
 func restoreDBConfig(cfg backup.Config, dbHost string, dbPort int, superuserPassword string) backup.Config {
 	if dbHost == "" {
+		cfg.DirectDB = false // default docker-exec path; explicit so a reused Config can't force TCP
 		cfg.SuperuserPassword = superuserPassword
 		return cfg
 	}
@@ -371,7 +372,7 @@ func restoreDBConfig(cfg backup.Config, dbHost string, dbPort int, superuserPass
 	if dbPort != 0 {
 		cfg.DBPort = dbPort
 	}
-	cfg.DBUser = cfg.DBSuperuser // "postgres"
+	cfg.DBUser = cfg.DBSuperuser
 	cfg.DBPassword = superuserPassword
 	return cfg
 }
