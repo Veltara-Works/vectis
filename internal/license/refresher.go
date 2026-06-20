@@ -32,8 +32,10 @@ type Refresher struct {
 	stopCh  chan struct{}
 	trigger chan struct{}
 
-	// onRefresh, if non-nil, receives the Source of each background refresh.
-	// Test/observability hook only; never blocks the loop.
+	// onRefresh, if non-nil, receives the effective keyset Source after each
+	// background refresh cycle — on a failed refresh that's the retained
+	// last-good source, never an empty/invalid Source. Test/observability
+	// hook only; never blocks the loop.
 	onRefresh chan<- Source
 }
 
@@ -114,10 +116,14 @@ func (r *Refresher) refreshOnce() {
 	} else {
 		r.logger.Debug("license jwks refreshed", "source", src)
 	}
+	// Publish the effective source (last-good on failure), never the empty
+	// Source that Refresh returns on error.
 	if r.onRefresh != nil {
-		select {
-		case r.onRefresh <- src:
-		default:
+		if eff := r.provider.Source(); eff != "" {
+			select {
+			case r.onRefresh <- eff:
+			default:
+			}
 		}
 	}
 }

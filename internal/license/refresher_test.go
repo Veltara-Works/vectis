@@ -59,6 +59,35 @@ func TestRefresherTriggerForcesRefresh(t *testing.T) {
 	}
 }
 
+func TestRefresherFailedRefreshKeepsLastGoodSource(t *testing.T) {
+	p := NewProvider(NewResolver("", "")) // initial load succeeds (embedded)
+	r := NewRefresher(p, time.Hour, quietLogger())
+	seen := make(chan Source, 4)
+	r.onRefresh = seen
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer r.Stop()
+
+	// Break the resolver so the next refresh fails. The Trigger send below
+	// happens-before the loop reads p.resolver, so this is race-free.
+	p.resolver = &Resolver{Embedded: nil}
+	r.Trigger()
+
+	select {
+	case src := <-seen:
+		if src != SourceEmbedded {
+			t.Fatalf("failed refresh should report last-good source, got %q", src)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no refresh signal after trigger")
+	}
+	if p.Current() == nil {
+		t.Fatal("keyset must be retained after a failed refresh")
+	}
+}
+
 func TestRefresherTicksPeriodically(t *testing.T) {
 	p := NewProvider(NewResolver("", ""))
 	r := NewRefresher(p, 10*time.Millisecond, quietLogger())
