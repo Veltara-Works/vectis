@@ -799,6 +799,12 @@ func (s *Server) buildRouter() chi.Router {
 		// Internal service-to-service endpoints (token-authenticated, not session).
 		r.Post("/internal/inbound", s.handleInboundNotify)
 
+		// ValidonX-facing license revoke webhook. HMAC-authenticated over the
+		// raw body (X-Vectis-Signature: sha256=<hex>), NOT session-authed — the
+		// caller is ValidonX, not a browser. Probe-resistant 401 when the
+		// offline verifier or webhook_secret is not configured.
+		r.Post("/admin/license/revoke", s.handleLicenseRevoke)
+
 		// Public tracking endpoints (no auth — must work in email clients).
 		r.Get("/track/open/{token}", s.handleTrackOpen)
 		r.Get("/track/click/{token}", s.handleTrackClick)
