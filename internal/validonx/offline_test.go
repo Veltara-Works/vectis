@@ -131,21 +131,47 @@ func TestOfflineLicense_ProToken_DeniesEnterpriseFeature(t *testing.T) {
 	}
 }
 
-// TestOfflineLicense_PastGrace_Downgrades: a token past exp+grace resolves to
-// the policy DowngradeTier ("Free"), so the offline verdict (still ACCEPT, but
-// downgraded) authoritatively denies the Pro feature.
-func TestOfflineLicense_PastGrace_Downgrades(t *testing.T) {
+// TestOfflineLicense_PastGrace_FallsThrough: a token past exp+grace has nothing
+// left to assert, so the offline source reports NO authority and the gate falls
+// through to the HTTP-resolve path (unconfigured here, hence Free/deny) rather
+// than authoritatively pinning the install to Free. This is the
+// HTTP-resolve-primary / offline-JWT-as-resilience behaviour: a lapsed
+// resilience token defers to the primary path, which on a healthy subscription
+// would still entitle the box.
+func TestOfflineLicense_PastGrace_FallsThrough(t *testing.T) {
 	p, priv := newTestProvider(t)
 	now := time.Unix(1_700_000_000, 0)
-	// exp 48h ago, well past the placeholder 24h grace window.
+	// exp 48h ago, well past the 24h grace cushion.
 	token := signVMToken(t, priv, "pro", now.Add(-96*time.Hour), now.Add(-48*time.Hour))
 	gate := gateWithOffline(t, token, p, now)
 
+	if _, ok := gate.offlineFeatures(); ok {
+		t.Error("past-grace token must report no offline authority (fall through to http-resolve)")
+	}
 	if gate.HasFeature(context.Background(), FeatureOIDCSSO) {
 		t.Error("past-grace token must not grant Pro features")
 	}
 	if tier, _ := gate.ResolveTier(context.Background()); tier != TierFree {
 		t.Errorf("ResolveTier = %q, want %q after grace", tier, TierFree)
+	}
+}
+
+// TestOfflineLicense_InGrace_StillEntitles: a token expired within the grace
+// cushion still entitles its tier (the resilience layer holds the tier briefly
+// past exp to bridge a missed re-mint).
+func TestOfflineLicense_InGrace_StillEntitles(t *testing.T) {
+	p, priv := newTestProvider(t)
+	now := time.Unix(1_700_000_000, 0)
+	// exp 1h ago — inside the 24h cushion.
+	token := signVMToken(t, priv, "pro", now.Add(-97*time.Hour), now.Add(-time.Hour))
+	gate := gateWithOffline(t, token, p, now)
+
+	feats, ok := gate.offlineFeatures()
+	if !ok {
+		t.Fatal("in-grace token must still carry offline authority")
+	}
+	if !featureInList(feats, FeatureOIDCSSO) {
+		t.Error("in-grace pro token must still grant Pro features")
 	}
 }
 
