@@ -1,0 +1,109 @@
+{
+  "_about": "Pharlux licensing-verifier conformance vectors (v1, frozen Phase-1 contract). Each vector is (token, keyset, now_unix) -> expected verdict. Sandbox-signed tokens (kid=validonx-sandbox-2026-06); NOT production keys; payloads carry no production data. A conforming verifier must reproduce every 'expect' below. See LICENSE_TOKEN_CONTRACT.md for the algorithm.",
+  "keysets": {
+    "sandbox": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "atURRxq1FNAsX4KrElpyHLRr0JzQrmcWCOYHb-cNPmw", "kid": "validonx-sandbox-2026-06", "use": "sig", "alg": "EdDSA"}]},
+    "production": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "guvdOblwtwbfLMKIX0FhHdb7BDv0xh0UyrzOH-hWhd8", "kid": "validonx-2026-05", "use": "sig", "alg": "EdDSA"}]}
+  },
+  "vectors": [
+    {
+      "id": "valid_both_axes",
+      "desc": "tier=team with both limit axes overridden; verified LIVE.",
+      "keyset": "sandbox",
+      "now_unix": 1781090747,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDQ",
+      "expect": {
+        "verdict": "ACCEPT",
+        "grace_state": "LIVE",
+        "internal_tier": "Professional",
+        "entitlements": {
+          "pharlux.tier": "team",
+          "pharlux.features.commercial-use": "true",
+          "pharlux.features.binary-distribution": "false",
+          "pharlux.limits.hosts.max": "25",
+          "pharlux.limits.retention.days": "45"
+        }
+      }
+    },
+    {
+      "id": "valid_single_axis",
+      "desc": "tier=team with only hosts overridden; retention falls back to team default 30; verified LIVE.",
+      "keyset": "sandbox",
+      "now_unix": 1781090747,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiJmNDI3NmQ5Zi1mYmQ4LTQzYTQtOTQ1OS0yZDcyNTgyYmNhNDYiLCJpYXQiOjE3ODEwODA3NDcuMjUwODk3LCJleHAiOjIwOTY0NDA3NDcuMjUwODk3LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNX19.iGqalZLtz6S2m_kaMuNeF097ofx3Wy_nuHJmeMmcmK6QGg98Ggk0m8n8d3Nc4M4kNomDjTzpcfPCeiLfefrDCA",
+      "expect": {
+        "verdict": "ACCEPT",
+        "grace_state": "LIVE",
+        "internal_tier": "Professional",
+        "entitlements": {
+          "pharlux.tier": "team",
+          "pharlux.features.commercial-use": "true",
+          "pharlux.features.binary-distribution": "false",
+          "pharlux.limits.hosts.max": "25",
+          "pharlux.limits.retention.days": "30"
+        }
+      }
+    },
+    {
+      "id": "in_grace_preserves_paid_tier",
+      "desc": "Same valid token, evaluated 100s AFTER exp (within the 24h grace) -> paid tier preserved.",
+      "keyset": "sandbox",
+      "now_unix": 2096440847,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDQ",
+      "expect": {
+        "verdict": "ACCEPT",
+        "grace_state": "IN_GRACE",
+        "internal_tier": "Professional",
+        "entitlements": {
+          "pharlux.tier": "team",
+          "pharlux.features.commercial-use": "true",
+          "pharlux.features.binary-distribution": "false",
+          "pharlux.limits.hosts.max": "25",
+          "pharlux.limits.retention.days": "45"
+        }
+      }
+    },
+    {
+      "id": "past_grace_downgrades_to_community",
+      "desc": "Same valid token, evaluated 86500s AFTER exp (>24h past grace) -> downgrade to Community, empty entitlements.",
+      "keyset": "sandbox",
+      "now_unix": 2096527247,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDQ",
+      "expect": {
+        "verdict": "ACCEPT",
+        "grace_state": "PAST_GRACE",
+        "internal_tier": "Community",
+        "entitlements": {}
+      }
+    },
+    {
+      "id": "tampered_signature",
+      "desc": "valid_both_axes with the final signature character flipped (Q->R). Ed25519 verification must fail.",
+      "keyset": "sandbox",
+      "now_unix": 1781090747,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDR",
+      "expect": {
+        "verdict": "REJECT",
+        "reason": "bad signature"
+      }
+    },
+    {
+      "id": "wrong_key_unknown_kid",
+      "desc": "Genuine sandbox token verified against the PRODUCTION keyset (lacks the sandbox kid). Key selection must fail closed.",
+      "keyset": "production",
+      "now_unix": 1781090747,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDQ",
+      "expect": {
+        "verdict": "REJECT",
+        "reason": "UnknownKid: validonx-sandbox-2026-06"
+      }
+    }
+  ],
+  "_pending_issuer_minted_vectors": {
+    "_note": "These negative cases need a token MINTED by the ValidonX sandbox signer (the existing sandbox fixtures don't carry bad iss/aud/tier). Listed here with expected verdicts so the set can be completed issuer-side. A conforming verifier should also reject all of these.",
+    "wrong_issuer": {"desc": "iss != 'validonx'", "expect": {"verdict": "REJECT", "reason": "issuer mismatch"}},
+    "wrong_audience": {"desc": "aud not containing 'pharlux'", "expect": {"verdict": "REJECT", "reason": "audience mismatch"}},
+    "unknown_tier": {"desc": "tier not in {team,business,scale,commercial-license-only}", "expect": {"verdict": "REJECT", "reason": "UnknownTierClaim"}},
+    "missing_kid": {"desc": "header without kid", "expect": {"verdict": "REJECT", "reason": "MissingKid"}},
+    "wrong_alg": {"desc": "alg != EdDSA (e.g. none/HS256)", "expect": {"verdict": "REJECT", "reason": "algorithm not allowed"}}
+  }
+}
