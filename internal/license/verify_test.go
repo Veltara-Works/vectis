@@ -117,7 +117,7 @@ func TestRejectsNonEdDSAAlg(t *testing.T) {
 	ks := mustSandbox(t)
 	for _, alg := range []string{"none", "HS256", "RS256", ""} {
 		got := Verify(craftToken(`{"alg":"`+alg+`","typ":"JWT","kid":"validonx-sandbox-2026-06"}`), ks, time.Unix(1781090747, 0), PharluxPolicy())
-		if got.Accepted || got.Reason != "algorithm not allowed" {
+		if got.Accepted || got.Reason != "algorithm not allowed (alg != EdDSA)" {
 			t.Fatalf("alg=%q: got %+v, want REJECT algorithm not allowed", alg, got)
 		}
 	}

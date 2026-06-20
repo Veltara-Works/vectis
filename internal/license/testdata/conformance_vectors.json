@@ -96,14 +96,34 @@
         "verdict": "REJECT",
         "reason": "UnknownKid: validonx-sandbox-2026-06"
       }
+    },
+    {
+      "id": "missing_kid",
+      "desc": "Header omits 'kid'. Rejected at the kid presence check, BEFORE signature verification, so issuer-signing is moot (payload/sig reused from valid_both_axes).",
+      "keyset": "sandbox",
+      "now_unix": 1781090747,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDQ",
+      "expect": {
+        "verdict": "REJECT",
+        "reason": "MissingKid"
+      }
+    },
+    {
+      "id": "wrong_alg",
+      "desc": "Header alg=HS256 (kid present). Rejected at the EdDSA algorithm pin, BEFORE signature verification, so issuer-signing is moot. This is the algorithm-confusion guard: a verifier MUST pin EdDSA and never honour the token's alg.",
+      "keyset": "sandbox",
+      "now_unix": 1781090747,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6InZhbGlkb254LXNhbmRib3gtMjAyNi0wNiJ9.eyJpc3MiOiJ2YWxpZG9ueCIsImF1ZCI6InBoYXJsdXgiLCJzdWIiOiJiZjMzNmYwYS05MzE4LTQ5NmYtYmIwZC02YzY1NTY4Y2IzYzgiLCJqdGkiOiI1OTg0NmI3ZC00ODkzLTQ4YzktYjhkOC00ZjI0NmYxMGI1NjciLCJpYXQiOjE3ODEwODA3NDcuMjUwMDc4LCJleHAiOjIwOTY0NDA3NDcuMjUwMDc4LCJ0aWVyIjoidGVhbSIsImN1c3RvbWVyX2VtYWlsIjoiaWFuaG9sdEBhZnhncm91cC5jb20uYXUiLCJsaW1pdHMiOnsiaG9zdHNfbWF4IjoyNSwicmV0ZW50aW9uX2RheXMiOjQ1fX0.aMZOrYIY1egg-Y-s2gkQpAHtZg4dxATHD2SfRy77HSBSlVb2w848H2TFcin-vI7_0lkTrt3ZydiPZ__5Fy-BDR",
+      "expect": {
+        "verdict": "REJECT",
+        "reason": "algorithm not allowed (alg != EdDSA)"
+      }
     }
   ],
   "_pending_issuer_minted_vectors": {
-    "_note": "These negative cases need a token MINTED by the ValidonX sandbox signer (the existing sandbox fixtures don't carry bad iss/aud/tier). Listed here with expected verdicts so the set can be completed issuer-side. A conforming verifier should also reject all of these.",
-    "wrong_issuer": {"desc": "iss != 'validonx'", "expect": {"verdict": "REJECT", "reason": "issuer mismatch"}},
-    "wrong_audience": {"desc": "aud not containing 'pharlux'", "expect": {"verdict": "REJECT", "reason": "audience mismatch"}},
-    "unknown_tier": {"desc": "tier not in {team,business,scale,commercial-license-only}", "expect": {"verdict": "REJECT", "reason": "UnknownTierClaim"}},
-    "missing_kid": {"desc": "header without kid", "expect": {"verdict": "REJECT", "reason": "MissingKid"}},
-    "wrong_alg": {"desc": "alg != EdDSA (e.g. none/HS256)", "expect": {"verdict": "REJECT", "reason": "algorithm not allowed"}}
+    "_note": "These three need a token MINTED by the ValidonX sandbox signer: each must carry a VALID sandbox signature so it passes signature verification and is rejected specifically at the claim check (an invalidly-signed token would be rejected for the signature instead, demonstrating the wrong thing). Mint spec in MINT_REQUEST_VALIDONX.md. (missing_kid and wrong_alg are now concrete above — they are rejected before signature verification, so no issuer signature is required for them.)",
+    "wrong_issuer": {"desc": "validly sandbox-signed, but iss != 'validonx'", "expect": {"verdict": "REJECT", "reason": "issuer mismatch"}},
+    "wrong_audience": {"desc": "validly sandbox-signed, but aud not containing 'pharlux'", "expect": {"verdict": "REJECT", "reason": "audience mismatch"}},
+    "unknown_tier": {"desc": "validly sandbox-signed, but tier not in {team,business,scale,commercial-license-only}", "expect": {"verdict": "REJECT", "reason": "UnknownTierClaim"}}
   }
 }

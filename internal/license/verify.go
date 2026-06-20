@@ -74,7 +74,7 @@ func Verify(token string, ks *KeySet, now time.Time, policy Policy) Verdict {
 		return reject("malformed")
 	}
 	if hdr.Alg != "EdDSA" {
-		return reject("algorithm not allowed")
+		return reject("algorithm not allowed (alg != EdDSA)")
 	}
 	if hdr.Kid == "" {
 		return reject("MissingKid")
