@@ -678,18 +678,53 @@ func refreshCLIBinary() (string, error) {
 		return "", fmt.Errorf("checksum mismatch (expected %s, got %s)", expectedSHA, actualSHA)
 	}
 
-	// 4. Make executable and atomic-rename into place. Linux allows
-	// renaming a file over a running binary's path — the kernel keeps the
-	// old inode mapped for the running process; subsequent invocations
-	// pick up the new binary.
+	// 4. Make executable and install into place. Linux allows renaming a
+	// file over a running binary's path — the kernel keeps the old inode
+	// mapped for the running process; subsequent invocations pick up the
+	// new binary.
 	if err := os.Chmod(tmpBin, 0o755); err != nil {
 		return "", fmt.Errorf("chmod downloaded binary: %w", err)
 	}
-	if err := os.Rename(tmpBin, expectedBinaryPath); err != nil {
-		return "", fmt.Errorf("install binary at %s: %w", expectedBinaryPath, err)
+	if err := installBinary(tmpBin, expectedBinaryPath); err != nil {
+		return "", err
 	}
 
 	return fmt.Sprintf("updated %s -> %s (takes effect on next vectis invocation)", version.Version, manifest.Latest), nil
+}
+
+// installBinary moves the freshly-downloaded, checksum-verified binary into
+// place at dest.
+//
+// The fast path is a direct atomic rename, which succeeds when the caller owns
+// dest (e.g. running as root) and src/dest share a filesystem. When an operator
+// runs `vectis update apply` as an ordinary user — the common case, since the
+// orchestrator drives the container swap and only this host binary needs root
+// to replace — that rename fails with EACCES on root-owned /usr/local/bin.
+//
+// Rather than surface a bare "permission denied", fall back to a
+// NON-INTERACTIVE privileged copy via `sudo -n install`. `sudo -n` never blocks
+// on a password prompt, which keeps both the interactive and --json/automation
+// callers safe:
+//   - NOPASSWD sudo (build boxes, CI, many prod setups): the refresh just works.
+//   - password-gated sudo: `sudo -n` fails fast and we return an actionable
+//     error telling the operator exactly how to refresh manually.
+//
+// `install` also copies across filesystems, so this doubles as the fix for a
+// cross-device rename. dest is a fixed constant and src is a path we control, so
+// there is no shell or argument-injection surface.
+func installBinary(src, dest string) error {
+	if err := os.Rename(src, dest); err == nil {
+		return nil
+	}
+
+	if sudoPath, err := exec.LookPath("sudo"); err == nil {
+		if err := exec.Command(sudoPath, "-n", "install", "-m", "0755", src, dest).Run(); err == nil {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("cannot write %s without privileges — run 'sudo vectis update self' "+
+		"to refresh the host CLI binary", dest)
 }
 
 func downloadFile(client *http.Client, url, dest string) error {
