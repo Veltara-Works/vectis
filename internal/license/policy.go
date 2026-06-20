@@ -18,11 +18,12 @@ type Limits struct {
 // model here matches Pharlux's verifier (contract §9): a fixed grace window
 // after `exp`, then a downgrade to a fallback tier with empty entitlements.
 //
-// Vectis Mail deliberately does NOT adopt Pharlux's 24h-then-downgrade
-// behaviour (decision, Ian 2026-06-20): VM is an always-online mail server
-// and keeps its own `expires_at`-as-grace + offline-bound clamp policy. The
-// grace model is the one intentional per-product divergence; the token shape
-// and the rest of the verification algorithm are shared. See [VMPolicy].
+// Both products use this window shape, but with different intent and window
+// sizes. For Vectis Mail the window is a MODEST resilience cushion, not the
+// subscription grace: VM's HTTP-resolve path is the primary entitlement source
+// and owns the 21-day past_due grace, so the offline JWT only needs a short
+// post-exp cushion before deferring back to that path (decision, Ian
+// 2026-06-21). See [VMGraceCushion] and validonx.offlineFeatures.
 type GraceModel struct {
 	// Window is the grace duration after exp during which the paid tier is
 	// preserved. After exp+Window, the token downgrades.
@@ -127,19 +128,31 @@ func PharluxPolicy() Policy {
 
 // ---- Vectis Mail policy ----------------------------------------------------
 
-// VMPolicy returns Vectis Mail's production policy: aud="vectis-mail", the VM
-// tier map (vectis-licensing-plan.md §4.1), and VM's grace policy.
+// VMGraceCushion is the window after a token's exp during which the offline
+// verifier still honours the token's tier (GraceInGrace) before downgrading
+// (GracePastGrace). It is deliberately MODEST.
 //
-// NOTE: the grace model below is a placeholder mirroring the window shape so
-// the core compiles and runs. VM's real grace semantics (expires_at-as-grace
-// + offline-bound clamp, per Ian's 2026-06-20 decision) are wired in a later
-// phase — they are deliberately NOT Pharlux's 24h-then-downgrade. The Phase-1
-// scope here is the shared core proven against the Pharlux conformance pack;
-// VM's grace state machine is the last piece, tracked separately.
+// VM's licensing model is HTTP-resolve-primary, offline-JWT-as-resilience
+// (decision, Ian 2026-06-21): online installs entitle via the ValidonX
+// HTTP-resolve path, which owns the 21-day past_due subscription grace —
+// ValidonX keeps minting tier:"pro" right through it (plan §4.2 option (c)).
+// The offline JWT is the air-gap/outage layer. So this cushion does not need to
+// span the subscription grace; it only bridges the brief gap between a token's
+// 96h exp and either the next re-mint or a fall-through to HTTP-resolve. Past
+// the cushion the gate falls through to the primary path rather than pinning the
+// install to Free (see validonx.offlineFeatures). Subscription `status` is read
+// from the resolve response, not carried as a token claim, so it plays no part
+// in this offline classification.
+const VMGraceCushion = 24 * time.Hour
+
+// VMPolicy returns Vectis Mail's production policy: aud="vectis-mail", the VM
+// tier map (vectis-licensing-plan.md §4.1), and VM's grace cushion (see
+// VMGraceCushion for why it is a modest post-exp window rather than the full
+// subscription grace).
 func VMPolicy() Policy {
 	return Policy{
 		Audience: "vectis-mail",
-		Grace:    GraceModel{Window: 24 * time.Hour, DowngradeTier: "Free"}, // TODO(license): replace with VM expires_at + offline-bound clamp
+		Grace:    GraceModel{Window: VMGraceCushion, DowngradeTier: "Free"},
 		MapTier: func(tier string, _ Limits) (string, map[string]string, bool) {
 			if tier != "pro" {
 				return "", nil, false // "enterprise" deferred to Phase 4

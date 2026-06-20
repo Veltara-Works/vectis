@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Veltara-Works/vectis/internal/license"
 )
 
 var errClientNotConfigured = errors.New("validonx client not configured")
@@ -147,13 +149,23 @@ func (fgs *FeatureGateService) SetOfflineLicense(o *OfflineLicense) {
 }
 
 // offlineFeatures returns (features, true) when an offline JWT license is
-// configured AND currently verifies to an ACCEPT verdict, with the feature list
-// derived from the verdict's resolved tier (already grace-adjusted by Verify).
-// It returns (nil, false) — meaning "no offline authority, fall through" — when
-// no token is configured, the keyset has not loaded yet, or the token is
-// REJECTED (tampered/wrong-issuer/malformed). A rejection is logged at Debug
-// rather than Warn to avoid hot-path log spam; `vectis license verify` is the
-// loud operator diagnostic.
+// configured AND currently entitles — i.e. it verifies to an ACCEPT verdict
+// that is still LIVE or IN_GRACE — with the feature list derived from the
+// verdict's resolved tier. It returns (nil, false) — meaning "no offline
+// authority, fall through to the HTTP-resolve path" — when no token is
+// configured, the keyset has not loaded yet, the token is REJECTED
+// (tampered/wrong-issuer/malformed), OR the token is past its grace cushion.
+//
+// The past-grace fall-through is deliberate. VM's model is HTTP-resolve-primary,
+// offline-JWT-as-resilience: a lapsed resilience token must DEFER to the primary
+// path (which may still entitle the install via a live/cached ValidonX resolve —
+// e.g. a subscription that's healthy but whose 96h token simply wasn't re-minted
+// in time) rather than authoritatively pin the box to Free. ValidonX remains the
+// source of truth for a genuinely-ended subscription (it stops minting tier:pro
+// and HTTP-resolve then returns Free), so deferring never over-grants.
+//
+// A rejection / past-grace is logged at Debug rather than Warn to avoid hot-path
+// log spam; `vectis license verify` is the loud operator diagnostic.
 func (fgs *FeatureGateService) offlineFeatures() ([]string, bool) {
 	v, ok := fgs.offline.verdict()
 	if !ok {
@@ -162,6 +174,10 @@ func (fgs *FeatureGateService) offlineFeatures() ([]string, bool) {
 	if !v.Accepted {
 		fgs.logger.Debug("offline license token rejected; falling through to http-resolve",
 			"reason", v.Reason)
+		return nil, false
+	}
+	if v.GraceState == license.GracePastGrace {
+		fgs.logger.Debug("offline license past grace cushion; falling through to http-resolve")
 		return nil, false
 	}
 	return featuresForTier(v.InternalTier), true
