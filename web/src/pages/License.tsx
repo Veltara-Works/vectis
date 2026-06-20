@@ -17,8 +17,9 @@ interface LicenseState {
   last_check_at?: string
   expires_at?: string
   grace_remaining_days?: number
-  // Offline JWT verifier snapshot (the resilience layer). Present and
-  // configured=true only when a [license].token is set in secrets.yaml.
+  // Offline JWT verifier snapshot (the resilience layer). The backend always
+  // includes this object; `configured` is true only when a [license].token is
+  // set in secrets.yaml. Optional here only to tolerate older API responses.
   offline?: OfflineState
 }
 
