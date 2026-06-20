@@ -10,8 +10,9 @@
 // tests cannot reach: composeServices/composeImages (config parsers),
 // ApplyCompose (full `up -d --remove-orphans`), ApplyComposeServices (targeted
 // `up -d --no-deps` with the undefined-service filter), StartServices (ordered
-// `up` + WaitHealthy gating), StopServices (already-stopped tolerance), and
-// PullImages (defined + local-ref filtering).
+// `up` + WaitHealthy gating), StopServices (already-stopped tolerance),
+// PullImages (defined + local-ref filtering), and RestartContainers (the Phase
+// 5.5 config-only-changed sidecar recycle).
 //
 // SAFETY: every project is written into its own t.TempDir(), so the compose
 // project name (derived from the dir basename) is unique — this scopes
@@ -48,9 +49,9 @@ import (
 
 // composeSvc describes one service to render into a throwaway compose project.
 type composeSvc struct {
-	name      string // compose service key; container_name becomes vectis-<name>
-	image     string // image ref; "" → probeImage (alpine:3.24)
-	withHealth bool  // emit a fast always-passing healthcheck (for StartServices)
+	name       string // compose service key; container_name becomes vectis-<name>
+	image      string // image ref; "" → probeImage (alpine:3.24)
+	withHealth bool   // emit a fast always-passing healthcheck (for StartServices)
 }
 
 // composeManager returns a DockerManager pointed at the given compose file with
@@ -278,5 +279,74 @@ func TestDockerManager_PullImages_Filtering(t *testing.T) {
 	}
 	if st := inspectStatus(t, dm, localSvc); st != "" {
 		t.Errorf("PullImages must not create containers; %s status = %q", localSvc, st)
+	}
+}
+
+// ── RestartContainers (Apply Phase 5.5 config-only restart) ──────────
+
+// containerStartedAt returns the container's State.StartedAt timestamp via raw
+// `docker inspect`. A `docker restart` issues a fresh start, so this value moves
+// — that's how we prove RestartContainers actually recycled the container
+// rather than no-op'ing.
+func containerStartedAt(t *testing.T, name string) string {
+	t.Helper()
+	// CombinedOutput so a docker failure surfaces the CLI's stderr (e.g. "No such
+	// object"), not just the bare "exit status 1" — dockertest failures are
+	// otherwise painful to debug.
+	out, err := exec.Command("docker", "inspect", "-f", "{{.State.StartedAt}}", name).CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspect StartedAt for %s: %v: %s", name, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestDockerManager_RestartContainers exercises the actual `docker container
+// restart` shell-out behind Apply's Phase 5.5 — the path that recycles
+// config-only-changed sidecars (webmail, cert-extractor) whose image didn't
+// bump and which therefore weren't recreated in Phase 4. A plain restart is the
+// ONLY way those pick up edited single-file bind-mounts, whose inode changes on
+// edit (see feedback_bind_mount_edits.md). The targeting logic
+// (configRestartTargets) is unit-tested in compose_selfheal_test.go; this proves
+// the docker call it feeds actually restarts a running container — plus the
+// empty-list no-op and the error surfaced for a missing container.
+func TestDockerManager_RestartContainers(t *testing.T) {
+	requireDocker(t)
+
+	svc := uniqueService()
+	file := writeComposeProject(t, composeSvc{name: svc, withHealth: true})
+	dm := composeManager(file)
+	ctx := context.Background()
+
+	// Empty list is a documented no-op (Phase 5.5 passes nil when no config-only
+	// service changed) — must not error or shell out.
+	if err := dm.RestartContainers(ctx, nil); err != nil {
+		t.Fatalf("RestartContainers(nil): want nil, got %v", err)
+	}
+
+	// Bring the service up (StartServices blocks until healthy → settled).
+	if err := dm.StartServices(ctx, []string{svc}); err != nil {
+		t.Fatalf("StartServices: %v", err)
+	}
+	name := containerName(svc)
+	before := containerStartedAt(t, name)
+
+	// RestartContainers takes container names (not service keys), mirroring how
+	// Phase 5.5 calls it with the resolved vectis-<svc> names.
+	if err := dm.RestartContainers(ctx, []string{name}); err != nil {
+		t.Fatalf("RestartContainers(%s): %v", name, err)
+	}
+
+	// Still running, and StartedAt advanced → a real restart, not a no-op.
+	if st := inspectStatus(t, dm, svc); st != "running" {
+		t.Errorf("after RestartContainers, %s status = %q, want running", svc, st)
+	}
+	if after := containerStartedAt(t, name); after == before {
+		t.Errorf("StartedAt unchanged (%s) — container was not actually restarted", after)
+	}
+
+	// A name that doesn't exist must surface the docker error, not swallow it —
+	// Phase 5.5 logs a warning on failure, so the error has to propagate up.
+	if err := dm.RestartContainers(ctx, []string{"vectis-" + uniqueService()}); err == nil {
+		t.Errorf("RestartContainers(missing container): want error, got nil")
 	}
 }
