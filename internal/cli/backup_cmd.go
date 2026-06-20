@@ -292,9 +292,11 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 
 	// Restore runs WITHOUT a DB pool. On a real install the host cannot resolve
 	// the Docker-internal "postgres" hostname (and during restore the DB has
-	// just been stopped), so the Manager drives the DB via `docker exec` as the
-	// superuser and skips DB-backed job tracking. (Finding B, 2026-05-30
-	// Scenario-B DR drill — see docs/notes/dr-drill-scenario-b-2026-05-30.md.)
+	// just been stopped), so by default the Manager drives the DB via `docker
+	// exec` as the superuser and skips DB-backed job tracking. The --db-host
+	// flag opts into a TCP psql restore against a directly-reachable Postgres
+	// instead (e.g. DR onto a fresh box). (Finding B, 2026-05-30 Scenario-B DR
+	// drill — see docs/notes/dr-drill-scenario-b-2026-05-30.md.)
 	secrets, err := loadSecrets(cmd)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
@@ -312,7 +314,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 
 	cfg := backup.DefaultConfig()
 	cfg.DBName = secrets.Database.Name
-	cfg.SuperuserPassword = secrets.Database.SuperuserPassword
+	cfg = restoreDBConfig(cfg, backupDBHost, secrets.Database.Port, secrets.Database.SuperuserPassword)
 	if secrets.DKIM.KeyBasePath != "" {
 		cfg.DKIMDir = secrets.DKIM.KeyBasePath
 	}
@@ -347,6 +349,31 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// restoreDBConfig applies the operator's --db-host choice to a restore Config.
+//
+// Empty dbHost keeps the default host path: load via `docker exec` into the
+// vectis-postgres container as the superuser. A non-empty dbHost opts into a
+// TCP psql restore against a directly-reachable Postgres (e.g. DR onto a fresh
+// box) — connecting as the superuser, because loading a dump recreates
+// superuser-owned objects such as the pgcrypto extension that the least-
+// privilege app user cannot (2026-05-30 Scenario-B DR drill, Finding B). This
+// differs from `backup create --db-host`, which dumps as the app user. dbPort 0
+// leaves the Config default (5432). Pure for testability.
+func restoreDBConfig(cfg backup.Config, dbHost string, dbPort int, superuserPassword string) backup.Config {
+	if dbHost == "" {
+		cfg.SuperuserPassword = superuserPassword
+		return cfg
+	}
+	cfg.DirectDB = true
+	cfg.DBHost = dbHost
+	if dbPort != 0 {
+		cfg.DBPort = dbPort
+	}
+	cfg.DBUser = cfg.DBSuperuser // "postgres"
+	cfg.DBPassword = superuserPassword
+	return cfg
 }
 
 func runBackupList(cmd *cobra.Command, args []string) error {
@@ -498,6 +525,7 @@ func init() {
 	backupCreateCmd.Flags().StringVar(&backupOutput, "output", "", "Output path for the backup archive")
 	backupCreateCmd.Flags().StringVar(&backupDBHost, "db-host", "", "Dump the DB over TCP from this directly-reachable Postgres host (requires pg_dump on the host) instead of docker exec into the vectis-postgres container")
 	backupRestoreCmd.Flags().BoolVar(&backupConfirm, "confirm", false, "Confirm destructive restore operation")
+	backupRestoreCmd.Flags().StringVar(&backupDBHost, "db-host", "", "Restore the DB over TCP to this directly-reachable Postgres host as the superuser (requires psql on the host) instead of docker exec into the vectis-postgres container")
 
 	backupCmd.AddCommand(backupCreateCmd)
 	backupCmd.AddCommand(backupRestoreCmd)

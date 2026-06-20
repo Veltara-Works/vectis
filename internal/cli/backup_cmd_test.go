@@ -4,7 +4,56 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/Veltara-Works/vectis/internal/backup"
 )
+
+// TestRestoreDBConfig locks down how `vectis backup restore --db-host` retargets
+// the restore Config. The two paths differ deliberately: the default uses
+// docker exec as the superuser, while --db-host switches to a TCP restore that
+// MUST connect as the superuser (not the app user) so the dump can recreate
+// superuser-owned objects like the pgcrypto extension (DR drill Finding B).
+func TestRestoreDBConfig(t *testing.T) {
+	t.Run("no db-host keeps docker-exec superuser path", func(t *testing.T) {
+		cfg := restoreDBConfig(backup.DefaultConfig(), "", 5432, "superpass")
+		if cfg.DirectDB {
+			t.Fatalf("DirectDB should be false without --db-host")
+		}
+		if cfg.SuperuserPassword != "superpass" {
+			t.Fatalf("SuperuserPassword = %q, want superpass", cfg.SuperuserPassword)
+		}
+		if cfg.DBHost != "postgres" {
+			t.Fatalf("DBHost = %q, want default postgres", cfg.DBHost)
+		}
+	})
+
+	t.Run("db-host opts into TCP restore as superuser", func(t *testing.T) {
+		cfg := restoreDBConfig(backup.DefaultConfig(), "10.0.0.5", 6543, "superpass")
+		if !cfg.DirectDB {
+			t.Fatalf("DirectDB should be true with --db-host")
+		}
+		if cfg.DBHost != "10.0.0.5" {
+			t.Fatalf("DBHost = %q, want 10.0.0.5", cfg.DBHost)
+		}
+		if cfg.DBPort != 6543 {
+			t.Fatalf("DBPort = %d, want 6543", cfg.DBPort)
+		}
+		// Must connect as the superuser, not the app user.
+		if cfg.DBUser != cfg.DBSuperuser {
+			t.Fatalf("DBUser = %q, want superuser %q", cfg.DBUser, cfg.DBSuperuser)
+		}
+		if cfg.DBPassword != "superpass" {
+			t.Fatalf("DBPassword = %q, want superpass", cfg.DBPassword)
+		}
+	})
+
+	t.Run("zero port leaves Config default", func(t *testing.T) {
+		cfg := restoreDBConfig(backup.DefaultConfig(), "10.0.0.5", 0, "superpass")
+		if cfg.DBPort != backup.DefaultConfig().DBPort {
+			t.Fatalf("DBPort = %d, want default %d", cfg.DBPort, backup.DefaultConfig().DBPort)
+		}
+	})
+}
 
 // TestContainerBackupArgs locks down the docker exec argv used to trigger a
 // full backup inside the api container. The flags are load-bearing:
