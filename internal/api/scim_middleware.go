@@ -77,11 +77,14 @@ func scimAuthMiddleware(tokens scimTokenStore, logger *slog.Logger) func(http.Ha
 }
 
 // scimBearerToken extracts the raw value of an "Authorization: Bearer <token>"
-// header, or "" if absent. SCIM clients never present a cookie.
+// header, or "" if absent. The auth scheme name is matched case-insensitively
+// (RFC 7235 §2.1 — scheme names are case-insensitive) so a client sending
+// "bearer"/"BEARER" is not spuriously rejected. SCIM clients never present a
+// cookie.
 func scimBearerToken(r *http.Request) string {
-	h := r.Header.Get("Authorization")
-	if strings.HasPrefix(h, "Bearer ") {
-		return strings.TrimPrefix(h, "Bearer ")
+	scheme, token, found := strings.Cut(r.Header.Get("Authorization"), " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
+		return ""
 	}
-	return ""
+	return strings.TrimSpace(token)
 }

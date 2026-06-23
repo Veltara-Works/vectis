@@ -47,6 +47,7 @@ func UserResourceTypesResponse(baseURL string) map[string]any {
 // emails). Minimal but valid for Okta/Azure schema discovery.
 func UserSchemasResponse() map[string]any {
 	userSchema := map[string]any{
+		"schemas":     []string{SchemaResourceSchema},
 		"id":          UserSchema,
 		"name":        ResourceTypeUser,
 		"description": "SCIM core User resource.",

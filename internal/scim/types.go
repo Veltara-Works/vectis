@@ -15,6 +15,7 @@ const (
 	UserSchema                  = "urn:ietf:params:scim:schemas:core:2.0:User"
 	ServiceProviderConfigSchema = "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"
 	ResourceTypeSchema          = "urn:ietf:params:scim:schemas:core:2.0:ResourceType"
+	SchemaResourceSchema        = "urn:ietf:params:scim:schemas:core:2.0:Schema"
 	ListResponseSchema          = "urn:ietf:params:scim:api:messages:2.0:ListResponse"
 	ErrorSchema                 = "urn:ietf:params:scim:api:messages:2.0:Error"
 	PatchOpSchema               = "urn:ietf:params:scim:api:messages:2.0:PatchOp"

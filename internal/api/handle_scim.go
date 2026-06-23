@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -38,7 +39,7 @@ func writeSCIMJSON(w http.ResponseWriter, status int, v any) {
 // callback base URL, or the request host as a fallback.
 func (s *Server) scimBaseURL(r *http.Request) string {
 	if s.callbackBaseURL != "" {
-		return s.callbackBaseURL
+		return strings.TrimRight(s.callbackBaseURL, "/")
 	}
 	return "https://" + r.Host
 }
@@ -131,14 +132,28 @@ func (s *Server) handleSCIMCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Idempotency: an externalId or (domain, localPart) collision is a 409.
+	// Idempotency: an externalId or (domain, localPart) collision is a 409. A DB
+	// error here must surface as a clean 500 — not fall through to a create that
+	// would fail later with a misleading error (or skip the uniqueness guard).
 	if req.ExternalID != "" {
-		if existing, _ := s.mailboxes.GetByExternalID(r.Context(), req.ExternalID); existing != nil {
+		existing, lerr := s.mailboxes.GetByExternalID(r.Context(), req.ExternalID)
+		if lerr != nil {
+			s.logger.Error("scim: externalId lookup failed", "error", lerr)
+			scim.WriteError(w, http.StatusInternalServerError, "", "Internal error")
+			return
+		}
+		if existing != nil {
 			scim.WriteError(w, http.StatusConflict, "uniqueness", "A user with this externalId already exists")
 			return
 		}
 	}
-	if existing, _ := s.mailboxes.GetByEmail(r.Context(), domain.ID, localPart); existing != nil {
+	existing, lerr := s.mailboxes.GetByEmail(r.Context(), domain.ID, localPart)
+	if lerr != nil {
+		s.logger.Error("scim: userName lookup failed", "error", lerr)
+		scim.WriteError(w, http.StatusInternalServerError, "", "Internal error")
+		return
+	}
+	if existing != nil {
 		scim.WriteError(w, http.StatusConflict, "uniqueness", "A user with userName "+req.UserName+" already exists")
 		return
 	}
@@ -193,8 +208,22 @@ func (s *Server) handleSCIMListUsers(w http.ResponseWriter, r *http.Request) {
 
 	if value, ok := scim.ParseUserNameFilter(r.URL.Query().Get("filter")); ok {
 		if localPart, domainName, err := scim.SplitUserName(value); err == nil {
-			if domain, _ := s.domains.GetByName(r.Context(), domainName); domain != nil {
-				if m, _ := s.mailboxes.GetByEmail(r.Context(), domain.ID, localPart); m != nil {
+			// A DB error must surface as a 500, not a silent empty ListResponse —
+			// an empty result tells the IdP "no such user" and provokes a create.
+			domain, derr := s.domains.GetByName(r.Context(), domainName)
+			if derr != nil {
+				s.logger.Error("scim: filter domain lookup failed", "error", derr)
+				scim.WriteError(w, http.StatusInternalServerError, "", "Internal error")
+				return
+			}
+			if domain != nil {
+				m, merr := s.mailboxes.GetByEmail(r.Context(), domain.ID, localPart)
+				if merr != nil {
+					s.logger.Error("scim: filter mailbox lookup failed", "error", merr)
+					scim.WriteError(w, http.StatusInternalServerError, "", "Internal error")
+					return
+				}
+				if m != nil {
 					users = append(users, scim.MailboxToUser(m, domain.Name, baseURL))
 				}
 			}

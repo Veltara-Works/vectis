@@ -1,5 +1,7 @@
 package scim
 
+import "strings"
+
 // Supported is the common {"supported": bool} SCIM capability flag.
 type Supported struct {
 	Supported bool `json:"supported"`
@@ -63,6 +65,9 @@ func DefaultServiceProviderConfig(baseURL string) ServiceProviderConfig {
 			Description: "Authentication via a static SCIM bearer token (scim_…).",
 			Primary:     true,
 		}},
-		Meta: Meta{ResourceType: "ServiceProviderConfig"},
+		Meta: Meta{
+			ResourceType: "ServiceProviderConfig",
+			Location:     strings.TrimRight(baseURL, "/") + "/scim/v2/ServiceProviderConfig",
+		},
 	}
 }

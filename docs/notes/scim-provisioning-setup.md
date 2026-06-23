@@ -102,7 +102,9 @@ Supported operations: `POST/GET/PUT/PATCH/DELETE /Users`,
   **Mailboxes** for the right domain, marked active.
 - Unassign / disable the user → confirm the mailbox flips to **inactive**
   (it is not deleted).
-- Re-assign → the same mailbox is matched by `externalId` and reactivated.
+- Re-assign → the IdP reactivates the existing mailbox via `PATCH active:true`
+  (Phase 1 does **not** auto-reactivate on a re-*create* — a duplicate
+  `userName`/`externalId` returns **409**; reactivation is the IdP's update call).
 
 ## Lifecycle reference
 
@@ -112,6 +114,7 @@ Supported operations: `POST/GET/PUT/PATCH/DELETE /Users`,
 | Probe before create   | `GET /Users?filter=userName eq "…"`         | `ListResponse` (empty or 1), never 404         |
 | Update attributes     | `PUT /Users/{id}` / `PATCH /Users/{id}`     | Update display name / active                    |
 | Deactivate            | `PATCH active:false` or `DELETE /Users/{id}`| Mailbox `active=false` (retained, not erased)  |
+| Reactivate            | `PATCH active:true` (or `PUT … active:true`)| Mailbox `active=true` (found by the SCIM `id`) |
 | Rename (`userName`)   | `PUT` with a changed `userName`             | **409** — rename is not supported in Phase 1   |
 
 ## Troubleshooting
@@ -123,8 +126,9 @@ Supported operations: `POST/GET/PUT/PATCH/DELETE /Users`,
 - **400 "Domain … is not provisioned / not active"** — create and activate the
   domain under **Domains** first; `userName` must use a provisioned domain.
 - **409 uniqueness** — a mailbox with that `userName` or `externalId` already
-  exists. For re-onboarding, send the original `externalId` so the existing
-  mailbox is matched.
+  exists. This is expected on re-onboarding: don't re-create — reactivate the
+  existing user with `PATCH active:true` (most IdPs do this automatically). Send
+  a stable `externalId` so re-creates are reliably detected as duplicates.
 - **Token leaked?** A SCIM token can create and deactivate every mailbox.
   Regenerate immediately (this revokes the old one), and review `last_used_at`
   in the token list. Restrict IdP egress IPs where possible.
