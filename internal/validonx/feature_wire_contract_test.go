@@ -19,6 +19,7 @@ func TestEnterpriseFeatureWireContract(t *testing.T) {
 		{"FeatureSAMLSSO", FeatureSAMLSSO, "saml_sso"},
 		{"FeatureSLA", FeatureSLA, "sla"},
 		{"FeatureDSAR", FeatureDSAR, "dsar"},
+		{"FeatureSCIM", FeatureSCIM, "scim"},
 	}
 	for _, w := range wire {
 		if w.constant != w.want {
@@ -29,7 +30,7 @@ func TestEnterpriseFeatureWireContract(t *testing.T) {
 	// The Enterprise entitlement set must advertise every Enterprise-only
 	// feature, so a resolved Enterprise license classifies as Enterprise and
 	// the gates open.
-	for _, f := range []string{FeatureSAMLSSO, FeatureSLA, FeatureDSAR} {
+	for _, f := range []string{FeatureSAMLSSO, FeatureSLA, FeatureDSAR, FeatureSCIM} {
 		found := false
 		for _, e := range EnterpriseFeatures {
 			if e == f {
