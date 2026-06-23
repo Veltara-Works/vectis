@@ -259,6 +259,42 @@ func TestServeWire(t *testing.T) {
 	}
 }
 
+// TestStopClosesIdleConnections guards the shutdown path: a handler parked in
+// readRequest on a persistent connection (Postfix keeps these open) must be
+// unblocked by Stop closing the connection, so shutdown never hangs.
+func TestStopClosesIdleConnections(t *testing.T) {
+	s := testServer(&fakeBackend{resolveFound: false}, Config{ListenAddr: "127.0.0.1:0"})
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	s.mu.Lock()
+	addr := s.ln.Addr().String()
+	s.mu.Unlock()
+
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Send one request and read its reply; the handler then parks in readRequest
+	// awaiting a next request that never arrives — the exact persistent-conn case.
+	if _, err := conn.Write([]byte("sasl_username=x@example.com\n\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := bufio.NewReader(conn).ReadString('\n'); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() { s.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop() hung on a live idle connection — handler never unblocked")
+	}
+}
+
 var errBoom = &boomError{}
 
 type boomError struct{}

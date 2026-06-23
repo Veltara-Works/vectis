@@ -83,9 +83,11 @@ type Server struct {
 	backend Backend
 	logger  *slog.Logger
 
-	mu sync.Mutex
-	ln net.Listener
-	wg sync.WaitGroup
+	mu     sync.Mutex
+	ln     net.Listener
+	conns  map[net.Conn]struct{} // live client connections, closed on Stop
+	closed bool
+	wg     sync.WaitGroup
 }
 
 // New builds a policy server. It does not bind a listener until Start.
@@ -93,7 +95,7 @@ func New(backend Backend, cfg Config, logger *slog.Logger) *Server {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
-	return &Server{cfg: cfg, backend: backend, logger: logger}
+	return &Server{cfg: cfg, backend: backend, logger: logger, conns: make(map[net.Conn]struct{})}
 }
 
 // Start binds the listener and serves connections in the background. It returns
@@ -121,13 +123,25 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Stop closes the listener and waits for in-flight connections to drain.
+// Stop closes the listener AND any live client connections, then waits for the
+// handler goroutines to drain. Postfix keeps policy connections open and
+// persistent, so a handler blocked in conn.Read would never return on its own —
+// closing the connections unblocks those reads so shutdown can't hang.
 func (s *Server) Stop() {
 	s.mu.Lock()
+	s.closed = true
 	ln := s.ln
+	conns := make([]net.Conn, 0, len(s.conns))
+	for c := range s.conns {
+		conns = append(conns, c)
+	}
 	s.mu.Unlock()
+
 	if ln != nil {
 		_ = ln.Close()
+	}
+	for _, c := range conns {
+		_ = c.Close()
 	}
 	s.wg.Wait()
 }
@@ -142,12 +156,37 @@ func (s *Server) serve(ln net.Listener) {
 			s.logger.Error("policy accept failed", "error", err)
 			continue
 		}
+		if !s.trackConn(conn) {
+			// Stop() raced ahead of this Accept — refuse the connection.
+			_ = conn.Close()
+			continue
+		}
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			defer s.untrackConn(conn)
 			s.handleConn(conn)
 		}()
 	}
+}
+
+// trackConn registers a live connection so Stop can close it. It returns false
+// if the server is already shutting down, in which case the caller must close
+// the connection itself.
+func (s *Server) trackConn(c net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.conns[c] = struct{}{}
+	return true
+}
+
+func (s *Server) untrackConn(c net.Conn) {
+	s.mu.Lock()
+	delete(s.conns, c)
+	s.mu.Unlock()
 }
 
 // handleConn services a single Postfix connection. Postfix keeps the connection
