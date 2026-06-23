@@ -67,6 +67,30 @@ export const api = {
   samlProviders: () => request<{ providers: string[] }>('GET', '/auth/saml/providers').then(r => r.providers),
   samlMetadataUrl: (provider: string) => `${BASE}/auth/saml/metadata/${encodeURIComponent(provider)}`,
   samlDisconnect: () => request<{ message: string }>('POST', '/auth/saml/disconnect'),
+
+  // SCIM 2.0 provisioning tokens (Enterprise — scim feature; super_admin only).
+  // The IdP (Okta/Entra) uses the Bearer token against /scim/v2. The raw token
+  // is returned by create exactly once; list only ever returns hashes' metadata.
+  // Create rotates: it revokes any prior active token (single active token per
+  // install in Phase 1). All three endpoints 403 on non-Enterprise installs.
+  listSCIMTokens: () =>
+    request<Array<{
+      id: string;
+      token_prefix: string;
+      active: boolean;
+      expires_at?: string;
+      last_used_at?: string;
+      created_at: string;
+    }>>('GET', '/scim-tokens'),
+  createSCIMToken: (body: { expires_in_days?: number } = {}) =>
+    request<{
+      token: string;
+      endpoint_url: string;
+      scim_token: { id: string; token_prefix: string; active: boolean; expires_at?: string; created_at: string };
+    }>('POST', '/scim-tokens', body),
+  revokeSCIMToken: (id: string) =>
+    request<{ message: string }>('DELETE', `/scim-tokens/${encodeURIComponent(id)}`),
+
   logout: () => request<void>('POST', '/auth/logout'),
   logoutAll: () => request<void>('POST', '/auth/logout-all'),
   sessions: () => request<Array<{ id: string; ip_address: string; user_agent: string; created_at: string }>>('GET', '/auth/sessions'),

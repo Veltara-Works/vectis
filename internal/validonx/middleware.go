@@ -38,6 +38,7 @@ const (
 	FeatureSAMLSSO         = "saml_sso"         // Enterprise: SAML 2.0 single sign-on
 	FeatureSLA             = "sla"              // Enterprise: SLA guarantees
 	FeatureDSAR            = "dsar"             // Enterprise: data-subject access + erasure (GDPR Art.15/17)
+	FeatureSCIM            = "scim"             // Enterprise: SCIM 2.0 user provisioning (RFC 7643/7644)
 	// NOTE: two would-be Enterprise features are intentionally omitted because
 	// they are unbuilt:
 	//   - multi_tenant (tenant isolation): belongs to the future Vectis Cloud
@@ -77,6 +78,7 @@ var EnterpriseFeatures = []string{
 	FeatureSAMLSSO,
 	FeatureSLA,
 	FeatureDSAR,
+	FeatureSCIM,
 }
 
 // isFreeTierFeature returns true if the feature is available on the free tier.
@@ -277,7 +279,7 @@ func tierFromFeatures(features []string) string {
 	hasPro := false
 	for _, f := range features {
 		switch f {
-		case FeatureSAMLSSO, FeatureSLA, FeatureDSAR:
+		case FeatureSAMLSSO, FeatureSLA, FeatureDSAR, FeatureSCIM:
 			hasEnterprise = true
 		case FeatureAnalytics, FeatureOIDCSSO, FeatureCustomBranding,
 			FeatureAdvancedSpam, FeaturePrioritySupport:

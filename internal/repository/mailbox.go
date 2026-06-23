@@ -22,6 +22,9 @@ type Mailbox struct {
 	Active       bool      `json:"active"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// ExternalID is the SCIM externalId — the IdP's stable user id. NULL/nil
+	// means the mailbox is not IdP-managed. Migration 000021.
+	ExternalID *string `json:"external_id,omitempty"`
 }
 
 // MailboxCreate holds fields for creating a mailbox.
@@ -31,6 +34,7 @@ type MailboxCreate struct {
 	PasswordHash string
 	DisplayName  *string
 	QuotaMB      *int
+	ExternalID   *string
 }
 
 // MailboxUpdate holds fields for updating a mailbox.
@@ -39,7 +43,11 @@ type MailboxUpdate struct {
 	DisplayName  *string
 	QuotaMB      *int
 	Active       *bool
+	ExternalID   *string
 }
+
+// mailboxColumns is the canonical SELECT column list (order matches scanMailbox).
+const mailboxColumns = `id, domain_id, local_part, password_hash, display_name, quota_mb, active, created_at, updated_at, external_id`
 
 // MailboxRepo handles mailbox CRUD operations.
 type MailboxRepo struct {
@@ -49,6 +57,12 @@ type MailboxRepo struct {
 // NewMailboxRepo creates a new mailbox repository.
 func NewMailboxRepo(db *pgxpool.Pool) *MailboxRepo {
 	return &MailboxRepo{db: db}
+}
+
+// scanMailbox scans one row in mailboxColumns order.
+func scanMailbox(row pgx.Row, m *Mailbox) error {
+	return row.Scan(&m.ID, &m.DomainID, &m.LocalPart, &m.PasswordHash, &m.DisplayName,
+		&m.QuotaMB, &m.Active, &m.CreatedAt, &m.UpdatedAt, &m.ExternalID)
 }
 
 // Create inserts a new mailbox.
@@ -61,6 +75,7 @@ func (r *MailboxRepo) Create(ctx context.Context, input MailboxCreate) (*Mailbox
 		DisplayName:  input.DisplayName,
 		QuotaMB:      1024,
 		Active:       true,
+		ExternalID:   input.ExternalID,
 	}
 	if input.QuotaMB != nil {
 		m.QuotaMB = *input.QuotaMB
@@ -71,9 +86,9 @@ func (r *MailboxRepo) Create(ctx context.Context, input MailboxCreate) (*Mailbox
 	m.UpdatedAt = now
 
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO mailboxes (id, domain_id, local_part, password_hash, display_name, quota_mb, active, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		m.ID, m.DomainID, m.LocalPart, m.PasswordHash, m.DisplayName, m.QuotaMB, m.Active, m.CreatedAt, m.UpdatedAt,
+		`INSERT INTO mailboxes (id, domain_id, local_part, password_hash, display_name, quota_mb, active, created_at, updated_at, external_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		m.ID, m.DomainID, m.LocalPart, m.PasswordHash, m.DisplayName, m.QuotaMB, m.Active, m.CreatedAt, m.UpdatedAt, m.ExternalID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert mailbox: %w", err)
@@ -84,10 +99,8 @@ func (r *MailboxRepo) Create(ctx context.Context, input MailboxCreate) (*Mailbox
 // GetByID fetches a mailbox by its UUID.
 func (r *MailboxRepo) GetByID(ctx context.Context, id string) (*Mailbox, error) {
 	m := &Mailbox{}
-	err := r.db.QueryRow(ctx,
-		`SELECT id, domain_id, local_part, password_hash, display_name, quota_mb, active, created_at, updated_at
-		 FROM mailboxes WHERE id = $1`, id,
-	).Scan(&m.ID, &m.DomainID, &m.LocalPart, &m.PasswordHash, &m.DisplayName, &m.QuotaMB, &m.Active, &m.CreatedAt, &m.UpdatedAt)
+	err := scanMailbox(r.db.QueryRow(ctx,
+		`SELECT `+mailboxColumns+` FROM mailboxes WHERE id = $1`, id), m)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -100,10 +113,8 @@ func (r *MailboxRepo) GetByID(ctx context.Context, id string) (*Mailbox, error) 
 // GetByEmail fetches a mailbox by local_part + domain_id.
 func (r *MailboxRepo) GetByEmail(ctx context.Context, domainID, localPart string) (*Mailbox, error) {
 	m := &Mailbox{}
-	err := r.db.QueryRow(ctx,
-		`SELECT id, domain_id, local_part, password_hash, display_name, quota_mb, active, created_at, updated_at
-		 FROM mailboxes WHERE domain_id = $1 AND local_part = $2`, domainID, localPart,
-	).Scan(&m.ID, &m.DomainID, &m.LocalPart, &m.PasswordHash, &m.DisplayName, &m.QuotaMB, &m.Active, &m.CreatedAt, &m.UpdatedAt)
+	err := scanMailbox(r.db.QueryRow(ctx,
+		`SELECT `+mailboxColumns+` FROM mailboxes WHERE domain_id = $1 AND local_part = $2`, domainID, localPart), m)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -113,11 +124,26 @@ func (r *MailboxRepo) GetByEmail(ctx context.Context, domainID, localPart string
 	return m, nil
 }
 
+// GetByExternalID fetches a mailbox by its SCIM externalId (IdP user id). The
+// partial unique index (migration 000021) guarantees at most one match. Returns
+// nil if no IdP-managed mailbox carries that externalId.
+func (r *MailboxRepo) GetByExternalID(ctx context.Context, externalID string) (*Mailbox, error) {
+	m := &Mailbox{}
+	err := scanMailbox(r.db.QueryRow(ctx,
+		`SELECT `+mailboxColumns+` FROM mailboxes WHERE external_id = $1`, externalID), m)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get mailbox by external_id: %w", err)
+	}
+	return m, nil
+}
+
 // ListByDomain returns all mailboxes for a domain.
 func (r *MailboxRepo) ListByDomain(ctx context.Context, domainID string) ([]Mailbox, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, domain_id, local_part, password_hash, display_name, quota_mb, active, created_at, updated_at
-		 FROM mailboxes WHERE domain_id = $1 ORDER BY local_part`, domainID)
+		`SELECT `+mailboxColumns+` FROM mailboxes WHERE domain_id = $1 ORDER BY local_part`, domainID)
 	if err != nil {
 		return nil, fmt.Errorf("list mailboxes: %w", err)
 	}
@@ -126,7 +152,7 @@ func (r *MailboxRepo) ListByDomain(ctx context.Context, domainID string) ([]Mail
 	var mailboxes []Mailbox
 	for rows.Next() {
 		var m Mailbox
-		if err := rows.Scan(&m.ID, &m.DomainID, &m.LocalPart, &m.PasswordHash, &m.DisplayName, &m.QuotaMB, &m.Active, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := scanMailbox(rows, &m); err != nil {
 			return nil, fmt.Errorf("scan mailbox: %w", err)
 		}
 		mailboxes = append(mailboxes, m)
@@ -137,8 +163,7 @@ func (r *MailboxRepo) ListByDomain(ctx context.Context, domainID string) ([]Mail
 // ListByDomainPaginated returns mailboxes for a domain with cursor-based pagination.
 // Results are ordered by created_at DESC. Fetches page.Limit+1 rows so the caller can detect has_more.
 func (r *MailboxRepo) ListByDomainPaginated(ctx context.Context, domainID string, page PaginationParams) ([]Mailbox, error) {
-	cols := `id, domain_id, local_part, password_hash, display_name, quota_mb, active, created_at, updated_at`
-	query := fmt.Sprintf(`SELECT %s FROM mailboxes WHERE domain_id = $1`, cols)
+	query := fmt.Sprintf(`SELECT %s FROM mailboxes WHERE domain_id = $1`, mailboxColumns)
 	args := []any{domainID}
 	argIdx := 2
 
@@ -160,7 +185,7 @@ func (r *MailboxRepo) ListByDomainPaginated(ctx context.Context, domainID string
 	var mailboxes []Mailbox
 	for rows.Next() {
 		var m Mailbox
-		if err := rows.Scan(&m.ID, &m.DomainID, &m.LocalPart, &m.PasswordHash, &m.DisplayName, &m.QuotaMB, &m.Active, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := scanMailbox(rows, &m); err != nil {
 			return nil, fmt.Errorf("scan mailbox: %w", err)
 		}
 		mailboxes = append(mailboxes, m)
@@ -192,6 +217,11 @@ func (r *MailboxRepo) Update(ctx context.Context, id string, input MailboxUpdate
 	if input.Active != nil {
 		setClauses = append(setClauses, fmt.Sprintf("active = $%d", argIdx))
 		args = append(args, *input.Active)
+		argIdx++
+	}
+	if input.ExternalID != nil {
+		setClauses = append(setClauses, fmt.Sprintf("external_id = $%d", argIdx))
+		args = append(args, *input.ExternalID)
 		argIdx++
 	}
 

@@ -44,17 +44,18 @@ type Server struct {
 	logger     *slog.Logger
 
 	// Dependencies
-	db            *pgxpool.Pool
-	vk            valkey.Client
-	sessions      *auth.SessionManager
-	hostname      string
-	internalToken string // shared secret for service-to-service calls (Postfix → API)
-	dkimBasePath  string
-	webDir        string
-	genDir        string // directory for generated config files
-	cfg           *config.VectisConfig
-	secrets       *config.VectisSecrets
-	orchClient    *orchestrator.Client
+	db              *pgxpool.Pool
+	vk              valkey.Client
+	sessions        *auth.SessionManager
+	hostname        string
+	internalToken   string // shared secret for service-to-service calls (Postfix → API)
+	dkimBasePath    string
+	webDir          string
+	genDir          string // directory for generated config files
+	callbackBaseURL string // public base URL (OIDC/SAML callbacks, SCIM meta.location)
+	cfg             *config.VectisConfig
+	secrets         *config.VectisSecrets
+	orchClient      *orchestrator.Client
 
 	// Repositories
 	domains      *repository.DomainRepo
@@ -75,6 +76,7 @@ type Server struct {
 	rblChecks    *repository.RBLCheckRepo
 	fblReports   *repository.FBLReportRepo
 	resetTokens  *repository.PasswordResetRepo
+	scimTokens   *repository.SCIMTokenRepo
 
 	erasureTombstones *repository.ErasureTombstoneRepo
 
@@ -175,6 +177,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		dkimBasePath:      cfg.DKIMBasePath,
 		webDir:            cfg.WebDir,
 		genDir:            cfg.GenDir,
+		callbackBaseURL:   cfg.CallbackBaseURL,
 		cfg:               cfg.VectisCfg,
 		secrets:           cfg.VectisSecrets,
 		domains:           repository.NewDomainRepo(db),
@@ -195,6 +198,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		rblChecks:         repository.NewRBLCheckRepo(db),
 		fblReports:        repository.NewFBLReportRepo(db),
 		resetTokens:       repository.NewPasswordResetRepo(db),
+		scimTokens:        repository.NewSCIMTokenRepo(db),
 		erasureTombstones: repository.NewErasureTombstoneRepo(db),
 		totpManager:       auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
 	}
@@ -975,6 +979,17 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Post("/license", s.handleSetLicense)
 			r.With(requireSuperAdmin()).Delete("/license", s.handleDeleteLicense)
 
+			// SCIM token management — super_admin only AND Enterprise-gated
+			// (FeatureSCIM). Mints/rotates/revokes the Bearer token the IdP
+			// uses against /scim/v2. The token-mgmt endpoints share the SCIM
+			// feature gate so a non-Enterprise admin can't mint tokens that
+			// the /scim/v2 group would only 403 anyway. Lives on the
+			// License/SSO page. POST rotates (revokes prior active token).
+			scimTokenGate := s.featureGate.FeatureGate(validonx.FeatureSCIM)
+			r.With(requireSuperAdmin(), scimTokenGate).Get("/scim-tokens", s.handleListSCIMTokens)
+			r.With(requireSuperAdmin(), scimTokenGate).Post("/scim-tokens", s.handleCreateSCIMToken)
+			r.With(requireSuperAdmin(), scimTokenGate).Delete("/scim-tokens/{tokenID}", s.handleRevokeSCIMToken)
+
 			// Customer account / billing portal — super_admin only.
 			// Mints a Stripe Customer Portal session via ValidonX and
 			// returns the URL the admin UI should redirect to. Used by
@@ -1049,6 +1064,27 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Get("/cluster/operations", s.handleListClusterOperations)
 			r.With(requireSuperAdmin()).Get("/cluster/operations/{operationID}", s.handleGetClusterOperation)
 		})
+	})
+
+	// SCIM 2.0 provisioning (Enterprise). Top-level group, sibling to /api/v1,
+	// so it owns its own application/scim+json media type and SCIM error shape
+	// rather than the Vectis JSON envelope. Auth is a Bearer scim_ token (not a
+	// session); the Enterprise feature gate denies non-Enterprise installs with
+	// a SCIM-shaped 403. See internal/scim, scim_middleware.go, handle_scim.go.
+	r.Route("/scim/v2", func(r chi.Router) {
+		r.Use(scimAuthMiddleware(s.scimTokens, s.logger))
+		r.Use(s.scimFeatureGate)
+
+		r.Get("/ServiceProviderConfig", s.handleSCIMServiceProviderConfig)
+		r.Get("/ResourceTypes", s.handleSCIMResourceTypes)
+		r.Get("/Schemas", s.handleSCIMSchemas)
+
+		r.Post("/Users", s.handleSCIMCreateUser)
+		r.Get("/Users", s.handleSCIMListUsers)
+		r.Get("/Users/{id}", s.handleSCIMGetUser)
+		r.Put("/Users/{id}", s.handleSCIMReplaceUser)
+		r.Patch("/Users/{id}", s.handleSCIMPatchUser)
+		r.Delete("/Users/{id}", s.handleSCIMDeleteUser)
 	})
 
 	// Serve admin UI static files if WebDir is configured.
