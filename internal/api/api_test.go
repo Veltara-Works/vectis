@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/Veltara-Works/vectis/internal/api"
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/database"
@@ -25,6 +27,7 @@ import (
 type testEnv struct {
 	server  *api.Server
 	handler http.Handler
+	pool    *pgxpool.Pool
 	cookie  string
 	adminID string
 }
@@ -104,6 +107,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 	env := &testEnv{
 		server:  srv,
 		handler: srv.Handler(),
+		pool:    pool,
 		adminID: admin.ID,
 	}
 
