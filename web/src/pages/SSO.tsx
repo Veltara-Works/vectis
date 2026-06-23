@@ -15,14 +15,22 @@ import { api } from '../api/client.ts'
 export default function SSOPage() {
   const [me, setMe] = useState<Awaited<ReturnType<typeof api.me>> | null>(null)
   const [samlProviders, setSamlProviders] = useState<string[]>([])
+  const [scimTokens, setScimTokens] = useState<Awaited<ReturnType<typeof api.listSCIMTokens>>>([])
+  // The raw SCIM token + endpoint URL, shown exactly once right after creation.
+  const [newScim, setNewScim] = useState<{ token: string; url: string } | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+
+  const loadScim = () =>
+    api.listSCIMTokens().then(setScimTokens).catch(() => setScimTokens([]))
 
   const load = () => {
     api.me().then(setMe).catch(() => setError('Failed to load account'))
     // Empty unless the install is entitled to saml_sso. Failures are non-fatal:
     // the metadata section just renders its empty-state.
     api.samlProviders().then(setSamlProviders).catch(() => setSamlProviders([]))
+    // 403s (→ []) on non-Enterprise installs, mirroring samlProviders.
+    loadScim()
   }
   useEffect(() => { load() }, [])
 
@@ -31,6 +39,33 @@ export default function SSOPage() {
   // install with no providers yet needs "configure providers", whereas a
   // non-entitled install needs the upsell. samlProviders is [] in both cases.
   const samlEntitled = (me?.features ?? []).includes('saml_sso')
+  const scimEntitled = (me?.features ?? []).includes('scim')
+
+  const handleGenerateSCIM = async () => {
+    if (scimTokens.some(t => t.active) &&
+        !confirm('Generate a new SCIM token? This revokes the current active token — your IdP will stop provisioning until you paste the new one in.')) return
+    setError(''); setSuccess(''); setNewScim(null)
+    try {
+      const r = await api.createSCIMToken()
+      setNewScim({ token: r.token, url: r.endpoint_url })
+      setSuccess('SCIM token generated. Copy it now — it is shown only once.')
+      loadScim()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to generate SCIM token')
+    }
+  }
+
+  const handleRevokeSCIM = async (id: string) => {
+    if (!confirm('Revoke this SCIM token? Your IdP will stop provisioning immediately.')) return
+    setError(''); setSuccess(''); setNewScim(null)
+    try {
+      const r = await api.revokeSCIMToken(id)
+      setSuccess(r.message || 'SCIM token revoked')
+      loadScim()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to revoke SCIM token')
+    }
+  }
 
   const handleDisconnectSAML = async () => {
     if (!confirm('Disconnect SAML from your account? You will sign in with your password (and TOTP, if enabled) afterwards.')) return
@@ -132,6 +167,66 @@ export default function SSOPage() {
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+      )}
+
+      {isSuperAdmin && (
+        <div className="card" style={{ marginTop: '1.5rem' }}>
+          <h3 style={{ marginTop: 0 }}>SCIM provisioning</h3>
+          <p className="text-muted" style={{ fontSize: '0.9rem' }}>
+            SCIM 2.0 lets your identity provider (Okta, Microsoft Entra ID) auto-provision and
+            deprovision mailboxes as employees join and leave. Generate a token below and paste it,
+            with the SCIM endpoint URL, into your IdP's SCIM app.
+            {' '}See the{' '}
+            <a href="https://vectismail.com/docs/" target="_blank" rel="noopener noreferrer">SCIM setup guide</a>.
+          </p>
+
+          {!scimEntitled ? (
+            <p className="text-muted">
+              SCIM provisioning is an Enterprise feature. <a href="https://vectismail.com/pricing" target="_blank" rel="noopener noreferrer">View plans</a> to enable it.
+            </p>
+          ) : (
+            <>
+              {newScim && (
+                <div className="alert alert-success" style={{ wordBreak: 'break-all' }}>
+                  <strong>Copy this token now — it will not be shown again.</strong>
+                  <div className="mono" style={{ margin: '0.5rem 0' }}>{newScim.token}</div>
+                  <div style={{ fontSize: '0.85rem' }}>
+                    SCIM endpoint URL: <span className="mono">{newScim.url}</span>
+                  </div>
+                </div>
+              )}
+
+              {scimTokens.length === 0 ? (
+                <p className="text-muted">No SCIM token has been generated yet.</p>
+              ) : (
+                <table>
+                  <thead>
+                    <tr><th>Token</th><th>Status</th><th>Last used</th><th>Created</th><th></th></tr>
+                  </thead>
+                  <tbody>
+                    {scimTokens.map(t => (
+                      <tr key={t.id}>
+                        <td className="mono">{t.token_prefix}…</td>
+                        <td>{t.active ? 'Active' : 'Revoked'}</td>
+                        <td>{t.last_used_at ? new Date(t.last_used_at).toLocaleString() : 'Never'}</td>
+                        <td>{new Date(t.created_at).toLocaleString()}</td>
+                        <td>
+                          {t.active && (
+                            <button className="btn btn-sm btn-danger" onClick={() => handleRevokeSCIM(t.id)}>Revoke</button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              <button className="btn btn-sm" style={{ marginTop: '1rem' }} onClick={handleGenerateSCIM}>
+                {scimTokens.some(t => t.active) ? 'Regenerate token' : 'Generate token'}
+              </button>
+            </>
           )}
         </div>
       )}

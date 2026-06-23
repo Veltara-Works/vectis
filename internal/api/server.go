@@ -979,6 +979,17 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Post("/license", s.handleSetLicense)
 			r.With(requireSuperAdmin()).Delete("/license", s.handleDeleteLicense)
 
+			// SCIM token management — super_admin only AND Enterprise-gated
+			// (FeatureSCIM). Mints/rotates/revokes the Bearer token the IdP
+			// uses against /scim/v2. The token-mgmt endpoints share the SCIM
+			// feature gate so a non-Enterprise admin can't mint tokens that
+			// the /scim/v2 group would only 403 anyway. Lives on the
+			// License/SSO page. POST rotates (revokes prior active token).
+			scimTokenGate := s.featureGate.FeatureGate(validonx.FeatureSCIM)
+			r.With(requireSuperAdmin(), scimTokenGate).Get("/scim-tokens", s.handleListSCIMTokens)
+			r.With(requireSuperAdmin(), scimTokenGate).Post("/scim-tokens", s.handleCreateSCIMToken)
+			r.With(requireSuperAdmin(), scimTokenGate).Delete("/scim-tokens/{tokenID}", s.handleRevokeSCIMToken)
+
 			// Customer account / billing portal — super_admin only.
 			// Mints a Stripe Customer Portal session via ValidonX and
 			// returns the URL the admin UI should redirect to. Used by
