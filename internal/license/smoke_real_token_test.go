@@ -60,11 +60,11 @@ func TestRealValidonXProductionToken(t *testing.T) {
 // (iat 2026-06-18T00:00:00Z, exp 2026-06-22T00:00:00Z). The signature is valid
 // forever, but the grace classification depends on the clock — so we pin a
 // clock INSIDE the original live window to assert the LIVE/Enterprise verdict,
-// and separately assert that at a CURRENT clock the same token is past grace
-// and unlocks nothing. An expired token cannot be pasted into a secrets.yaml
-// [license] block to unlock Enterprise offline (see
-// feedback_no_live_license_tokens_in_fixtures), which is why ValidonX minted it
-// already-expired for this fixture.
+// and separately assert that at a clock well past exp+grace the same token is
+// past grace and unlocks nothing. An expired token cannot be pasted into a
+// secrets.yaml [license] block to unlock Enterprise offline — honouring the
+// project rule that we never land a *live* license token in this public repo —
+// which is why ValidonX minted it already-expired for this fixture.
 func TestRealValidonXEnterpriseToken(t *testing.T) {
 	// Real compact JWS minted by ValidonX against a sandbox holder tenant
 	// (sub c028523d-…, placeholder customer_email), already-expired window.
@@ -99,9 +99,10 @@ func TestRealValidonXEnterpriseToken(t *testing.T) {
 	}
 
 	// Belt-and-braces on why this is safe to commit: at a clock past exp+grace
-	// (the token has been expired since 2026-06-23T00:00:00Z) the SAME real
-	// token is accepted-but-downgraded — Free tier, no entitlements. A paste of
-	// this fixture into a live install unlocks nothing.
+	// (exp was 2026-06-22T00:00:00Z; past grace from 2026-06-23T00:00:00Z given
+	// the 24h VMGraceCushion) the SAME real token is accepted-but-downgraded —
+	// Free tier, no entitlements. A paste of this fixture into a live install
+	// unlocks nothing.
 	expired := time.Unix(1782259200, 0) // 2026-06-24T00:00:00Z, > exp+24h cushion
 	ev := Verify(token, ks, expired, VMPolicy())
 	if !ev.Accepted {
