@@ -105,6 +105,64 @@ func TestPostfixMainCF(t *testing.T) {
 	}
 }
 
+// TestPostfixMasterCFSubmissionPolicy verifies the submission/smtps services
+// call the Vectis send-suspend policy server (vectis-private #5). Without this
+// the per-mailbox suspend + abuse auto-suspend are enforced only on the HTTP
+// send API and bypassable via authenticated SMTP submission.
+func TestPostfixMasterCFSubmissionPolicy(t *testing.T) {
+	files, _ := Generate(testData())
+	var masterCF string
+	for _, f := range files {
+		if f.RelPath == "postfix/master.cf" {
+			masterCF = string(f.Content)
+			break
+		}
+	}
+	if masterCF == "" {
+		t.Fatal("postfix/master.cf not found")
+	}
+
+	// The restriction-class reference must appear exactly twice — once for
+	// submission (587), once for smtps (465) — and never leak onto inbound :25.
+	// A class (single token) is used because a master.cf -o value cannot contain
+	// whitespace; the class itself is defined in main.cf.
+	const policyHook = "-o smtpd_data_restrictions=vectis_submission_policy"
+	if n := strings.Count(masterCF, policyHook); n != 2 {
+		t.Errorf("policy hook count = %d, want 2 (submission + smtps)\n%s", n, masterCF)
+	}
+	if n := strings.Count(masterCF, "-o smtpd_policy_service_default_action=DUNNO"); n != 2 {
+		t.Errorf("policy default_action override count = %d, want 2", n)
+	}
+	// The master.cf -o value must remain a single whitespace-free token, else
+	// Postfix splits it into a stray argument.
+	if strings.Contains(masterCF, "smtpd_data_restrictions=check_policy_service") {
+		t.Error("master.cf inlines check_policy_service with a space — will be split by Postfix; use the restriction class")
+	}
+}
+
+// TestPostfixMainCFSubmissionPolicyClass verifies the restriction class the
+// submission services reference is actually defined in main.cf and points at the
+// policy server.
+func TestPostfixMainCFSubmissionPolicyClass(t *testing.T) {
+	files, _ := Generate(testData())
+	var mainCF string
+	for _, f := range files {
+		if f.RelPath == "postfix/main.cf" {
+			mainCF = string(f.Content)
+			break
+		}
+	}
+	checks := []string{
+		"smtpd_restriction_classes = vectis_submission_policy",
+		"vectis_submission_policy = check_policy_service inet:vectis-api:10099",
+	}
+	for _, c := range checks {
+		if !strings.Contains(mainCF, c) {
+			t.Errorf("main.cf missing policy class line: %s", c)
+		}
+	}
+}
+
 func TestDovecotSQL(t *testing.T) {
 	files, _ := Generate(testData())
 	var sqlConf string

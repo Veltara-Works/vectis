@@ -5,17 +5,33 @@
 # service type  private unpriv  chroot  wakeup  maxproc command + args
 # ==========================================================================
 smtp      inet  n       -       n       -       -       smtpd
+# The submission/smtps services call the Vectis send-suspend policy server (the
+# api container's submission-policy listener) once per message at the DATA
+# command, via the vectis_submission_policy restriction class defined in main.cf.
+# It enforces per-mailbox send_suspended + the abuse rate-limit/auto-suspend on
+# the authenticated submission path — the same controls the HTTP send API applies
+# — so a suspended or compromised mailbox can't bypass them via SMTP-AUTH. Scoped
+# to submission/smtps only; inbound :25 is untouched. A restriction CLASS is used
+# (not an inline `check_policy_service inet:...`) because a master.cf -o value
+# cannot contain whitespace — it would be split into a stray argument.
+# default_action=DUNNO fails open if the api is briefly down (e.g. a cutover) so
+# legitimate mail isn't deferred; set it to 451 (drop the override) for strict
+# fail-closed enforcement.
 submission inet  n       -       n       -       -       smtpd
   -o syslog_name=postfix/submission
   -o smtpd_tls_security_level=encrypt
   -o smtpd_sasl_auth_enable=yes
   -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
+  -o smtpd_data_restrictions=vectis_submission_policy
+  -o smtpd_policy_service_default_action=DUNNO
   -o milter_macro_daemon_name=ORIGINATING
 smtps     inet  n       -       n       -       -       smtpd
   -o syslog_name=postfix/smtps
   -o smtpd_tls_wrappermode=yes
   -o smtpd_sasl_auth_enable=yes
   -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
+  -o smtpd_data_restrictions=vectis_submission_policy
+  -o smtpd_policy_service_default_action=DUNNO
   -o milter_macro_daemon_name=ORIGINATING
 pickup    unix  n       -       n       60      1       pickup
 cleanup   unix  n       -       n       -       0       cleanup

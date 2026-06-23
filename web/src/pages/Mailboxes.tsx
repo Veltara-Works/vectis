@@ -5,6 +5,7 @@ interface Domain { id: string; name: string }
 interface Mailbox {
   id: string; domain_id: string; local_part: string;
   display_name?: string; quota_mb: number; active: boolean; created_at: string;
+  send_suspended?: boolean; send_suspended_reason?: string;
 }
 
 export default function MailboxesPage() {
@@ -128,6 +129,24 @@ export default function MailboxesPage() {
       setResetPassword('')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to reset password')
+    }
+  }
+
+  const handleToggleSend = async (m: Mailbox, email: string) => {
+    setError(''); setSuccess('')
+    try {
+      if (m.send_suspended) {
+        await api.resumeMailboxSend(m.id)
+        setSuccess(`Sending re-enabled for ${email}`)
+      } else {
+        if (!confirm(`Suspend sending for ${email}? They can still receive mail, but cannot send via any client or the API until resumed.`)) return
+        await api.suspendMailboxSend(m.id, 'Suspended by admin')
+        setSuccess(`Sending suspended for ${email} (receive-only)`)
+      }
+      api.listMailboxes(selectedDomain).then(m => setMailboxes(m || [])).catch(() => setMailboxes([]))
+      setTimeout(() => setSuccess(''), 5000)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to update sending status')
     }
   }
 
@@ -263,7 +282,7 @@ export default function MailboxesPage() {
       <div className="card">
         <table>
           <thead>
-            <tr><th>Email</th><th>Display Name</th><th>Quota</th><th>Active</th><th>Created</th><th></th></tr>
+            <tr><th>Email</th><th>Display Name</th><th>Quota</th><th>Active</th><th>Sending</th><th>Created</th><th></th></tr>
           </thead>
           <tbody>
             {mailboxes.map(m => (
@@ -272,15 +291,25 @@ export default function MailboxesPage() {
                 <td className="text-muted">{m.display_name || '-'}</td>
                 <td className="mono">{m.quota_mb} MB</td>
                 <td><span className={`badge ${m.active ? 'badge-success' : 'badge-danger'}`}>{m.active ? 'yes' : 'no'}</span></td>
+                <td>
+                  <span className={`badge ${m.send_suspended ? 'badge-danger' : 'badge-success'}`}
+                    title={m.send_suspended ? (m.send_suspended_reason || 'Sending suspended') : 'Sending allowed'}>
+                    {m.send_suspended ? 'suspended' : 'allowed'}
+                  </span>
+                </td>
                 <td className="text-muted">{new Date(m.created_at).toLocaleDateString()}</td>
                 <td style={{ display: 'flex', gap: '0.5rem' }}>
                   <button className="btn btn-sm" onClick={() => handleImpersonate(m.id, `${m.local_part}@${domainName}`)}>View as User</button>
                   <button className="btn btn-sm" onClick={() => { setResetTarget({ id: m.id, email: `${m.local_part}@${domainName}` }); setResetPassword('') }}>Reset Password</button>
+                  <button className={`btn btn-sm ${m.send_suspended ? '' : 'btn-danger'}`}
+                    onClick={() => handleToggleSend(m, `${m.local_part}@${domainName}`)}>
+                    {m.send_suspended ? 'Resume Sending' : 'Suspend Sending'}
+                  </button>
                   <button className="btn btn-sm btn-danger" onClick={() => handleDelete(m.id, m.local_part)}>Delete</button>
                 </td>
               </tr>
             ))}
-            {mailboxes.length === 0 && <tr><td colSpan={6} className="text-muted">No mailboxes in this domain</td></tr>}
+            {mailboxes.length === 0 && <tr><td colSpan={7} className="text-muted">No mailboxes in this domain</td></tr>}
           </tbody>
         </table>
       </div>

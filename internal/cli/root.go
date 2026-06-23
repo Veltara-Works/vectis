@@ -119,6 +119,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	srv.StartBackupScheduler()
 	srv.StartWebhookDispatcher()
 	srv.StartPostfixLogTailer()
+	srv.StartPolicyServer()
 	srv.StartUsageReporter()
 	srv.StartLicenseRefresher()
 	srv.EnsureRspamdConfigFresh()
