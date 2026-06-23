@@ -25,6 +25,11 @@ type Mailbox struct {
 	// ExternalID is the SCIM externalId — the IdP's stable user id. NULL/nil
 	// means the mailbox is not IdP-managed. Migration 000021.
 	ExternalID *string `json:"external_id,omitempty"`
+	// SendSuspended is true when the mailbox is blocked from sending (manual
+	// admin action or abuse auto-suspend). Inbound delivery is unaffected.
+	// Enforced on both the HTTP send API and the submission path (internal/policy).
+	SendSuspended       bool    `json:"send_suspended"`
+	SendSuspendedReason *string `json:"send_suspended_reason,omitempty"`
 }
 
 // MailboxCreate holds fields for creating a mailbox.
@@ -47,7 +52,7 @@ type MailboxUpdate struct {
 }
 
 // mailboxColumns is the canonical SELECT column list (order matches scanMailbox).
-const mailboxColumns = `id, domain_id, local_part, password_hash, display_name, quota_mb, active, created_at, updated_at, external_id`
+const mailboxColumns = `id, domain_id, local_part, password_hash, display_name, quota_mb, active, created_at, updated_at, external_id, send_suspended, send_suspended_reason`
 
 // MailboxRepo handles mailbox CRUD operations.
 type MailboxRepo struct {
@@ -62,7 +67,8 @@ func NewMailboxRepo(db *pgxpool.Pool) *MailboxRepo {
 // scanMailbox scans one row in mailboxColumns order.
 func scanMailbox(row pgx.Row, m *Mailbox) error {
 	return row.Scan(&m.ID, &m.DomainID, &m.LocalPart, &m.PasswordHash, &m.DisplayName,
-		&m.QuotaMB, &m.Active, &m.CreatedAt, &m.UpdatedAt, &m.ExternalID)
+		&m.QuotaMB, &m.Active, &m.CreatedAt, &m.UpdatedAt, &m.ExternalID,
+		&m.SendSuspended, &m.SendSuspendedReason)
 }
 
 // Create inserts a new mailbox.

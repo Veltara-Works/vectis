@@ -11,6 +11,8 @@ vi.mock('../api/client', () => ({
     updateMailbox: vi.fn(),
     deleteMailbox: vi.fn(),
     impersonate: vi.fn(),
+    suspendMailboxSend: vi.fn(),
+    resumeMailboxSend: vi.fn(),
   },
 }))
 
@@ -108,6 +110,43 @@ describe('MailboxesPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Mailbox admin@test.com created')).toBeInTheDocument()
+    })
+  })
+
+  it('suspends sending for an active mailbox', async () => {
+    mockApi.listDomains.mockResolvedValue([domain] as never)
+    mockApi.listMailboxes.mockResolvedValue([mailbox] as never)
+    mockApi.suspendMailboxSend.mockResolvedValue({ message: 'ok' } as never)
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<MailboxesPage />)
+    const user = userEvent.setup()
+
+    await waitFor(() => expect(screen.getByText('admin@test.com')).toBeInTheDocument())
+    // An allowed mailbox shows the "allowed" badge and a "Suspend Sending" action.
+    expect(screen.getByText('allowed')).toBeInTheDocument()
+    await user.click(screen.getByText('Suspend Sending'))
+
+    await waitFor(() => {
+      expect(mockApi.suspendMailboxSend).toHaveBeenCalledWith('mb1', expect.any(String))
+    })
+    confirmSpy.mockRestore()
+  })
+
+  it('resumes sending for a suspended mailbox', async () => {
+    const suspended = { ...mailbox, send_suspended: true, send_suspended_reason: 'abuse' }
+    mockApi.listDomains.mockResolvedValue([domain] as never)
+    mockApi.listMailboxes.mockResolvedValue([suspended] as never)
+    mockApi.resumeMailboxSend.mockResolvedValue({ message: 'ok' } as never)
+
+    render(<MailboxesPage />)
+    const user = userEvent.setup()
+
+    await waitFor(() => expect(screen.getByText('suspended')).toBeInTheDocument())
+    await user.click(screen.getByText('Resume Sending'))
+
+    await waitFor(() => {
+      expect(mockApi.resumeMailboxSend).toHaveBeenCalledWith('mb1')
     })
   })
 

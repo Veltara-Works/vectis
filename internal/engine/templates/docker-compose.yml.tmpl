@@ -53,6 +53,13 @@ services:
       - vectis-frontend
       - vectis-data
       - vectis-orchestrator
+    # 8080 = HTTP API/UI (fronted by traefik). 10099 = Postfix submission
+    # access-policy server (internal only, reached by postfix over vectis-data
+    # as `vectis-api:10099`); enforces per-mailbox send-suspend + abuse
+    # rate-limit on 587/465. Neither is published to the host.
+    expose:
+      - "8080"
+      - "10099"
     # P7-H1 capacity ceiling — see engine.go ResourceKnobs for the matrix.
     # Go binary; baseline ~80 MB. The `small` default (512m) covers typical
     # request bursts; `production`+ leave headroom for full-Maildir scans +

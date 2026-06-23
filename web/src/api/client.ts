@@ -141,7 +141,8 @@ export const api = {
   listMailboxes: (domainId: string) =>
     request<Array<{
       id: string; domain_id: string; local_part: string; display_name?: string;
-      quota_mb: number; active: boolean; created_at: string
+      quota_mb: number; active: boolean; created_at: string;
+      send_suspended?: boolean; send_suspended_reason?: string
     }>>('GET', `/mailboxes?domain_id=${domainId}`),
   createMailbox: (domain_id: string, local_part: string, password: string, display_name?: string, quota_mb?: number) =>
     request<{ id: string }>('POST', '/mailboxes', { domain_id, local_part, password, display_name, quota_mb }),
@@ -149,6 +150,13 @@ export const api = {
     request<{ id: string }>('PATCH', `/mailboxes/${id}`, updates),
   deleteMailbox: (id: string) =>
     request<void>('DELETE', `/mailboxes/${id}`, undefined),
+  // Sending suspension (abuse subsystem). Suspends/resumes outbound sending for
+  // a mailbox; inbound delivery is unaffected. Enforced on the HTTP send API and
+  // the Postfix submission path.
+  suspendMailboxSend: (id: string, reason?: string) =>
+    request<{ message: string }>('POST', `/abuse/mailboxes/${id}/suspend`, { reason: reason || '' }),
+  resumeMailboxSend: (id: string) =>
+    request<{ message: string }>('POST', `/abuse/mailboxes/${id}/unsuspend`, {}),
 
   // Aliases
   listAliases: (domainId: string) =>

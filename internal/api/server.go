@@ -30,6 +30,7 @@ import (
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
 	"github.com/Veltara-Works/vectis/internal/monitor"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
+	"github.com/Veltara-Works/vectis/internal/policy"
 	"github.com/Veltara-Works/vectis/internal/repository"
 	"github.com/Veltara-Works/vectis/internal/retention"
 	"github.com/Veltara-Works/vectis/internal/secretcrypto"
@@ -97,6 +98,7 @@ type Server struct {
 	webhookDispatcher *mail.WebhookDispatcher
 	abuseDetector     *mail.AbuseDetector
 	postfixTailer     *postfixlog.Tailer
+	policyServer      *policy.Server
 
 	// Sieve filter management
 	sieveClient *mail.SieveClient
@@ -725,6 +727,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.StopRBLMonitor()
 	s.StopWarmupManager()
 	s.StopCluster()
+	s.StopPolicyServer()
 	return s.httpServer.Shutdown(ctx)
 }
 

@@ -40,6 +40,12 @@ var (
 		Help:      "Total sends blocked by abuse detection (auto-suspend)",
 	})
 
+	SubmissionPolicyRejects = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "submission_policy_rejects_total",
+		Help:      "Total authenticated-submission (587/465) sends rejected by the Postfix policy server",
+	}, []string{"reason"}) // "suspended", "rate_limit"
+
 	WebhookDeliveries = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "webhook_deliveries_total",
@@ -91,6 +97,7 @@ func init() {
 		EmailsDelivered,
 		EmailsBounced,
 		EmailsSendSuspended,
+		SubmissionPolicyRejects,
 		WebhookDeliveries,
 		APIRequests,
 		BatchMessagesSent,

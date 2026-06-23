@@ -99,6 +99,16 @@ smtpd_recipient_restrictions =
     reject_unauth_destination,
     reject_unknown_recipient_domain
 
+# Send-suspend policy for authenticated submission (587/465). Defined as a
+# restriction class so the submission/smtps services in master.cf can reference
+# it by a single-token name — a master.cf -o value cannot contain whitespace,
+# which an inline `check_policy_service inet:...` would. The policy server runs
+# in the api container and is reached over the vectis-data network. It is wired
+# into smtpd_data_restrictions on submission/smtps ONLY (never inbound :25), so
+# inbound delivery is unaffected. See internal/policy and vectis-private #5.
+smtpd_restriction_classes = vectis_submission_policy
+vectis_submission_policy = check_policy_service inet:vectis-api:10099
+
 # Milter (Rspamd)
 smtpd_milters = inet:rspamd:11332
 non_smtpd_milters = $smtpd_milters
