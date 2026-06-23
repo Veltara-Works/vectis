@@ -48,7 +48,7 @@ fork) and are listed separately to reflect that.
 | `github.com/beorn7/perks/quantile` | v1.0.1 | MIT |
 | `github.com/boombuler/barcode` | 6c824513bacc | MIT |
 | `github.com/cespare/xxhash/v2` | v2.3.0 | MIT |
-| `github.com/coreos/go-oidc/v3/oidc` | v3.18.0 | Apache-2.0 |
+| `github.com/coreos/go-oidc/v3/oidc` | v3.19.0 | Apache-2.0 |
 | `github.com/crewjam/saml` | v0.5.1 | BSD-2-Clause |
 | `github.com/go-chi/chi/v5` | v5.3.0 | MIT |
 | `github.com/go-jose/go-jose/v4` | v4.1.4 | Apache-2.0 |
@@ -73,7 +73,7 @@ fork) and are listed separately to reflect that.
 | `github.com/russellhaering/goxmldsig` | v1.6.0 | Apache-2.0 |
 | `github.com/spf13/cobra` | v1.10.2 | Apache-2.0 |
 | `github.com/spf13/pflag` | v1.0.6 | BSD-3-Clause |
-| `github.com/valkey-io/valkey-go` | v1.0.75 | Apache-2.0 |
+| `github.com/valkey-io/valkey-go` | v1.0.76 | Apache-2.0 |
 | `go.yaml.in/yaml/v2` | v2.4.2 | Apache-2.0 |
 | `golang.org/x/crypto` | v0.53.0 | BSD-3-Clause |
 | `golang.org/x/oauth2` | v0.30.0 | BSD-3-Clause |
@@ -99,11 +99,11 @@ distributed and are out of scope.
 
 | Package | Version | License |
 |---|---|---|
-| `react` | 19.2.4 | MIT |
-| `react-dom` | 19.2.4 | MIT |
+| `react` | 19.2.7 | MIT |
+| `react-dom` | 19.2.7 | MIT |
 | `scheduler` | 0.27.0 | MIT |
-| `react-router-dom` | 7.13.2 | MIT |
-| `react-router` | 7.13.2 | MIT |
+| `react-router-dom` | 7.18.0 | MIT |
+| `react-router` | 7.18.0 | MIT |
 | `cookie` | 1.1.1 | MIT |
 | `set-cookie-parser` | 2.7.2 | MIT |
 
