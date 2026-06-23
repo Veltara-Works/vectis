@@ -92,9 +92,9 @@ func (o *OfflineLicense) Status() OfflineStatus {
 
 // featuresForTier maps a verifier-resolved internal tier name to the VM feature
 // list the rest of the gate already reasons over (so the offline path reuses
-// tierFromFeatures, HasFeature, etc. unchanged). VMPolicy emits "Pro" for a
-// live pro token and its DowngradeTier ("Free") past grace; "Enterprise" is
-// handled for forward-compatibility though VMPolicy does not emit it yet.
+// tierFromFeatures, HasFeature, etc. unchanged). VMPolicy emits "Pro"/
+// "Enterprise" for a live pro/enterprise token and its DowngradeTier ("Free")
+// past grace.
 func featuresForTier(internalTier string) []string {
 	switch internalTier {
 	case "Enterprise":

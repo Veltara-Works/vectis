@@ -154,18 +154,41 @@ func VMPolicy() Policy {
 		Audience: "vectis-mail",
 		Grace:    GraceModel{Window: VMGraceCushion, DowngradeTier: "Free"},
 		MapTier: func(tier string, _ Limits) (string, map[string]string, bool) {
-			if tier != "pro" {
-				return "", nil, false // "enterprise" deferred to Phase 4
+			switch tier {
+			case "pro":
+				return "Pro", map[string]string{
+					"vectis.tier":                          "pro",
+					"vectis.features.unlimited-domains":    "true",
+					"vectis.features.unlimited-mailboxes":  "true",
+					"vectis.features.per-domain-analytics": "true",
+					"vectis.features.advanced-spam":        "true",
+					"vectis.features.oidc-sso":             "true",
+					"vectis.features.priority-support":     "true",
+				}, true
+			case "enterprise":
+				// Enterprise is a superset of Pro plus the Enterprise-only
+				// features. The gate derives the authoritative entitlement set
+				// from InternalTier ("Enterprise" -> validonx.EnterpriseFeatures,
+				// which includes scim); this map is the display-only entitlement
+				// view surfaced by `vectis license verify`. It lists only shipped,
+				// entitled features — advanced_deliverability is a roadmap item
+				// (not in EnterpriseFeatures) so it is deliberately omitted.
+				return "Enterprise", map[string]string{
+					"vectis.tier":                          "enterprise",
+					"vectis.features.unlimited-domains":    "true",
+					"vectis.features.unlimited-mailboxes":  "true",
+					"vectis.features.per-domain-analytics": "true",
+					"vectis.features.advanced-spam":        "true",
+					"vectis.features.oidc-sso":             "true",
+					"vectis.features.priority-support":     "true",
+					"vectis.features.saml-sso":             "true",
+					"vectis.features.sla":                  "true",
+					"vectis.features.dsar":                 "true",
+					"vectis.features.scim-provisioning":    "true",
+				}, true
+			default:
+				return "", nil, false
 			}
-			return "Pro", map[string]string{
-				"vectis.tier":                          "pro",
-				"vectis.features.unlimited-domains":    "true",
-				"vectis.features.unlimited-mailboxes":  "true",
-				"vectis.features.per-domain-analytics": "true",
-				"vectis.features.advanced-spam":        "true",
-				"vectis.features.oidc-sso":             "true",
-				"vectis.features.priority-support":     "true",
-			}, true
 		},
 	}
 }
