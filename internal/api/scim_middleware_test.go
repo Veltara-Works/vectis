@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Veltara-Works/vectis/internal/repository"
+	"github.com/Veltara-Works/vectis/internal/scim"
 )
 
 // stubSCIMStore implements scimTokenStore without a database.
@@ -92,15 +93,15 @@ func TestSCIMAuthMiddleware_Rejects(t *testing.T) {
 				t.Error("next handler must not run on auth failure")
 			}
 			// Errors must be SCIM-shaped, not the Vectis envelope.
-			if ct := rr.Header().Get("Content-Type"); ct != scimContentType {
-				t.Errorf("Content-Type = %q, want %q", ct, scimContentType)
+			if ct := rr.Header().Get("Content-Type"); ct != scim.ContentType {
+				t.Errorf("Content-Type = %q, want %q", ct, scim.ContentType)
 			}
-			var body scimError
+			var body scim.Error
 			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 				t.Fatalf("error body is not valid JSON: %v", err)
 			}
-			if len(body.Schemas) != 1 || body.Schemas[0] != scimErrorSchema {
-				t.Errorf("schemas = %v, want [%q]", body.Schemas, scimErrorSchema)
+			if len(body.Schemas) != 1 || body.Schemas[0] != scim.ErrorSchema {
+				t.Errorf("schemas = %v, want [%q]", body.Schemas, scim.ErrorSchema)
 			}
 			if body.Status != strings.TrimSpace(itoa(tc.wantStatus)) {
 				t.Errorf("status field = %q, want %q (string)", body.Status, itoa(tc.wantStatus))
