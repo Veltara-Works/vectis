@@ -9,7 +9,24 @@ import (
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/repository"
 	"github.com/Veltara-Works/vectis/internal/scim"
+	"github.com/Veltara-Works/vectis/internal/validonx"
 )
+
+// scimFeatureGate denies non-Enterprise installs with a SCIM-shaped 403. It
+// reuses the entitlement logic via featureGate.HasFeature (which returns false
+// for every deny path — unconfigured/Free, Pro-without-scim, lapsed Enterprise
+// past the offline horizon), keeping the SCIM error shape isolated from the
+// Vectis envelope that writeFeatureError emits.
+func (s *Server) scimFeatureGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.featureGate.HasFeature(r.Context(), validonx.FeatureSCIM) {
+			scim.WriteError(w, http.StatusForbidden, "",
+				"SCIM provisioning requires a Vectis Enterprise license.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // ctxSCIMTokenID carries the authenticated SCIM token id for downstream
 // audit / last-used use.

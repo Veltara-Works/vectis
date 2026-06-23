@@ -71,6 +71,29 @@ func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
 	respondPaginated(w, r, http.StatusOK, mailboxes, nextCursor, hasMore)
 }
 
+// provisionMaildir creates the Maildir cur/new/tmp tree for a mailbox and chowns
+// the domain tree to vmail (uid/gid 5000). Failures are logged, not fatal —
+// Dovecot also creates the Maildir on first delivery. Returns the Maildir base
+// path. Shared by the admin create handler and SCIM provisioning so both lay
+// down identical on-disk storage.
+func (s *Server) provisionMaildir(domainName, localPart string) string {
+	domainDir := filepath.Join("/var/vectis/mail", domainName)
+	maildirBase := filepath.Join(domainDir, localPart, "Maildir")
+	for _, sub := range []string{"cur", "new", "tmp"} {
+		if err := os.MkdirAll(filepath.Join(maildirBase, sub), 0700); err != nil {
+			s.logger.Warn("failed to create Maildir", "path", maildirBase, "error", err)
+		}
+	}
+	// Ownership to vmail (5000:5000) from the domain dir down.
+	_ = filepath.Walk(domainDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr == nil {
+			os.Chown(path, 5000, 5000)
+		}
+		return nil
+	})
+	return maildirBase
+}
+
 func (s *Server) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 	var req createMailboxRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -174,22 +197,8 @@ func (s *Server) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create Maildir structure on disk (Spec A.4 step 6).
-	// Walk starts from the domain directory to ensure correct ownership throughout.
-	domainDir := filepath.Join("/var/vectis/mail", domain.Name)
-	maildirBase := filepath.Join(domainDir, req.LocalPart, "Maildir")
-	for _, sub := range []string{"cur", "new", "tmp"} {
-		if mkdirErr := os.MkdirAll(filepath.Join(maildirBase, sub), 0700); mkdirErr != nil {
-			s.logger.Warn("failed to create Maildir", "path", maildirBase, "error", mkdirErr)
-		}
-	}
-	// Set ownership to vmail (uid/gid 5000) from domain dir down.
-	_ = filepath.Walk(domainDir, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr == nil {
-			os.Chown(path, 5000, 5000)
-		}
-		return nil
-	})
+	// Create Maildir structure on disk + set vmail ownership (Spec A.4 step 6).
+	maildirBase := s.provisionMaildir(domain.Name, req.LocalPart)
 
 	// Deliver a welcome email directly to the new Maildir.
 	email := fmt.Sprintf("%s@%s", req.LocalPart, domain.Name)
