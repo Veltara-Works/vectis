@@ -20,3 +20,21 @@ func TestSCIMIsEnterpriseOnly(t *testing.T) {
 		t.Errorf("tierFromFeatures([scim]) = %q, want %q", got, TierEnterprise)
 	}
 }
+
+// TestOfflineEnterpriseTierGrantsSCIM locks the offline-path tier→feature
+// mapping: a verifier-resolved "Enterprise" tier (what VMPolicy now emits for a
+// real tier:"enterprise" token) maps to a feature set that includes scim (plus
+// the other Enterprise features), so an offline Enterprise license opens the
+// SCIM gate. Pro must not. Pairs with the real-envelope regression vector
+// license.TestRealValidonXEnterpriseToken.
+func TestOfflineEnterpriseTierGrantsSCIM(t *testing.T) {
+	ent := featuresForTier("Enterprise")
+	for _, f := range []string{FeatureSCIM, FeatureSAMLSSO, FeatureDSAR} {
+		if !samlSliceHas(ent, f) {
+			t.Errorf("featuresForTier(Enterprise) must include %q", f)
+		}
+	}
+	if samlSliceHas(featuresForTier("Pro"), FeatureSCIM) {
+		t.Error("featuresForTier(Pro) must NOT include scim")
+	}
+}

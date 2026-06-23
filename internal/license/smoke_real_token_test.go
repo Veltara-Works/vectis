@@ -48,3 +48,47 @@ func TestRealValidonXProductionToken(t *testing.T) {
 		t.Errorf("expected oidc-sso entitlement, got %v", v.Entitlements)
 	}
 }
+
+// TestVMPolicyResolvesEnterpriseTier locks the offline Enterprise tier mapping:
+// VMPolicy must resolve tier:"enterprise" → InternalTier "Enterprise" with a
+// display-entitlement view that advertises only shipped Enterprise features
+// (incl. scim), while still mapping "pro" and rejecting unknown tiers. The
+// authoritative gate set is derived from InternalTier →
+// validonx.EnterpriseFeatures (see validonx.TestOfflineEnterpriseTierGrantsSCIM).
+//
+// This is the synthetic counterpart to the Pro real-envelope vector above. We
+// deliberately do NOT commit a live ValidonX-minted Enterprise token as a
+// fixture: this is a public repo and a live token (valid until its 96h exp)
+// could be pasted into a secrets.yaml [license] block to unlock Enterprise
+// offline. A real-envelope Enterprise vector will be added from an already-
+// EXPIRED ValidonX token (signature still valid; grace asserted via a pinned
+// clock), which carries no abuse risk. The Pro vector already proves the
+// embedded key accepts ValidonX's real signatures (same kid/key).
+func TestVMPolicyResolvesEnterpriseTier(t *testing.T) {
+	tier, ent, ok := VMPolicy().MapTier("enterprise", Limits{})
+	if !ok {
+		t.Fatal("enterprise tier must be recognised by VMPolicy")
+	}
+	if tier != "Enterprise" {
+		t.Errorf("internal tier = %q, want Enterprise", tier)
+	}
+	if ent["vectis.tier"] != "enterprise" {
+		t.Errorf("vectis.tier = %q, want enterprise", ent["vectis.tier"])
+	}
+	for _, k := range []string{"vectis.features.scim-provisioning", "vectis.features.saml-sso", "vectis.features.dsar"} {
+		if ent[k] != "true" {
+			t.Errorf("expected entitlement %q=true, got %q", k, ent[k])
+		}
+	}
+	// Roadmap/unshipped features must not be advertised (claims integrity).
+	if _, present := ent["vectis.features.advanced-deliverability"]; present {
+		t.Error("must not advertise advanced-deliverability (unshipped roadmap item)")
+	}
+	// Pro still maps; unknown tiers still reject.
+	if pt, _, pok := VMPolicy().MapTier("pro", Limits{}); !pok || pt != "Pro" {
+		t.Errorf("pro mapping regressed: tier=%q ok=%v", pt, pok)
+	}
+	if _, _, uok := VMPolicy().MapTier("nonsense", Limits{}); uok {
+		t.Error("unknown tier must be rejected (UnknownTierClaim)")
+	}
+}
