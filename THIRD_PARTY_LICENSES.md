@@ -99,11 +99,11 @@ distributed and are out of scope.
 
 | Package | Version | License |
 |---|---|---|
-| `react` | 19.2.4 | MIT |
-| `react-dom` | 19.2.4 | MIT |
+| `react` | 19.2.7 | MIT |
+| `react-dom` | 19.2.7 | MIT |
 | `scheduler` | 0.27.0 | MIT |
-| `react-router-dom` | 7.13.2 | MIT |
-| `react-router` | 7.13.2 | MIT |
+| `react-router-dom` | 7.18.0 | MIT |
+| `react-router` | 7.18.0 | MIT |
 | `cookie` | 1.1.1 | MIT |
 | `set-cookie-parser` | 2.7.2 | MIT |
 
