@@ -98,12 +98,22 @@ func Dial(cfg SourceConfig) (*SourceClient, error) {
 		if err != nil {
 			return nil, fmt.Errorf("dial %s: %w", cfg.Addr(), err)
 		}
-		// Upgrade to TLS before sending credentials, when the server offers it.
-		if ok, _ := c.SupportStartTLS(); ok {
-			if err := c.StartTLS(&tls.Config{ServerName: cfg.Host}); err != nil {
-				c.Logout()
-				return nil, fmt.Errorf("starttls %s: %w", cfg.Addr(), err)
-			}
+		// Non-TLS mode is "plaintext + STARTTLS": REQUIRE the upgrade before
+		// sending credentials. If the server doesn't advertise STARTTLS we refuse
+		// rather than silently transmit the password in cleartext (a downgrade an
+		// attacker or a misconfigured server could force).
+		ok, serr := c.SupportStartTLS()
+		if serr != nil {
+			c.Logout()
+			return nil, fmt.Errorf("check starttls support on %s: %w", cfg.Addr(), serr)
+		}
+		if !ok {
+			c.Logout()
+			return nil, fmt.Errorf("source %s does not advertise STARTTLS; refusing to send credentials in plaintext (use implicit TLS on 993 instead)", cfg.Addr())
+		}
+		if err := c.StartTLS(&tls.Config{ServerName: cfg.Host}); err != nil {
+			c.Logout()
+			return nil, fmt.Errorf("starttls %s: %w", cfg.Addr(), err)
 		}
 	}
 

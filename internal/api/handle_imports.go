@@ -155,6 +155,12 @@ func (s *Server) requireImportJob(w http.ResponseWriter, r *http.Request) (*repo
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get import job")
 		return nil, nil, false
 	}
+	// Defensive: stay correct regardless of the repo's not-found convention
+	// (error vs the repo-wide (nil, nil)).
+	if job == nil {
+		respondError(w, r, http.StatusNotFound, "NOT_FOUND", "Import job not found")
+		return nil, nil, false
+	}
 	// Prevent cross-mailbox access via a mismatched path.
 	if job.MailboxID != mailbox.ID {
 		respondError(w, r, http.StatusNotFound, "NOT_FOUND", "Import job not found")

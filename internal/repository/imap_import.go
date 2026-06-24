@@ -101,7 +101,8 @@ func (r *IMAPImportRepo) Create(ctx context.Context, in ImportCreate) (*ImportJo
 
 // TargetEmail resolves a mailbox id to its full email (local_part@domain) — the
 // Dovecot login the importer authenticates AS and the auth-token target_user.
-// Returns an empty string if the mailbox no longer exists.
+// Returns an error if the mailbox no longer exists (no rows) or on any query
+// failure, so the importer fails the job rather than acting on a stale id.
 func (r *IMAPImportRepo) TargetEmail(ctx context.Context, mailboxID string) (string, error) {
 	var email string
 	err := r.db.QueryRow(ctx,

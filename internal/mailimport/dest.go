@@ -81,12 +81,14 @@ func (d *DestClient) EnsureFolder(name string) error {
 
 // ExistingMessageIDs selects the folder and returns the set of normalized
 // Message-IDs already present — the basis for idempotent re-runs (cutover
-// deltas). A missing folder yields an empty set (nothing to skip).
+// deltas). The importer always calls EnsureFolder first, so the folder exists by
+// the time we get here; a SELECT error therefore signals a real auth/connection
+// problem and is returned, not swallowed (swallowing it would silently disable
+// de-dupe and let a re-run double-import).
 func (d *DestClient) ExistingMessageIDs(folder string) (map[string]struct{}, error) {
 	mbox, err := d.c.Select(folder, true)
 	if err != nil {
-		// Folder not present yet (first import) — nothing exists.
-		return map[string]struct{}{}, nil //nolint:nilerr // absent folder == empty set by design
+		return nil, fmt.Errorf("select %q to scan existing message-ids: %w", folder, err)
 	}
 	out := make(map[string]struct{})
 	if mbox.Messages == 0 {
