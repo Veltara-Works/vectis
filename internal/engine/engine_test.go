@@ -229,9 +229,30 @@ func TestDovecotAuthTokenPassdb(t *testing.T) {
 	if tokenIdx > mailboxIdx {
 		t.Error("token passdb must be listed before the mailbox passdb")
 	}
+
+	// CRITICAL (Dovecot 2.4 named-filter semantics, validated on a live 2.4.3
+	// harness): the token passdb is a SECOND sql passdb and must carry a DISTINCT
+	// filter name. Two unnamed `passdb sql {}` blocks silently collapse into one —
+	// the token passdb becomes inert and token auth never runs. Guard against any
+	// regression to twin-unnamed blocks.
+	// Anchor on line-start ("\n") so explanatory comment prose mentioning these
+	// tokens (e.g. "two unnamed `passdb sql {}`") is not counted as a real block.
+	if !strings.Contains(sqlConf, "\npassdb auth_token {") {
+		t.Error("token passdb must use a distinct filter name (passdb auth_token {); " +
+			"a second unnamed `passdb sql {}` collapses into the mailbox passdb and goes inert")
+	}
+	if n := strings.Count(sqlConf, "\npassdb sql {"); n != 1 {
+		t.Errorf("expected exactly one unnamed `passdb sql {` block (the mailbox passdb); "+
+			"two would collapse — got %d", n)
+	}
+	// The token block selects the sql driver explicitly (required once the filter
+	// name is not literally `sql`).
+	if !strings.Contains(sqlConf, "\npassdb auth_token {\n    driver = sql") {
+		t.Error("token passdb (auth_token) must set `driver = sql` explicitly")
+	}
 	// Fail-safe settings — without these a token miss or DB error would break
-	// normal auth.
-	for _, must := range []string{"result_failure = continue", "result_internalfail = continue"} {
+	// normal auth. With a custom filter name they must be fully-qualified.
+	for _, must := range []string{"passdb_result_failure = continue", "passdb_result_internalfail = continue"} {
 		if !strings.Contains(sqlConf, must) {
 			t.Errorf("token passdb missing fail-safe setting: %s", must)
 		}

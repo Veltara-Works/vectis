@@ -22,15 +22,24 @@ pgsql main {
 # token row (migration 000023 / internal/repository/dovecot_auth_token.go), so a
 # server-side feature can act AS a mailbox without that user's real password.
 #
+# 2.4 NOTE (validated on a live Dovecot 2.4.3 harness): this is a SECOND sql
+# passdb, so it MUST carry a distinct filter name (auth_token) from the mailbox
+# passdb below. Two unnamed `passdb sql {}` blocks silently collapse into one
+# (only the last query survives), leaving this passdb inert. A custom filter
+# name also disables 2.4's prefix-stripping shortcut, so each setting is written
+# fully-qualified (passdb_sql_query, passdb_result_failure, ...) and the driver
+# is selected explicitly with `driver = sql`.
+#
 # It is listed BEFORE the mailbox passdb and is engineered to be incapable of
 # breaking normal auth: result_failure/result_internalfail = continue mean a
 # missing/expired/mismatched token OR a DB error simply falls through to the
 # real mailbox passdb below. Only a present, unexpired, matching token succeeds.
-passdb sql {
-    default_password_scheme = ARGON2ID
-    result_failure = continue
-    result_internalfail = continue
-    query = SELECT password_hash AS password FROM dovecot_auth_tokens WHERE target_user = '%{user}' AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1
+passdb auth_token {
+    driver = sql
+    passdb_default_password_scheme = ARGON2ID
+    passdb_result_failure = continue
+    passdb_result_internalfail = continue
+    passdb_sql_query = SELECT password_hash AS password FROM dovecot_auth_tokens WHERE target_user = '%{user}' AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1
 }
 
 passdb sql {
