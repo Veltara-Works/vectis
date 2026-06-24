@@ -32,7 +32,18 @@ const (
 	// progressEvery throttles DB progress writes and cancellation polls to one per
 	// this many processed messages (plus once per folder boundary).
 	progressEvery = 50
+
+	// maxMsgAttempts bounds per-message fetch+append retries. Real-world IMAP
+	// imports hit transient blips (dropped connections, server hiccups); a small
+	// retry rides them out. A message still failing after this aborts the job
+	// with context — and because the import dedupes by Message-ID, a re-run
+	// resumes from where it stopped rather than re-copying everything.
+	maxMsgAttempts = 3
 )
+
+// msgRetryBackoff is the pause between per-message retries. A var (not const) so
+// tests can zero it.
+var msgRetryBackoff = 2 * time.Second
 
 // errCancelled is an internal sentinel: the job was cancelled mid-run. The runner
 // already set status=cancelled, so the engine just stops without Fail/Complete.
@@ -228,12 +239,9 @@ func (im *Importer) run(ctx context.Context, log *slog.Logger, job *repository.I
 				}
 			}
 
-			body, err := src.FetchBody(ov.UID)
-			if err != nil {
-				return fmt.Errorf("fetch message uid %d in %q: %w", ov.UID, f.Name, err)
-			}
-			if err := dst.Append(destFolder, body, sanitizeFlags(ov.Flags), ov.InternalDate); err != nil {
-				return fmt.Errorf("append message to %q: %w", destFolder, err)
+			if err := im.copyMessage(src, dst, destFolder, ov); err != nil {
+				return fmt.Errorf("import message uid %d (message-id %q) in %q after %d attempts: %w",
+					ov.UID, ov.MessageID, f.Name, maxMsgAttempts, err)
 			}
 			if ov.MessageID != "" {
 				existing[ov.MessageID] = struct{}{} // guard against dupes within this run
@@ -267,7 +275,9 @@ func (im *Importer) selectableFolders(src sourceConn) ([]Folder, error) {
 	}
 	var out []Folder
 	for _, f := range all {
-		if f.IsNoSelect() {
+		// Skip container-only folders and Gmail's virtual labels (All Mail /
+		// Important / Starred) whose messages duplicate the real folders.
+		if f.IsNoSelect() || f.IsDuplicativeVirtual() {
 			continue
 		}
 		out = append(out, f)
@@ -315,6 +325,29 @@ func percent(processed, total int) int {
 		p = 100
 	}
 	return p
+}
+
+// copyMessage fetches one message and appends it to the destination, retrying a
+// few times to ride out transient IMAP errors. Fetch and append are retried as a
+// unit (a re-fetch on append failure is harmless — the message isn't recorded as
+// present until the whole op succeeds).
+func (im *Importer) copyMessage(src sourceConn, dst destConn, destFolder string, ov Overview) error {
+	var err error
+	for attempt := 1; attempt <= maxMsgAttempts; attempt++ {
+		var body []byte
+		if body, err = src.FetchBody(ov.UID); err == nil {
+			err = dst.Append(destFolder, body, sanitizeFlags(ov.Flags), ov.InternalDate)
+		}
+		if err == nil {
+			return nil
+		}
+		im.logger.Warn("import: message copy failed, retrying",
+			"uid", ov.UID, "attempt", attempt, "max", maxMsgAttempts, "error", err)
+		if attempt < maxMsgAttempts {
+			time.Sleep(msgRetryBackoff)
+		}
+	}
+	return err
 }
 
 // sanitizeFlags drops flags that cannot be set via APPEND. \Recent is

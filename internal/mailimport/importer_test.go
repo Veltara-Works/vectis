@@ -5,12 +5,19 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
+
+// Zero the per-message retry backoff so the retry tests don't sleep.
+func TestMain(m *testing.M) {
+	msgRetryBackoff = 0
+	os.Exit(m.Run())
+}
 
 // ---- fakes -----------------------------------------------------------------
 
@@ -68,11 +75,12 @@ func (m *fakeMinter) Mint(_ context.Context, _, _ string, _ time.Duration) (*rep
 func (m *fakeMinter) Revoke(_ context.Context, _ string) error { m.revoked++; return nil }
 
 type fakeSource struct {
-	folders   []Folder
-	overviews map[string][]Overview // by folder name
-	bodies    map[uint32][]byte     // by uid
-	current   string
-	dialErr   error
+	folders    []Folder
+	overviews  map[string][]Overview // by folder name
+	bodies     map[uint32][]byte     // by uid
+	fetchFails map[uint32]int        // remaining transient FetchBody failures per uid
+	current    string
+	dialErr    error
 }
 
 func (s *fakeSource) Folders() ([]Folder, error) { return s.folders, nil }
@@ -81,8 +89,14 @@ func (s *fakeSource) SelectFolder(name string) (uint32, error) {
 	return uint32(len(s.overviews[name])), nil
 }
 func (s *fakeSource) Overviews(_ uint32) ([]Overview, error) { return s.overviews[s.current], nil }
-func (s *fakeSource) FetchBody(uid uint32) ([]byte, error)   { return s.bodies[uid], nil }
-func (s *fakeSource) Close()                                 {}
+func (s *fakeSource) FetchBody(uid uint32) ([]byte, error) {
+	if s.fetchFails != nil && s.fetchFails[uid] > 0 {
+		s.fetchFails[uid]--
+		return nil, errors.New("transient fetch error")
+	}
+	return s.bodies[uid], nil
+}
+func (s *fakeSource) Close() {}
 
 type appended struct {
 	folder string
@@ -245,5 +259,74 @@ func TestImporter_SkipsNoSelectAndNotRunnable(t *testing.T) {
 	newTestImporter(store, &fakeMinter{}, &fakeSource{}, &fakeDest{}).Run(context.Background(), "j")
 	if store.setRunningTotal != 0 || store.completed != nil {
 		t.Error("already-completed job must not be processed")
+	}
+}
+
+func TestImporter_RetriesTransientThenSucceeds(t *testing.T) {
+	src := &fakeSource{
+		folders:    []Folder{{Name: "INBOX"}},
+		overviews:  map[string][]Overview{"INBOX": {{UID: 1, MessageID: "a@x"}}},
+		bodies:     map[uint32][]byte{1: []byte("m1")},
+		fetchFails: map[uint32]int{1: 2}, // fail twice, succeed on the 3rd attempt
+	}
+	dst := &fakeDest{existing: map[string]map[string]struct{}{}}
+	store := &fakeStore{job: runnableJob()}
+
+	newTestImporter(store, &fakeMinter{}, src, dst).Run(context.Background(), "job-1")
+
+	if store.failed != "" {
+		t.Fatalf("transient errors should have been retried, not failed: %s", store.failed)
+	}
+	if store.completed == nil || len(dst.appends) != 1 {
+		t.Errorf("message should import after retries; completed=%v appends=%d", store.completed != nil, len(dst.appends))
+	}
+}
+
+func TestImporter_FailsAfterMaxAttempts(t *testing.T) {
+	src := &fakeSource{
+		folders:    []Folder{{Name: "INBOX"}},
+		overviews:  map[string][]Overview{"INBOX": {{UID: 1, MessageID: "a@x"}}},
+		bodies:     map[uint32][]byte{1: []byte("m1")},
+		fetchFails: map[uint32]int{1: 99}, // never succeeds
+	}
+	dst := &fakeDest{existing: map[string]map[string]struct{}{}}
+	store := &fakeStore{job: runnableJob()}
+
+	newTestImporter(store, &fakeMinter{}, src, dst).Run(context.Background(), "job-1")
+
+	if store.completed != nil {
+		t.Error("a permanently failing message must not complete the job")
+	}
+	if store.failed == "" {
+		t.Error("expected the job to be failed after exhausting retries")
+	}
+}
+
+func TestImporter_SkipsGmailVirtualFolders(t *testing.T) {
+	src := &fakeSource{
+		folders: []Folder{
+			{Name: "INBOX"},
+			{Name: "[Gmail]/All Mail", Delim: "/", Attrs: []string{"\\All"}},
+			{Name: "[Gmail]/Important", Delim: "/", Attrs: []string{"\\Important"}},
+		},
+		overviews: map[string][]Overview{
+			"INBOX":            {{UID: 1, MessageID: "a@x"}},
+			"[Gmail]/All Mail": {{UID: 2, MessageID: "a@x"}, {UID: 3, MessageID: "b@x"}},
+			"[Gmail]/Important": {{UID: 4, MessageID: "a@x"}},
+		},
+		bodies: map[uint32][]byte{1: []byte("m1"), 2: []byte("m2"), 3: []byte("m3"), 4: []byte("m4")},
+	}
+	dst := &fakeDest{existing: map[string]map[string]struct{}{}}
+	store := &fakeStore{job: runnableJob()}
+
+	newTestImporter(store, &fakeMinter{}, src, dst).Run(context.Background(), "job-1")
+
+	// Only the single INBOX message should be imported; the virtual folders
+	// (which duplicate it) are skipped, so total is 1 and one append happens.
+	if store.setRunningTotal != 1 {
+		t.Errorf("virtual folders should be excluded from the total; got %d, want 1", store.setRunningTotal)
+	}
+	if len(dst.appends) != 1 || dst.appends[0].folder != "INBOX" {
+		t.Errorf("expected only the INBOX message imported, got %d appends", len(dst.appends))
 	}
 }

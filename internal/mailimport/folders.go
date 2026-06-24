@@ -2,6 +2,27 @@ package mailimport
 
 import "strings"
 
+// duplicativeVirtualAttrs are special-use folders whose contents mirror messages
+// already filed in real folders — importing them double-files everything. These
+// are Gmail's virtual labels surfaced over IMAP: \All ("All Mail"), \Important,
+// and \Flagged ("Starred"). An import skips them.
+var duplicativeVirtualAttrs = map[string]bool{
+	"\\all":       true,
+	"\\important": true,
+	"\\flagged":   true,
+}
+
+// IsDuplicativeVirtual reports a folder that duplicates other folders' messages
+// (Gmail All Mail / Important / Starred) and should be skipped during import.
+func (f Folder) IsDuplicativeVirtual() bool {
+	for _, a := range f.Attrs {
+		if duplicativeVirtualAttrs[strings.ToLower(a)] {
+			return true
+		}
+	}
+	return false
+}
+
 // canonical special-use destination folder names. These match the auto-created
 // \Sent/\Drafts/\Junk/\Trash/\Archive mailboxes in the Vectis Dovecot namespace
 // (see dovecot.conf), so flagged source folders land in the right place even when
