@@ -21,3 +21,11 @@ CREATE TABLE dovecot_auth_tokens (
 
 -- The hot path is the Dovecot passdb lookup by login, filtered on expiry.
 CREATE INDEX idx_dovecot_auth_tokens_lookup ON dovecot_auth_tokens(target_user, expires_at);
+
+-- Dovecot reads this table via the read-only vectis_dovecot role (the same role
+-- used for the mailbox passdb — see 000001's `GRANT SELECT ... mailboxes`). The
+-- auth_token passdb is consulted BEFORE the mailbox passdb on every login, so
+-- without this grant the query errors with "permission denied", Dovecot returns
+-- an internal failure, and logins are denied with temp_fail (and the importer's
+-- mint→authenticate path can never succeed). Mirror the mailboxes grant.
+GRANT SELECT ON dovecot_auth_tokens TO vectis_dovecot;
