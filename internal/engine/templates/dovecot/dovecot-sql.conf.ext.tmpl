@@ -17,6 +17,22 @@ pgsql main {
     }
 }
 
+# Short-lived server-side auth-token passdb (the native IMAP importer; later
+# admin impersonation). Authenticates a target login against a hashed, expiring
+# token row (migration 000023 / internal/repository/dovecot_auth_token.go), so a
+# server-side feature can act AS a mailbox without that user's real password.
+#
+# It is listed BEFORE the mailbox passdb and is engineered to be incapable of
+# breaking normal auth: result_failure/result_internalfail = continue mean a
+# missing/expired/mismatched token OR a DB error simply falls through to the
+# real mailbox passdb below. Only a present, unexpired, matching token succeeds.
+passdb sql {
+    default_password_scheme = ARGON2ID
+    result_failure = continue
+    result_internalfail = continue
+    query = SELECT password_hash AS password FROM dovecot_auth_tokens WHERE target_user = '%{user}' AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1
+}
+
 passdb sql {
     default_password_scheme = ARGON2ID
     query = SELECT CONCAT(m.local_part, '@', d.name) AS user, m.password_hash AS password FROM mailboxes m JOIN domains d ON m.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.name) = '%{user}' AND m.active = true AND d.active = true
