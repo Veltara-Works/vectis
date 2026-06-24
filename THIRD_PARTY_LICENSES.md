@@ -27,8 +27,10 @@ section for the analysis.
 > incrementally updated **2026-06-08** for the Enterprise SAML SSO dependencies
 > (`crewjam/saml` + its compiled transitives), each license re-verified with
 > `go-licenses` v1.6.0. Build toolchain bumped to **Go 1.26.4** on **2026-06-12**
-> (`golang:1.26-alpine` builders); the module graph is unchanged, so the section-1
-> license inventory below remains valid as last generated.
+> (`golang:1.26-alpine` builders). Incrementally updated **2026-06-24** for the
+> native IMAP-import dependencies (`emersion/go-imap` + the indirect
+> `emersion/go-sasl`, both MIT), verified with `go-licenses` against the Go 1.26.4
+> SDK GOROOT.
 
 ---
 
@@ -50,6 +52,8 @@ fork) and are listed separately to reflect that.
 | `github.com/cespare/xxhash/v2` | v2.3.0 | MIT |
 | `github.com/coreos/go-oidc/v3/oidc` | v3.19.0 | Apache-2.0 |
 | `github.com/crewjam/saml` | v0.5.1 | BSD-2-Clause |
+| `github.com/emersion/go-imap` | v1.2.1 | MIT |
+| `github.com/emersion/go-sasl` | b788ff22d5a6 | MIT |
 | `github.com/go-chi/chi/v5` | v5.3.0 | MIT |
 | `github.com/go-jose/go-jose/v4` | v4.1.4 | Apache-2.0 |
 | `github.com/go-jose/go-jose/v4/json` | v4.1.4 | BSD-3-Clause |

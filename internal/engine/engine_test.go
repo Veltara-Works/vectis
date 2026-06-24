@@ -197,6 +197,68 @@ func TestDovecotSQL(t *testing.T) {
 	}
 }
 
+// TestDovecotAuthTokenPassdb verifies the server-side auth-token passdb (used by
+// the native IMAP importer / impersonation) is wired BEFORE the mailbox passdb
+// and is fail-safe — it must never be able to break normal mailbox auth.
+func TestDovecotAuthTokenPassdb(t *testing.T) {
+	files, _ := Generate(testData())
+	var sqlConf string
+	for _, f := range files {
+		if f.RelPath == "dovecot/dovecot-sql.conf.ext" {
+			sqlConf = string(f.Content)
+			break
+		}
+	}
+	if sqlConf == "" {
+		t.Fatal("dovecot-sql.conf.ext not found")
+	}
+
+	tokenQuery := "FROM dovecot_auth_tokens WHERE target_user = '%{user}' AND expires_at > NOW()"
+	mailboxQuery := "FROM mailboxes m JOIN domains d"
+
+	tokenIdx := strings.Index(sqlConf, tokenQuery)
+	mailboxIdx := strings.Index(sqlConf, mailboxQuery)
+	if tokenIdx < 0 {
+		t.Fatal("token passdb query not found")
+	}
+	if mailboxIdx < 0 {
+		t.Fatal("mailbox passdb query not found")
+	}
+	// The token passdb MUST precede the mailbox passdb (so a token can win, while
+	// absent tokens fall through to real auth).
+	if tokenIdx > mailboxIdx {
+		t.Error("token passdb must be listed before the mailbox passdb")
+	}
+
+	// CRITICAL (Dovecot 2.4 named-filter semantics, validated on a live 2.4.3
+	// harness): the token passdb is a SECOND sql passdb and must carry a DISTINCT
+	// filter name. Two unnamed `passdb sql {}` blocks silently collapse into one —
+	// the token passdb becomes inert and token auth never runs. Guard against any
+	// regression to twin-unnamed blocks.
+	// Anchor on line-start ("\n") so explanatory comment prose mentioning these
+	// tokens (e.g. "two unnamed `passdb sql {}`") is not counted as a real block.
+	if !strings.Contains(sqlConf, "\npassdb auth_token {") {
+		t.Error("token passdb must use a distinct filter name (passdb auth_token {); " +
+			"a second unnamed `passdb sql {}` collapses into the mailbox passdb and goes inert")
+	}
+	if n := strings.Count(sqlConf, "\npassdb sql {"); n != 1 {
+		t.Errorf("expected exactly one unnamed `passdb sql {` block (the mailbox passdb); "+
+			"two would collapse — got %d", n)
+	}
+	// The token block selects the sql driver explicitly (required once the filter
+	// name is not literally `sql`).
+	if !strings.Contains(sqlConf, "\npassdb auth_token {\n    driver = sql") {
+		t.Error("token passdb (auth_token) must set `driver = sql` explicitly")
+	}
+	// Fail-safe settings — without these a token miss or DB error would break
+	// normal auth. With a custom filter name they must be fully-qualified.
+	for _, must := range []string{"passdb_result_failure = continue", "passdb_result_internalfail = continue"} {
+		if !strings.Contains(sqlConf, must) {
+			t.Errorf("token passdb missing fail-safe setting: %s", must)
+		}
+	}
+}
+
 // TestDovecotMailLocation verifies the 2.4 mail_location → mail_driver/mail_path/
 // mail_home split (a key migration risk): the combined mail_location is gone and
 // the maildir path is rendered with the 2.4 %{user | ...} expansion syntax derived

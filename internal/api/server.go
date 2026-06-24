@@ -27,6 +27,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/license"
 	"github.com/Veltara-Works/vectis/internal/mail"
 	"github.com/Veltara-Works/vectis/internal/mail/postfixlog"
+	"github.com/Veltara-Works/vectis/internal/mailimport"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
 	"github.com/Veltara-Works/vectis/internal/monitor"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
@@ -81,6 +82,10 @@ type Server struct {
 
 	erasureTombstones *repository.ErasureTombstoneRepo
 
+	// Native IMAP import (admin-triggered external-account onboarding).
+	importJobs    *repository.IMAPImportRepo
+	dovecotTokens *repository.DovecotAuthTokenRepo
+
 	// Notifications
 	notifications *mail.NotificationSender
 
@@ -117,6 +122,7 @@ type Server struct {
 	auditPruner      *audit.Pruner
 	retentionSweeper *retention.Sweeper
 	sessionCleaner   *auth.SessionCleaner
+	importWorker     *mailimport.Worker
 	backupScheduler  *backup.Scheduler
 	backupSchedMu    sync.Mutex // serialises Start/Stop/Reload of backupScheduler
 	usageReporter    *validonx.UsageReporter
@@ -169,6 +175,10 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	// already has for sessions/JWTs.
 	webhookEncKey := secretcrypto.DeriveKey([]byte(cfg.CookieSecret), "vectis-webhook-secret-v1")
 
+	// The IMAP import source password is encrypted at rest with its own derived
+	// key (same provisioning model as webhook secrets — no extra secret needed).
+	importEncKey := secretcrypto.DeriveKey([]byte(cfg.CookieSecret), "vectis-imap-import-v1")
+
 	s := &Server{
 		logger:            logger,
 		db:                db,
@@ -202,6 +212,8 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		resetTokens:       repository.NewPasswordResetRepo(db),
 		scimTokens:        repository.NewSCIMTokenRepo(db),
 		erasureTombstones: repository.NewErasureTombstoneRepo(db),
+		importJobs:        repository.NewIMAPImportRepo(db, importEncKey),
+		dovecotTokens:     repository.NewDovecotAuthTokenRepo(db),
 		totpManager:       auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
 	}
 
@@ -250,6 +262,12 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	s.notifications = mail.NewNotificationSender(s.mailSender, cfg.Hostname)
 	s.webhookDispatcher = mail.NewWebhookDispatcher(s.webhooks, logger.With("component", "webhook-dispatcher"))
 	s.abuseDetector = mail.NewAbuseDetector(vk, mail.DefaultAbuseConfig(), logger.With("component", "abuse-detector"))
+
+	// Native IMAP import worker: runs admin-triggered external-account imports in
+	// the background and recovers any left pending/running after a restart.
+	importLogger := logger.With("component", "imap-import")
+	importer := mailimport.NewImporter(s.importJobs, s.dovecotTokens, importLogger)
+	s.importWorker = mailimport.NewWorker(importer, s.importJobs, importLogger)
 
 	// Initialize Postfix log tailer if a log path is configured. The tailer
 	// resolves Postfix queue_ids back to RFC 5322 Message-IDs and emits
@@ -590,6 +608,21 @@ func (s *Server) StopWebhookDispatcher() {
 	}
 }
 
+// StartImportWorker starts the IMAP import background worker (and recovers any
+// pending/running jobs left by a previous run).
+func (s *Server) StartImportWorker() {
+	if s.importWorker != nil {
+		s.importWorker.Start()
+	}
+}
+
+// StopImportWorker stops the IMAP import background worker.
+func (s *Server) StopImportWorker() {
+	if s.importWorker != nil {
+		s.importWorker.Stop()
+	}
+}
+
 // StartPostfixLogTailer begins tailing the Postfix mail log for delivery
 // and bounce events that get translated into mail.delivered / mail.bounced
 // webhook dispatches. No-op when PostfixLogPath is unset.
@@ -719,6 +752,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.StopAuditPruner()
 	s.StopRetentionSweeper()
 	s.StopSessionCleaner()
+	s.StopImportWorker()
 	s.StopBackupScheduler()
 	s.StopWebhookDispatcher()
 	s.StopPostfixLogTailer()
@@ -954,6 +988,13 @@ func (s *Server) buildRouter() chi.Router {
 			// Admin impersonation — admin and super_admin.
 			r.With(requireAdminOrAbove()).Post("/mailboxes/{mailboxID}/impersonate", s.handleImpersonate)
 			r.With(requireAdminOrAbove()).Delete("/mailboxes/{mailboxID}/impersonate", s.handleRevokeImpersonation)
+
+			// Native IMAP import — admin and super_admin (handles source credentials
+			// and acts AS the mailbox). Domain scoping enforced per mailbox.
+			r.With(requireAdminOrAbove()).Post("/mailboxes/{mailboxID}/import", s.handleCreateImport)
+			r.With(requireAdminOrAbove()).Get("/mailboxes/{mailboxID}/imports", s.handleListImports)
+			r.With(requireAdminOrAbove()).Get("/mailboxes/{mailboxID}/imports/{jobID}", s.handleGetImport)
+			r.With(requireAdminOrAbove()).Post("/mailboxes/{mailboxID}/imports/{jobID}/cancel", s.handleCancelImport)
 
 			// Per-domain analytics — Pro feature; gated by FeatureGate.
 			// Free installs (ValidonX unconfigured): 403 FEATURE_NOT_AVAILABLE
