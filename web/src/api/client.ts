@@ -461,4 +461,22 @@ export const api = {
     ),
   revokeImpersonation: (mailboxId: string) =>
     request<{ status: string }>('DELETE', `/mailboxes/${mailboxId}/impersonate`),
+  // Native IMAP import: pull an external IMAP account's mail into this mailbox.
+  startImport: (mailboxId: string, source: {
+    source_host: string; source_port?: number; source_tls?: boolean;
+    source_user: string; source_password: string
+  }) => request<ImportJob>('POST', `/mailboxes/${mailboxId}/import`, source),
+  listImports: (mailboxId: string) =>
+    request<ImportJob[]>('GET', `/mailboxes/${mailboxId}/imports`),
+  cancelImport: (mailboxId: string, jobId: string) =>
+    request<{ message: string }>('POST', `/mailboxes/${mailboxId}/imports/${jobId}/cancel`, {}),
+}
+
+export interface ImportJob {
+  id: string; mailbox_id: string;
+  source_host: string; source_port: number; source_tls: boolean; source_user: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  progress: number; total_messages: number; imported_count: number; skipped_count: number;
+  current_folder?: string; error_message?: string;
+  started_at: string; completed_at?: string;
 }

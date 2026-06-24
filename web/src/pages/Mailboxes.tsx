@@ -1,5 +1,5 @@
 import { useState, useEffect, FormEvent } from 'react'
-import { api } from '../api/client.ts'
+import { api, type ImportJob } from '../api/client.ts'
 
 interface Domain { id: string; name: string }
 interface Mailbox {
@@ -22,8 +22,22 @@ export default function MailboxesPage() {
   const [resetPasswordError, setResetPasswordError] = useState('')
   const [copied, setCopied] = useState('')
   const [impersonation, setImpersonation] = useState<{ username: string; password: string; imap_host: string; imap_port: number; expires_at: string } | null>(null)
+  const [importTarget, setImportTarget] = useState<{ id: string; email: string } | null>(null)
+  const [importForm, setImportForm] = useState({ source_host: '', source_port: '993', source_user: '', source_password: '', source_tls: true })
+  const [importJobs, setImportJobs] = useState<ImportJob[]>([])
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+
+  // Poll the target mailbox's import jobs while the Import panel is open, so
+  // progress/status updates live without a manual refresh.
+  useEffect(() => {
+    if (!importTarget) return
+    let active = true
+    const load = () => api.listImports(importTarget.id).then(j => { if (active) setImportJobs(j || []) }).catch(() => {})
+    load()
+    const t = setInterval(load, 3000)
+    return () => { active = false; clearInterval(t) }
+  }, [importTarget])
 
   useEffect(() => { api.listDomains().then(d => setDomains(d || [])) }, [])
 
@@ -161,6 +175,45 @@ export default function MailboxesPage() {
     }
   }
 
+  const openImport = (id: string, email: string) => {
+    setError(''); setSuccess('')
+    setImportTarget({ id, email })
+    setImportJobs([])
+    setImportForm({ source_host: '', source_port: '993', source_user: '', source_password: '', source_tls: true })
+  }
+
+  const handleStartImport = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!importTarget) return
+    setError(''); setSuccess('')
+    try {
+      await api.startImport(importTarget.id, {
+        source_host: importForm.source_host,
+        source_port: parseInt(importForm.source_port) || undefined,
+        source_tls: importForm.source_tls,
+        source_user: importForm.source_user,
+        source_password: importForm.source_password,
+      })
+      setSuccess(`Import queued for ${importTarget.email}. Messages already present are skipped on re-runs.`)
+      setImportForm({ ...importForm, source_password: '' })
+      api.listImports(importTarget.id).then(j => setImportJobs(j || [])).catch(() => {})
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to start import')
+    }
+  }
+
+  const handleCancelImport = async (jobId: string) => {
+    if (!importTarget) return
+    setError(''); setSuccess('')
+    try {
+      await api.cancelImport(importTarget.id, jobId)
+      setSuccess('Import cancellation requested')
+      api.listImports(importTarget.id).then(j => setImportJobs(j || [])).catch(() => {})
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to cancel import')
+    }
+  }
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
@@ -279,6 +332,73 @@ export default function MailboxesPage() {
         </div>
       )}
 
+      {importTarget && (
+        <div className="card" style={{ borderColor: '#3b82f6' }}>
+          <h3 style={{ marginTop: 0 }}>Import Mail into {importTarget.email}</h3>
+          <p className="muted">Pull all mail from an external IMAP account (folders, flags and dates preserved). Safe to re-run for cutover — messages already present are skipped.</p>
+          <form onSubmit={handleStartImport}>
+            <div className="form-group">
+              <label>Source IMAP Host</label>
+              <input value={importForm.source_host} onChange={e => setImportForm({ ...importForm, source_host: e.target.value })}
+                placeholder="e.g. imap.gmail.com" required autoFocus />
+            </div>
+            <div style={{ display: 'flex', gap: '1rem' }}>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Port</label>
+                <input type="number" value={importForm.source_port} onChange={e => setImportForm({ ...importForm, source_port: e.target.value })} />
+              </div>
+              <div className="form-group" style={{ flex: 2, display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1.5rem' }}>
+                <input type="checkbox" id="import-tls" checked={importForm.source_tls}
+                  onChange={e => setImportForm({ ...importForm, source_tls: e.target.checked, source_port: e.target.checked ? '993' : '143' })} />
+                <label htmlFor="import-tls" style={{ margin: 0 }}>Implicit TLS (uncheck for STARTTLS on 143)</label>
+              </div>
+            </div>
+            <div className="form-group">
+              <label>Source Username</label>
+              <input value={importForm.source_user} onChange={e => setImportForm({ ...importForm, source_user: e.target.value })}
+                placeholder="full login at the source server" required />
+            </div>
+            <div className="form-group">
+              <label>Source Password</label>
+              <input type="password" value={importForm.source_password} onChange={e => setImportForm({ ...importForm, source_password: e.target.value })}
+                placeholder="stored encrypted; used only for the import" required />
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button className="btn" type="submit">Start Import</button>
+              <button className="btn btn-sm" type="button" onClick={() => setImportTarget(null)}>Close</button>
+            </div>
+          </form>
+
+          {importJobs.length > 0 && (
+            <table style={{ marginTop: '1rem' }}>
+              <thead>
+                <tr><th>Status</th><th>Progress</th><th>Imported</th><th>Skipped</th><th>Folder</th><th>Started</th><th></th></tr>
+              </thead>
+              <tbody>
+                {importJobs.map(j => (
+                  <tr key={j.id}>
+                    <td>
+                      <span className={`badge ${j.status === 'completed' ? 'badge-success' : j.status === 'failed' ? 'badge-danger' : j.status === 'cancelled' ? 'badge-muted' : 'badge-warning'}`}
+                        title={j.error_message || ''}>{j.status}</span>
+                    </td>
+                    <td className="mono">{j.progress < 0 ? '—' : `${j.progress}%`}{j.total_messages > 0 ? ` of ${j.total_messages}` : ''}</td>
+                    <td className="mono">{j.imported_count}</td>
+                    <td className="mono">{j.skipped_count}</td>
+                    <td className="text-muted">{j.current_folder || '-'}</td>
+                    <td className="text-muted">{new Date(j.started_at).toLocaleString()}</td>
+                    <td>
+                      {(j.status === 'pending' || j.status === 'running') && (
+                        <button className="btn btn-sm btn-danger" onClick={() => handleCancelImport(j.id)}>Cancel</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
       <div className="card">
         <table>
           <thead>
@@ -300,6 +420,7 @@ export default function MailboxesPage() {
                 <td className="text-muted">{new Date(m.created_at).toLocaleDateString()}</td>
                 <td style={{ display: 'flex', gap: '0.5rem' }}>
                   <button className="btn btn-sm" onClick={() => handleImpersonate(m.id, `${m.local_part}@${domainName}`)}>View as User</button>
+                  <button className="btn btn-sm" onClick={() => openImport(m.id, `${m.local_part}@${domainName}`)}>Import Mail</button>
                   <button className="btn btn-sm" onClick={() => { setResetTarget({ id: m.id, email: `${m.local_part}@${domainName}` }); setResetPassword('') }}>Reset Password</button>
                   <button className={`btn btn-sm ${m.send_suspended ? '' : 'btn-danger'}`}
                     onClick={() => handleToggleSend(m, `${m.local_part}@${domainName}`)}>

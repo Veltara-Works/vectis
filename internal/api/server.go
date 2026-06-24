@@ -989,6 +989,13 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireAdminOrAbove()).Post("/mailboxes/{mailboxID}/impersonate", s.handleImpersonate)
 			r.With(requireAdminOrAbove()).Delete("/mailboxes/{mailboxID}/impersonate", s.handleRevokeImpersonation)
 
+			// Native IMAP import — admin and super_admin (handles source credentials
+			// and acts AS the mailbox). Domain scoping enforced per mailbox.
+			r.With(requireAdminOrAbove()).Post("/mailboxes/{mailboxID}/import", s.handleCreateImport)
+			r.With(requireAdminOrAbove()).Get("/mailboxes/{mailboxID}/imports", s.handleListImports)
+			r.With(requireAdminOrAbove()).Get("/mailboxes/{mailboxID}/imports/{jobID}", s.handleGetImport)
+			r.With(requireAdminOrAbove()).Post("/mailboxes/{mailboxID}/imports/{jobID}/cancel", s.handleCancelImport)
+
 			// Per-domain analytics — Pro feature; gated by FeatureGate.
 			// Free installs (ValidonX unconfigured): 403 FEATURE_NOT_AVAILABLE
 			// since v0.1.6. Authenticated users on a paying customer with
