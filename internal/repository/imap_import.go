@@ -99,6 +99,21 @@ func (r *IMAPImportRepo) Create(ctx context.Context, in ImportCreate) (*ImportJo
 	return job, nil
 }
 
+// TargetEmail resolves a mailbox id to its full email (local_part@domain) — the
+// Dovecot login the importer authenticates AS and the auth-token target_user.
+// Returns an empty string if the mailbox no longer exists.
+func (r *IMAPImportRepo) TargetEmail(ctx context.Context, mailboxID string) (string, error) {
+	var email string
+	err := r.db.QueryRow(ctx,
+		`SELECT CONCAT(m.local_part, '@', d.name)
+		   FROM mailboxes m JOIN domains d ON m.domain_id = d.id
+		  WHERE m.id = $1`, mailboxID).Scan(&email)
+	if err != nil {
+		return "", fmt.Errorf("resolve target email for mailbox %s: %w", mailboxID, err)
+	}
+	return email, nil
+}
+
 // DecryptPassword returns the decrypted source password for the runner. Kept
 // separate from the status reads so the credential is only ever materialised on
 // the import path.
