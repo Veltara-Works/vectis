@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -79,38 +80,84 @@ func (d *DestClient) EnsureFolder(name string) error {
 	return nil
 }
 
-// ExistingMessageIDs selects the folder and returns the set of normalized
-// Message-IDs already present — the basis for idempotent re-runs (cutover
-// deltas). The importer always calls EnsureFolder first, so the folder exists by
-// the time we get here; a SELECT error therefore signals a real auth/connection
-// problem and is returned, not swallowed (swallowing it would silently disable
-// de-dupe and let a re-run double-import).
-func (d *DestClient) ExistingMessageIDs(folder string) (map[string]struct{}, error) {
+// ExistingIndex captures what a destination folder already holds — the basis for
+// idempotent re-runs (cutover deltas). Messages are de-duplicated by Message-ID;
+// messages that lack one (which can't be matched that way) are additionally
+// indexed by a content hash so they don't re-append on every run.
+type ExistingIndex struct {
+	MessageIDs    map[string]struct{} // normalized Message-IDs present
+	ContentHashes map[string]struct{} // contentHash() of header-less messages present
+}
+
+// Existing selects the folder and scans what's already present. The importer
+// always calls EnsureFolder first, so the folder exists by the time we get here;
+// a SELECT error therefore signals a real auth/connection problem and is
+// returned, not swallowed (swallowing it would silently disable de-dupe and let
+// a re-run double-import).
+//
+// It is a two-pass scan: a cheap envelope pass collects Message-IDs and flags
+// the (rare) messages that lack one; a second pass fetches the bodies of only
+// those header-less messages to hash them. The body fetch is bounded by the
+// header-less count, so large folders stay cheap.
+func (d *DestClient) Existing(folder string) (*ExistingIndex, error) {
 	mbox, err := d.c.Select(folder, true)
 	if err != nil {
-		return nil, fmt.Errorf("select %q to scan existing message-ids: %w", folder, err)
+		return nil, fmt.Errorf("select %q to scan existing messages: %w", folder, err)
 	}
-	out := make(map[string]struct{})
+	idx := &ExistingIndex{MessageIDs: map[string]struct{}{}, ContentHashes: map[string]struct{}{}}
 	if mbox.Messages == 0 {
-		return out, nil
+		return idx, nil
 	}
 
+	// Pass 1: envelope-only scan → Message-IDs, plus the sequence numbers of any
+	// messages with no Message-ID (which need a body hash instead).
 	seq := new(imap.SeqSet)
 	seq.AddRange(1, mbox.Messages)
 	ch := make(chan *imap.Message, 64)
 	done := make(chan error, 1)
 	go func() { done <- d.c.Fetch(seq, []imap.FetchItem{imap.FetchEnvelope}, ch) }()
+	headerless := new(imap.SeqSet)
+	var headerlessCount int
 	for m := range ch {
+		id := ""
 		if m.Envelope != nil {
-			if id := NormalizeMessageID(m.Envelope.MessageId); id != "" {
-				out[id] = struct{}{}
-			}
+			id = NormalizeMessageID(m.Envelope.MessageId)
+		}
+		if id != "" {
+			idx.MessageIDs[id] = struct{}{}
+		} else {
+			headerless.AddNum(m.SeqNum)
+			headerlessCount++
 		}
 	}
 	if err := <-done; err != nil {
-		return nil, fmt.Errorf("scan existing message-ids in %q: %w", folder, err)
+		return nil, fmt.Errorf("scan existing messages in %q: %w", folder, err)
 	}
-	return out, nil
+	if headerlessCount == 0 {
+		return idx, nil
+	}
+
+	// Pass 2: hash the bodies of the header-less messages so a re-run recognises
+	// an identical message already present.
+	section := &imap.BodySectionName{}
+	ch2 := make(chan *imap.Message, 16)
+	done2 := make(chan error, 1)
+	go func() { done2 <- d.c.Fetch(headerless, []imap.FetchItem{section.FetchItem()}, ch2) }()
+	for m := range ch2 {
+		r := m.GetBody(section)
+		if r == nil {
+			continue
+		}
+		b, err := io.ReadAll(r)
+		if err != nil {
+			return nil, fmt.Errorf("read existing header-less body in %q: %w", folder, err)
+		}
+		idx.ContentHashes[contentHash(b)] = struct{}{}
+	}
+	if err := <-done2; err != nil {
+		return nil, fmt.Errorf("scan existing header-less bodies in %q: %w", folder, err)
+	}
+	return idx, nil
 }
 
 // Append writes one message into folder, preserving its flags and original

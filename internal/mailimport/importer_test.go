@@ -106,18 +106,23 @@ type appended struct {
 }
 
 type fakeDest struct {
-	existing  map[string]map[string]struct{} // folder -> message-id set
-	ensured   []string
-	appends   []appended
-	mu        sync.Mutex
+	existing       map[string]map[string]struct{} // folder -> message-id set
+	existingHashes map[string]map[string]struct{} // folder -> content-hash set (header-less)
+	ensured        []string
+	appends        []appended
+	mu             sync.Mutex
 }
 
 func (d *fakeDest) EnsureFolder(name string) error { d.ensured = append(d.ensured, name); return nil }
-func (d *fakeDest) ExistingMessageIDs(folder string) (map[string]struct{}, error) {
-	if d.existing[folder] == nil {
-		return map[string]struct{}{}, nil
+func (d *fakeDest) Existing(folder string) (*ExistingIndex, error) {
+	idx := &ExistingIndex{MessageIDs: map[string]struct{}{}, ContentHashes: map[string]struct{}{}}
+	if d.existing[folder] != nil {
+		idx.MessageIDs = d.existing[folder]
 	}
-	return d.existing[folder], nil
+	if d.existingHashes[folder] != nil {
+		idx.ContentHashes = d.existingHashes[folder]
+	}
+	return idx, nil
 }
 func (d *fakeDest) Append(folder string, body []byte, flags []string, date time.Time) error {
 	d.mu.Lock()
@@ -201,6 +206,42 @@ func TestImporter_HappyPath_DedupeFlagsDate(t *testing.T) {
 	}
 	if minter.minted != 1 || minter.revoked != 1 {
 		t.Errorf("token lifecycle = minted %d/revoked %d, want 1/1", minter.minted, minter.revoked)
+	}
+}
+
+func TestImporter_DedupesHeaderlessByContent(t *testing.T) {
+	date := time.Date(2025, 5, 5, 0, 0, 0, 0, time.UTC)
+	src := &fakeSource{
+		folders: []Folder{{Name: "INBOX"}},
+		overviews: map[string][]Overview{
+			"INBOX": {
+				{UID: 1, MessageID: "", InternalDate: date}, // body "X" already present -> skipped
+				{UID: 2, MessageID: "", InternalDate: date}, // body "Y" new -> imported
+				{UID: 3, MessageID: "", InternalDate: date}, // body "Y" again -> within-run dup skipped
+			},
+		},
+		bodies: map[uint32][]byte{1: []byte("X"), 2: []byte("Y"), 3: []byte("Y")},
+	}
+	// The dest already holds a header-less message whose body is "X".
+	dst := &fakeDest{existingHashes: map[string]map[string]struct{}{
+		"INBOX": {contentHash([]byte("X")): {}},
+	}}
+	store := &fakeStore{job: runnableJob()}
+
+	newTestImporter(store, &fakeMinter{}, src, dst).Run(context.Background(), "job-1")
+
+	if store.failed != "" {
+		t.Fatalf("unexpected failure: %s", store.failed)
+	}
+	if store.completed == nil {
+		t.Fatal("job not completed")
+	}
+	// "X" is a dest dup; the second "Y" is a within-run dup of the first -> 1 imported, 2 skipped.
+	if got := *store.completed; got != [2]int{1, 2} {
+		t.Errorf("completed = imported %d/skipped %d, want 1/2", got[0], got[1])
+	}
+	if len(dst.appends) != 1 || string(dst.appends[0].body) != "Y" {
+		t.Fatalf("expected only the unique header-less message appended once; appends=%d", len(dst.appends))
 	}
 }
 
