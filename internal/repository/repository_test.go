@@ -1459,9 +1459,12 @@ func TestDovecotAuthToken_RevokeByTarget(t *testing.T) {
 	imp2 := mustMint(target, "impersonate")
 	importTok := mustMint(target, "import")    // same mailbox, different consumer
 	otherTok := mustMint(other, "impersonate") // different mailbox
+	// Clean up every minted token, not just the survivors — so a failure before
+	// RevokeByTarget runs can't leave impersonation rows behind across reruns.
 	t.Cleanup(func() {
-		_ = repo.Revoke(ctx, importTok.ID)
-		_ = repo.Revoke(ctx, otherTok.ID)
+		for _, tok := range []*repository.MintedToken{imp1, imp2, importTok, otherTok} {
+			_ = repo.Revoke(ctx, tok.ID)
+		}
 	})
 
 	n, err := repo.RevokeByTarget(ctx, target, "impersonate")
