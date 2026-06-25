@@ -1,10 +1,24 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+)
+
+const (
+	// sieveTokenTTL bounds a single ManageSieve admin operation. It is a backstop
+	// only — every caller revokes its token as soon as the operation completes —
+	// but keeps a leaked row (handler panic, lost revoke) short-lived. PruneExpired
+	// is the final safety net.
+	sieveTokenTTL = 2 * time.Minute
+	// sievePurpose tags auth tokens minted for ManageSieve admin access, distinct
+	// from the importer's "import" and impersonation's "impersonate" tokens so
+	// purpose-scoped revokes never clobber each other.
+	sievePurpose = "sieve"
 )
 
 type sieveScriptRequest struct {
@@ -16,11 +30,12 @@ type sieveScriptRequest struct {
 // handleListSieveScripts returns all Sieve filter scripts for a mailbox.
 func (s *Server) handleListSieveScripts(w http.ResponseWriter, r *http.Request) {
 	mailboxID := chi.URLParam(r, "mailboxID")
-	user, pass, err := s.getMailboxCredentials(r, mailboxID)
+	user, pass, revoke, err := s.getMailboxCredentials(r, mailboxID)
 	if err != nil {
 		respondError(w, r, http.StatusNotFound, "NOT_FOUND", err.Error())
 		return
 	}
+	defer revoke()
 
 	if s.sieveClient == nil {
 		respondError(w, r, http.StatusServiceUnavailable, "SIEVE_UNAVAILABLE", "Sieve filtering is not configured")
@@ -41,11 +56,12 @@ func (s *Server) handleListSieveScripts(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleGetSieveScript(w http.ResponseWriter, r *http.Request) {
 	mailboxID := chi.URLParam(r, "mailboxID")
 	scriptName := chi.URLParam(r, "scriptName")
-	user, pass, err := s.getMailboxCredentials(r, mailboxID)
+	user, pass, revoke, err := s.getMailboxCredentials(r, mailboxID)
 	if err != nil {
 		respondError(w, r, http.StatusNotFound, "NOT_FOUND", err.Error())
 		return
 	}
+	defer revoke()
 
 	content, err := s.sieveClient.GetScript(user, pass, scriptName)
 	if err != nil {
@@ -71,11 +87,12 @@ func (s *Server) handlePutSieveScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, pass, err := s.getMailboxCredentials(r, mailboxID)
+	user, pass, revoke, err := s.getMailboxCredentials(r, mailboxID)
 	if err != nil {
 		respondError(w, r, http.StatusNotFound, "NOT_FOUND", err.Error())
 		return
 	}
+	defer revoke()
 
 	if err := s.sieveClient.PutScript(user, pass, req.Name, req.Content); err != nil {
 		s.logger.Error("put sieve script failed", "error", err)
@@ -101,11 +118,12 @@ func (s *Server) handlePutSieveScript(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteSieveScript(w http.ResponseWriter, r *http.Request) {
 	mailboxID := chi.URLParam(r, "mailboxID")
 	scriptName := chi.URLParam(r, "scriptName")
-	user, pass, err := s.getMailboxCredentials(r, mailboxID)
+	user, pass, revoke, err := s.getMailboxCredentials(r, mailboxID)
 	if err != nil {
 		respondError(w, r, http.StatusNotFound, "NOT_FOUND", err.Error())
 		return
 	}
+	defer revoke()
 
 	if err := s.sieveClient.DeleteScript(user, pass, scriptName); err != nil {
 		s.logger.Error("delete sieve script failed", "error", err)
@@ -121,27 +139,47 @@ func (s *Server) handleDeleteSieveScript(w http.ResponseWriter, r *http.Request)
 	respond(w, r, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-// getMailboxCredentials resolves a mailbox ID to user@domain + password for ManageSieve auth.
-// In admin impersonation mode, uses a master password via Dovecot master user mechanism.
-func (s *Server) getMailboxCredentials(r *http.Request, mailboxID string) (string, string, error) {
+// getMailboxCredentials resolves a mailbox ID to a (login, password) pair for
+// ManageSieve admin access, plus a revoke func the caller must defer.
+//
+// It mints a short-lived Dovecot auth token scoped to the mailbox — the same
+// proven token-passdb mechanism the native IMAP importer (#112) and admin
+// impersonation (#114) use — and returns the mailbox's own address as the login.
+// The auth_token passdb is consulted (globally, so ManageSieve-login too) before
+// the real mailbox passdb and is fail-safe: a miss/expiry/DB error falls through
+// to normal auth. This replaces the unwired `user@domain*vectis-admin` master
+// user, which the deployed Dovecot 2.4 stack never actually authenticated.
+//
+// revoke is always non-nil on success and deletes the token; callers defer it so
+// the token lives only for the single ManageSieve operation (TTL is a backstop).
+func (s *Server) getMailboxCredentials(r *http.Request, mailboxID string) (login, password string, revoke func(), err error) {
 	mailbox, err := s.mailboxes.GetByID(r.Context(), mailboxID)
 	if err != nil || mailbox == nil {
-		return "", "", fmt.Errorf("mailbox not found")
+		return "", "", nil, fmt.Errorf("mailbox not found")
 	}
 
 	if !s.canAccessDomain(r.Context(), mailbox.DomainID) {
-		return "", "", fmt.Errorf("access denied")
+		return "", "", nil, fmt.Errorf("access denied")
 	}
 
 	domain, err := s.domains.GetByID(r.Context(), mailbox.DomainID)
 	if err != nil || domain == nil {
-		return "", "", fmt.Errorf("domain not found")
+		return "", "", nil, fmt.Errorf("domain not found")
 	}
 
-	// Use Dovecot master user for admin access to ManageSieve.
-	// Format: user@domain*vectis-admin with internal service token as password.
 	userEmail := mailbox.LocalPart + "@" + domain.Name
-	masterUser := userEmail + "*vectis-admin"
+	token, err := s.dovecotTokens.Mint(r.Context(), userEmail, sievePurpose, sieveTokenTTL)
+	if err != nil {
+		s.logger.Error("mint sieve auth token failed", "error", err, "mailbox_id", mailboxID)
+		return "", "", nil, fmt.Errorf("failed to generate credentials")
+	}
 
-	return masterUser, s.internalToken, nil
+	revoke = func() {
+		// WithoutCancel: revoke even if the request context is already done.
+		if rerr := s.dovecotTokens.Revoke(context.WithoutCancel(r.Context()), token.ID); rerr != nil {
+			s.logger.Error("revoke sieve auth token failed", "error", rerr, "token_id", token.ID)
+		}
+	}
+
+	return userEmail, token.Password, revoke, nil
 }
