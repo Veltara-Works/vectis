@@ -328,9 +328,9 @@ func percent(processed, total int) int {
 // De-dupe is by normalized Message-ID where one exists. Messages with no
 // Message-ID can't be matched that way, so they are de-duped by a content hash
 // of the raw body — without this they re-append on every re-run (a delta or a
-// resumed import), the cause of the felicityholt duplicate pile-up. The body is
-// needed to hash, so the header-less path fetches it up front and reuses it for
-// the append. The in-memory index is updated on success to also guard against
+// resumed import), accumulating a fresh copy per pass. The body is needed to
+// hash, so the header-less path fetches it up front and reuses it for the
+// append. The in-memory index is updated on success to also guard against
 // duplicates encountered within this same run.
 func (im *Importer) importMessage(src sourceConn, dst destConn, destFolder string, ov Overview, existing *ExistingIndex) (bool, error) {
 	if ov.MessageID != "" {
