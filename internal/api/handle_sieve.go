@@ -206,8 +206,12 @@ func (s *Server) getMailboxCredentials(r *http.Request, mailboxID string) (login
 	}
 
 	domain, err := s.domains.GetByID(r.Context(), mailbox.DomainID)
-	if err != nil || domain == nil {
+	if err != nil {
 		s.logger.Error("get domain for sieve creds failed", "error", err, "mailbox_id", mailboxID)
+		return "", "", nil, errSieveCredsInternal
+	}
+	if domain == nil {
+		s.logger.Error("sieve creds: mailbox references missing domain", "mailbox_id", mailboxID, "domain_id", mailbox.DomainID)
 		return "", "", nil, errSieveCredsInternal
 	}
 
