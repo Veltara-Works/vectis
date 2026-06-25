@@ -32,7 +32,8 @@ func envOrSieve(key, fallback string) string {
 //   - mints exactly one short-lived auth-token row tagged purpose="sieve", and
 //   - hands back a revoke func that deletes that row.
 func TestGetMailboxCredentials_MintsAndRevokesSieveToken(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	dbCfg := database.Config{
@@ -78,7 +79,10 @@ func TestGetMailboxCredentials_MintsAndRevokesSieveToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create domain: %v", err)
 	}
-	pwHash, _ := auth.HashPassword("irrelevant-mailbox-password")
+	pwHash, err := auth.HashPassword("irrelevant-mailbox-password")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
 	mb, err := mailboxRepo.Create(ctx, repository.MailboxCreate{
 		DomainID:     dom.ID,
 		LocalPart:    "filtered",
@@ -90,9 +94,12 @@ func TestGetMailboxCredentials_MintsAndRevokesSieveToken(t *testing.T) {
 	wantLogin := mb.LocalPart + "@" + domainName
 
 	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM dovecot_auth_tokens WHERE target_user = $1`, wantLogin)
-		_, _ = pool.Exec(ctx, `DELETE FROM mailboxes WHERE id = $1`, mb.ID)
-		_, _ = pool.Exec(ctx, `DELETE FROM domains WHERE id = $1`, dom.ID)
+		// Fresh context: the test's ctx is cancelled by its deferred cancel()
+		// before t.Cleanup runs.
+		cleanupCtx := context.Background()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM dovecot_auth_tokens WHERE target_user = $1`, wantLogin)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM mailboxes WHERE id = $1`, mb.ID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM domains WHERE id = $1`, dom.ID)
 	})
 
 	// Request carries a super_admin role so canAccessDomain short-circuits to

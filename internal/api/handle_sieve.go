@@ -2,7 +2,7 @@ package api
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 	"time"
 
@@ -21,6 +21,28 @@ const (
 	sievePurpose = "sieve"
 )
 
+// Sentinel errors from getMailboxCredentials so handlers map each cause to the
+// right HTTP status (a DB/token failure must not masquerade as 404), mirroring
+// requireMailboxAccess in handle_mailboxes.go.
+var (
+	errSieveMailboxNotFound = errors.New("mailbox not found")
+	errSieveAccessDenied    = errors.New("access denied")
+	errSieveCredsInternal   = errors.New("failed to prepare credentials")
+)
+
+// respondSieveCredError writes the HTTP response for a getMailboxCredentials
+// failure, mapping the sentinel cause to a consistent status/code.
+func respondSieveCredError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, errSieveMailboxNotFound):
+		respondError(w, r, http.StatusNotFound, "NOT_FOUND", "Mailbox not found")
+	case errors.Is(err, errSieveAccessDenied):
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this mailbox")
+	default:
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to prepare ManageSieve credentials")
+	}
+}
+
 type sieveScriptRequest struct {
 	Name    string `json:"name"`
 	Content string `json:"content"`
@@ -30,17 +52,17 @@ type sieveScriptRequest struct {
 // handleListSieveScripts returns all Sieve filter scripts for a mailbox.
 func (s *Server) handleListSieveScripts(w http.ResponseWriter, r *http.Request) {
 	mailboxID := chi.URLParam(r, "mailboxID")
-	user, pass, revoke, err := s.getMailboxCredentials(r, mailboxID)
-	if err != nil {
-		respondError(w, r, http.StatusNotFound, "NOT_FOUND", err.Error())
-		return
-	}
-	defer revoke()
-
 	if s.sieveClient == nil {
 		respondError(w, r, http.StatusServiceUnavailable, "SIEVE_UNAVAILABLE", "Sieve filtering is not configured")
 		return
 	}
+
+	user, pass, revoke, err := s.getMailboxCredentials(r, mailboxID)
+	if err != nil {
+		respondSieveCredError(w, r, err)
+		return
+	}
+	defer revoke()
 
 	scripts, err := s.sieveClient.ListScripts(user, pass)
 	if err != nil {
@@ -56,9 +78,14 @@ func (s *Server) handleListSieveScripts(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleGetSieveScript(w http.ResponseWriter, r *http.Request) {
 	mailboxID := chi.URLParam(r, "mailboxID")
 	scriptName := chi.URLParam(r, "scriptName")
+	if s.sieveClient == nil {
+		respondError(w, r, http.StatusServiceUnavailable, "SIEVE_UNAVAILABLE", "Sieve filtering is not configured")
+		return
+	}
+
 	user, pass, revoke, err := s.getMailboxCredentials(r, mailboxID)
 	if err != nil {
-		respondError(w, r, http.StatusNotFound, "NOT_FOUND", err.Error())
+		respondSieveCredError(w, r, err)
 		return
 	}
 	defer revoke()
@@ -76,6 +103,10 @@ func (s *Server) handleGetSieveScript(w http.ResponseWriter, r *http.Request) {
 // handlePutSieveScript creates or updates a Sieve script.
 func (s *Server) handlePutSieveScript(w http.ResponseWriter, r *http.Request) {
 	mailboxID := chi.URLParam(r, "mailboxID")
+	if s.sieveClient == nil {
+		respondError(w, r, http.StatusServiceUnavailable, "SIEVE_UNAVAILABLE", "Sieve filtering is not configured")
+		return
+	}
 
 	var req sieveScriptRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -89,7 +120,7 @@ func (s *Server) handlePutSieveScript(w http.ResponseWriter, r *http.Request) {
 
 	user, pass, revoke, err := s.getMailboxCredentials(r, mailboxID)
 	if err != nil {
-		respondError(w, r, http.StatusNotFound, "NOT_FOUND", err.Error())
+		respondSieveCredError(w, r, err)
 		return
 	}
 	defer revoke()
@@ -118,9 +149,14 @@ func (s *Server) handlePutSieveScript(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteSieveScript(w http.ResponseWriter, r *http.Request) {
 	mailboxID := chi.URLParam(r, "mailboxID")
 	scriptName := chi.URLParam(r, "scriptName")
+	if s.sieveClient == nil {
+		respondError(w, r, http.StatusServiceUnavailable, "SIEVE_UNAVAILABLE", "Sieve filtering is not configured")
+		return
+	}
+
 	user, pass, revoke, err := s.getMailboxCredentials(r, mailboxID)
 	if err != nil {
-		respondError(w, r, http.StatusNotFound, "NOT_FOUND", err.Error())
+		respondSieveCredError(w, r, err)
 		return
 	}
 	defer revoke()
@@ -154,24 +190,29 @@ func (s *Server) handleDeleteSieveScript(w http.ResponseWriter, r *http.Request)
 // the token lives only for the single ManageSieve operation (TTL is a backstop).
 func (s *Server) getMailboxCredentials(r *http.Request, mailboxID string) (login, password string, revoke func(), err error) {
 	mailbox, err := s.mailboxes.GetByID(r.Context(), mailboxID)
-	if err != nil || mailbox == nil {
-		return "", "", nil, fmt.Errorf("mailbox not found")
+	if err != nil {
+		s.logger.Error("get mailbox for sieve creds failed", "error", err, "mailbox_id", mailboxID)
+		return "", "", nil, errSieveCredsInternal
+	}
+	if mailbox == nil {
+		return "", "", nil, errSieveMailboxNotFound
 	}
 
 	if !s.canAccessDomain(r.Context(), mailbox.DomainID) {
-		return "", "", nil, fmt.Errorf("access denied")
+		return "", "", nil, errSieveAccessDenied
 	}
 
 	domain, err := s.domains.GetByID(r.Context(), mailbox.DomainID)
 	if err != nil || domain == nil {
-		return "", "", nil, fmt.Errorf("domain not found")
+		s.logger.Error("get domain for sieve creds failed", "error", err, "mailbox_id", mailboxID)
+		return "", "", nil, errSieveCredsInternal
 	}
 
 	userEmail := mailbox.LocalPart + "@" + domain.Name
 	token, err := s.dovecotTokens.Mint(r.Context(), userEmail, sievePurpose, sieveTokenTTL)
 	if err != nil {
 		s.logger.Error("mint sieve auth token failed", "error", err, "mailbox_id", mailboxID)
-		return "", "", nil, fmt.Errorf("failed to generate credentials")
+		return "", "", nil, errSieveCredsInternal
 	}
 
 	revoke = func() {
