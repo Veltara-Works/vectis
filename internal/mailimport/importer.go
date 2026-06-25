@@ -2,6 +2,8 @@ package mailimport
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -36,8 +38,9 @@ const (
 	// maxMsgAttempts bounds per-message fetch+append retries. Real-world IMAP
 	// imports hit transient blips (dropped connections, server hiccups); a small
 	// retry rides them out. A message still failing after this aborts the job
-	// with context — and because the import dedupes by Message-ID, a re-run
-	// resumes from where it stopped rather than re-copying everything.
+	// with context — and because the import de-dupes (by Message-ID, or by
+	// content hash for header-less mail), a re-run resumes from where it stopped
+	// rather than re-copying everything.
 	maxMsgAttempts = 3
 )
 
@@ -81,7 +84,7 @@ type sourceConn interface {
 
 type destConn interface {
 	EnsureFolder(name string) error
-	ExistingMessageIDs(folder string) (map[string]struct{}, error)
+	Existing(folder string) (*ExistingIndex, error)
 	Append(folder string, body []byte, flags []string, date time.Time) error
 	Close()
 }
@@ -213,7 +216,7 @@ func (im *Importer) run(ctx context.Context, log *slog.Logger, job *repository.I
 		if err := dst.EnsureFolder(destFolder); err != nil {
 			return fmt.Errorf("ensure dest folder %q: %w", destFolder, err)
 		}
-		existing, err := dst.ExistingMessageIDs(destFolder)
+		existing, err := dst.Existing(destFolder)
 		if err != nil {
 			return fmt.Errorf("scan existing messages in %q: %w", destFolder, err)
 		}
@@ -228,25 +231,16 @@ func (im *Importer) run(ctx context.Context, log *slog.Logger, job *repository.I
 		}
 
 		for _, ov := range overviews {
-			// Idempotent re-runs: skip a message already present at the dest
-			// (matched by normalized Message-ID). Messages with no Message-ID
-			// can't be de-duplicated and are always copied.
-			if ov.MessageID != "" {
-				if _, dup := existing[ov.MessageID]; dup {
-					skipped++
-					processed++
-					continue
-				}
-			}
-
-			if err := im.copyMessage(src, dst, destFolder, ov); err != nil {
+			imp, err := im.importMessage(src, dst, destFolder, ov, existing)
+			if err != nil {
 				return fmt.Errorf("import message uid %d (message-id %q) in %q after %d attempts: %w",
 					ov.UID, ov.MessageID, f.Name, maxMsgAttempts, err)
 			}
-			if ov.MessageID != "" {
-				existing[ov.MessageID] = struct{}{} // guard against dupes within this run
+			if imp {
+				imported++
+			} else {
+				skipped++
 			}
-			imported++
 			processed++
 
 			if processed%progressEvery == 0 {
@@ -327,27 +321,93 @@ func percent(processed, total int) int {
 	return p
 }
 
-// copyMessage fetches one message and appends it to the destination, retrying a
-// few times to ride out transient IMAP errors. Fetch and append are retried as a
-// unit (a re-fetch on append failure is harmless — the message isn't recorded as
-// present until the whole op succeeds).
-func (im *Importer) copyMessage(src sourceConn, dst destConn, destFolder string, ov Overview) error {
+// importMessage copies one source message into destFolder unless an identical
+// message is already present. It returns whether the message was imported
+// (false = skipped as a duplicate).
+//
+// De-dupe is by normalized Message-ID where one exists. Messages with no
+// Message-ID can't be matched that way, so they are de-duped by a content hash
+// of the raw body — without this they re-append on every re-run (a delta or a
+// resumed import), accumulating a fresh copy per pass. The body is needed to
+// hash, so the header-less path fetches it up front and reuses it for the
+// append. The in-memory index is updated on success to also guard against
+// duplicates encountered within this same run.
+func (im *Importer) importMessage(src sourceConn, dst destConn, destFolder string, ov Overview, existing *ExistingIndex) (bool, error) {
+	if ov.MessageID != "" {
+		if _, dup := existing.MessageIDs[ov.MessageID]; dup {
+			return false, nil
+		}
+		body, err := im.fetchBody(src, ov.UID)
+		if err != nil {
+			return false, err
+		}
+		if err := im.appendBody(dst, destFolder, body, ov); err != nil {
+			return false, err
+		}
+		existing.MessageIDs[ov.MessageID] = struct{}{}
+		return true, nil
+	}
+
+	body, err := im.fetchBody(src, ov.UID)
+	if err != nil {
+		return false, err
+	}
+	h := contentHash(body)
+	if _, dup := existing.ContentHashes[h]; dup {
+		return false, nil
+	}
+	if err := im.appendBody(dst, destFolder, body, ov); err != nil {
+		return false, err
+	}
+	existing.ContentHashes[h] = struct{}{}
+	return true, nil
+}
+
+// fetchBody fetches one message body by UID, retrying a few times to ride out
+// transient IMAP errors. A message still failing after maxMsgAttempts aborts the
+// job with context; because the import de-dupes, a re-run resumes rather than
+// re-copying everything.
+func (im *Importer) fetchBody(src sourceConn, uid uint32) ([]byte, error) {
 	var err error
 	for attempt := 1; attempt <= maxMsgAttempts; attempt++ {
 		var body []byte
-		if body, err = src.FetchBody(ov.UID); err == nil {
-			err = dst.Append(destFolder, body, sanitizeFlags(ov.Flags), ov.InternalDate)
+		if body, err = src.FetchBody(uid); err == nil {
+			return body, nil
 		}
-		if err == nil {
+		im.logger.Warn("import: message fetch failed, retrying",
+			"uid", uid, "attempt", attempt, "max", maxMsgAttempts, "error", err)
+		if attempt < maxMsgAttempts {
+			time.Sleep(msgRetryBackoff)
+		}
+	}
+	return nil, err
+}
+
+// appendBody writes one already-fetched body to the destination, retrying a few
+// times to ride out transient IMAP errors. The message is not recorded as
+// present until the append succeeds, so a retry never double-counts.
+func (im *Importer) appendBody(dst destConn, destFolder string, body []byte, ov Overview) error {
+	var err error
+	for attempt := 1; attempt <= maxMsgAttempts; attempt++ {
+		if err = dst.Append(destFolder, body, sanitizeFlags(ov.Flags), ov.InternalDate); err == nil {
 			return nil
 		}
-		im.logger.Warn("import: message copy failed, retrying",
+		im.logger.Warn("import: message append failed, retrying",
 			"uid", ov.UID, "attempt", attempt, "max", maxMsgAttempts, "error", err)
 		if attempt < maxMsgAttempts {
 			time.Sleep(msgRetryBackoff)
 		}
 	}
 	return err
+}
+
+// contentHash returns the hex SHA-256 of a raw message — the de-dupe key for
+// messages that lack a Message-ID. Dovecot stores and returns APPENDed messages
+// verbatim, so the hash of a source body matches the hash of the same message
+// already at the destination, making re-runs idempotent for header-less mail.
+func contentHash(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 // sanitizeFlags drops flags that cannot be set via APPEND. \Recent is
