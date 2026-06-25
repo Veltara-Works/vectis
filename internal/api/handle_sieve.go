@@ -15,8 +15,9 @@ const (
 	// but keeps a leaked row (handler panic, lost revoke) short-lived. PruneExpired
 	// is the final safety net.
 	sieveTokenTTL = 2 * time.Minute
-	// sieveRevokeTimeout bounds the deferred token revoke so a slow/hung DB call
-	// can't block the handler's return path and the HTTP response.
+	// sieveRevokeTimeout bounds the deferred token revoke: a slow/hung DB call
+	// delays the handler's return (and the HTTP response) by at most this much
+	// rather than blocking it indefinitely. TTL + PruneExpired backstop a drop.
 	sieveRevokeTimeout = 5 * time.Second
 	// sievePurpose tags auth tokens minted for ManageSieve admin access, distinct
 	// from the importer's "import" and impersonation's "impersonate" tokens so
@@ -224,8 +225,9 @@ func (s *Server) getMailboxCredentials(r *http.Request, mailboxID string) (login
 
 	revoke = func() {
 		// WithoutCancel: revoke even if the request context is already done.
-		// Bounded by a short timeout so a slow/hung DB can't block the handler's
-		// return path (and the HTTP response); TTL + PruneExpired backstop a drop.
+		// Bounded by a short timeout so a slow/hung DB delays the handler's return
+		// by at most sieveRevokeTimeout instead of blocking it indefinitely; TTL +
+		// PruneExpired backstop a dropped revoke.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), sieveRevokeTimeout)
 		defer cancel()
 		if rerr := s.dovecotTokens.Revoke(ctx, token.ID); rerr != nil {

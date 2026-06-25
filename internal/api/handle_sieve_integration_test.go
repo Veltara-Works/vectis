@@ -1,5 +1,13 @@
 //go:build integration
 
+// This test lives in package api (internal), unlike the external api_test
+// integration suite, on purpose: it asserts the exact return contract of the
+// unexported getMailboxCredentials — that the ManageSieve login is the
+// mailbox's OWN address (not the retired *vectis-admin master user) and that
+// the minted token carries purpose="sieve". Those are unobservable through the
+// external HTTP path (ManageSieve is unreachable in CI and a token's
+// purpose/login can't be seen mid-request), so the small DB/Valkey setup
+// duplication is the cost of testing the contract directly.
 package api
 
 import (
