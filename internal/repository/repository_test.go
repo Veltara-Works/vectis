@@ -1427,3 +1427,66 @@ func TestRBLCheck_CRUD(t *testing.T) {
 		t.Errorf("pruned %d rows, want >=2", deleted)
 	}
 }
+
+// TestDovecotAuthToken_RevokeByTarget covers the purpose-scoped bulk revoke used
+// by admin impersonation: it clears all impersonation tokens for one mailbox
+// while leaving the importer's "import"-purpose tokens (and other users' tokens)
+// intact, and is idempotent on a second call.
+func TestDovecotAuthToken_RevokeByTarget(t *testing.T) {
+	ctx := context.Background()
+	repo := repository.NewDovecotAuthTokenRepo(testPool)
+	suffix := uniqueSuffix()
+	target := "imp-" + suffix + "@repo-test.com"
+	other := "other-" + suffix + "@repo-test.com"
+
+	mustMint := func(user, purpose string) *repository.MintedToken {
+		tok, err := repo.Mint(ctx, user, purpose, time.Hour)
+		if err != nil {
+			t.Fatalf("Mint(%s,%s): %v", user, purpose, err)
+		}
+		return tok
+	}
+	exists := func(id string) bool {
+		var n int
+		if err := testPool.QueryRow(ctx,
+			`SELECT count(*) FROM dovecot_auth_tokens WHERE id = $1`, id).Scan(&n); err != nil {
+			t.Fatalf("exists(%s): %v", id, err)
+		}
+		return n == 1
+	}
+
+	imp1 := mustMint(target, "impersonate")
+	imp2 := mustMint(target, "impersonate")
+	importTok := mustMint(target, "import")    // same mailbox, different consumer
+	otherTok := mustMint(other, "impersonate") // different mailbox
+	t.Cleanup(func() {
+		_ = repo.Revoke(ctx, importTok.ID)
+		_ = repo.Revoke(ctx, otherTok.ID)
+	})
+
+	n, err := repo.RevokeByTarget(ctx, target, "impersonate")
+	if err != nil {
+		t.Fatalf("RevokeByTarget: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("revoked %d rows, want 2", n)
+	}
+	if exists(imp1.ID) || exists(imp2.ID) {
+		t.Error("impersonation tokens for target should be gone")
+	}
+	if !exists(importTok.ID) {
+		t.Error("import-purpose token for the same mailbox must survive purpose-scoped revoke")
+	}
+	if !exists(otherTok.ID) {
+		t.Error("another mailbox's impersonation token must survive")
+	}
+
+	// Idempotent: nothing left to revoke.
+	again, err := repo.RevokeByTarget(ctx, target, "impersonate")
+	if err != nil {
+		t.Fatalf("RevokeByTarget (2nd): %v", err)
+	}
+	if again != 0 {
+		t.Errorf("second revoke removed %d rows, want 0", again)
+	}
+}
