@@ -1,9 +1,6 @@
 package api
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -11,22 +8,26 @@ import (
 )
 
 const (
-	impersonationTTL    = 30 * time.Minute
-	impersonationPrefix = "impersonate:"
+	impersonationTTL   = 30 * time.Minute
+	impersonatePurpose = "impersonate"
 )
 
 type impersonateResponse struct {
-	IMAPHost    string `json:"imap_host"`
-	IMAPPort    int    `json:"imap_port"`
-	Username    string `json:"username"`     // master user format: user@domain*admin
-	Password    string `json:"password"`     // temporary password
-	ExpiresAt   string `json:"expires_at"`
-	ExpiresInS  int    `json:"expires_in_seconds"`
+	IMAPHost   string `json:"imap_host"`
+	IMAPPort   int    `json:"imap_port"`
+	Username   string `json:"username"` // the mailbox's own address — log in AS this
+	Password   string `json:"password"` // short-lived Dovecot auth-token password
+	ExpiresAt  string `json:"expires_at"`
+	ExpiresInS int    `json:"expires_in_seconds"`
 }
 
-// handleImpersonate generates temporary Dovecot master user credentials
-// for an admin to access a mailbox. The credentials expire after 30 minutes.
-// All impersonation is logged in the audit trail.
+// handleImpersonate mints a short-lived Dovecot auth token so an admin can log
+// into a mailbox AS that user — the same token-passdb mechanism the native IMAP
+// importer uses (internal/repository/dovecot_auth_token.go, migration 000023).
+// The admin connects to IMAP as the mailbox's own address with the returned
+// token password; the auth_token passdb is checked before the real mailbox
+// passdb and is fail-safe (a miss/expiry/DB error falls through to normal auth).
+// Tokens expire after 30 minutes and every impersonation is audit-logged.
 func (s *Server) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 	mailboxID := chi.URLParam(r, "mailboxID")
 	if mailboxID == "" {
@@ -59,26 +60,16 @@ func (s *Server) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate a temporary password and store in Valkey.
-	tempPassword, err := generateTempPassword()
+	userEmail := mailbox.LocalPart + "@" + domain.Name
+
+	// Mint a short-lived auth token scoped to this mailbox. The admin logs into
+	// Dovecot as userEmail with this token password.
+	token, err := s.dovecotTokens.Mint(r.Context(), userEmail, impersonatePurpose, impersonationTTL)
 	if err != nil {
+		s.logger.Error("mint impersonation token failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to generate credentials")
 		return
 	}
-
-	userEmail := mailbox.LocalPart + "@" + domain.Name
-	masterUsername := userEmail + "*vectis-admin"
-
-	// Store the temporary password in Valkey with TTL.
-	vkKey := impersonationPrefix + masterUsername
-	setCmd := s.vk.B().Set().Key(vkKey).Value(tempPassword).Ex(impersonationTTL).Build()
-	if err := s.vk.Do(r.Context(), setCmd).Error(); err != nil {
-		s.logger.Error("store impersonation creds failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to store credentials")
-		return
-	}
-
-	expiresAt := time.Now().UTC().Add(impersonationTTL)
 
 	// Audit log — impersonation is a sensitive action.
 	adminID := getAdminID(r.Context())
@@ -87,20 +78,23 @@ func (s *Server) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 		map[string]any{
 			"target_email": userEmail,
 			"domain":       domain.Name,
-			"expires_at":   expiresAt.Format(time.RFC3339),
+			"token_id":     token.ID,
+			"expires_at":   token.ExpiresAt.Format(time.RFC3339),
 		}, &ip)
 
 	respond(w, r, http.StatusOK, impersonateResponse{
 		IMAPHost:   s.hostname,
 		IMAPPort:   993,
-		Username:   masterUsername,
-		Password:   tempPassword,
-		ExpiresAt:  expiresAt.Format(time.RFC3339),
+		Username:   userEmail,
+		Password:   token.Password,
+		ExpiresAt:  token.ExpiresAt.Format(time.RFC3339),
 		ExpiresInS: int(impersonationTTL.Seconds()),
 	})
 }
 
-// handleRevokeImpersonation immediately invalidates impersonation credentials for a mailbox.
+// handleRevokeImpersonation immediately invalidates all active impersonation
+// tokens for a mailbox (deletes the rows). The importer's own "import"-purpose
+// tokens for the same mailbox are left untouched.
 func (s *Server) handleRevokeImpersonation(w http.ResponseWriter, r *http.Request) {
 	mailboxID := chi.URLParam(r, "mailboxID")
 	if mailboxID == "" {
@@ -126,10 +120,11 @@ func (s *Server) handleRevokeImpersonation(w http.ResponseWriter, r *http.Reques
 	}
 
 	userEmail := mailbox.LocalPart + "@" + domain.Name
-	masterUsername := userEmail + "*vectis-admin"
-	vkKey := impersonationPrefix + masterUsername
-
-	s.vk.Do(r.Context(), s.vk.B().Del().Key(vkKey).Build())
+	if _, err := s.dovecotTokens.RevokeByTarget(r.Context(), userEmail, impersonatePurpose); err != nil {
+		s.logger.Error("revoke impersonation tokens failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to revoke credentials")
+		return
+	}
 
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
@@ -137,12 +132,4 @@ func (s *Server) handleRevokeImpersonation(w http.ResponseWriter, r *http.Reques
 		map[string]any{"target_email": userEmail}, &ip)
 
 	respond(w, r, http.StatusOK, map[string]string{"status": "revoked"})
-}
-
-func generateTempPassword() (string, error) {
-	b := make([]byte, 24)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("generate temp password: %w", err)
-	}
-	return hex.EncodeToString(b), nil
 }

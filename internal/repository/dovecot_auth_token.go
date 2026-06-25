@@ -70,6 +70,22 @@ func (r *DovecotAuthTokenRepo) Revoke(ctx context.Context, id string) error {
 	return nil
 }
 
+// RevokeByTarget deletes all tokens for targetUser with the given purpose,
+// returning how many rows were removed. Admin impersonation revoke uses this:
+// unlike the importer (which holds one token id per run) an admin has no single
+// id to track and may have minted several, so revoke clears them in one shot.
+// Scoping by purpose leaves other consumers' tokens (e.g. a concurrent
+// "import" run for the same mailbox) untouched.
+func (r *DovecotAuthTokenRepo) RevokeByTarget(ctx context.Context, targetUser, purpose string) (int64, error) {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM dovecot_auth_tokens WHERE target_user = $1 AND purpose = $2`,
+		targetUser, purpose)
+	if err != nil {
+		return 0, fmt.Errorf("revoke auth tokens by target: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // PruneExpired removes tokens past their expiry. A safety net in case a session
 // crashes before it revokes; the passdb already ignores expired rows.
 func (r *DovecotAuthTokenRepo) PruneExpired(ctx context.Context) (int64, error) {
