@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -59,8 +60,10 @@ func (c SourceConfig) effectivePort() int {
 }
 
 // Addr returns host:port, defaulting the port from the TLS mode.
+// net.JoinHostPort (not fmt.Sprintf) so IPv6 literal hosts are bracketed
+// correctly, e.g. "[::1]:993".
 func (c SourceConfig) Addr() string {
-	return fmt.Sprintf("%s:%d", c.Host, c.effectivePort())
+	return net.JoinHostPort(c.Host, strconv.Itoa(c.effectivePort()))
 }
 
 // validate enforces the SSRF guard's static checks: a non-empty host and a
