@@ -30,7 +30,9 @@ section for the analysis.
 > (`golang:1.26-alpine` builders). Incrementally updated **2026-06-24** for the
 > native IMAP-import dependencies (`emersion/go-imap` + the indirect
 > `emersion/go-sasl`, both MIT), verified with `go-licenses` against the Go 1.26.4
-> SDK GOROOT.
+> SDK GOROOT. Reconciled **2026-06-26** against `go list -m` after a prelaunch
+> audit found four stale versions (`spf13/pflag` → v1.0.9, `x/oauth2` → v0.36.0,
+> `x/sync` → v0.21.0, `x/text` → v0.38.0); licenses unchanged (all BSD-3-Clause).
 
 ---
 
@@ -76,14 +78,14 @@ fork) and are listed separately to reflect that.
 | `github.com/prometheus/procfs` | v0.16.1 | Apache-2.0 |
 | `github.com/russellhaering/goxmldsig` | v1.6.0 | Apache-2.0 |
 | `github.com/spf13/cobra` | v1.10.2 | Apache-2.0 |
-| `github.com/spf13/pflag` | v1.0.6 | BSD-3-Clause |
+| `github.com/spf13/pflag` | v1.0.9 | BSD-3-Clause |
 | `github.com/valkey-io/valkey-go` | v1.0.76 | Apache-2.0 |
 | `go.yaml.in/yaml/v2` | v2.4.2 | Apache-2.0 |
 | `golang.org/x/crypto` | v0.53.0 | BSD-3-Clause |
-| `golang.org/x/oauth2` | v0.30.0 | BSD-3-Clause |
-| `golang.org/x/sync/semaphore` | v0.20.0 | BSD-3-Clause |
+| `golang.org/x/oauth2` | v0.36.0 | BSD-3-Clause |
+| `golang.org/x/sync/semaphore` | v0.21.0 | BSD-3-Clause |
 | `golang.org/x/sys` | v0.46.0 | BSD-3-Clause |
-| `golang.org/x/text` | v0.35.0 | BSD-3-Clause |
+| `golang.org/x/text` | v0.38.0 | BSD-3-Clause |
 | `google.golang.org/protobuf` | v1.36.8 | BSD-3-Clause |
 | `gopkg.in/yaml.v3` | v3.0.1 | MIT |
 

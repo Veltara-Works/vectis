@@ -24,8 +24,12 @@
   API operation, not a config edit.
 - **Postfix and Dovecot use direct SQL lookups** for domain/mailbox/alias
   resolution — no service reload is needed for entity changes.
-- **The orchestrator container is the ONLY one with Docker socket access.**
-  Any new code that needs to manage containers belongs in the orchestrator.
+- **Docker socket access is minimised per ADR-017.** Three containers mount the
+  socket, each with the least capability for one need: `orchestrator` (`:ro`,
+  the primary socket-holder; full stack lifecycle), `promtail` (`:ro`, log-label
+  discovery), and `cert-extractor` (RW, to `docker kill --signal=HUP` the mail
+  stack on cert rotation). No other container gets the socket; any new code that
+  needs to manage containers belongs in the orchestrator.
 - **Migrations are forward-only.** Rollback is via `pg_dump` snapshot restore,
   not down-migrations. `.down.sql` files exist for tooling convention only.
 - **Four Docker networks** segregate traffic: `frontend`, `mail`, `data`,
