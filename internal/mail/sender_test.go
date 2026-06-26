@@ -158,3 +158,52 @@ func TestBuildMessage_QuotedPrintable_Multipart(t *testing.T) {
 		t.Errorf("html part\n got: %q\nwant: %q", gotHTML, html)
 	}
 }
+
+// TestBuildMessage_HeaderInjection verifies that CR/LF (and quote-in-filename)
+// in any header-bound field is rejected, preventing SMTP/RFC 5322 header
+// injection (e.g. smuggling an extra Bcc). Body fields are exempt.
+func TestBuildMessage_HeaderInjection(t *testing.T) {
+	base := func() *Message {
+		return &Message{
+			From:     Address{Email: "noreply@vectismail.com"},
+			To:       []Address{{Email: "user@example.com"}},
+			Subject:  "Hi",
+			TextBody: "body",
+		}
+	}
+
+	mutate := []struct {
+		name string
+		mod  func(*Message)
+	}{
+		{"from email CRLF", func(m *Message) { m.From.Email = "a@b.com\r\nBcc: evil@x.com" }},
+		{"to email LF", func(m *Message) { m.To[0].Email = "u@e.com\nBcc: evil@x.com" }},
+		{"cc email CRLF", func(m *Message) { m.CC = []Address{{Email: "c@e.com\r\nX-Evil: 1"}} }},
+		{"bcc email CRLF", func(m *Message) { m.BCC = []Address{{Email: "b@e.com\r\nX-Evil: 1"}} }},
+		{"reply-to CRLF", func(m *Message) { m.ReplyTo = &Address{Email: "r@e.com\r\nX-Evil: 1"} }},
+		{"name CRLF", func(m *Message) { m.From.Name = "Bob\r\nBcc: evil@x.com" }},
+		{"subject CRLF", func(m *Message) { m.Subject = "Hi\r\nBcc: evil@x.com" }},
+		{"custom header value CRLF", func(m *Message) { m.Headers = map[string]string{"X-Foo": "v\r\nBcc: evil@x.com"} }},
+		{"custom header key CRLF", func(m *Message) { m.Headers = map[string]string{"X-Foo\r\nBcc: evil@x.com": "v"} }},
+		{"attachment filename CRLF", func(m *Message) {
+			m.Attachments = []Attachment{{Filename: "f\r\nBcc: evil@x.com", ContentType: "text/plain", Content: "aGk="}}
+		}},
+		{"attachment filename quote", func(m *Message) {
+			m.Attachments = []Attachment{{Filename: `f"; x="y`, ContentType: "text/plain", Content: "aGk="}}
+		}},
+	}
+	for _, tc := range mutate {
+		t.Run(tc.name, func(t *testing.T) {
+			m := base()
+			tc.mod(m)
+			if _, err := buildMessage(m, "id@host", "host"); err == nil {
+				t.Fatalf("expected header-injection rejection, got nil error")
+			}
+		})
+	}
+
+	// A legitimate message with no CR/LF must still build successfully.
+	if _, err := buildMessage(base(), "id@host", "host"); err != nil {
+		t.Fatalf("clean message rejected: %v", err)
+	}
+}
