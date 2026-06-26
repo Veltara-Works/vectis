@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -187,6 +188,13 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.mailSender.Send(msg)
 	if err != nil {
+		// Header-injection attempts are client errors, not server faults.
+		if errors.Is(err, mail.ErrHeaderInjection) {
+			s.logger.Warn("send rejected: header injection", "error", err, "from", req.From.Email)
+			respondError(w, r, http.StatusBadRequest, "INVALID_HEADER",
+				"Message rejected: a header field contains illegal characters")
+			return
+		}
 		s.logger.Error("send failed", "error", err, "from", req.From.Email)
 		respondError(w, r, http.StatusInternalServerError, "SEND_FAILED",
 			"Failed to send message: "+err.Error())

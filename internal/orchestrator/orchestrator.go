@@ -189,22 +189,33 @@ func (o *Orchestrator) Health() HealthResponse {
 	}
 }
 
-// acquireAdvisoryLock acquires the Postgres advisory lock for the orchestrator.
-// Only one operation can run at a time (Spec D.4).
-func (o *Orchestrator) acquireAdvisoryLock(ctx context.Context) error {
-	_, err := o.db.Exec(ctx, "SELECT pg_advisory_lock(1)")
+// acquireAdvisoryLock takes the orchestrator's Postgres advisory lock so only
+// one operation runs at a time (Spec D.4).
+//
+// pg_advisory_lock is SESSION-scoped: the lock is owned by the backend
+// connection that took it and must be released on that SAME connection. Running
+// it via the pool (o.db.Exec) grabs an arbitrary connection per call, so the
+// lock and unlock could land on different sessions — giving no mutual exclusion
+// and leaking the lock. We therefore acquire ONE dedicated connection from the
+// pool and hold it for the whole locked operation. The returned func releases
+// the lock on that connection and returns it to the pool; callers must defer it.
+func (o *Orchestrator) acquireAdvisoryLock(ctx context.Context) (func(), error) {
+	conn, err := o.db.Acquire(ctx)
 	if err != nil {
-		return fmt.Errorf("acquire advisory lock: %w", err)
+		return nil, fmt.Errorf("acquire db connection for advisory lock: %w", err)
 	}
-	return nil
-}
-
-// releaseAdvisoryLock releases the Postgres advisory lock.
-func (o *Orchestrator) releaseAdvisoryLock(ctx context.Context) {
-	_, err := o.db.Exec(ctx, "SELECT pg_advisory_unlock(1)")
-	if err != nil {
-		o.logger.Error("failed to release advisory lock", "error", err)
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(1)"); err != nil {
+		conn.Release()
+		return nil, fmt.Errorf("acquire advisory lock: %w", err)
 	}
+	return func() {
+		// Release on the SAME connection. Use a cancel-free context so a
+		// cancelled operation still drops the lock rather than leaking it.
+		if _, err := conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock(1)"); err != nil {
+			o.logger.Error("failed to release advisory lock", "error", err)
+		}
+		conn.Release()
+	}, nil
 }
 
 // configHash computes a SHA-256 hash of the current docker-compose file
@@ -230,10 +241,11 @@ func (o *Orchestrator) configHash() (string, error) {
 // Plan computes the diff between current and desired state (Spec D.3, D.9).
 // This is a synchronous operation that blocks until complete.
 func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
-	if err := o.acquireAdvisoryLock(ctx); err != nil {
+	release, err := o.acquireAdvisoryLock(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("orchestrator busy: %w", err)
 	}
-	defer o.releaseAdvisoryLock(ctx)
+	defer release()
 
 	// Validate current state allows planning.
 	if !o.sm.State().CanPlan() {
@@ -408,10 +420,11 @@ func (o *Orchestrator) Apply(ctx context.Context) (string, error) {
 // ApplyWithJobID is like Apply but uses a pre-generated job ID so the caller
 // can return it to clients before the advisory lock is acquired.
 func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string, error) {
-	if err := o.acquireAdvisoryLock(ctx); err != nil {
+	release, err := o.acquireAdvisoryLock(ctx)
+	if err != nil {
 		return "", fmt.Errorf("orchestrator busy: %w", err)
 	}
-	defer o.releaseAdvisoryLock(ctx)
+	defer release()
 
 	// Check state.
 	if !o.sm.State().CanApply() {
@@ -898,10 +911,11 @@ func (o *Orchestrator) Rollback(ctx context.Context) (string, error) {
 
 // RollbackWithJobID is like Rollback but uses a pre-generated job ID.
 func (o *Orchestrator) RollbackWithJobID(ctx context.Context, jobID string) (string, error) {
-	if err := o.acquireAdvisoryLock(ctx); err != nil {
+	release, err := o.acquireAdvisoryLock(ctx)
+	if err != nil {
 		return "", fmt.Errorf("orchestrator busy: %w", err)
 	}
-	defer o.releaseAdvisoryLock(ctx)
+	defer release()
 
 	if !o.sm.State().CanRollback() {
 		return "", &ErrInvalidTransition{From: o.sm.State(), Op: "rollback"}

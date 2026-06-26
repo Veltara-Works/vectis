@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,12 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrHeaderInjection is returned when a message field that is written into an
+// RFC 5322 header (or a MIME parameter) contains a CR or LF — i.e. an attempt
+// to smuggle additional headers (header injection, e.g. an extra Bcc) or to
+// split the message.
+var ErrHeaderInjection = errors.New("mail: header injection attempt (CR/LF in header field)")
 
 // Sender submits outbound messages to Postfix via SMTP on the internal network.
 type Sender struct {
@@ -38,15 +45,15 @@ func NewSender(smtpAddr, ehlo string, logger *slog.Logger) *Sender {
 
 // Message represents an outbound email to be sent.
 type Message struct {
-	From        Address      `json:"from"`
-	To          []Address    `json:"to"`
-	CC          []Address    `json:"cc,omitempty"`
-	BCC         []Address    `json:"bcc,omitempty"`
-	ReplyTo     *Address     `json:"reply_to,omitempty"`
-	Subject     string       `json:"subject"`
-	TextBody    string       `json:"text_body,omitempty"`
-	HTMLBody    string       `json:"html_body,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
+	From        Address           `json:"from"`
+	To          []Address         `json:"to"`
+	CC          []Address         `json:"cc,omitempty"`
+	BCC         []Address         `json:"bcc,omitempty"`
+	ReplyTo     *Address          `json:"reply_to,omitempty"`
+	Subject     string            `json:"subject"`
+	TextBody    string            `json:"text_body,omitempty"`
+	HTMLBody    string            `json:"html_body,omitempty"`
+	Attachments []Attachment      `json:"attachments,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"` // custom headers (X-*)
 	// MessageID, when non-empty, is used verbatim as the RFC 5322 Message-ID.
 	// Callers pre-generate this (via GenerateMessageID) when they need to
@@ -151,8 +158,83 @@ func (s *Sender) Send(msg *Message) (*SendResult, error) {
 	return &SendResult{MessageID: messageID}, nil
 }
 
+// validateHeaders rejects any header-bound field containing CR or LF (header
+// injection). Address Name and Subject are RFC 2047 Q-encoded downstream — which
+// itself neutralises CR/LF — but they are validated here too as defence in
+// depth. Body fields (TextBody/HTMLBody) are exempt: they are quoted-printable
+// encoded and cannot break out of their MIME part. Attachment filenames are also
+// checked for the '"' that would break the quoted MIME name/filename parameter.
+func (m *Message) validateHeaders() error {
+	noCRLF := func(field, v string) error {
+		if strings.ContainsAny(v, "\r\n") {
+			return fmt.Errorf("%w: %s", ErrHeaderInjection, field)
+		}
+		return nil
+	}
+	addrs := func(label string, list []Address) error {
+		for i, a := range list {
+			if err := noCRLF(fmt.Sprintf("%s[%d].email", label, i), a.Email); err != nil {
+				return err
+			}
+			if err := noCRLF(fmt.Sprintf("%s[%d].name", label, i), a.Name); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := noCRLF("from.email", m.From.Email); err != nil {
+		return err
+	}
+	if err := noCRLF("from.name", m.From.Name); err != nil {
+		return err
+	}
+	for _, g := range []struct {
+		label string
+		list  []Address
+	}{{"to", m.To}, {"cc", m.CC}, {"bcc", m.BCC}} {
+		if err := addrs(g.label, g.list); err != nil {
+			return err
+		}
+	}
+	if m.ReplyTo != nil {
+		if err := noCRLF("reply_to.email", m.ReplyTo.Email); err != nil {
+			return err
+		}
+		if err := noCRLF("reply_to.name", m.ReplyTo.Name); err != nil {
+			return err
+		}
+	}
+	if err := noCRLF("subject", m.Subject); err != nil {
+		return err
+	}
+	for k, v := range m.Headers {
+		if err := noCRLF("header.key", k); err != nil {
+			return err
+		}
+		if err := noCRLF("header["+k+"]", v); err != nil {
+			return err
+		}
+	}
+	for i, att := range m.Attachments {
+		if err := noCRLF(fmt.Sprintf("attachments[%d].filename", i), att.Filename); err != nil {
+			return err
+		}
+		if strings.Contains(att.Filename, `"`) {
+			return fmt.Errorf("%w: attachments[%d].filename contains quote", ErrHeaderInjection, i)
+		}
+		if err := noCRLF(fmt.Sprintf("attachments[%d].content_type", i), att.ContentType); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // buildMessage creates an RFC 5322 message with optional MIME multipart.
 func buildMessage(msg *Message, messageID, hostname string) ([]byte, error) {
+	if err := msg.validateHeaders(); err != nil {
+		return nil, err
+	}
+
 	var buf bytes.Buffer
 
 	// Headers.
@@ -245,10 +327,22 @@ func buildMessage(msg *Message, messageID, hostname string) ([]byte, error) {
 }
 
 func writeHeader(buf *bytes.Buffer, key, value string) {
-	buf.WriteString(key)
+	// Defence in depth: buildMessage validates all caller-supplied fields via
+	// validateHeaders before reaching here, but strip any stray CR/LF so a
+	// future caller that bypasses validation can never inject a header.
+	buf.WriteString(stripCRLF(key))
 	buf.WriteString(": ")
-	buf.WriteString(value)
+	buf.WriteString(stripCRLF(value))
 	buf.WriteString("\r\n")
+}
+
+// stripCRLF removes carriage returns and line feeds, the characters used for
+// header injection. Program-generated headers never legitimately contain them.
+func stripCRLF(s string) string {
+	if !strings.ContainsAny(s, "\r\n") {
+		return s
+	}
+	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
 }
 
 func formatAddresses(addrs []Address) string {

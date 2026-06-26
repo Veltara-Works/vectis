@@ -33,6 +33,11 @@ type OIDCIdentity struct {
 	Provider string
 	Subject  string
 	Email    string
+	// EmailVerified reflects the IdP's email_verified claim. It is true only
+	// when the claim is explicitly present AND true; an absent claim is treated
+	// as unverified. The email address must NOT be trusted for account matching
+	// or auto-linking unless this is true (see handleOIDCCallback).
+	EmailVerified bool
 }
 
 const oidcStatePrefix = "oidc_state:"
@@ -109,7 +114,7 @@ func (m *OIDCManager) CreateState(ctx context.Context, provider string) (string,
 	}
 	state := hex.EncodeToString(b)
 
-	cmd := m.vk.B().Set().Key(oidcStatePrefix+state).Value(provider).Ex(oidcStateTTL).Build()
+	cmd := m.vk.B().Set().Key(oidcStatePrefix + state).Value(provider).Ex(oidcStateTTL).Build()
 	if err := m.vk.Do(ctx, cmd).Error(); err != nil {
 		return "", fmt.Errorf("store state: %w", err)
 	}
@@ -150,10 +155,12 @@ func (m *OIDCManager) ExchangeAndVerify(ctx context.Context, provider *OIDCProvi
 		return nil, fmt.Errorf("verify id_token: %w", err)
 	}
 
-	// Extract claims.
+	// Extract claims. email_verified is a *bool so we can distinguish an
+	// explicit "false" from an absent claim — both are treated as unverified,
+	// but the distinction is useful for operator-facing diagnostics.
 	var claims struct {
 		Email         string `json:"email"`
-		EmailVerified bool   `json:"email_verified"`
+		EmailVerified *bool  `json:"email_verified"`
 		Sub           string `json:"sub"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
@@ -165,8 +172,18 @@ func (m *OIDCManager) ExchangeAndVerify(ctx context.Context, provider *OIDCProvi
 	}
 
 	return &OIDCIdentity{
-		Provider: provider.Name,
-		Subject:  claims.Sub,
-		Email:    strings.ToLower(claims.Email),
+		Provider:      provider.Name,
+		Subject:       claims.Sub,
+		Email:         strings.ToLower(claims.Email),
+		EmailVerified: emailClaimVerified(claims.EmailVerified),
 	}, nil
+}
+
+// emailClaimVerified reports whether the IdP positively asserted that the email
+// is verified. The email_verified claim is OPTIONAL in OIDC, so an absent claim
+// (nil) is treated as UNVERIFIED — the secure default. Only an explicit true is
+// trusted. The email address must not be used for account auto-linking unless
+// this returns true.
+func emailClaimVerified(claim *bool) bool {
+	return claim != nil && *claim
 }

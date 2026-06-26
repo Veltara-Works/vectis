@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -196,6 +197,9 @@ func (s *Server) processSingleSend(r *http.Request, req sendRequest, adminID, ad
 
 	result, err := s.mailSender.Send(msg)
 	if err != nil {
+		if errors.Is(err, mail.ErrHeaderInjection) {
+			return singleSendResult{code: "INVALID_HEADER", err: "Message rejected: a header field contains illegal characters"}
+		}
 		return singleSendResult{code: "SEND_FAILED", err: "Failed to send: " + err.Error()}
 	}
 

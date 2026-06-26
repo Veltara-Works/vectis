@@ -19,11 +19,24 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
+)
+
+const (
+	// dialTimeout bounds the TCP connect to a source server. Without it, a
+	// black-holed host hangs the dial indefinitely and wedges an import slot.
+	dialTimeout = 30 * time.Second
+	// commandTimeout is the per-IMAP-command deadline. Generous enough for a
+	// large folder's metadata fetch, but bounds a server that stalls mid-stream
+	// so a hung source is eventually abandoned rather than wedging a slot forever.
+	commandTimeout = 10 * time.Minute
 )
 
 // SourceConfig describes the external account to read from.
@@ -35,17 +48,75 @@ type SourceConfig struct {
 	Pass string
 }
 
-// Addr returns host:port, defaulting the port from the TLS mode.
-func (c SourceConfig) Addr() string {
-	port := c.Port
-	if port == 0 {
-		if c.TLS {
-			port = 993
-		} else {
-			port = 143
-		}
+// effectivePort returns the dial port, defaulting from the TLS mode.
+func (c SourceConfig) effectivePort() int {
+	if c.Port != 0 {
+		return c.Port
 	}
-	return fmt.Sprintf("%s:%d", c.Host, port)
+	if c.TLS {
+		return 993
+	}
+	return 143
+}
+
+// Addr returns host:port, defaulting the port from the TLS mode.
+// net.JoinHostPort (not fmt.Sprintf) so IPv6 literal hosts are bracketed
+// correctly, e.g. "[::1]:993".
+func (c SourceConfig) Addr() string {
+	return net.JoinHostPort(c.Host, strconv.Itoa(c.effectivePort()))
+}
+
+// validate enforces the SSRF guard's static checks: a non-empty host and a
+// port restricted to the IMAP ports. The dynamic IP check happens in the dialer
+// Control hook (rebinding-proof). Restricting the port prevents the import
+// feature from being used to reach arbitrary internal services (Redis, HTTP,
+// etc.) on a co-located network.
+func (c SourceConfig) validate() error {
+	if strings.TrimSpace(c.Host) == "" {
+		return fmt.Errorf("source host is empty")
+	}
+	if p := c.effectivePort(); p != 143 && p != 993 {
+		return fmt.Errorf("source port %d not allowed (only IMAP 143 or 993)", p)
+	}
+	return nil
+}
+
+// disallowedDialTarget reports whether an IP literal must not be dialed by the
+// import feature — loopback, link-local (incl. cloud metadata 169.254.169.254),
+// private (RFC 1918 + IPv6 ULA), CGNAT, unspecified, or multicast. This is the
+// core SSRF defence: the source server is operator/admin-supplied and dialed
+// server-side, so without it an attacker who reaches the import API could probe
+// internal infrastructure.
+func disallowedDialTarget(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() ||
+		ip.IsPrivate() {
+		return true
+	}
+	// 100.64.0.0/10 — CGNAT (RFC 6598), not covered by IsPrivate.
+	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+		return true
+	}
+	return false
+}
+
+// ssrfControl is a net.Dialer Control hook that rejects connections to
+// disallowed addresses. It runs after DNS resolution with the concrete IP about
+// to be connected, so it defeats DNS-rebinding (TOCTOU) attacks that a
+// resolve-then-dial-by-name check would miss.
+func ssrfControl(network, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("ssrf guard: parse %q: %w", address, err)
+	}
+	ip := net.ParseIP(host)
+	if disallowedDialTarget(ip) {
+		return fmt.Errorf("ssrf guard: refusing to dial disallowed address %s", address)
+	}
+	return nil
 }
 
 // Folder is a source mailbox (folder) and its raw IMAP attributes (e.g.
@@ -84,20 +155,30 @@ type SourceClient struct {
 
 // Dial connects and logs in.
 func Dial(cfg SourceConfig) (*SourceClient, error) {
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+
+	// Guarded dialer: bounded connect timeout + an SSRF Control hook that
+	// validates the concrete resolved IP at connect time (rebinding-proof).
+	dialer := &net.Dialer{Timeout: dialTimeout, Control: ssrfControl}
+
 	var (
 		c   *client.Client
 		err error
 	)
 	if cfg.TLS {
-		c, err = client.DialTLS(cfg.Addr(), &tls.Config{ServerName: cfg.Host})
+		c, err = client.DialWithDialerTLS(dialer, cfg.Addr(), &tls.Config{ServerName: cfg.Host})
 		if err != nil {
 			return nil, fmt.Errorf("dial tls %s: %w", cfg.Addr(), err)
 		}
+		c.Timeout = commandTimeout
 	} else {
-		c, err = client.Dial(cfg.Addr())
+		c, err = client.DialWithDialer(dialer, cfg.Addr())
 		if err != nil {
 			return nil, fmt.Errorf("dial %s: %w", cfg.Addr(), err)
 		}
+		c.Timeout = commandTimeout
 		// Non-TLS mode is "plaintext + STARTTLS": REQUIRE the upgrade before
 		// sending credentials. If the server doesn't advertise STARTTLS we refuse
 		// rather than silently transmit the password in cleartext (a downgrade an
