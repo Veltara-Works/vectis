@@ -11,19 +11,36 @@ import (
 	"strings"
 )
 
+// MIME parsing limits — defence against resource-exhaustion DoS from
+// attacker-sent mail. Inbound messages are attacker-controlled, so the parser
+// must bound recursion depth (deeply nested multiparts → stack), part count
+// (CPU), and total accumulated bytes (memory), in addition to the per-part cap.
+const (
+	maxMIMEDepth      = 20       // max multipart nesting levels
+	maxMIMEParts      = 1000     // max total parts across the whole message
+	maxMIMEPartBytes  = 25 << 20 // max bytes read from a single part (25 MB)
+	maxMIMETotalBytes = 64 << 20 // max bytes accumulated across all parts (64 MB)
+)
+
+// mimeBudget tracks cumulative parsing cost across the recursive multipart walk.
+type mimeBudget struct {
+	parts int
+	bytes int
+}
+
 // ParsedMessage represents a fully parsed RFC 5322 email.
 type ParsedMessage struct {
-	MessageID   string            `json:"message_id"`
-	From        Address           `json:"from"`
-	To          []Address         `json:"to"`
-	CC          []Address         `json:"cc,omitempty"`
-	ReplyTo     *Address          `json:"reply_to,omitempty"`
-	Subject     string            `json:"subject"`
-	Date        string            `json:"date,omitempty"`
-	BodyText    string            `json:"body_text,omitempty"`
-	BodyHTML    string            `json:"body_html,omitempty"`
+	MessageID   string             `json:"message_id"`
+	From        Address            `json:"from"`
+	To          []Address          `json:"to"`
+	CC          []Address          `json:"cc,omitempty"`
+	ReplyTo     *Address           `json:"reply_to,omitempty"`
+	Subject     string             `json:"subject"`
+	Date        string             `json:"date,omitempty"`
+	BodyText    string             `json:"body_text,omitempty"`
+	BodyHTML    string             `json:"body_html,omitempty"`
 	Attachments []ParsedAttachment `json:"attachments,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
+	Headers     map[string]string  `json:"headers,omitempty"`
 }
 
 // ParsedAttachment represents an email attachment extracted from MIME.
@@ -89,7 +106,7 @@ func ParseRawMessage(raw []byte) (*ParsedMessage, error) {
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
-		if err := parseMultipart(msg.Body, params["boundary"], parsed); err != nil {
+		if err := parseMultipart(msg.Body, params["boundary"], parsed, &mimeBudget{}, 0); err != nil {
 			// Fallback: raw body.
 			body, _ := io.ReadAll(io.LimitReader(msg.Body, 10<<20))
 			parsed.BodyText = string(body)
@@ -107,7 +124,12 @@ func ParseRawMessage(raw []byte) (*ParsedMessage, error) {
 	return parsed, nil
 }
 
-func parseMultipart(body io.Reader, boundary string, parsed *ParsedMessage) error {
+func parseMultipart(body io.Reader, boundary string, parsed *ParsedMessage, budget *mimeBudget, depth int) error {
+	if depth > maxMIMEDepth {
+		// Refuse to recurse further — bounds stack/CPU from deeply nested MIME.
+		return fmt.Errorf("mime nesting exceeds %d levels", maxMIMEDepth)
+	}
+
 	reader := multipart.NewReader(body, boundary)
 
 	for {
@@ -117,6 +139,14 @@ func parseMultipart(body io.Reader, boundary string, parsed *ParsedMessage) erro
 		}
 		if err != nil {
 			return fmt.Errorf("read part: %w", err)
+		}
+
+		budget.parts++
+		if budget.parts > maxMIMEParts || budget.bytes >= maxMIMETotalBytes {
+			// Stop processing further parts — bounds total CPU/memory from
+			// attacker-sent messages with huge part counts or total size.
+			// What has already been parsed is kept.
+			break
 		}
 
 		partContentType := part.Header.Get("Content-Type")
@@ -131,12 +161,19 @@ func parseMultipart(body io.Reader, boundary string, parsed *ParsedMessage) erro
 		if strings.HasPrefix(mediaType, "multipart/") {
 			nestedBoundary := params["boundary"]
 			if nestedBoundary != "" {
-				parseMultipart(part, nestedBoundary, parsed)
+				parseMultipart(part, nestedBoundary, parsed, budget, depth+1)
 			}
 			continue
 		}
 
-		content, _ := io.ReadAll(io.LimitReader(part, 25<<20)) // 25 MB per part
+		// Per-part cap, further clamped by the remaining cumulative budget so a
+		// flood of large parts cannot exceed maxMIMETotalBytes in aggregate.
+		readCap := maxMIMEPartBytes
+		if remaining := maxMIMETotalBytes - budget.bytes; remaining < readCap {
+			readCap = remaining
+		}
+		content, _ := io.ReadAll(io.LimitReader(part, int64(readCap)))
+		budget.bytes += len(content)
 		decoded := decodeTransferEncoding(content, transferEncoding)
 
 		// Check if this is an attachment.
