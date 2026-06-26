@@ -18,6 +18,11 @@ const (
 	// missed (a full buffer, or a crash that left a job mid-flight). The
 	// dedupe-by-Message-ID design makes re-running a partial job safe.
 	recoveryInterval = 1 * time.Minute
+	// maxJobDuration is a generous backstop on a single import's total wall time.
+	// A genuinely large mailbox finishes well within it; it only fires for a job
+	// stuck making pathologically slow progress, so the slot is reclaimed and the
+	// job recovered (resumed via the safe Message-ID dedupe) on a later scan.
+	maxJobDuration = 24 * time.Hour
 )
 
 // ActiveLister is the worker's view of the job repository: the jobs it must pick
@@ -37,12 +42,15 @@ type runner interface {
 // channel missed. Mirrors the webhook dispatcher's Start/Stop lifecycle.
 type Worker struct {
 	importer runner
-	active    ActiveLister
-	logger    *slog.Logger
+	active   ActiveLister
+	logger   *slog.Logger
 
 	enqueue chan string
 	stopCh  chan struct{}
 	sem     chan struct{}
+
+	rootCtx context.Context // cancelled by Stop(); parent of every job context
+	cancel  context.CancelFunc
 
 	mu      sync.Mutex
 	running map[string]struct{} // jobs in-flight in THIS process (dedupe guard)
@@ -50,6 +58,7 @@ type Worker struct {
 
 // NewWorker creates an import worker.
 func NewWorker(importer *Importer, active ActiveLister, logger *slog.Logger) *Worker {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Worker{
 		importer: importer,
 		active:   active,
@@ -57,6 +66,8 @@ func NewWorker(importer *Importer, active ActiveLister, logger *slog.Logger) *Wo
 		enqueue:  make(chan string, enqueueBuffer),
 		stopCh:   make(chan struct{}),
 		sem:      make(chan struct{}, maxConcurrentImports),
+		rootCtx:  ctx,
+		cancel:   cancel,
 		running:  make(map[string]struct{}),
 	}
 }
@@ -67,10 +78,12 @@ func (w *Worker) Start() {
 	go w.loop()
 }
 
-// Stop signals the worker loop to stop. In-flight imports are not interrupted;
-// they finish (or are abandoned on process exit and recovered next start).
+// Stop signals the worker loop to stop and cancels the root context so in-flight
+// imports are interrupted at their next context-aware step (rather than running
+// to completion or hanging). Interrupted jobs are recovered on next start.
 func (w *Worker) Stop() {
 	w.logger.Info("stopping imap import worker")
+	w.cancel()
 	close(w.stopCh)
 }
 
@@ -103,7 +116,7 @@ func (w *Worker) loop() {
 // recover re-dispatches all pending/running jobs (already-running ones are
 // skipped by the in-process guard in dispatch).
 func (w *Worker) recover() {
-	jobs, err := w.active.ListActive(context.Background())
+	jobs, err := w.active.ListActive(w.rootCtx)
 	if err != nil {
 		w.logger.Error("imap import recovery scan failed", "error", err)
 		return
@@ -142,6 +155,12 @@ func (w *Worker) dispatch(jobID string) {
 			<-w.sem
 			release()
 		}()
-		w.importer.Run(context.Background(), jobID)
+		// Per-job context: descends from rootCtx (so Stop() cancels it) and has
+		// a generous total-duration backstop so a job that makes pathologically
+		// slow progress cannot occupy a slot indefinitely. Combined with the
+		// source client's per-command timeout, a hung source is always recovered.
+		ctx, cancel := context.WithTimeout(w.rootCtx, maxJobDuration)
+		defer cancel()
+		w.importer.Run(ctx, jobID)
 	}()
 }

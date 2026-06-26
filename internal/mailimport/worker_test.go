@@ -32,6 +32,7 @@ type fakeActive struct{ jobs []repository.ImportJob }
 func (f *fakeActive) ListActive(context.Context) ([]repository.ImportJob, error) { return f.jobs, nil }
 
 func newTestWorker(r runner, a ActiveLister) *Worker {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Worker{
 		importer: r,
 		active:   a,
@@ -39,6 +40,8 @@ func newTestWorker(r runner, a ActiveLister) *Worker {
 		enqueue:  make(chan string, enqueueBuffer),
 		stopCh:   make(chan struct{}),
 		sem:      make(chan struct{}, maxConcurrentImports),
+		rootCtx:  ctx,
+		cancel:   cancel,
 		running:  make(map[string]struct{}),
 	}
 }
