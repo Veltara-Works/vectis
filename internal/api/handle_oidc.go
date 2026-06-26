@@ -125,6 +125,23 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if admin == nil {
+		// Falling back to email-based matching auto-links a new IdP subject to
+		// an existing admin account. The email claim is attacker-controllable
+		// at IdPs that emit unverified emails (multi-tenant/consumer providers),
+		// so we MUST require a verified email here — otherwise an attacker who
+		// can assert a super_admin's address gets a silent link + full session.
+		// The provider+subject path above is unaffected: already-linked admins
+		// keep logging in regardless of the email_verified claim.
+		if !identity.EmailVerified {
+			s.logger.Warn("oidc auto-link refused: email not verified by IdP",
+				"provider", identity.Provider, "subject", identity.Subject)
+			respondError(w, r, http.StatusForbidden, "OIDC_EMAIL_UNVERIFIED",
+				"Your identity provider did not assert a verified email, so this account "+
+					"cannot be auto-linked. Ask a super_admin to link your OIDC identity, "+
+					"or configure the IdP to send email_verified=true.")
+			return
+		}
+
 		// Try matching by email — auto-link if admin exists.
 		admin, err = s.admins.GetByEmail(r.Context(), strings.ToLower(identity.Email))
 		if err != nil {
