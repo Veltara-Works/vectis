@@ -32,7 +32,8 @@ networks:
     internal: false  # Traefik needs external access for ACME challenges
   vectis-mail:
     driver: bridge
-    internal: true
+    internal: false  # mail flows to/from the public internet; Docker drops
+                     # `ports:` on all-internal networks (see note)
   vectis-data:
     driver: bridge
     internal: true
@@ -41,7 +42,7 @@ networks:
     internal: true
 ```
 
-Note: `vectis-frontend` is the only non-internal network because Traefik needs to reach the internet for Let's Encrypt ACME challenges and to accept incoming HTTP/HTTPS connections.
+Note: `vectis-frontend` and `vectis-mail` are the two non-internal networks. `vectis-frontend` is external so Traefik can reach Let's Encrypt for ACME challenges and accept incoming HTTP/HTTPS. `vectis-mail` MUST also be external: mail by definition flows in/out of the public internet (inbound 25, outbound MTA delivery, IMAPS from clients), and Docker silently drops `ports:` directives on a container whose networks are *all* `internal: true` — so marking `vectis-mail` internal meant Postfix/Dovecot host-port publishing (25/465/587/993/995) was never honoured while process-local healthchecks still reported healthy. Do **not** set it to `internal: true`.
 
 ---
 
@@ -58,7 +59,7 @@ Note: `vectis-frontend` is the only non-internal network because Traefik needs t
 | Postgres | | | ✓ | |
 | Valkey | | | ✓ | |
 | cert-extractor | | ✓ | | |
-| Orchestrator | | | ✓ | ✓ |
+| Orchestrator | ✓ | | ✓ | ✓ |
 | ValidonX Agent | | | ✓ | |
 
 > **Implementation note (Phase 1):** The Admin UI is not a separate container. The React SPA is compiled to static files and served directly by the Go API container. This is an intentional simplification — the Admin UI communicates exclusively via the API, so a separate container adds operational complexity without security benefit. The API container therefore appears on `vectis-frontend` in place of a dedicated UI container. If a future phase requires separation (e.g., for independent scaling), the SPA can be extracted with no API changes.
@@ -71,7 +72,7 @@ This matrix shows which containers can reach which. "✓" means the two containe
 
 | | Traefik | UI | API | Postfix | Dovecot | Rspamd | ClamAV | Postgres | Valkey | Orch. | ValidonX |
 |-|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| **Traefik** | — | ✓ | ✓ | | | | | | | | |
+| **Traefik** | — | ✓ | ✓ | | | | | | | ✓ | |
 | **Admin UI** | ✓ | — | | | | | | | | | |
 | **Go API** | ✓ | | — | | | | | ✓ | ✓ | ✓ | |
 | **Postfix** | | | | — | ✓ | ✓ | ✓ | ✓ | | | |
@@ -80,7 +81,7 @@ This matrix shows which containers can reach which. "✓" means the two containe
 | **ClamAV** | | | | ✓ | | ✓ | — | | | | |
 | **Postgres** | | | ✓ | ✓ | ✓ | | | — | | | ✓ |
 | **Valkey** | | | ✓ | | | ✓ | | | — | | |
-| **Orch.** | | | ✓ | | | | | ✓ | ✓ | — | |
+| **Orch.** | ✓ | | ✓ | | | | | ✓ | ✓ | — | |
 | **ValidonX** | | | | | | | | ✓ | | | — |
 
 ---
@@ -94,6 +95,10 @@ The Admin UI is a React SPA served as static files. It communicates exclusively 
 ### Why the Orchestrator requires data network access
 
 The orchestrator requires `vectis-data` network access for Postgres advisory locks, crash recovery state queries, and `pg_dump`/`psql` snapshot operations. This is an acknowledged deviation from the original isolation design — the orchestrator's database access is limited to these operational functions and does not access mail entity data.
+
+### Why the Orchestrator requires frontend network access
+
+The orchestrator also joins `vectis-frontend` because it needs outbound internet access during Plan/Apply — to fetch the release channel manifest and pull container images. `vectis-orchestrator` and `vectis-data` are both `internal: true`, so without a non-internal network the orchestrator could not reach the registry or `dl.vectismail.com`. `vectis-frontend` (shared with Traefik and the API) provides that egress; the added blast radius is minimal since the orchestrator already holds the Docker socket.
 
 Specifically, the orchestrator connects to Postgres for:
 - **Advisory lock** (`pg_advisory_lock(1)`): Ensures mutual exclusion during apply/rollback operations
@@ -189,7 +194,8 @@ networks:
     internal: false
   vectis-mail:
     driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
-    internal: true
+    internal: false  # external: mail flows to/from the internet; Docker drops
+                     # `ports:` on all-internal networks (see G.2 note)
   vectis-data:
     driver: {{ if .Cluster.Enabled }}overlay{{ else }}bridge{{ end }}
     internal: true
@@ -271,6 +277,7 @@ services:
 
   orchestrator:
     networks:
+      - vectis-frontend      # Outbound internet for release-channel/image fetch (Plan/Apply)
       - vectis-orchestrator
       - vectis-data          # Required for pg_dump, advisory locks, crash recovery
     volumes:

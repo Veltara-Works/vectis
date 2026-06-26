@@ -69,7 +69,7 @@
 7. **Direct SQL lookups** — Postfix/Dovecot query Postgres for domains/mailboxes/aliases (live, no reload needed)
 8. **TCP LMTP** between Postfix and Dovecot (port 24, over Docker network)
 9. **Forward-only migrations** with snapshot-based rollback (golang-migrate, embedded)
-10. **Orchestrator** is the only container with Docker socket access
+10. **Docker socket** mounted by three containers per ADR-017: orchestrator (ro), promtail (ro), cert-extractor (rw, for cert-rotation HUP)
 11. **Four container networks:** frontend, mail, data, orchestrator
 12. **Three Postgres users:** vectis_postfix (read-only), vectis_dovecot (read-only), vectis_api (full)
 13. **cert-extractor sidecar** reuses Traefik's ACME certs for SMTP/IMAP — single ACME flow, no separate sidecar (see ADR-009)
