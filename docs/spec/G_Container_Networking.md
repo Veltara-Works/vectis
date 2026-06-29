@@ -18,8 +18,8 @@ The config engine generates the network definitions in `docker-compose.yml`. All
 
 | Network | Purpose | Type |
 |---------|---------|------|
-| `vectis-frontend` | Web-facing traffic (Traefik ↔ UI, API) | bridge, internal |
-| `vectis-mail` | Mail service communication | bridge, internal |
+| `vectis-frontend` | Web-facing traffic (Traefik ↔ UI, API) | bridge, **external** (`internal: false`) |
+| `vectis-mail` | Mail service communication + public mail ports | bridge, **external** (`internal: false`) |
 | `vectis-data` | Database and cache access | bridge, internal |
 | `vectis-orchestrator` | Orchestrator control plane | bridge, internal |
 
@@ -60,7 +60,17 @@ Note: `vectis-frontend` and `vectis-mail` are the two non-internal networks. `ve
 | Valkey | | | ✓ | |
 | cert-extractor | | ✓ | | |
 | Orchestrator | ✓ | | ✓ | ✓ |
-| ValidonX Agent | | | ✓ | |
+| Webmail (Roundcube) | ✓ | ✓ | | |
+| Loki | | | ✓ | |
+| Promtail | | | ✓ | |
+| Grafana | ✓ | | ✓ | |
+| PgBouncer | | | ✓ | |
+
+> **Note — ValidonX:** ValidonX is **not** a container in the stack. Licensing
+> is an *outbound* integration: the API/orchestrator call the external ValidonX
+> service over the internet (via `vectis-frontend` egress) using a per-domain
+> egress key — there is no in-cluster `validonx-agent`. Earlier drafts of this
+> spec listed one; it was never built.
 
 > **Implementation note (Phase 1):** The Admin UI is not a separate container. The React SPA is compiled to static files and served directly by the Go API container. This is an intentional simplification — the Admin UI communicates exclusively via the API, so a separate container adds operational complexity without security benefit. The API container therefore appears on `vectis-frontend` in place of a dedicated UI container. If a future phase requires separation (e.g., for independent scaling), the SPA can be extracted with no API changes.
 
@@ -68,21 +78,20 @@ Note: `vectis-frontend` and `vectis-mail` are the two non-internal networks. `ve
 
 ## G.4 Connectivity Matrix
 
-This matrix shows which containers can reach which. "✓" means the two containers share at least one network and can communicate. Blank means no direct network path.
+This matrix shows which **core mail/data-plane** containers can reach which. "✓" means the two containers share at least one network and can communicate. Blank means no direct network path. The observability/webmail stack (Webmail, Loki, Promtail, Grafana, PgBouncer) is omitted here for brevity — its network memberships are in G.3. ValidonX is an external service (not a container) and is therefore not in the matrix.
 
-| | Traefik | UI | API | Postfix | Dovecot | Rspamd | ClamAV | Postgres | Valkey | Orch. | ValidonX |
-|-|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| **Traefik** | — | ✓ | ✓ | | | | | | | ✓ | |
-| **Admin UI** | ✓ | — | | | | | | | | | |
-| **Go API** | ✓ | | — | | | | | ✓ | ✓ | ✓ | |
-| **Postfix** | | | | — | ✓ | ✓ | ✓ | ✓ | | | |
-| **Dovecot** | | | | ✓ | — | | | ✓ | | | |
-| **Rspamd** | | | | ✓ | | — | ✓ | | ✓ | | |
-| **ClamAV** | | | | ✓ | | ✓ | — | | | | |
-| **Postgres** | | | ✓ | ✓ | ✓ | | | — | | | ✓ |
-| **Valkey** | | | ✓ | | | ✓ | | | — | | |
-| **Orch.** | ✓ | | ✓ | | | | | ✓ | ✓ | — | |
-| **ValidonX** | | | | | | | | ✓ | | | — |
+| | Traefik | UI | API | Postfix | Dovecot | Rspamd | ClamAV | Postgres | Valkey | Orch. |
+|-|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| **Traefik** | — | ✓ | ✓ | | | | | | | ✓ |
+| **Admin UI** | ✓ | — | | | | | | | | |
+| **Go API** | ✓ | | — | | | | | ✓ | ✓ | ✓ |
+| **Postfix** | | | | — | ✓ | ✓ | ✓ | ✓ | | |
+| **Dovecot** | | | | ✓ | — | | | ✓ | | |
+| **Rspamd** | | | | ✓ | | — | ✓ | | ✓ | |
+| **ClamAV** | | | | ✓ | | ✓ | — | | | |
+| **Postgres** | | | ✓ | ✓ | ✓ | | | — | | |
+| **Valkey** | | | ✓ | | | ✓ | | | — | |
+| **Orch.** | ✓ | | ✓ | | | | | ✓ | ✓ | — |
 
 ---
 
@@ -133,9 +142,9 @@ ClamAV only needs to communicate with Rspamd (which passes messages to ClamAV fo
 
 Note: If ClamAV uses the `none` profile, the container is omitted entirely from the Compose file, and Rspamd is configured to skip virus scanning.
 
-### Why ValidonX Agent reaches Postgres
+### ValidonX is an external service, not a container
 
-The ValidonX licensing agent needs to store license state and entitlement data. In Phase 1, it uses the Vectis Postgres database (with its own schema or dedicated tables). It does not need access to the mail network, API, or orchestrator. If ValidonX is unreachable, the agent uses cached entitlement data from Postgres (see 30-day grace period in Architecture v1.3 §15).
+ValidonX licensing is an **outbound** integration, not an in-cluster container. The API/orchestrator call the external ValidonX service over the internet (egress via `vectis-frontend`) using a per-domain egress key; entitlement results are cached in Postgres (the `validonx_config`/`validonx_cache` tables — see B.11/B.22) so that a 30-day grace period survives ValidonX being unreachable. An earlier draft of this spec modelled a `validonx-agent` sidecar container with its own Postgres access; that was never built and has been removed from the topology above.
 
 ---
 
@@ -282,10 +291,6 @@ services:
       - vectis-data          # Required for pg_dump, advisory locks, crash recovery
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-
-  validonx-agent:
-    networks:
-      - vectis-data
 ```
 
 This is a simplified illustration — the actual generated Compose file will include resource limits, health checks, Traefik labels, environment variables, volume mounts, and other configuration from the config engine.

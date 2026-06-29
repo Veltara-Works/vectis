@@ -33,6 +33,9 @@ section for the analysis.
 > SDK GOROOT. Reconciled **2026-06-26** against `go list -m` after a prelaunch
 > audit found four stale versions (`spf13/pflag` → v1.0.9, `x/oauth2` → v0.36.0,
 > `x/sync` → v0.21.0, `x/text` → v0.38.0); licenses unchanged (all BSD-3-Clause).
+> Follow-up reconcile (same date): added the missing direct dependency
+> `robfig/cron/v3` v3.0.1 (MIT) and corrected the summary count (was 38, now 41
+> matching the table).
 
 ---
 
@@ -44,7 +47,7 @@ unused graph dependencies are excluded). A few modules vendor a second component
 under its own license file (e.g. `go-jose/json`, the Prometheus internal `gddo`
 fork) and are listed separately to reflect that.
 
-**Summary:** 38 entries — 12 MIT, 11 BSD-3-Clause, 13 Apache-2.0, 2 BSD-2-Clause.
+**Summary:** 41 entries — 15 MIT, 11 BSD-3-Clause, 13 Apache-2.0, 2 BSD-2-Clause.
 
 | Module / package | Version | License |
 |---|---|---|
@@ -76,6 +79,7 @@ fork) and are listed separately to reflect that.
 | `github.com/prometheus/client_model/go` | v0.6.2 | Apache-2.0 |
 | `github.com/prometheus/common` | v0.66.1 | Apache-2.0 |
 | `github.com/prometheus/procfs` | v0.16.1 | Apache-2.0 |
+| `github.com/robfig/cron/v3` | v3.0.1 | MIT |
 | `github.com/russellhaering/goxmldsig` | v1.6.0 | Apache-2.0 |
 | `github.com/spf13/cobra` | v1.10.2 | Apache-2.0 |
 | `github.com/spf13/pflag` | v1.0.9 | BSD-3-Clause |
