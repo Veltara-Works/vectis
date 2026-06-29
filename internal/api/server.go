@@ -169,18 +169,10 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 			logger.Warn("dkim RepairPerms failed (non-fatal)", "error", err, "base_path", cfg.DKIMBasePath)
 		}
 	}
-
-	// Self-heal generated config permissions on every startup. Generate writes
-	// secret-bearing configs (dovecot/postfix SQL conf, rspamd bayes, ...) at
-	// 0600, but a content-identical upgrade never rewrites them, so an install
-	// created before that change keeps the old world-readable 0644. This pass
-	// tightens any generated config that embeds a credential to 0600 (webmail/
-	// excluded — www-data reader). Mirrors dkim.RepairPerms above; idempotent.
-	if cfg.GenDir != "" && cfg.VectisSecrets != nil {
-		if err := engine.RepairConfigPerms(cfg.GenDir, cfg.VectisSecrets); err != nil {
-			logger.Warn("config RepairPerms failed (non-fatal)", "error", err, "gen_dir", cfg.GenDir)
-		}
-	}
+	// NB: secret-config permission self-heal (engine.RepairConfigPerms) lives in
+	// the orchestrator, not here — the api only bind-mounts the rspamd subdir of
+	// /var/vectis/generated, so it can't see the dovecot/postfix SQL conf files
+	// that carry the DB role passwords.
 
 	// Webhook signing secrets are encrypted at rest (P5-M10) with a key
 	// derived from the API signing secret — no extra secret to provision.

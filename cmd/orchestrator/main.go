@@ -337,6 +337,20 @@ func run(logger *slog.Logger) error {
 	orch.SelfHealComposeOnVersionTransition(healCtx, version.Version)
 	healCancel()
 
+	// Self-heal generated config permissions on every startup. engine.Generate
+	// writes secret-bearing configs (dovecot/postfix SQL conf, rspamd bayes, ...)
+	// at 0600, but a content-identical upgrade never rewrites them, so an install
+	// predating that change keeps the old world-readable 0644. This pass tightens
+	// any generated config that embeds a credential to 0600 (webmail/ excluded).
+	// It lives in the orchestrator, not the api: the api only bind-mounts the
+	// rspamd subdir of the generated tree, whereas the orchestrator has the whole
+	// tree mounted rw and holds the full secret set. Best-effort, idempotent.
+	if orchCfg.GeneratedConfigDir != "" {
+		if err := engine.RepairConfigPerms(orchCfg.GeneratedConfigDir, secrets); err != nil {
+			logger.Warn("config perm self-heal failed (non-fatal)", "error", err, "gen_dir", orchCfg.GeneratedConfigDir)
+		}
+	}
+
 	// Start server in a goroutine.
 	errCh := make(chan error, 1)
 	go func() {

@@ -411,8 +411,10 @@ func containsAny(content []byte, secrets []string) bool {
 // credential to 0600 — the self-heal counterpart to Generate's mode selection.
 // Generate picks 0600 only when it (re)writes a file, but a content-identical
 // upgrade never rewrites the secret-bearing SQL conf files, so an install that
-// predates the 0600 change keeps its world-readable 0644 perms. Run on every api
-// startup (like dkim.RepairPerms), this reconciles them. Idempotent and
+// predates the 0600 change keeps its world-readable 0644 perms. Run on every
+// orchestrator startup — which, unlike the api (it bind-mounts only the rspamd
+// subdir), has the whole generated tree mounted rw and the full secret set —
+// this reconciles them, in the spirit of dkim.RepairPerms. Idempotent and
 // tighten-only: it acts solely on files that currently expose group/other
 // access, and skips webmail/ (Roundcube's www-data workers need group/other
 // read), shell scripts (0755 to stay executable) and symlinks (never chmod a
