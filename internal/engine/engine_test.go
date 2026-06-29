@@ -1444,3 +1444,93 @@ func TestGenerateSecretConfigPermsShortPassword(t *testing.T) {
 	}
 	t.Fatal("dovecot/dovecot-sql.conf.ext not generated")
 }
+
+// TestRepairConfigPerms covers the startup self-heal that retroactively tightens
+// secret-bearing configs on installs predating the 0600 change (a content-
+// identical upgrade never rewrites them, so Generate's mode pick alone can't fix
+// them). Verifies: secret config tightened; webmail + shell scripts excluded;
+// non-secret untouched; already-tight unchanged; idempotent; nil-safe.
+func TestRepairConfigPerms(t *testing.T) {
+	dir := t.TempDir()
+	const secret = "supersecretvalue123"
+	secrets := &config.VectisSecrets{
+		Database: config.DatabaseSecrets{DovecotPassword: secret},
+	}
+
+	write := func(rel string, mode os.FileMode, body string) string {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, mode); err != nil { // defeat umask
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	sqlConf := write("dovecot/dovecot-sql.conf.ext", 0o644, "password="+secret)
+	roundcube := write("webmail/roundcube.config.php", 0o644, "db_pass="+secret)
+	initSh := write("postgres/init.sh", 0o755, "PW="+secret)
+	plainConf := write("postfix/main.cf", 0o644, "myhostname = mail.example.com")
+	alreadyTight := write("rspamd/classifier-bayes.conf", 0o600, "password="+secret)
+
+	if err := RepairConfigPerms(dir, secrets); err != nil {
+		t.Fatalf("RepairConfigPerms: %v", err)
+	}
+
+	checks := []struct {
+		path string
+		want os.FileMode
+		why  string
+	}{
+		{sqlConf, 0o600, "secret-bearing config must be tightened"},
+		{roundcube, 0o644, "webmail config excluded (www-data reader)"},
+		{initSh, 0o755, "shell script excluded (must stay executable)"},
+		{plainConf, 0o644, "non-secret config left untouched"},
+		{alreadyTight, 0o600, "already-tight config unchanged"},
+	}
+	for _, c := range checks {
+		info, err := os.Stat(c.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != c.want {
+			t.Errorf("%s: mode %o, want %o (%s)", c.path, info.Mode().Perm(), c.want, c.why)
+		}
+	}
+
+	// A symlink inside genDir must not be followed — chmod must never escape
+	// the generated tree onto the symlink's target.
+	external := filepath.Join(t.TempDir(), "external-secret.conf")
+	if err := os.WriteFile(external, []byte("password="+secret), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(external, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(dir, "rspamd", "link.conf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := RepairConfigPerms(dir, secrets); err != nil {
+		t.Fatalf("RepairConfigPerms (symlink): %v", err)
+	}
+	if info, _ := os.Stat(external); info.Mode().Perm() != 0o644 {
+		t.Errorf("symlink target chmod'd to %o; symlinks must not be followed", info.Mode().Perm())
+	}
+
+	// Idempotent: a second pass leaves the tightened file at 0600.
+	if err := RepairConfigPerms(dir, secrets); err != nil {
+		t.Fatalf("RepairConfigPerms (2nd pass): %v", err)
+	}
+	if info, _ := os.Stat(sqlConf); info.Mode().Perm() != 0o600 {
+		t.Errorf("sqlConf after 2nd pass: %o, want 0600", info.Mode().Perm())
+	}
+
+	// nil secrets is a no-op, never a panic.
+	if err := RepairConfigPerms(dir, nil); err != nil {
+		t.Errorf("nil secrets should be a no-op, got: %v", err)
+	}
+}

@@ -373,13 +373,20 @@ type GeneratedFile struct {
 // non-webmail config consumer reads as root, so an over-tightened 0600 file is
 // still readable by its service; the failure mode is fail-closed.
 func (data *TemplateData) secretMaterial() []string {
+	return secretValues(data.Database, data.Valkey, data.API)
+}
+
+// secretValues collects the non-empty secret strings shared by Generate (mode
+// selection) and RepairConfigPerms (startup self-heal). See secretMaterial's
+// doc for the non-empty-only rationale.
+func secretValues(db config.DatabaseSecrets, vk config.ValkeySecrets, api config.APISecrets) []string {
 	candidates := []string{
-		data.Database.SuperuserPassword,
-		data.Database.APIPassword,
-		data.Database.PostfixPassword,
-		data.Database.DovecotPassword,
-		data.Valkey.Password,
-		data.API.Secret,
+		db.SuperuserPassword,
+		db.APIPassword,
+		db.PostfixPassword,
+		db.DovecotPassword,
+		vk.Password,
+		api.Secret,
 	}
 	var out []string
 	for _, s := range candidates {
@@ -398,6 +405,63 @@ func containsAny(content []byte, secrets []string) bool {
 		}
 	}
 	return false
+}
+
+// RepairConfigPerms tightens any already-generated config that embeds a
+// credential to 0600 — the self-heal counterpart to Generate's mode selection.
+// Generate picks 0600 only when it (re)writes a file, but a content-identical
+// upgrade never rewrites the secret-bearing SQL conf files, so an install that
+// predates the 0600 change keeps its world-readable 0644 perms. Run on every api
+// startup (like dkim.RepairPerms), this reconciles them. Idempotent and
+// tighten-only: it acts solely on files that currently expose group/other
+// access, and skips webmail/ (Roundcube's www-data workers need group/other
+// read), shell scripts (0755 to stay executable) and symlinks (never chmod a
+// target outside genDir) — mirroring the exclusions Generate uses.
+func RepairConfigPerms(genDir string, secrets *config.VectisSecrets) error {
+	if secrets == nil {
+		return nil
+	}
+	needles := secretValues(secrets.Database, secrets.Valkey, secrets.API)
+	if len(needles) == 0 {
+		return nil
+	}
+	return filepath.WalkDir(genDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		// Never follow a symlink: os.ReadFile/os.Chmod below would resolve it,
+		// so a symlink in the generated tree could otherwise chmod a target
+		// outside genDir. The generated tree holds no symlinks today; this is
+		// belt-and-braces.
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		rel, err := filepath.Rel(genDir, path)
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(rel, "webmail/") || strings.HasSuffix(path, ".sh") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().Perm()&0o077 == 0 {
+			return nil // no group/other access — already safe, skip the read
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !containsAny(content, needles) {
+			return nil
+		}
+		return os.Chmod(path, 0o600)
+	})
 }
 
 // dovecotMailVars converts legacy Dovecot 2.3 %d/%n/%u variables to the
