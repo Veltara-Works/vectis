@@ -2,7 +2,10 @@ package engine
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -15,6 +18,25 @@ import (
 	"github.com/Veltara-Works/vectis/internal/version"
 )
 
+// inboundNotifyTokenLabel is the HKDF/HMAC label that derives the Postfix
+// inbound-notify token from the master API secret. Changing it rotates the
+// token; the API and the generated script must always use the same label.
+const inboundNotifyTokenLabel = "vectis-inbound-notify-v1"
+
+// DeriveInboundNotifyToken derives the token the Postfix inbound-notify script
+// presents to POST /internal/inbound, as HMAC-SHA256(apiSecret, label). It is
+// deliberately NOT the master API secret: the script is world-readable inside
+// the postfix container (it runs as user=nobody via a Postfix pipe, so it must
+// be readable by that user), and embedding the master secret there exposes the
+// key that also protects sessions, TOTP, webhooks and import encryption. The
+// derived token only authorises inbound notifications. The API computes the
+// same value at startup, so no storage or migration is needed.
+func DeriveInboundNotifyToken(apiSecret string) string {
+	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac.Write([]byte(inboundNotifyTokenLabel))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
 //go:embed templates
 var templatesFS embed.FS
 
@@ -26,15 +48,15 @@ type TemplateData struct {
 	Version string
 
 	// From config.yaml
-	Hostname   string
-	TLS        config.TLSConfig
-	Resources  ResourceKnobs
-	ClamAV     ClamAVKnobs
-	Rspamd     config.RspamdConfig
-	Postfix    config.PostfixConfig
-	Dovecot    config.DovecotConfig
-	Logging    config.LoggingConfig
-	Admin      config.AdminConfig
+	Hostname      string
+	TLS           config.TLSConfig
+	Resources     ResourceKnobs
+	ClamAV        ClamAVKnobs
+	Rspamd        config.RspamdConfig
+	Postfix       config.PostfixConfig
+	Dovecot       config.DovecotConfig
+	Logging       config.LoggingConfig
+	Admin         config.AdminConfig
 	Webmail       config.WebmailConfig
 	Observability config.ObservabilityConfig
 	RateLimits    config.RateLimitConfig
@@ -59,6 +81,15 @@ type TemplateData struct {
 	SpamListEntries []SpamListInfo
 }
 
+// InboundNotifyToken is the scoped token embedded in the Postfix inbound-notify
+// script, derived from the master API secret (never the secret itself — see
+// DeriveInboundNotifyToken). Exposed as a method so templates can reference
+// {{ .InboundNotifyToken }} without every TemplateData construction site having
+// to compute it.
+func (d TemplateData) InboundNotifyToken() string {
+	return DeriveInboundNotifyToken(d.API.Secret)
+}
+
 // SpamListInfo is a denormalized view of a domain_spam_lists row used by
 // rspamd templates. DomainName is included so the template can build
 // per-recipient-domain composite keys without a join. Kept in the engine
@@ -79,10 +110,11 @@ type SpamListInfo struct {
 // `.Resources.APIMemLimit` etc. without re-deriving.
 //
 // Profile semantics (P7-H1 / audit 2026-05-17):
-//   dev        — laptop / 2 GB VPS; minimal ceilings (~1.8 GB base)
-//   small      — single-domain 4 GB VPS; default for fresh installs (~3.5 GB base)
-//   production — multi-domain 8 GB VPS; matches audit recommendation (~6.7 GB base)
-//   enterprise — 16 GB+; doubled from production for high-volume sites (~13.5 GB base)
+//
+//	dev        — laptop / 2 GB VPS; minimal ceilings (~1.8 GB base)
+//	small      — single-domain 4 GB VPS; default for fresh installs (~3.5 GB base)
+//	production — multi-domain 8 GB VPS; matches audit recommendation (~6.7 GB base)
+//	enterprise — 16 GB+; doubled from production for high-volume sites (~13.5 GB base)
 //
 // "Base" excludes ClamAV (which has its own profile) and the optional
 // webmail / Loki / Promtail / Grafana / cert-extractor / pgbouncer
@@ -92,22 +124,22 @@ type SpamListInfo struct {
 // and intentionally sits well below ValkeyMemLimit so valkey LRU-evicts
 // gracefully before the cgroup OOM-kills the process.
 type ResourceKnobs struct {
-	Profile              string
-	APIMemLimit          string
-	OrchestratorMemLimit string
-	TraefikMemLimit      string
-	PostfixMemLimit      string
-	DovecotMemLimit      string
-	RspamdMemLimit       string
-	PostgresMemLimit     string
-	ValkeyMemLimit       string
-	ValkeyMaxMemory      string
-	WebmailMemLimit      string
-	LokiMemLimit         string
-	PromtailMemLimit     string
-	GrafanaMemLimit      string
+	Profile               string
+	APIMemLimit           string
+	OrchestratorMemLimit  string
+	TraefikMemLimit       string
+	PostfixMemLimit       string
+	DovecotMemLimit       string
+	RspamdMemLimit        string
+	PostgresMemLimit      string
+	ValkeyMemLimit        string
+	ValkeyMaxMemory       string
+	WebmailMemLimit       string
+	LokiMemLimit          string
+	PromtailMemLimit      string
+	GrafanaMemLimit       string
 	CertExtractorMemLimit string
-	PgBouncerMemLimit    string
+	PgBouncerMemLimit     string
 }
 
 // resolveResourceKnobs maps a resources.profile string to concrete per-service
@@ -202,11 +234,12 @@ func resolveResourceKnobs(profile string) ResourceKnobs {
 // templates can reference `.ClamAV.MaxThreads` etc. without re-deriving.
 //
 // Profile semantics per ADR-007:
-//   none       — container omitted entirely (knobs unused)
-//   dev        — laptop / single-developer; minimal RAM
-//   small      — 1-domain VPS; balanced
-//   production — multi-domain; default for typical installs
-//   enterprise — high-volume; tuned for throughput
+//
+//	none       — container omitted entirely (knobs unused)
+//	dev        — laptop / single-developer; minimal RAM
+//	small      — 1-domain VPS; balanced
+//	production — multi-domain; default for typical installs
+//	enterprise — high-volume; tuned for throughput
 type ClamAVKnobs struct {
 	Profile         string // "none" | "dev" | "small" | "production" | "enterprise"
 	MaxThreads      int    // clamd.conf MaxThreads
@@ -276,24 +309,24 @@ func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, do
 	dovecot.ValkeyPort = secrets.Valkey.Port
 
 	return &TemplateData{
-		Version:    version.Version,
-		Hostname:   cfg.Hostname,
-		TLS:        cfg.TLS,
-		Resources:  resolveResourceKnobs(cfg.Resources.Profile),
-		ClamAV:     resolveClamAVKnobs(cfg.ClamAV.Profile),
-		Rspamd:     cfg.Rspamd,
-		Postfix:    cfg.Postfix,
-		Dovecot:    dovecot,
-		Logging:    cfg.Logging,
-		Admin:      cfg.Admin,
+		Version:       version.Version,
+		Hostname:      cfg.Hostname,
+		TLS:           cfg.TLS,
+		Resources:     resolveResourceKnobs(cfg.Resources.Profile),
+		ClamAV:        resolveClamAVKnobs(cfg.ClamAV.Profile),
+		Rspamd:        cfg.Rspamd,
+		Postfix:       cfg.Postfix,
+		Dovecot:       dovecot,
+		Logging:       cfg.Logging,
+		Admin:         cfg.Admin,
 		Webmail:       cfg.Webmail,
 		Observability: cfg.Observability,
 		RateLimits:    rateLimits,
-		Database: secrets.Database,
-		Valkey:   secrets.Valkey,
-		API:      secrets.API,
-		Cluster:  cfg.Cluster,
-		Domains:    domains,
+		Database:      secrets.Database,
+		Valkey:        secrets.Valkey,
+		API:           secrets.API,
+		Cluster:       cfg.Cluster,
+		Domains:       domains,
 	}
 }
 
@@ -330,14 +363,17 @@ func splitMailLocation(loc string) (driver, path string) {
 
 // funcMap provides custom template functions.
 var funcMap = template.FuncMap{
-	"upper": strings.ToUpper,
-	"lower": strings.ToLower,
+	"upper":    strings.ToUpper,
+	"lower":    strings.ToLower,
 	"hasFloat": func(p *float64) bool { return p != nil },
 	"hasBool":  func(p *bool) bool { return p != nil },
 	// Dovecot 2.4 mail_location → mail_driver/mail_path/mail_home conversion.
 	"mailDriver": func(loc string) string { d, _ := splitMailLocation(loc); return d },
 	"mailPath":   func(loc string) string { _, p := splitMailLocation(loc); return dovecotMailVars(p) },
-	"mailHome":   func(loc string) string { _, p := splitMailLocation(loc); return dovecotMailVars(strings.TrimSuffix(p, "/Maildir")) },
+	"mailHome": func(loc string) string {
+		_, p := splitMailLocation(loc)
+		return dovecotMailVars(strings.TrimSuffix(p, "/Maildir"))
+	},
 	"derefFloat": func(p *float64) float64 {
 		if p == nil {
 			return 0

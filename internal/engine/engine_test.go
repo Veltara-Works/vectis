@@ -1229,3 +1229,56 @@ func TestSpamToJunkSieve(t *testing.T) {
 		t.Error("disabled: spam-to-junk.sieve should still be generated (mount is unconditional)")
 	}
 }
+
+// TestDeriveInboundNotifyToken locks the derivation contract: deterministic,
+// 64-hex, never equal to the input secret, distinct per secret, and the
+// TemplateData method matches the package function.
+func TestDeriveInboundNotifyToken(t *testing.T) {
+	a := DeriveInboundNotifyToken("s1")
+	if len(a) != 64 {
+		t.Fatalf("expected 64 hex chars, got %d (%q)", len(a), a)
+	}
+	if a == "s1" {
+		t.Fatal("derived token must not equal the secret")
+	}
+	if a != DeriveInboundNotifyToken("s1") {
+		t.Fatal("derivation is not deterministic")
+	}
+	if a == DeriveInboundNotifyToken("s2") {
+		t.Fatal("different secrets must derive different tokens")
+	}
+	d := TemplateData{API: config.APISecrets{Secret: "s1"}}
+	if d.InboundNotifyToken() != a {
+		t.Fatal("TemplateData.InboundNotifyToken() != DeriveInboundNotifyToken()")
+	}
+}
+
+// TestInboundNotifyScript_DoesNotLeakMasterSecret is the regression guard for the
+// audit finding: the generated Postfix inbound-notify script (world-readable in
+// the container) must embed the derived token, NOT the master API secret.
+func TestInboundNotifyScript_DoesNotLeakMasterSecret(t *testing.T) {
+	const masterSecret = "super-master-secret-do-not-leak-0123456789abcdef"
+	data := testData()
+	data.API = config.APISecrets{Secret: masterSecret}
+
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	var script string
+	for _, f := range files {
+		if f.RelPath == "postfix/inbound-notify.sh" {
+			script = string(f.Content)
+			break
+		}
+	}
+	if script == "" {
+		t.Fatal("postfix/inbound-notify.sh was not generated")
+	}
+	if strings.Contains(script, masterSecret) {
+		t.Error("inbound-notify.sh leaks the master API secret")
+	}
+	if !strings.Contains(script, DeriveInboundNotifyToken(masterSecret)) {
+		t.Error("inbound-notify.sh does not contain the derived inbound-notify token")
+	}
+}
