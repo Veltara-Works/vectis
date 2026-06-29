@@ -1282,3 +1282,83 @@ func TestInboundNotifyScript_DoesNotLeakMasterSecret(t *testing.T) {
 		t.Error("inbound-notify.sh does not contain the derived inbound-notify token")
 	}
 }
+
+func TestDeriveGrafanaAdminPassword(t *testing.T) {
+	const secret = "super-master-secret-do-not-leak-0123456789abcdef"
+	pw := DeriveGrafanaAdminPassword(secret)
+	if len(pw) != 64 {
+		t.Fatalf("expected 64 hex chars, got %d (%q)", len(pw), pw)
+	}
+	if pw != DeriveGrafanaAdminPassword(secret) {
+		t.Fatal("derivation is not deterministic")
+	}
+	if pw == DeriveGrafanaAdminPassword(secret+"x") {
+		t.Fatal("different secrets must derive different passwords")
+	}
+	// Must be a one-way function of the secret, never a substring of it (the
+	// pre-fix code used secret[:32], which exposed the master secret verbatim).
+	if strings.Contains(secret, pw) || strings.Contains(pw, secret) {
+		t.Fatal("derived password must not be a substring of (or contain) the master secret")
+	}
+	// Domain separation: a different label must not collide with the
+	// inbound-notify token derived from the same secret.
+	if pw == DeriveInboundNotifyToken(secret) {
+		t.Fatal("grafana password must not equal the inbound-notify token (missing domain separation)")
+	}
+}
+
+// TestGenerateDoesNotEmitSecrets is the regression guard for the audit finding:
+// Generate (rendered to disk at 0644 by WriteFiles, with no WriteSecrets on the
+// config-apply / orchestrator paths) must NOT emit any secret file. Secrets are
+// written exclusively by WriteSecrets at mode 0600 with one-way-derived values.
+func TestGenerateDoesNotEmitSecrets(t *testing.T) {
+	const masterSecret = "super-master-secret-do-not-leak-0123456789abcdef"
+	data := testData()
+	data.API = config.APISecrets{Secret: masterSecret}
+	data.Observability.GrafanaEnabled = true
+
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, f := range files {
+		if strings.HasPrefix(f.RelPath, "secrets/") {
+			t.Errorf("Generate emitted a secret file %q (mode %o) — secrets must come from WriteSecrets only", f.RelPath, f.Mode)
+		}
+		if strings.Contains(string(f.Content), masterSecret) {
+			t.Errorf("generated file %q leaks the master API secret", f.RelPath)
+		}
+	}
+}
+
+// TestWriteSecretsGrafanaDerived verifies WriteSecrets writes a one-way-derived
+// Grafana admin password at mode 0600 — never a substring of the master secret.
+func TestWriteSecretsGrafanaDerived(t *testing.T) {
+	const masterSecret = "super-master-secret-do-not-leak-0123456789abcdef"
+	data := testData()
+	data.API = config.APISecrets{Secret: masterSecret}
+	data.Observability.GrafanaEnabled = true
+
+	dir := t.TempDir()
+	if err := WriteSecrets(dir, data); err != nil {
+		t.Fatalf("WriteSecrets: %v", err)
+	}
+	path := filepath.Join(dir, "grafana_admin_password")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat grafana_admin_password: %v", err)
+	}
+	if info.Mode()&os.ModePerm != 0o600 {
+		t.Errorf("grafana_admin_password mode = %o, want 0600", info.Mode()&os.ModePerm)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read grafana_admin_password: %v", err)
+	}
+	if string(got) != DeriveGrafanaAdminPassword(masterSecret) {
+		t.Error("grafana_admin_password is not the derived value")
+	}
+	if strings.Contains(masterSecret, string(got)) {
+		t.Error("grafana_admin_password is a substring of the master secret")
+	}
+}

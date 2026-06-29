@@ -3,11 +3,13 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
 
@@ -286,11 +288,19 @@ func (sm *StateMachine) recoverState(ctx context.Context) error {
 	err := sm.db.QueryRow(ctx,
 		`SELECT status FROM orchestrator_history ORDER BY started_at DESC LIMIT 1`,
 	).Scan(&status)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// No rows = fresh installation -> idle.
 		sm.logger.Info("no prior operations found, starting in idle state")
 		sm.state = StateIdle
 		return nil
+	}
+	if err != nil {
+		// A real query error (connection blip, timeout, permission) must NOT be
+		// silently treated as "fresh install" — that would clear the crash gate
+		// (CanApply/CanPlan return true) on a half-upgraded stack. Fail loud:
+		// startup aborts and the operator/Docker restart-policy retries, which
+		// is the conservative choice for crash recovery (Spec D.4).
+		return fmt.Errorf("query last orchestrator operation for crash recovery: %w", err)
 	}
 
 	switch status {
