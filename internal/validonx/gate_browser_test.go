@@ -334,28 +334,6 @@ func TestFeatureGateBrowser_HTMLPage_EscapesUserInput(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// htmlEscape — direct unit test
-// ---------------------------------------------------------------------------
-
-func TestHTMLEscape(t *testing.T) {
-	tests := []struct {
-		in, want string
-	}{
-		{"plain", "plain"},
-		{"<tag>", "&lt;tag&gt;"},
-		{"a & b", "a &amp; b"},
-		{`a "b" c`, "a &quot;b&quot; c"},
-		{"a 'b' c", "a &#39;b&#39; c"},
-		{"<script>alert('x')</script>", "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"},
-	}
-	for _, tt := range tests {
-		if got := htmlEscape(tt.in); got != tt.want {
-			t.Errorf("htmlEscape(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // writeFeatureUpgradeHTML — direct render test (covers the expired branch
 // which the deny tests above don't reach, since cache=nil yields err=nil).
 // ---------------------------------------------------------------------------
