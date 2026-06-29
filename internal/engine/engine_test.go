@@ -1502,6 +1502,25 @@ func TestRepairConfigPerms(t *testing.T) {
 		}
 	}
 
+	// A symlink inside genDir must not be followed — chmod must never escape
+	// the generated tree onto the symlink's target.
+	external := filepath.Join(t.TempDir(), "external-secret.conf")
+	if err := os.WriteFile(external, []byte("password="+secret), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(external, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(dir, "rspamd", "link.conf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := RepairConfigPerms(dir, secrets); err != nil {
+		t.Fatalf("RepairConfigPerms (symlink): %v", err)
+	}
+	if info, _ := os.Stat(external); info.Mode().Perm() != 0o644 {
+		t.Errorf("symlink target chmod'd to %o; symlinks must not be followed", info.Mode().Perm())
+	}
+
 	// Idempotent: a second pass leaves the tightened file at 0600.
 	if err := RepairConfigPerms(dir, secrets); err != nil {
 		t.Fatalf("RepairConfigPerms (2nd pass): %v", err)

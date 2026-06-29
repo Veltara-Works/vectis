@@ -413,9 +413,10 @@ func containsAny(content []byte, secrets []string) bool {
 // upgrade never rewrites the secret-bearing SQL conf files, so an install that
 // predates the 0600 change keeps its world-readable 0644 perms. Run on every api
 // startup (like dkim.RepairPerms), this reconciles them. Idempotent and
-// tighten-only: it acts solely on files that currently expose group/other read,
-// and skips webmail/ (Roundcube's www-data workers need group/other read) and
-// shell scripts (0755 to stay executable) — the same exclusions Generate uses.
+// tighten-only: it acts solely on files that currently expose group/other
+// access, and skips webmail/ (Roundcube's www-data workers need group/other
+// read), shell scripts (0755 to stay executable) and symlinks (never chmod a
+// target outside genDir) — mirroring the exclusions Generate uses.
 func RepairConfigPerms(genDir string, secrets *config.VectisSecrets) error {
 	if secrets == nil {
 		return nil
@@ -429,6 +430,13 @@ func RepairConfigPerms(genDir string, secrets *config.VectisSecrets) error {
 			return walkErr
 		}
 		if d.IsDir() {
+			return nil
+		}
+		// Never follow a symlink: os.ReadFile/os.Chmod below would resolve it,
+		// so a symlink in the generated tree could otherwise chmod a target
+		// outside genDir. The generated tree holds no symlinks today; this is
+		// belt-and-braces.
+		if d.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
 		rel, err := filepath.Rel(genDir, path)
