@@ -25,9 +25,9 @@ const inboundNotifyTokenLabel = "vectis-inbound-notify-v1"
 
 // grafanaAdminPasswordLabel derives Grafana's admin password from the master
 // API secret. Like the inbound-notify token it is a one-way HMAC of the secret,
-// never a substring of it: the value is written to an on-disk secrets file and
-// handed to Grafana, so it must not be reversible into the master secret (which
-// also keys sessions, TOTP, webhooks and backup encryption).
+// not a truncation or copy of it: the value is written to an on-disk secrets
+// file and handed to Grafana, so it must not be reversible into the master
+// secret (which also keys sessions, TOTP, webhooks and backup encryption).
 const grafanaAdminPasswordLabel = "vectis-grafana-admin-v1"
 
 // DeriveInboundNotifyToken derives the token the Postfix inbound-notify script
@@ -422,10 +422,10 @@ func Generate(data *TemplateData) ([]GeneratedFile, error) {
 			return nil
 		}
 		// Secret files are written exclusively by WriteSecrets (mode 0600, with
-		// values that are loaded or one-way-derived — never a master-secret
-		// substring). Skipping templates/secrets/ here keeps Generate/WriteFiles
-		// from emitting a world-readable (0644) secret file or, worse, the API
-		// secret prefix on every config apply. See WriteSecrets /
+		// values that are loaded or one-way-derived — not a truncation of the
+		// master secret). Skipping templates/secrets/ here keeps Generate/
+		// WriteFiles from emitting a world-readable (0644) secret file or, worse,
+		// the API secret prefix on every config apply. See WriteSecrets /
 		// DeriveGrafanaAdminPassword.
 		if strings.HasPrefix(path, "templates/secrets/") {
 			return nil
@@ -512,7 +512,7 @@ func WriteSecrets(secretsDir string, data *TemplateData) error {
 	}
 
 	if data.Observability.GrafanaEnabled && data.API.Secret != "" {
-		// One-way HMAC of the API secret (NOT a substring of it) so the on-disk
+		// One-way HMAC of the API secret (not a truncation of it) so the on-disk
 		// secrets file and Grafana's stored credential can't be reversed into
 		// the master secret. See DeriveGrafanaAdminPassword.
 		secrets["grafana_admin_password"] = DeriveGrafanaAdminPassword(data.API.Secret)
