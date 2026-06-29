@@ -18,7 +18,10 @@
 # Exits 0 unconditionally — never block mail delivery because of webhook issues.
 
 API_URL="http://vectis-api:8080/api/v1/internal/inbound"
-INTERNAL_TOKEN="{{ .API.Secret }}"
+# Scoped token derived from the API secret (HMAC), NOT the master secret itself:
+# this script is world-readable in the container (Postfix runs it as nobody), so
+# it must never carry the key that also protects sessions/TOTP/webhooks/imports.
+INTERNAL_TOKEN="{{ .InboundNotifyToken }}"
 
 ENCODED_USER="${1:-}"
 ENV_SENDER="${2:-}"

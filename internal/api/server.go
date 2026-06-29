@@ -24,6 +24,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/cluster"
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/dkim"
+	"github.com/Veltara-Works/vectis/internal/engine"
 	"github.com/Veltara-Works/vectis/internal/license"
 	"github.com/Veltara-Works/vectis/internal/mail"
 	"github.com/Veltara-Works/vectis/internal/mail/postfixlog"
@@ -46,18 +47,19 @@ type Server struct {
 	logger     *slog.Logger
 
 	// Dependencies
-	db              *pgxpool.Pool
-	vk              valkey.Client
-	sessions        *auth.SessionManager
-	hostname        string
-	internalToken   string // shared secret for service-to-service calls (Postfix → API)
-	dkimBasePath    string
-	webDir          string
-	genDir          string // directory for generated config files
-	callbackBaseURL string // public base URL (OIDC/SAML callbacks, SCIM meta.location)
-	cfg             *config.VectisConfig
-	secrets         *config.VectisSecrets
-	orchClient      *orchestrator.Client
+	db                 *pgxpool.Pool
+	vk                 valkey.Client
+	sessions           *auth.SessionManager
+	hostname           string
+	internalToken      string // shared secret for service-to-service calls (tracking-link HMAC)
+	inboundNotifyToken string // scoped token (derived from API secret) for Postfix inbound-notify → API
+	dkimBasePath       string
+	webDir             string
+	genDir             string // directory for generated config files
+	callbackBaseURL    string // public base URL (OIDC/SAML callbacks, SCIM meta.location)
+	cfg                *config.VectisConfig
+	secrets            *config.VectisSecrets
+	orchClient         *orchestrator.Client
 
 	// Repositories
 	domains      *repository.DomainRepo
@@ -180,41 +182,42 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	importEncKey := secretcrypto.DeriveKey([]byte(cfg.CookieSecret), "vectis-imap-import-v1")
 
 	s := &Server{
-		logger:            logger,
-		db:                db,
-		vk:                vk,
-		sessions:          auth.NewSessionManager(db, vk, cfg.SessionTTL, cfg.CookieSecret),
-		hostname:          cfg.Hostname,
-		internalToken:     cfg.CookieSecret, // reuse API secret as internal service token
-		dkimBasePath:      cfg.DKIMBasePath,
-		webDir:            cfg.WebDir,
-		genDir:            cfg.GenDir,
-		callbackBaseURL:   cfg.CallbackBaseURL,
-		cfg:               cfg.VectisCfg,
-		secrets:           cfg.VectisSecrets,
-		domains:           repository.NewDomainRepo(db),
-		mailboxes:         repository.NewMailboxRepo(db),
-		aliases:           repository.NewAliasRepo(db),
-		spamLists:         repository.NewSpamListRepo(db),
-		admins:            repository.NewAdminRepo(db),
-		adminDomains:      repository.NewAdminDomainRepo(db),
-		apiKeys:           repository.NewAPIKeyRepo(db),
-		webhooks:          repository.NewWebhookRepo(db, webhookEncKey),
-		abuseEvents:       repository.NewAbuseRepo(db),
-		audit:             repository.NewAuditRepo(db),
-		alerts:            repository.NewAlertRepo(db),
-		messages:          repository.NewMessageRepo(db),
-		mailStats:         repository.NewMailStatsRepo(db),
-		emailEvents:       repository.NewEmailEventRepo(db),
-		ipWarmup:          repository.NewIPWarmupRepo(db),
-		rblChecks:         repository.NewRBLCheckRepo(db),
-		fblReports:        repository.NewFBLReportRepo(db),
-		resetTokens:       repository.NewPasswordResetRepo(db),
-		scimTokens:        repository.NewSCIMTokenRepo(db),
-		erasureTombstones: repository.NewErasureTombstoneRepo(db),
-		importJobs:        repository.NewIMAPImportRepo(db, importEncKey),
-		dovecotTokens:     repository.NewDovecotAuthTokenRepo(db),
-		totpManager:       auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
+		logger:             logger,
+		db:                 db,
+		vk:                 vk,
+		sessions:           auth.NewSessionManager(db, vk, cfg.SessionTTL, cfg.CookieSecret),
+		hostname:           cfg.Hostname,
+		internalToken:      cfg.CookieSecret,                                  // reuse API secret for tracking-link HMAC
+		inboundNotifyToken: engine.DeriveInboundNotifyToken(cfg.CookieSecret), // scoped, not the master secret
+		dkimBasePath:       cfg.DKIMBasePath,
+		webDir:             cfg.WebDir,
+		genDir:             cfg.GenDir,
+		callbackBaseURL:    cfg.CallbackBaseURL,
+		cfg:                cfg.VectisCfg,
+		secrets:            cfg.VectisSecrets,
+		domains:            repository.NewDomainRepo(db),
+		mailboxes:          repository.NewMailboxRepo(db),
+		aliases:            repository.NewAliasRepo(db),
+		spamLists:          repository.NewSpamListRepo(db),
+		admins:             repository.NewAdminRepo(db),
+		adminDomains:       repository.NewAdminDomainRepo(db),
+		apiKeys:            repository.NewAPIKeyRepo(db),
+		webhooks:           repository.NewWebhookRepo(db, webhookEncKey),
+		abuseEvents:        repository.NewAbuseRepo(db),
+		audit:              repository.NewAuditRepo(db),
+		alerts:             repository.NewAlertRepo(db),
+		messages:           repository.NewMessageRepo(db),
+		mailStats:          repository.NewMailStatsRepo(db),
+		emailEvents:        repository.NewEmailEventRepo(db),
+		ipWarmup:           repository.NewIPWarmupRepo(db),
+		rblChecks:          repository.NewRBLCheckRepo(db),
+		fblReports:         repository.NewFBLReportRepo(db),
+		resetTokens:        repository.NewPasswordResetRepo(db),
+		scimTokens:         repository.NewSCIMTokenRepo(db),
+		erasureTombstones:  repository.NewErasureTombstoneRepo(db),
+		importJobs:         repository.NewIMAPImportRepo(db, importEncKey),
+		dovecotTokens:      repository.NewDovecotAuthTokenRepo(db),
+		totpManager:        auth.NewTOTPManager(cfg.CookieSecret, cfg.Hostname),
 	}
 
 	// Self-heal: encrypt any webhook signing secret still stored as plaintext

@@ -6,8 +6,8 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
-	stdmail "net/mail"
 	"net/http"
+	stdmail "net/mail"
 	"strings"
 	"time"
 
@@ -19,27 +19,28 @@ import (
 // inboundNotification is the payload POSTed by the Postfix notification script
 // after a message is delivered to Dovecot.
 type inboundNotification struct {
-	MessageID    string  `json:"message_id"`
-	From         string  `json:"from"`
-	To           string  `json:"to"`       // envelope recipient
-	Domain       string  `json:"domain"`   // recipient domain
-	Subject      string  `json:"subject"`
-	Size         int     `json:"size"`     // message size in bytes
-	SpamScore    float64 `json:"spam_score,omitempty"`
-	SpamAction   string  `json:"spam_action,omitempty"` // "no action", "add header", "reject", "greylist"
-	QueueID      string  `json:"queue_id,omitempty"`
-	EnvelopeFrom string  `json:"envelope_from,omitempty"` // SMTP MAIL FROM
-	EnvelopeTo   string  `json:"envelope_to,omitempty"`   // SMTP RCPT TO
-	RawMessageB64 string `json:"raw_message_b64,omitempty"` // base64-encoded full RFC 5322 message
+	MessageID     string  `json:"message_id"`
+	From          string  `json:"from"`
+	To            string  `json:"to"`     // envelope recipient
+	Domain        string  `json:"domain"` // recipient domain
+	Subject       string  `json:"subject"`
+	Size          int     `json:"size"` // message size in bytes
+	SpamScore     float64 `json:"spam_score,omitempty"`
+	SpamAction    string  `json:"spam_action,omitempty"` // "no action", "add header", "reject", "greylist"
+	QueueID       string  `json:"queue_id,omitempty"`
+	EnvelopeFrom  string  `json:"envelope_from,omitempty"`   // SMTP MAIL FROM
+	EnvelopeTo    string  `json:"envelope_to,omitempty"`     // SMTP RCPT TO
+	RawMessageB64 string  `json:"raw_message_b64,omitempty"` // base64-encoded full RFC 5322 message
 }
 
 // handleInboundNotify receives delivery notifications from the Postfix
 // notification script. Authenticated via internal token (X-Internal-Token header),
 // not session auth — this is a service-to-service call.
 func (s *Server) handleInboundNotify(w http.ResponseWriter, r *http.Request) {
-	// Authenticate via internal token.
+	// Authenticate via the scoped inbound-notify token (derived from the API
+	// secret, not the master secret — see DeriveInboundNotifyToken).
 	token := r.Header.Get("X-Internal-Token")
-	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.internalToken)) != 1 {
+	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.inboundNotifyToken)) != 1 {
 		respondError(w, r, http.StatusUnauthorized, "AUTH_REQUIRED", "Invalid internal token")
 		return
 	}
@@ -325,15 +326,15 @@ func (s *Server) dispatchFullInbound(domainID string, notif inboundNotification)
 	}
 
 	data := map[string]any{
-		"message_id": parsed.MessageID,
-		"from":       map[string]string{"name": parsed.From.Name, "email": parsed.From.Email},
-		"to":         toList,
-		"cc":         ccList,
-		"subject":    parsed.Subject,
-		"body_text":  parsed.BodyText,
-		"body_html":  parsed.BodyHTML,
+		"message_id":  parsed.MessageID,
+		"from":        map[string]string{"name": parsed.From.Name, "email": parsed.From.Email},
+		"to":          toList,
+		"cc":          ccList,
+		"subject":     parsed.Subject,
+		"body_text":   parsed.BodyText,
+		"body_html":   parsed.BodyHTML,
 		"attachments": attachments,
-		"headers":    parsed.Headers,
+		"headers":     parsed.Headers,
 		"envelope": map[string]any{
 			"mail_from": envelopeFrom,
 			"rcpt_to":   envelopeTo,

@@ -37,6 +37,10 @@ const (
 	// large folder's metadata fetch, but bounds a server that stalls mid-stream
 	// so a hung source is eventually abandoned rather than wedging a slot forever.
 	commandTimeout = 10 * time.Minute
+	// maxMessageBytes caps a single fetched message body. The source IMAP server
+	// is untrusted, so an unbounded io.ReadAll would let it exhaust memory by
+	// returning a huge "message". 64 MB comfortably exceeds any real mail size.
+	maxMessageBytes = 64 << 20
 )
 
 // SourceConfig describes the external account to read from.
@@ -294,9 +298,16 @@ func (s *SourceClient) FetchBody(uid uint32) ([]byte, error) {
 			ferr = fmt.Errorf("empty body section")
 			continue
 		}
-		b, err := io.ReadAll(r)
+		// Cap the read: the source server is untrusted, so bound memory per
+		// message. Read one byte past the cap to detect (and reject) oversize
+		// messages rather than silently truncating into a corrupt import.
+		b, err := io.ReadAll(io.LimitReader(r, maxMessageBytes+1))
 		if err != nil {
 			ferr = err
+			continue
+		}
+		if len(b) > maxMessageBytes {
+			ferr = fmt.Errorf("message exceeds %d bytes", maxMessageBytes)
 			continue
 		}
 		body = b

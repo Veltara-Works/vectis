@@ -246,6 +246,13 @@ func requireAdminOrAbove() func(http.Handler) http.Handler {
 // canAccessDomain checks if the current admin has access to the given domain.
 // Returns true for super_admin and admin roles; for domain_admin, checks the junction table.
 func (s *Server) canAccessDomain(ctx context.Context, domainID string) bool {
+	// API-key domain scoping applies regardless of the underlying admin's role:
+	// a scoped key may only touch its listed domains. Enforced here (the single
+	// gate every domain-scoped handler calls) so the restriction can't be
+	// bypassed by endpoints that previously only checked RBAC.
+	if !s.apiKeyAllowsDomain(ctx, domainID) {
+		return false
+	}
 	role := getAdminRole(ctx)
 	if auth.CanAccessAllDomains(role) {
 		return true
@@ -257,6 +264,41 @@ func (s *Server) canAccessDomain(ctx context.Context, domainID string) bool {
 		return false
 	}
 	return ok
+}
+
+// apiKeyAllowsDomain reports whether the request's API key (if any) is permitted
+// to act on domainID. Requests authenticated by a session (no API key) or by an
+// unscoped API key (empty ScopedDomainIDs) are unrestricted here; a scoped key
+// may act only on its listed domains. Fails closed if the key can't be loaded.
+func (s *Server) apiKeyAllowsDomain(ctx context.Context, domainID string) bool {
+	apiKeyID := getAPIKeyID(ctx)
+	if apiKeyID == "" {
+		return true // session-authenticated, not an API key
+	}
+	apiKey, err := s.apiKeys.GetByID(ctx, apiKeyID)
+	if err != nil {
+		s.logger.Error("api key lookup failed for domain scope check", "error", err, "api_key_id", apiKeyID)
+		return false // fail closed
+	}
+	if apiKey == nil {
+		s.logger.Warn("api key not found for domain scope check", "api_key_id", apiKeyID)
+		return false // fail closed
+	}
+	return domainInScope(apiKey.ScopedDomainIDs, domainID)
+}
+
+// domainInScope reports whether domainID is permitted by an API key's
+// ScopedDomainIDs. An empty scope list means "all domains" (unscoped key).
+func domainInScope(scoped []string, domainID string) bool {
+	if len(scoped) == 0 {
+		return true
+	}
+	for _, did := range scoped {
+		if did == domainID {
+			return true
+		}
+	}
+	return false
 }
 
 // getAllowedDomainIDs returns the domain IDs the current admin can access.
