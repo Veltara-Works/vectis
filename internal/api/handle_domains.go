@@ -19,6 +19,14 @@ import (
 
 var validDomainRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$`)
 
+// validDKIMSelectorRe restricts a caller-supplied DKIM selector to DNS-label
+// characters (RFC 6376 §3.1: one or more labels). Without this, a PATCH-supplied
+// selector is rendered unescaped into the quoted `selector = "..."` field of the
+// generated rspamd dkim_signing.conf, so a value containing a quote/brace/newline
+// could break out and inject arbitrary config. Date-based selectors like "202603"
+// are the norm.
+var validDKIMSelectorRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$`)
+
 type createDomainRequest struct {
 	Name            string   `json:"name"`
 	SpamThreshold   *float64 `json:"spam_threshold,omitempty"`
@@ -270,6 +278,16 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, r, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON request body")
 		return
+	}
+
+	// Reject an injection-bearing DKIM selector before it reaches the rspamd
+	// dkim_signing.conf template, which renders it unescaped into a quoted field.
+	if req.DKIMSelector != nil {
+		if sel := *req.DKIMSelector; len(sel) < 1 || len(sel) > 63 || !validDKIMSelectorRe.MatchString(sel) {
+			respondError(w, r, http.StatusBadRequest, "INVALID_DKIM_SELECTOR",
+				"dkim_selector must be a valid DNS-label selector (letters, digits, hyphens, dots)")
+			return
+		}
 	}
 
 	// Field-level Pro gate: reject the whole PATCH if a Free-tier caller
