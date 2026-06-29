@@ -56,9 +56,9 @@ func TestResolveTierUnconfigured(t *testing.T) {
 	}
 }
 
-// TestIsFreeTierFeature spot-checks the helper FeatureGate uses to
-// short-circuit on always-allowed features.
-func TestIsFreeTierFeature(t *testing.T) {
+// TestFreeTierFeatureMembership spot-checks the FreeTierFeatures set FeatureGate
+// uses (via featureInList) to short-circuit on always-allowed features.
+func TestFreeTierFeatureMembership(t *testing.T) {
 	if !featureInList(FreeTierFeatures, FeatureBasicMail) {
 		t.Error("basic_mail should be a free-tier feature")
 	}
