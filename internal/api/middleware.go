@@ -276,8 +276,12 @@ func (s *Server) apiKeyAllowsDomain(ctx context.Context, domainID string) bool {
 		return true // session-authenticated, not an API key
 	}
 	apiKey, err := s.apiKeys.GetByID(ctx, apiKeyID)
-	if err != nil || apiKey == nil {
+	if err != nil {
 		s.logger.Error("api key lookup failed for domain scope check", "error", err, "api_key_id", apiKeyID)
+		return false // fail closed
+	}
+	if apiKey == nil {
+		s.logger.Warn("api key not found for domain scope check", "api_key_id", apiKeyID)
 		return false // fail closed
 	}
 	return domainInScope(apiKey.ScopedDomainIDs, domainID)

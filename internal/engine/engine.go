@@ -18,7 +18,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/version"
 )
 
-// inboundNotifyTokenLabel is the HKDF/HMAC label that derives the Postfix
+// inboundNotifyTokenLabel is the HMAC message that derives the Postfix
 // inbound-notify token from the master API secret. Changing it rotates the
 // token; the API and the generated script must always use the same label.
 const inboundNotifyTokenLabel = "vectis-inbound-notify-v1"
