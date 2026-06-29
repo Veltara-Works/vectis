@@ -6,11 +6,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
 
@@ -161,6 +163,39 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID string) e
 		return fmt.Errorf("delete session from postgres: %w", err)
 	}
 	return nil
+}
+
+// DeleteSessionForAdmin removes a session only if it belongs to adminID. It
+// returns (true, nil) when a matching session was deleted, and (false, nil)
+// when no session with that ID is owned by adminID — letting the caller answer
+// 404 without revealing whether the ID exists under another admin. This is the
+// ownership-scoped form of DeleteSession: the revoke-a-session endpoint must
+// not let one admin delete another admin's session by ID (IDOR).
+func (sm *SessionManager) DeleteSessionForAdmin(ctx context.Context, sessionID, adminID string) (bool, error) {
+	// Scope the token_hash lookup to the owning admin so a non-owned ID never
+	// even surfaces a Valkey key to delete.
+	var tokenHash string
+	err := sm.db.QueryRow(ctx,
+		`SELECT token_hash FROM sessions WHERE id = $1 AND admin_id = $2`,
+		sessionID, adminID).Scan(&tokenHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // unknown ID, or owned by a different admin
+	}
+	if err != nil {
+		return false, fmt.Errorf("look up session for admin: %w", err)
+	}
+
+	if tokenHash != "" {
+		cmd := sm.vk.B().Del().Key(valkeySessionKey(tokenHash)).Build()
+		sm.vk.Do(ctx, cmd)
+	}
+
+	ct, err := sm.db.Exec(ctx,
+		`DELETE FROM sessions WHERE id = $1 AND admin_id = $2`, sessionID, adminID)
+	if err != nil {
+		return false, fmt.Errorf("delete session from postgres: %w", err)
+	}
+	return ct.RowsAffected() > 0, nil
 }
 
 // DeleteAllSessions removes all sessions for an admin.

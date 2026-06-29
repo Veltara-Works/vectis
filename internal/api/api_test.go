@@ -111,6 +111,13 @@ func setupTestEnv(t *testing.T) *testEnv {
 		adminID: admin.ID,
 	}
 
+	// Reset the per-IP login rate-limit window before the setup login. Every
+	// test logs in from httptest's fixed RemoteAddr (192.0.2.1), so without this
+	// the suite's cumulative login volume would trip the per-IP limiter and fail
+	// unrelated tests. Per-account keys never collide — each test seeds a unique
+	// admin.
+	vk.Do(ctx, vk.B().Del().Key("ratelimit:login:ip:192.0.2.1").Build())
+
 	// Login to get session cookie.
 	loginBody := fmt.Sprintf(`{"email":"%s","password":"test-password"}`, admin.Email)
 	resp := env.doRequest(t, "POST", "/api/v1/auth/login", loginBody)
@@ -170,6 +177,28 @@ func parseBody(t *testing.T, resp *http.Response) map[string]any {
 	var result map[string]any
 	json.NewDecoder(resp.Body).Decode(&result)
 	return result
+}
+
+// TestLoginRateLimit_PerIP is the regression guard for the brute-force audit
+// finding: sequential login attempts from one IP must be rate-limited (chi's
+// Throttle is concurrency-only, not a rate limiter). Uses a dedicated
+// X-Forwarded-For IP so it is isolated from the suite's shared 192.0.2.1 window.
+func TestLoginRateLimit_PerIP(t *testing.T) {
+	env := setupTestEnv(t)
+	const ip = "203.0.113.91" // unique to this test; per-IP login limit is 20/5m
+	body := `{"email":"definitely-nobody@example.com","password":"wrong"}`
+	got429 := false
+	for i := 0; i < 25; i++ {
+		resp := env.doRequestWithHeader(t, "POST", "/api/v1/auth/login", body, "X-Forwarded-For", ip)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			got429 = true
+			break
+		}
+	}
+	if !got429 {
+		t.Fatal("expected HTTP 429 after exceeding the per-IP login rate limit")
+	}
 }
 
 // ── Health + Version ─────────────────────────────────────────────

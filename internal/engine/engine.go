@@ -23,6 +23,13 @@ import (
 // token; the API and the generated script must always use the same label.
 const inboundNotifyTokenLabel = "vectis-inbound-notify-v1"
 
+// grafanaAdminPasswordLabel derives Grafana's admin password from the master
+// API secret. Like the inbound-notify token it is a one-way HMAC of the secret,
+// not a truncation or copy of it: the value is written to an on-disk secrets
+// file and handed to Grafana, so it must not be reversible into the master
+// secret (which also keys sessions, TOTP, webhooks and backup encryption).
+const grafanaAdminPasswordLabel = "vectis-grafana-admin-v1"
+
 // DeriveInboundNotifyToken derives the token the Postfix inbound-notify script
 // presents to POST /internal/inbound, as HMAC-SHA256(apiSecret, label). It is
 // deliberately NOT the master API secret: the script is world-readable inside
@@ -34,6 +41,18 @@ const inboundNotifyTokenLabel = "vectis-inbound-notify-v1"
 func DeriveInboundNotifyToken(apiSecret string) string {
 	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(inboundNotifyTokenLabel))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// DeriveGrafanaAdminPassword derives Grafana's admin password as
+// HMAC-SHA256(apiSecret, label), hex-encoded (64 chars). Deterministic so no
+// storage/migration is needed, and one-way so the on-disk secrets file and
+// Grafana's stored credential cannot be reversed into the master API secret.
+// Replaces the prior data.API.Secret[:32] substring, which exposed up to the
+// entire secret verbatim (api.secret is validated >= 32 chars).
+func DeriveGrafanaAdminPassword(apiSecret string) string {
+	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac.Write([]byte(grafanaAdminPasswordLabel))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
@@ -402,6 +421,15 @@ func Generate(data *TemplateData) ([]GeneratedFile, error) {
 		if !strings.HasSuffix(path, ".tmpl") {
 			return nil
 		}
+		// Secret files are written exclusively by WriteSecrets (mode 0600, with
+		// values that are loaded or one-way-derived — not a truncation of the
+		// master secret). Skipping templates/secrets/ here keeps Generate/
+		// WriteFiles from emitting a world-readable (0644) secret file or, worse,
+		// the API secret prefix on every config apply. See WriteSecrets /
+		// DeriveGrafanaAdminPassword.
+		if strings.HasPrefix(path, "templates/secrets/") {
+			return nil
+		}
 
 		content, err := fs.ReadFile(templatesFS, path)
 		if err != nil {
@@ -484,10 +512,10 @@ func WriteSecrets(secretsDir string, data *TemplateData) error {
 	}
 
 	if data.Observability.GrafanaEnabled && data.API.Secret != "" {
-		// Derive a Grafana admin password from the API secret rather than
-		// exposing the API secret itself. Use first 32 chars as a stable
-		// derived password.
-		secrets["grafana_admin_password"] = data.API.Secret[:min(32, len(data.API.Secret))]
+		// One-way HMAC of the API secret (not a truncation of it) so the on-disk
+		// secrets file and Grafana's stored credential can't be reversed into
+		// the master secret. See DeriveGrafanaAdminPassword.
+		secrets["grafana_admin_password"] = DeriveGrafanaAdminPassword(data.API.Secret)
 	}
 
 	for name, value := range secrets {

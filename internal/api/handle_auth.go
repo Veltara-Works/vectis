@@ -6,13 +6,55 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Veltara-Works/vectis/internal/auth"
+	"github.com/Veltara-Works/vectis/internal/ratelimit"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
+
+// Credential-endpoint rate limits. chi's Throttle on the login route is a
+// concurrency ceiling, not a rate limiter — it does nothing to stop sequential
+// password/TOTP guessing. These Valkey-backed fixed windows bound brute force:
+//   - per-IP: caps total /auth/login calls (step-1 password + step-2 TOTP)
+//     from one address, so credential spray across accounts is bounded.
+//   - per-account: caps attempts against a single admin, so a distributed
+//     attacker can't brute one account from many IPs.
+//
+// Limits are generous enough that a human admin (who logs in rarely) never
+// trips them, but tight enough that brute force is impractical. All checks
+// fail-OPEN on a Valkey error so an infra blip never locks out logins.
+const (
+	loginIPRateLimit    = 20
+	loginIPRateWindow   = 5 * time.Minute
+	loginAcctRateLimit  = 10
+	loginAcctRateWindow = 15 * time.Minute
+	totpAcctRateLimit   = 10
+	totpAcctRateWindow  = 15 * time.Minute
+)
+
+// rateLimitOK records one hit against key's fixed window and, when the window
+// is exhausted, writes a 429 with Retry-After and returns false. On a limiter
+// (Valkey) error it logs and returns true — fail-open, so a Valkey outage can
+// never lock admins out of their own panel. errCode is the API error code
+// surfaced to the client.
+func (s *Server) rateLimitOK(w http.ResponseWriter, r *http.Request, key string, limit int, window time.Duration, errCode string) bool {
+	res, err := ratelimit.Allow(r.Context(), s.vk, key, limit, window)
+	if err != nil {
+		s.logger.Warn("login rate-limit check failed; allowing (fail-open)", "key", key, "error", err)
+		return true
+	}
+	if !res.Allowed {
+		retry := ratelimit.RetryAfter(r.Context(), s.vk, key, window)
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())))
+		respondError(w, r, http.StatusTooManyRequests, errCode, "Too many attempts; please try again later")
+		return false
+	}
+	return true
+}
 
 type loginRequest struct {
 	Email       string `json:"email"`
@@ -63,6 +105,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-IP brute-force bound. Applied to every /auth/login call (covers both
+	// the password step and the TOTP step below), so an attacker spraying
+	// credentials from one address is cut off regardless of which account or
+	// step they target.
+	if !s.rateLimitOK(w, r, "ratelimit:login:ip:"+clientIP(r), loginIPRateLimit, loginIPRateWindow, "RATE_LIMITED") {
+		return
+	}
+
 	// Step 2: TOTP verification (second call with totp_session + totp_code).
 	if req.TOTPSession != "" && req.TOTPCode != "" {
 		s.completeTOTPLogin(w, r, req.TOTPSession, req.TOTPCode)
@@ -83,6 +133,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if admin == nil {
 		respondError(w, r, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password")
+		return
+	}
+
+	// Per-account brute-force bound, keyed by the resolved admin ID. Stops a
+	// distributed attacker from grinding a single known account from many IPs
+	// (which would slip past the per-IP limit above). Checked before the
+	// (expensive) password verify so it also sheds bcrypt load under attack.
+	if !s.rateLimitOK(w, r, "ratelimit:login:acct:"+admin.ID, loginAcctRateLimit, loginAcctRateWindow, "RATE_LIMITED") {
 		return
 	}
 
@@ -137,6 +195,14 @@ func (s *Server) completeTOTPLogin(w http.ResponseWriter, r *http.Request, totpS
 
 	if admin.TOTPSecret == nil {
 		respondError(w, r, http.StatusBadRequest, "TOTP_NOT_CONFIGURED", "TOTP is not configured for this account")
+		return
+	}
+
+	// Per-account bound on TOTP code attempts, keyed by admin ID. The per-IP
+	// login limit already caps codes guessed from one address; this stops a
+	// distributed attacker (who holds the password) from grinding the 6-digit
+	// code space within the validation skew window across many IPs.
+	if !s.rateLimitOK(w, r, "ratelimit:login:totp:"+admin.ID, totpAcctRateLimit, totpAcctRateWindow, "RATE_LIMITED") {
 		return
 	}
 
@@ -427,9 +493,16 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionID")
-	if err := s.sessions.DeleteSession(r.Context(), sessionID); err != nil {
+	// Scope the delete to the caller's own sessions: an admin must not be able
+	// to revoke another admin's session by guessing/enumerating its ID (IDOR).
+	deleted, err := s.sessions.DeleteSessionForAdmin(r.Context(), sessionID, getAdminID(r.Context()))
+	if err != nil {
 		s.logger.Error("delete session failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete session")
+		return
+	}
+	if !deleted {
+		respondError(w, r, http.StatusNotFound, "NOT_FOUND", "Session not found")
 		return
 	}
 	respond(w, r, http.StatusOK, map[string]string{"message": "Session invalidated"})

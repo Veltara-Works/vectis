@@ -115,11 +115,21 @@ func (o *Orchestrator) State() State {
 	return o.sm.State()
 }
 
-// LastOperation returns the most recent operation, if any.
+// LastOperation returns a snapshot of the most recent operation, if any.
+//
+// A COPY is returned, not o.lastOp itself: the Apply/Rollback goroutine
+// mutates the live struct's fields (State, EndedAt, SnapshotPath) under o.mu,
+// while callers json-marshal the returned value with no lock held. Handing out
+// the shared pointer is a data race; copying under the lock gives the caller an
+// immutable snapshot.
 func (o *Orchestrator) LastOperation() *Operation {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.lastOp
+	if o.lastOp == nil {
+		return nil
+	}
+	cp := *o.lastOp
+	return &cp
 }
 
 // CurrentPlan returns the current stored plan, if any.
@@ -130,12 +140,20 @@ func (o *Orchestrator) CurrentPlan() *Plan {
 }
 
 // Status returns the current state and the last operation info (Spec D.10).
+//
+// LastOperation is a COPY of o.lastOp taken under the lock — see LastOperation()
+// for why the shared pointer must not escape (the Apply goroutine mutates it).
 func (o *Orchestrator) Status() StatusResponse {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	var lastOp *Operation
+	if o.lastOp != nil {
+		cp := *o.lastOp
+		lastOp = &cp
+	}
 	return StatusResponse{
 		State:         o.sm.State(),
-		LastOperation: o.lastOp,
+		LastOperation: lastOp,
 	}
 }
 
