@@ -368,3 +368,81 @@ func TestDecodeJSONLimit(t *testing.T) {
 		}
 	})
 }
+
+// TestValidDKIMSelector pins the charset guard that stops a PATCH-supplied DKIM
+// selector from breaking out of the quoted `selector = "..."` field in the
+// generated rspamd dkim_signing.conf (config injection). Only DNS-label
+// characters are accepted; quotes, semicolons, braces, whitespace and newlines
+// must be rejected.
+func TestValidDKIMSelector(t *testing.T) {
+	tests := []struct {
+		sel  string
+		want bool
+	}{
+		{"202603", true},           // date-based default
+		{"default", true},          //
+		{"key1.smtp", true},        // multi-label
+		{"s-1", true},              // interior hyphen
+		{"", false},                // empty
+		{"-lead", false},           // leading hyphen
+		{"trail-", false},          // trailing hyphen
+		{".lead", false},           // leading dot
+		{"trail.", false},          // trailing dot
+		{"a..b", false},            // empty label
+		{`sel"`, false},            // quote (breakout)
+		{"a;b", false},             // semicolon
+		{"a b", false},             // space
+		{"a{b}", false},            // braces
+		{"sel\ninjected", false},   // newline
+		{"sel\"; } evil {", false}, // full injection payload
+	}
+	for _, tt := range tests {
+		t.Run(tt.sel, func(t *testing.T) {
+			if got := validDKIMSelectorRe.MatchString(tt.sel); got != tt.want {
+				t.Errorf("validDKIMSelectorRe.MatchString(%q) = %v, want %v", tt.sel, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUpdateDomainRejectsInjectionSelector verifies the PATCH handler rejects an
+// injection-bearing dkim_selector with a 400 before it ever reaches the config
+// engine. The rejection path returns prior to any DB access, so a bare Server
+// suffices.
+func TestUpdateDomainRejectsInjectionSelector(t *testing.T) {
+	s := &Server{}
+	body := `{"dkim_selector":"evil\"; } malicious {"}`
+	r := httptest.NewRequest(http.MethodPatch, "/domains/d1", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	s.handleUpdateDomain(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	var resp apiResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not valid JSON: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != "INVALID_DKIM_SELECTOR" {
+		t.Errorf("error envelope = %+v, want code INVALID_DKIM_SELECTOR", resp.Error)
+	}
+}
+
+// TestSCIMCreateUserBodyCapped is the regression for the audit finding that SCIM
+// user handlers decoded the request body with no size limit (memory exhaustion).
+// An oversized body must be rejected at the decode boundary (400) rather than
+// read unbounded into memory. The cap trips before any DB access.
+func TestSCIMCreateUserBodyCapped(t *testing.T) {
+	s := &Server{}
+	huge := strings.Repeat("x", (1<<20)+1024) // > maxBodySize (1 MiB)
+	body := `{"userName":"` + huge + `@example.com"}`
+	r := httptest.NewRequest(http.MethodPost, "/scim/v2/Users", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	s.handleSCIMCreateUser(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (oversized SCIM body must be rejected)", rec.Code, http.StatusBadRequest)
+	}
+}

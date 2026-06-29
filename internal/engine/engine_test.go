@@ -1362,3 +1362,60 @@ func TestWriteSecretsGrafanaDerived(t *testing.T) {
 		t.Error("grafana_admin_password is a substring of the master secret")
 	}
 }
+
+// TestGenerateSecretConfigPerms is the regression for the audit finding that
+// dovecot/postfix SQL conf files (and other configs embedding a credential)
+// were written world-readable (0644), leaking DB role passwords to any local
+// user. Generate must render a secret-bearing config at 0600 when its consumer
+// reads it as root, while leaving non-secret configs at 0644 and the
+// www-data-read webmail config readable.
+func TestGenerateSecretConfigPerms(t *testing.T) {
+	files, err := Generate(testData())
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	byPath := make(map[string]GeneratedFile, len(files))
+	for _, f := range files {
+		byPath[f.RelPath] = f
+	}
+
+	// Secret-bearing configs read by a root container master process → 0600.
+	secret0600 := []string{
+		"dovecot/dovecot-sql.conf.ext",
+		"postfix/pgsql_virtual_mailboxes.cf",
+		"postfix/pgsql_virtual_domains.cf",
+		"postfix/pgsql_virtual_aliases.cf",
+		"rspamd/classifier-bayes.conf",
+	}
+	for _, p := range secret0600 {
+		f, ok := byPath[p]
+		if !ok {
+			t.Errorf("%s not generated", p)
+			continue
+		}
+		if !strings.Contains(string(f.Content), "secret_") {
+			t.Errorf("%s expected to embed a DB/Valkey password but did not", p)
+		}
+		if f.Mode&os.ModePerm != 0o600 {
+			t.Errorf("%s mode = %o, want 0600 (embeds a secret)", p, f.Mode&os.ModePerm)
+		}
+	}
+
+	// The webmail config carries the roundcube DB password but is read by
+	// www-data inside the container, so it must stay group/other-readable.
+	if f, ok := byPath["webmail/roundcube.config.php"]; ok {
+		if f.Mode&os.ModePerm != 0o644 {
+			t.Errorf("webmail/roundcube.config.php mode = %o, want 0644 (www-data reader)", f.Mode&os.ModePerm)
+		}
+	}
+
+	// A representative config that carries no secret value stays at 0644.
+	if f, ok := byPath["postfix/main.cf"]; ok {
+		if strings.Contains(string(f.Content), "secret_") {
+			t.Skip("postfix/main.cf unexpectedly embeds a secret; skipping 0644 assertion")
+		}
+		if f.Mode&os.ModePerm != 0o644 {
+			t.Errorf("postfix/main.cf mode = %o, want 0644 (no secret material)", f.Mode&os.ModePerm)
+		}
+	}
+}

@@ -361,6 +361,41 @@ type GeneratedFile struct {
 	Mode os.FileMode
 }
 
+// secretMaterial returns the non-empty secret strings that, if found verbatim
+// in a rendered config file, mean that file must not be world-readable. Used by
+// Generate to select 0600 instead of the 0644 default. Values shorter than 8
+// chars are dropped so an unset/placeholder secret can never substring-match
+// every file and silently lock down readability; real secrets here are long,
+// high-entropy values (api.secret is validated >= 32 chars), making an
+// accidental match on unrelated content effectively impossible.
+func (data *TemplateData) secretMaterial() []string {
+	candidates := []string{
+		data.Database.SuperuserPassword,
+		data.Database.APIPassword,
+		data.Database.PostfixPassword,
+		data.Database.DovecotPassword,
+		data.Valkey.Password,
+		data.API.Secret,
+	}
+	var out []string
+	for _, s := range candidates {
+		if len(s) >= 8 {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// containsAny reports whether content embeds any of the given secret strings.
+func containsAny(content []byte, secrets []string) bool {
+	for _, s := range secrets {
+		if bytes.Contains(content, []byte(s)) {
+			return true
+		}
+	}
+	return false
+}
+
 // dovecotMailVars converts legacy Dovecot 2.3 %d/%n/%u variables to the
 // 2.4 %{user|...} expansion syntax (all one-letter variables were removed in 2.4).
 func dovecotMailVars(s string) string {
@@ -411,6 +446,11 @@ var funcMap = template.FuncMap{
 func Generate(data *TemplateData) ([]GeneratedFile, error) {
 	var files []GeneratedFile
 
+	// Secret strings that, if baked into a rendered config, mean the file must
+	// not be world-readable (DB role passwords, the Valkey password, the master
+	// API secret). Computed once; consulted per file below.
+	secretValues := data.secretMaterial()
+
 	err := fs.WalkDir(templatesFS, "templates", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -460,8 +500,24 @@ func Generate(data *TemplateData) ([]GeneratedFile, error) {
 		// causing `extends: elastic` to never register and templates to
 		// 404 with no clear error.
 		mode := os.FileMode(0644)
-		if strings.HasSuffix(relPath, ".sh") {
+		switch {
+		case strings.HasSuffix(relPath, ".sh"):
 			mode = 0755
+		case !strings.HasPrefix(relPath, "webmail/") && containsAny(buf.Bytes(), secretValues):
+			// The rendered config bakes in a credential (a DB role password,
+			// the Valkey password, or the master API secret). Every consumer of
+			// such a file — dovecot, postfix, rspamd and pgbouncer (whose config
+			// is read by their root master process), plus the host docker CLI —
+			// reads it as root, so world read is unnecessary. Tighten to 0600 so
+			// a local non-root user, or a container that bind-mounts the
+			// generated tree, cannot recover DB passwords or the master secret.
+			// In prod these files (postfix pgsql maps, rspamd bayes, pgbouncer
+			// userlist) already sit at 0600 and the stack is healthy.
+			//
+			// webmail/ is excluded: Roundcube's Apache workers drop to www-data
+			// and must keep group/other read, the same constraint that forced
+			// 0644 on the skin meta.json in the v0.1.7-rc2 walkthrough.
+			mode = 0600
 		}
 
 		files = append(files, GeneratedFile{

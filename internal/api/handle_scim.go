@@ -98,7 +98,7 @@ func (s *Server) handleSCIMSchemas(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSCIMCreateUser(w http.ResponseWriter, r *http.Request) {
 	var req scimUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		scim.WriteError(w, http.StatusBadRequest, "invalidValue", "Malformed SCIM JSON: "+err.Error())
 		return
 	}
@@ -258,7 +258,7 @@ func (s *Server) handleSCIMGetUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSCIMReplaceUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var req scimUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		scim.WriteError(w, http.StatusBadRequest, "invalidValue", "Malformed SCIM JSON: "+err.Error())
 		return
 	}
@@ -307,7 +307,7 @@ func (s *Server) handleSCIMReplaceUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSCIMPatchUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var req scim.PatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		scim.WriteError(w, http.StatusBadRequest, "invalidValue", "Malformed SCIM JSON: "+err.Error())
 		return
 	}
