@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/mail"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -283,14 +282,4 @@ func extractLocalPart(email string) string {
 		return ""
 	}
 	return strings.ToLower(parts[0])
-}
-
-// canSendAsDomain checks if the authenticated user (via session or API key)
-// has access to send from the given domain. Uses existing RBAC.
-func (s *Server) canSendAsDomain(r *http.Request, domainID string) bool {
-	role := getAdminRole(r.Context())
-	if auth.CanAccessAllDomains(role) {
-		return true
-	}
-	return s.canAccessDomain(r.Context(), domainID)
 }

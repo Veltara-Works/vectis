@@ -185,7 +185,3 @@ func NonDataStartOrder() []string {
 	}
 	return out
 }
-
-// Deprecated aliases kept for backward compat; prefer NonData* names.
-func RollbackStopOrder() []string  { return NonDataStopOrder() }
-func RollbackStartOrder() []string { return NonDataStartOrder() }

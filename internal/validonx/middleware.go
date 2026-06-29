@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -79,16 +80,6 @@ var EnterpriseFeatures = []string{
 	FeatureSLA,
 	FeatureDSAR,
 	FeatureSCIM,
-}
-
-// isFreeTierFeature returns true if the feature is available on the free tier.
-func isFreeTierFeature(feature string) bool {
-	for _, f := range FreeTierFeatures {
-		if f == feature {
-			return true
-		}
-	}
-	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +303,7 @@ func (fgs *FeatureGateService) FeatureGate(feature string) func(http.Handler) ht
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Step 1: Free-tier features are always allowed, regardless of
 			// licensing state.
-			if isFreeTierFeature(feature) {
+			if featureInList(FreeTierFeatures, feature) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -389,7 +380,7 @@ func (fgs *FeatureGateService) FeatureGate(feature string) func(http.Handler) ht
 // Callers that need to distinguish "not entitled" from "couldn't tell" should
 // use FeatureGate at the route boundary.
 func (fgs *FeatureGateService) HasFeature(ctx context.Context, feature string) bool {
-	if isFreeTierFeature(feature) {
+	if featureInList(FreeTierFeatures, feature) {
 		return true
 	}
 	// Offline JWT license takes precedence when present and valid.
@@ -428,7 +419,7 @@ func (fgs *FeatureGateService) HasFeature(ctx context.Context, feature string) b
 func (fgs *FeatureGateService) FeatureGateBrowser(feature, featureLabel, upgradeURL string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if isFreeTierFeature(feature) {
+			if featureInList(FreeTierFeatures, feature) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -755,7 +746,7 @@ func writeFeatureUpgradeHTML(w http.ResponseWriter, featureLabel, upgradeURL str
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>` + htmlEscape(heading) + ` — Vectis Mail</title>
+<title>` + html.EscapeString(heading) + ` — Vectis Mail</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -771,28 +762,14 @@ func writeFeatureUpgradeHTML(w http.ResponseWriter, featureLabel, upgradeURL str
 </style>
 </head>
 <body>
-<h1>` + htmlEscape(heading) + `</h1>
-<p>` + htmlEscape(body) + `</p>
+<h1>` + html.EscapeString(heading) + `</h1>
+<p>` + html.EscapeString(body) + `</p>
 <div class="actions">
-  <a class="btn btn-primary" href="` + htmlEscape(upgradeURL) + `">View pricing</a>
+  <a class="btn btn-primary" href="` + html.EscapeString(upgradeURL) + `">View pricing</a>
   <a class="btn btn-secondary" href="/admin">Back to sign-in</a>
 </div>
 <p class="meta">Vectis Mail Server</p>
 </body>
 </html>`
 	_, _ = w.Write([]byte(page))
-}
-
-// htmlEscape replaces characters that have special meaning in HTML context
-// with their entity equivalents. Used by writeFeatureUpgradeHTML to render
-// caller-supplied strings safely.
-func htmlEscape(s string) string {
-	r := strings.NewReplacer(
-		"&", "&amp;",
-		"<", "&lt;",
-		">", "&gt;",
-		`"`, "&quot;",
-		"'", "&#39;",
-	)
-	return r.Replace(s)
 }

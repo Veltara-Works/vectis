@@ -48,16 +48,6 @@ func TestNonDataStartOrder_ExcludesDataServices(t *testing.T) {
 	}
 }
 
-// Deprecated-alias smoke tests — ensure the old names still resolve to the new.
-func TestRollbackAliases_MatchNonDataOrders(t *testing.T) {
-	if !slices.Equal(RollbackStopOrder(), NonDataStopOrder()) {
-		t.Error("RollbackStopOrder must alias NonDataStopOrder")
-	}
-	if !slices.Equal(RollbackStartOrder(), NonDataStartOrder()) {
-		t.Error("RollbackStartOrder must alias NonDataStartOrder")
-	}
-}
-
 // VectisImageServicesExcludingSelf must return VectisImageServices minus
 // "orchestrator", preserving the original order. Apply's Phase 4.3 uses this
 // list to call `docker compose up -d` without touching the orchestrator
