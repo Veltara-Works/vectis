@@ -363,11 +363,15 @@ type GeneratedFile struct {
 
 // secretMaterial returns the non-empty secret strings that, if found verbatim
 // in a rendered config file, mean that file must not be world-readable. Used by
-// Generate to select 0600 instead of the 0644 default. Values shorter than 8
-// chars are dropped so an unset/placeholder secret can never substring-match
-// every file and silently lock down readability; real secrets here are long,
-// high-entropy values (api.secret is validated >= 32 chars), making an
-// accidental match on unrelated content effectively impossible.
+// Generate to select 0600 instead of the 0644 default. Only the empty string is
+// dropped — an empty value would substring-match every file (bytes.Contains
+// with "" is always true) and lock down readability indiscriminately. We do NOT
+// impose a minimum length, because DB role passwords and the Valkey password
+// are validated only as non-empty (no min-length floor like api.admin_password
+// has): a short-but-valid password must still tighten its config to 0600 rather
+// than silently leak. The cost of being conservative is bounded — every
+// non-webmail config consumer reads as root, so an over-tightened 0600 file is
+// still readable by its service; the failure mode is fail-closed.
 func (data *TemplateData) secretMaterial() []string {
 	candidates := []string{
 		data.Database.SuperuserPassword,
@@ -379,7 +383,7 @@ func (data *TemplateData) secretMaterial() []string {
 	}
 	var out []string
 	for _, s := range candidates {
-		if len(s) >= 8 {
+		if s != "" {
 			out = append(out, s)
 		}
 	}

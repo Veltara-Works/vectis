@@ -1419,3 +1419,28 @@ func TestGenerateSecretConfigPerms(t *testing.T) {
 		}
 	}
 }
+
+// TestGenerateSecretConfigPermsShortPassword guards the fail-closed property
+// raised in the PR #121 review: DB/Valkey passwords carry no min-length floor,
+// so even a short-but-valid password must still force its secret-bearing config
+// to 0600 rather than slip back to a world-readable 0644.
+func TestGenerateSecretConfigPermsShortPassword(t *testing.T) {
+	data := testData()
+	data.Database.DovecotPassword = "q9" // intentionally short, still a real secret
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	for _, f := range files {
+		if f.RelPath == "dovecot/dovecot-sql.conf.ext" {
+			if !strings.Contains(string(f.Content), "q9") {
+				t.Fatal("dovecot-sql.conf.ext did not embed the short password")
+			}
+			if f.Mode&os.ModePerm != 0o600 {
+				t.Errorf("dovecot-sql.conf.ext mode = %o, want 0600 even for a short password", f.Mode&os.ModePerm)
+			}
+			return
+		}
+	}
+	t.Fatal("dovecot/dovecot-sql.conf.ext not generated")
+}
