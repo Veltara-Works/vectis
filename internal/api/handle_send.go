@@ -144,7 +144,12 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 			"This API key does not have access to domain '"+senderDomain+"'")
 	}
 	if !auth.CanAccessAllDomains(adminRole) {
-		ok, _ := s.adminDomains.HasAccess(ctx, adminID, domain.ID)
+		ok, err := s.adminDomains.HasAccess(ctx, adminID, domain.ID)
+		if err != nil {
+			// Match canAccessDomain: log the infra failure rather than letting it
+			// masquerade as a plain authorization denial. Still fails closed below.
+			s.logger.Error("check domain access failed", "error", err, "admin_id", adminID, "domain_id", domain.ID)
+		}
 		if !ok {
 			return sendErr(http.StatusForbidden, "FORBIDDEN",
 				"You do not have access to send from domain '"+senderDomain+"'")
