@@ -101,6 +101,53 @@ func TestParseARF_RejectsNonARF(t *testing.T) {
 	}
 }
 
+// TestParseARF_LargePartStillAdvances proves the reader advances past a part
+// larger than the per-part LimitReader cap: mime/multipart's NextPart() closes
+// (drains) the previous part, so the rfc822 part AFTER an oversized
+// feedback-report part is still reached and parsed. Guards against a regression
+// if the loop were ever changed to rely on full part consumption.
+func TestParseARF_LargePartStillAdvances(t *testing.T) {
+	pad := strings.Repeat("x", 100<<10) // 100 KB, well past the 64 KB feedback-report cap
+	msg := "From: <c@isp.example>\r\n" +
+		"To: <abuse@m.example>\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/report; report-type=feedback-report; boundary=\"b1\"\r\n\r\n" +
+		"--b1\r\nContent-Type: message/feedback-report\r\n\r\n" +
+		"Feedback-Type: abuse\r\nVersion: 1\r\nOriginal-Mail-From: <s@m.example>\r\n" +
+		"X-Pad: " + pad + "\r\n" +
+		"\r\n--b1\r\nContent-Type: message/rfc822\r\n\r\n" +
+		"Message-ID: <big-123@m.example>\r\n\r\nbody\r\n" +
+		"--b1--\r\n"
+	r, err := ParseARF([]byte(msg))
+	if err != nil {
+		t.Fatalf("parse failed on an oversized part (NextPart should auto-drain + advance): %v", err)
+	}
+	if r.FeedbackType != "abuse" {
+		t.Errorf("feedback-type (pre-cap field) not parsed: %q", r.FeedbackType)
+	}
+	if r.OriginalMessageID != "big-123@m.example" {
+		t.Errorf("rfc822 part after the oversized part was not reached: msgid=%q", r.OriginalMessageID)
+	}
+}
+
+// TestParseARF_RejectsTooManyParts is the #173 DoS guard: a feedback report with
+// a huge number of MIME parts must be rejected rather than spinning the
+// NextPart() loop unbounded.
+func TestParseARF_RejectsTooManyParts(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("From: <complaints@isp.example>\r\n")
+	b.WriteString("To: <abuse@mail.example.com>\r\n")
+	b.WriteString("MIME-Version: 1.0\r\n")
+	b.WriteString("Content-Type: multipart/report; report-type=feedback-report; boundary=\"b1\"\r\n\r\n")
+	for i := 0; i < maxARFParts+5; i++ {
+		b.WriteString("--b1\r\nContent-Type: text/plain\r\n\r\njunk\r\n")
+	}
+	b.WriteString("--b1--\r\n")
+	if _, err := ParseARF([]byte(b.String())); err == nil {
+		t.Fatalf("expected error for an ARF report exceeding %d parts", maxARFParts)
+	}
+}
+
 func TestParseARF_DomainDerivedFromMailFrom(t *testing.T) {
 	// Strip Reported-Domain from sample to force derivation fallback.
 	stripped := strings.Replace(sampleARF,
