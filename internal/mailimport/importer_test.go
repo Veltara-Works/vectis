@@ -28,6 +28,7 @@ type fakeStore struct {
 
 	setRunningTotal int
 	completed       *[2]int // imported, skipped
+	completeNoOp    bool    // when true, Complete reports no transition (raced-in terminal state)
 	failed          string
 	progressCalls   int
 }
@@ -35,7 +36,9 @@ type fakeStore struct {
 func (s *fakeStore) GetByID(_ context.Context, _ string) (*repository.ImportJob, error) {
 	return s.job, nil
 }
-func (s *fakeStore) DecryptPassword(_ context.Context, _ string) (string, error) { return "src-pw", nil }
+func (s *fakeStore) DecryptPassword(_ context.Context, _ string) (string, error) {
+	return "src-pw", nil
+}
 func (s *fakeStore) TargetEmail(_ context.Context, _ string) (string, error) {
 	return "alice@test.local", nil
 }
@@ -47,9 +50,14 @@ func (s *fakeStore) UpdateProgress(_ context.Context, _ string, _ int, _ string,
 	s.progressCalls++
 	return nil
 }
-func (s *fakeStore) Complete(_ context.Context, _ string, imported, skipped int) error {
+func (s *fakeStore) Complete(_ context.Context, _ string, imported, skipped int) (bool, error) {
+	// Mirror the conditional repository UPDATE: if a cancel/failure raced in,
+	// the transition is a no-op and Complete reports false.
+	if s.completeNoOp {
+		return false, nil
+	}
 	s.completed = &[2]int{imported, skipped}
-	return nil
+	return true, nil
 }
 func (s *fakeStore) Fail(_ context.Context, _ string, msg string) error { s.failed = msg; return nil }
 func (s *fakeStore) Status(_ context.Context, _ string) (string, error) {
@@ -64,15 +72,20 @@ func (s *fakeStore) Status(_ context.Context, _ string) (string, error) {
 }
 
 type fakeMinter struct {
-	minted  int
-	revoked int
+	minted            int
+	revoked           int
+	revokeHadDeadline bool // whether the last Revoke ctx carried a deadline (#153)
 }
 
 func (m *fakeMinter) Mint(_ context.Context, _, _ string, _ time.Duration) (*repository.MintedToken, error) {
 	m.minted++
 	return &repository.MintedToken{ID: "tok-1", Password: "tok-pw", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
-func (m *fakeMinter) Revoke(_ context.Context, _ string) error { m.revoked++; return nil }
+func (m *fakeMinter) Revoke(ctx context.Context, _ string) error {
+	m.revoked++
+	_, m.revokeHadDeadline = ctx.Deadline()
+	return nil
+}
 
 type fakeSource struct {
 	folders    []Folder
@@ -275,6 +288,86 @@ func TestImporter_CancelMidRun(t *testing.T) {
 	}
 }
 
+// TestImporter_CancelRaceBeforeComplete is the regression for #184: a cancel
+// that lands after the loop finishes but before the terminal transition must NOT
+// be overwritten by Complete. The single folder imports fully (status "running"
+// at the folder check), then the final pre-Complete check observes "cancelled" —
+// the job must end cancelled, not completed.
+func TestImporter_CancelRaceBeforeComplete(t *testing.T) {
+	src := &fakeSource{
+		folders:   []Folder{{Name: "INBOX"}},
+		overviews: map[string][]Overview{"INBOX": {{UID: 1, MessageID: "a@x"}}},
+		bodies:    map[uint32][]byte{1: []byte("m1")},
+	}
+	dst := &fakeDest{existing: map[string]map[string]struct{}{}}
+	// 1st Status (folder-loop check) = running; 2nd (final pre-Complete) = cancelled.
+	store := &fakeStore{job: runnableJob(), statusSeq: []string{"running", "cancelled"}}
+	minter := &fakeMinter{}
+
+	newTestImporter(store, minter, src, dst).Run(context.Background(), "job-1")
+
+	if store.completed != nil {
+		t.Error("a cancel racing in before Complete must not be marked completed (#184)")
+	}
+	if store.failed != "" {
+		t.Errorf("late-cancelled job must not be marked failed, got %q", store.failed)
+	}
+	// The folder finished before the cancel was observed, so its message was imported.
+	if len(dst.appends) != 1 {
+		t.Errorf("expected the folder's message imported before the late cancel, appends=%d", len(dst.appends))
+	}
+	if minter.revoked != 1 {
+		t.Error("token must still be revoked on cancellation")
+	}
+}
+
+// TestImporter_RevokeIsTimeBounded is the regression for #153: the post-run
+// token revocation must run on a context with a deadline so a hung token store
+// can't block the import goroutine from returning and leak the concurrency slot.
+// TestImporter_CompleteNoOpNotMisreported guards the log-accuracy half of #184:
+// if a cancel/failure races in between the final check and the conditional
+// Complete UPDATE (so Complete reports no transition), the runner must NOT claim
+// the job completed — it leaves the recorded terminal status untouched.
+func TestImporter_CompleteNoOpNotMisreported(t *testing.T) {
+	src := &fakeSource{
+		folders:   []Folder{{Name: "INBOX"}},
+		overviews: map[string][]Overview{"INBOX": {{UID: 1, MessageID: "a@x"}}},
+		bodies:    map[uint32][]byte{1: []byte("m1")},
+	}
+	dst := &fakeDest{existing: map[string]map[string]struct{}{}}
+	store := &fakeStore{job: runnableJob(), completeNoOp: true} // Complete is a no-op
+	minter := &fakeMinter{}
+
+	newTestImporter(store, minter, src, dst).Run(context.Background(), "job-1")
+
+	if store.completed != nil {
+		t.Error("a no-op Complete must not record completion counts")
+	}
+	if store.failed != "" {
+		t.Errorf("must not be marked failed, got %q", store.failed)
+	}
+}
+
+func TestImporter_RevokeIsTimeBounded(t *testing.T) {
+	src := &fakeSource{
+		folders:   []Folder{{Name: "INBOX"}},
+		overviews: map[string][]Overview{"INBOX": {{UID: 1, MessageID: "a@x"}}},
+		bodies:    map[uint32][]byte{1: []byte("m1")},
+	}
+	dst := &fakeDest{existing: map[string]map[string]struct{}{}}
+	store := &fakeStore{job: runnableJob()}
+	minter := &fakeMinter{}
+
+	newTestImporter(store, minter, src, dst).Run(context.Background(), "job-1")
+
+	if minter.revoked != 1 {
+		t.Fatalf("expected exactly one revoke, got %d", minter.revoked)
+	}
+	if !minter.revokeHadDeadline {
+		t.Error("revoke ran on an unbounded context — a hung token store would wedge the slot (#153)")
+	}
+}
+
 func TestImporter_SourceDialFailure(t *testing.T) {
 	src := &fakeSource{dialErr: errors.New("connection refused")}
 	dst := &fakeDest{}
@@ -351,8 +444,8 @@ func TestImporter_SkipsGmailVirtualFolders(t *testing.T) {
 			{Name: "[Gmail]/Important", Delim: "/", Attrs: []string{"\\Important"}},
 		},
 		overviews: map[string][]Overview{
-			"INBOX":            {{UID: 1, MessageID: "a@x"}},
-			"[Gmail]/All Mail": {{UID: 2, MessageID: "a@x"}, {UID: 3, MessageID: "b@x"}},
+			"INBOX":             {{UID: 1, MessageID: "a@x"}},
+			"[Gmail]/All Mail":  {{UID: 2, MessageID: "a@x"}, {UID: 3, MessageID: "b@x"}},
 			"[Gmail]/Important": {{UID: 4, MessageID: "a@x"}},
 		},
 		bodies: map[uint32][]byte{1: []byte("m1"), 2: []byte("m2"), 3: []byte("m3"), 4: []byte("m4")},

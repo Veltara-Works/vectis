@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/argon2"
 
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
@@ -1394,20 +1395,55 @@ func (m *Manager) healthCheck(ctx context.Context) error {
 	return nil
 }
 
-// deriveKey returns a 32-byte AES-256 key from a passphrase via SHA-256.
-func deriveKey(passphrase string) []byte {
+const (
+	// backupMagicV1 prefixes archives whose key was derived with the salted,
+	// memory-hard Argon2id KDF (#177). Its absence marks a legacy archive whose
+	// key was a bare SHA-256 of the passphrase; decryptFile still reads those so
+	// backups taken before the format change remain restorable.
+	backupMagicV1 = "VXB1"
+	backupSaltLen = 16
+	// Argon2id parameters for backup key derivation. Backups are encrypted and
+	// decrypted rarely (not on a hot path), so the KDF runs once per archive —
+	// a 64 MB / t=3 / p=4 cost is comfortably affordable and makes offline brute
+	// force of a weak passphrase expensive.
+	backupArgonTime    = 3
+	backupArgonMemory  = 64 * 1024 // 64 MB
+	backupArgonThreads = 4
+	backupKeyLen       = 32 // AES-256
+)
+
+// deriveKeyArgon2 stretches a passphrase into a 32-byte AES-256 key using
+// Argon2id with a per-archive random salt (#177). The salt defeats
+// precomputation/rainbow tables and ensures two archives never share a key even
+// under the same passphrase; the memory-hard KDF makes brute force costly.
+func deriveKeyArgon2(passphrase string, salt []byte) []byte {
+	return argon2.IDKey([]byte(passphrase), salt, backupArgonTime, backupArgonMemory, backupArgonThreads, backupKeyLen)
+}
+
+// deriveKeyLegacy is the pre-#177 derivation: a bare, unsalted SHA-256 of the
+// passphrase. Retained ONLY to decrypt archives written before the format
+// change; never used to encrypt new archives.
+func deriveKeyLegacy(passphrase string) []byte {
 	h := sha256.Sum256([]byte(passphrase))
 	return h[:]
 }
 
-// encryptFile encrypts srcPath with AES-256-GCM and writes to dstPath.
+// encryptFile encrypts srcPath with AES-256-GCM and writes to dstPath. The
+// output layout is: magic || salt || nonce || ciphertext. A tampered salt or
+// nonce derives the wrong key (or fails the GCM tag), so neither needs separate
+// authentication.
 func encryptFile(srcPath, dstPath, passphrase string) error {
 	plaintext, err := os.ReadFile(srcPath)
 	if err != nil {
 		return fmt.Errorf("read plaintext: %w", err)
 	}
 
-	block, err := aes.NewCipher(deriveKey(passphrase))
+	salt := make([]byte, backupSaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return fmt.Errorf("generate salt: %w", err)
+	}
+
+	block, err := aes.NewCipher(deriveKeyArgon2(passphrase, salt))
 	if err != nil {
 		return fmt.Errorf("create cipher: %w", err)
 	}
@@ -1422,24 +1458,43 @@ func encryptFile(srcPath, dstPath, passphrase string) error {
 		return fmt.Errorf("generate nonce: %w", err)
 	}
 
-	// nonce is prepended to the ciphertext.
-	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+	// header = magic || salt || nonce; Seal appends the ciphertext to it.
+	header := append([]byte(backupMagicV1), salt...)
+	header = append(header, nonce...)
+	out := gcm.Seal(header, nonce, plaintext, nil)
 
-	if err := os.WriteFile(dstPath, ciphertext, 0600); err != nil {
+	if err := os.WriteFile(dstPath, out, 0600); err != nil {
 		return fmt.Errorf("write encrypted file: %w", err)
 	}
 
 	return nil
 }
 
-// decryptFile decrypts an AES-256-GCM encrypted file and writes to dstPath.
+// decryptFile decrypts an AES-256-GCM archive and writes to dstPath. It detects
+// the format by the leading magic: a VXB1 archive carries a salt and is keyed
+// with Argon2id; anything else is treated as a legacy (unsalted SHA-256) archive
+// so pre-#177 backups still restore.
 func decryptFile(srcPath, dstPath, passphrase string) error {
-	ciphertext, err := os.ReadFile(srcPath)
+	data, err := os.ReadFile(srcPath)
 	if err != nil {
 		return fmt.Errorf("read encrypted file: %w", err)
 	}
 
-	block, err := aes.NewCipher(deriveKey(passphrase))
+	var key, body []byte
+	if len(data) >= len(backupMagicV1) && string(data[:len(backupMagicV1)]) == backupMagicV1 {
+		rest := data[len(backupMagicV1):]
+		if len(rest) < backupSaltLen {
+			return fmt.Errorf("encrypted file is too short")
+		}
+		key = deriveKeyArgon2(passphrase, rest[:backupSaltLen])
+		body = rest[backupSaltLen:]
+	} else {
+		// Legacy archive: nonce || ciphertext, keyed by bare SHA-256.
+		key = deriveKeyLegacy(passphrase)
+		body = data
+	}
+
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return fmt.Errorf("create cipher: %w", err)
 	}
@@ -1450,11 +1505,11 @@ func decryptFile(srcPath, dstPath, passphrase string) error {
 	}
 
 	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
+	if len(body) < nonceSize {
 		return fmt.Errorf("encrypted file is too short")
 	}
 
-	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	nonce, ciphertext := body[:nonceSize], body[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return fmt.Errorf("decrypt failed (wrong key?): %w", err)
