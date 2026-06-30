@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/valkey-io/valkey-go"
 
 	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/ratelimit"
@@ -250,6 +251,28 @@ func (s *Server) completeTOTPLogin(w http.ResponseWriter, r *http.Request, totpS
 		ip := clientIP(r)
 		s.audit.Log(r.Context(), &admin.ID, "auth.login", "admin", &admin.ID,
 			map[string]any{"success": false, "ip": ip, "totp_used": true, "totp_failed": true}, &ip)
+		respondError(w, r, http.StatusUnauthorized, "TOTP_INVALID", "Invalid TOTP code")
+		return
+	}
+
+	// Guard against replay within the validation skew window. A TOTP code stays
+	// valid for period*(2*skew+1) = 90s, long enough for a code sniffed off the
+	// wire (or read from a logged request) to be re-presented even under the
+	// per-account rate limit above. Claim the code single-use; reject any second
+	// presentation. Fails closed on a Valkey error (matching the SAML
+	// assertion-replay guard) — the TOTP session GET above already proves Valkey
+	// is reachable, so an error here is anomalous and must not silently disable
+	// replay protection.
+	fresh, err := s.claimTOTPCode(r.Context(), admin.ID, totpCode)
+	if err != nil {
+		s.logger.Error("TOTP replay-cache check failed; rejecting (fail-closed)", "error", err)
+		respondError(w, r, http.StatusUnauthorized, "TOTP_INVALID", "Invalid TOTP code")
+		return
+	}
+	if !fresh {
+		ip := clientIP(r)
+		s.audit.Log(r.Context(), &admin.ID, "auth.login", "admin", &admin.ID,
+			map[string]any{"success": false, "ip": ip, "totp_used": true, "totp_replay": true}, &ip)
 		respondError(w, r, http.StatusUnauthorized, "TOTP_INVALID", "Invalid TOTP code")
 		return
 	}
@@ -534,6 +557,28 @@ func (s *Server) createTOTPSession(ctx context.Context, adminID string) (string,
 		return "", fmt.Errorf("store TOTP session: %w", err)
 	}
 	return token, nil
+}
+
+// totpReplayTTL bounds how long a used TOTP code is remembered. A code passes
+// validation across the skew window — period*(2*skew+1) = 30s*3 = 90s — so
+// remembering it for that span blocks replay until it can no longer validate
+// anyway. Keeping the TTL tight stops the namespace from growing unbounded.
+const totpReplayTTL = 90 * time.Second
+
+// claimTOTPCode atomically marks a TOTP code single-use for an admin and reports
+// whether this was its first presentation. SET NX lets the first use through; a
+// later SET NX against the still-live key returns valkey.Nil, which we surface
+// as "not fresh" (a replay). Any other Valkey error is returned so the caller
+// can fail closed rather than silently skip replay protection.
+func (s *Server) claimTOTPCode(ctx context.Context, adminID, code string) (bool, error) {
+	cmd := s.vk.B().Set().Key("totp_used:" + adminID + ":" + code).Value("1").Nx().Ex(totpReplayTTL).Build()
+	if err := s.vk.Do(ctx, cmd).Error(); err != nil {
+		if valkey.IsValkeyNil(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // getTOTPSession retrieves the admin ID for a TOTP session token from Valkey.
