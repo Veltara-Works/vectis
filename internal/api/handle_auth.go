@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -55,8 +57,10 @@ func clearSessionCookie(w http.ResponseWriter) {
 // password/TOTP guessing. These Valkey-backed fixed windows bound brute force:
 //   - per-IP: caps total /auth/login calls (step-1 password + step-2 TOTP)
 //     from one address, so credential spray across accounts is bounded.
-//   - per-account: caps attempts against a single admin, so a distributed
-//     attacker can't brute one account from many IPs.
+//   - per-email: caps attempts against a single account, keyed by the SUBMITTED
+//     email (not the resolved admin ID) and applied to known and unknown emails
+//     alike — so the 429 can't double as an account-existence oracle — which
+//     also stops a distributed attacker grinding one account from many IPs.
 //
 // Limits are generous enough that a human admin (who logs in rarely) never
 // trips them, but tight enough that brute force is impractical. All checks
@@ -69,6 +73,15 @@ const (
 	totpAcctRateLimit   = 10
 	totpAcctRateWindow  = 15 * time.Minute
 )
+
+// loginEmailKey derives a stable, privacy-preserving Valkey key fragment for a
+// submitted login email: lowercased and trimmed so case/whitespace variants
+// share one bucket (an attacker can't multiply their budget with casing games),
+// then SHA-256 hex so the raw address is never stored in Valkey.
+func loginEmailKey(email string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return hex.EncodeToString(sum[:])
+}
 
 // rateLimitOK records one hit against key's fixed window and, when the window
 // is exhausted, writes a 429 with Retry-After and returns false. On a limiter
@@ -158,6 +171,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-email brute-force bound, keyed by a hash of the submitted email and
+	// applied BEFORE the admin lookup so it covers existing and unknown emails
+	// identically. A limiter keyed by the resolved admin ID would only ever trip
+	// for real accounts, making its 429 an account-existence oracle that defeats
+	// the timing equalization below (#179). Checked before the lookup, it also
+	// sheds the DB query and (expensive) Argon2id verify under attack.
+	if !s.rateLimitOK(w, r, "ratelimit:login:email:"+loginEmailKey(req.Email), loginAcctRateLimit, loginAcctRateWindow, "RATE_LIMITED") {
+		return
+	}
+
 	// Look up admin.
 	admin, err := s.admins.GetByEmail(r.Context(), req.Email)
 	if err != nil {
@@ -172,14 +195,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// maps to a real admin (user enumeration, #179).
 		auth.VerifyDummyPassword(req.Password)
 		respondError(w, r, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password")
-		return
-	}
-
-	// Per-account brute-force bound, keyed by the resolved admin ID. Stops a
-	// distributed attacker from grinding a single known account from many IPs
-	// (which would slip past the per-IP limit above). Checked before the
-	// (expensive) password verify so it also sheds bcrypt load under attack.
-	if !s.rateLimitOK(w, r, "ratelimit:login:acct:"+admin.ID, loginAcctRateLimit, loginAcctRateWindow, "RATE_LIMITED") {
 		return
 	}
 

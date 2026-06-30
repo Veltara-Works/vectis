@@ -114,3 +114,38 @@ func TestTOTPCodeReplayRejected(t *testing.T) {
 		t.Fatalf("replayed TOTP code: error = %v, want code TOTP_INVALID", body2["error"])
 	}
 }
+
+// TestLoginUnknownEmailRateLimited proves the per-email rate limiter applies to
+// UNKNOWN accounts too (#179 hardening): without it, only real accounts could
+// hit a 429 while unknown emails returned 401 indefinitely, so the 429 itself
+// leaked which emails are real. An unknown email must start at 401 and flip to
+// 429 once the per-email window is exhausted — identical to a real account.
+//
+// Uses a dedicated X-Forwarded-For IP so the per-IP limit (20/5m) can't trip
+// first and mask the per-email limit (10/15m).
+func TestLoginUnknownEmailRateLimited(t *testing.T) {
+	env := setupTestEnv(t)
+	const ip = "203.0.113.77" // unique to this test
+	body := `{"email":"no-such-admin-12345@example.com","password":"wrong"}`
+
+	saw401, saw429 := false, false
+	for i := 0; i < 15; i++ { // per-email limit is 10/15m; per-IP is 20/5m
+		resp := env.doRequestWithHeader(t, "POST", "/api/v1/auth/login", body, "X-Forwarded-For", ip)
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			saw401 = true
+		case http.StatusTooManyRequests:
+			saw429 = true
+		}
+		resp.Body.Close()
+		if saw429 {
+			break
+		}
+	}
+	if !saw401 {
+		t.Error("expected an initial 401 for the unknown email (before the limit)")
+	}
+	if !saw429 {
+		t.Fatal("unknown email never hit 429 — its 429/401 behaviour still differs from a real account (enumeration oracle)")
+	}
+}
