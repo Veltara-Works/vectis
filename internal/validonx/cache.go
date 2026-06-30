@@ -160,6 +160,17 @@ func (cl *CachedLicense) HasFeature(feature string) bool {
 	return false
 }
 
+// GrantsFeature is the authoritative entitlement predicate: it reports whether
+// this license is currently valid AND includes the named feature. A license
+// ValidonX has marked invalid (valid:false — not entitled, suspended, revoked)
+// grants nothing, even if a stale allowed_features list still names the feature.
+// HasFeature is only the membership half; callers gating real access must use
+// this so a valid:false response can never re-grant a Pro/Enterprise feature
+// (audit finding #125/178).
+func (cl *CachedLicense) GrantsFeature(feature string) bool {
+	return cl.LicenseData.Valid && cl.HasFeature(feature)
+}
+
 // DeleteCached removes the cached license for a tenant.
 func (lc *LicenseCache) DeleteCached(ctx context.Context, tenantID string) error {
 	_, err := lc.db.Exec(ctx,
