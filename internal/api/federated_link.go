@@ -89,10 +89,18 @@ func (s *Server) resolveFederatedAdmin(ctx context.Context, ident federatedIdent
 }
 
 // establishFederatedSession finishes a successful SSO login: it creates a
-// session for the resolved admin (no TOTP — federated login trusts the IdP),
-// sets the session cookie, records the login, audits it, and redirects to the
-// admin UI. Shared by the OIDC and SAML callbacks so the post-resolution flow
-// cannot drift either.
+// session for the resolved admin, sets the session cookie, records the login,
+// audits it, and redirects to the admin UI. Shared by the OIDC and SAML
+// callbacks so the post-resolution flow cannot drift either.
+//
+// MFA posture (audit finding #145, decided): federated login does NOT apply the
+// Vectis TOTP step that password login enforces, even for a TOTP-enrolled admin.
+// This is deliberate — the IdP is the authentication authority for SSO and is
+// expected to enforce MFA upstream. The corollary (linking SSO to a password+
+// TOTP admin makes the account only as strong as the IdP login) is documented
+// for operators in docs/notes/saml-sso-setup.md so the trade-off is explicit
+// rather than silent. If a future policy needs a second factor on SSO, gate it
+// here on admin.TOTPEnabled before CreateSession.
 func (s *Server) establishFederatedSession(w http.ResponseWriter, r *http.Request, admin *repository.Admin, auditAction, provider string) {
 	token, session, err := s.sessions.CreateSession(r.Context(), admin.ID, clientIP(r), r.UserAgent())
 	if err != nil {
