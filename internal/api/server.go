@@ -897,6 +897,9 @@ func (s *Server) buildRouter() chi.Router {
 		// Authenticated endpoints.
 		r.Group(func(r chi.Router) {
 			r.Use(s.authMiddleware)
+			// CSRF defence in depth for cookie sessions (#127). After auth so
+			// only authenticated cookie requests reach it; skips Bearer/API-key.
+			r.Use(s.csrfProtect)
 
 			// Auth management — all authenticated roles.
 			r.Get("/auth/me", s.handleMe)
