@@ -21,7 +21,17 @@ through your corporate identity provider (IdP) — Okta, Microsoft Entra ID
   the admin under **Admins** first. This mirrors the OIDC behaviour.
 - **One SP identity per install.** A single SP keypair (entityID + cert + key)
   is shared across every configured provider.
-- **Federated logins skip TOTP**, same as OIDC — your IdP owns MFA.
+- **Federated logins skip Vectis TOTP**, same as OIDC — your IdP owns MFA (see
+  the security note below).
+
+> **Security: your IdP must enforce MFA.** A successful SSO login establishes an
+> admin session directly — Vectis does **not** apply its own TOTP step to
+> federated logins, even for an admin who has TOTP enrolled for password login.
+> This is a deliberate posture: the identity provider is the authentication
+> authority for SSO, so multi-factor authentication must be enforced **at the
+> IdP**. Note the corollary: linking SSO to an admin who also uses password+TOTP
+> makes that account only as strong as the IdP login — if the IdP does not
+> require MFA, SSO is the weaker path. Enforce MFA on every IdP you connect.
 
 The SP validates every assertion's **signature**, **audience** (must equal the
 SP entityID), **time window** (NotBefore / NotOnOrAfter, with clock skew),
