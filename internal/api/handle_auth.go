@@ -574,11 +574,13 @@ func (s *Server) createTOTPSession(ctx context.Context, adminID string) (string,
 	return token, nil
 }
 
-// totpReplayTTL bounds how long a used TOTP code is remembered. A code passes
-// validation across the skew window — period*(2*skew+1) = 30s*3 = 90s — so
-// remembering it for that span blocks replay until it can no longer validate
-// anyway. Keeping the TTL tight stops the namespace from growing unbounded.
-const totpReplayTTL = 90 * time.Second
+// totpReplayTTL bounds how long a used TOTP code is remembered: exactly the
+// window over which ValidateCodeWithSkew will still accept it
+// (auth.TOTPReplayWindow = period*(2*skew+1)). Deriving it from the same source
+// as the validator keeps the two from drifting if the period or skew changes.
+// Remembering a code for that span blocks replay until it can no longer validate
+// anyway, and the tight TTL stops the namespace from growing unbounded.
+const totpReplayTTL = auth.TOTPReplayWindow
 
 // claimTOTPCode atomically marks a TOTP code single-use for an admin and reports
 // whether this was its first presentation. SET NX lets the first use through; a

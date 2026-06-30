@@ -13,6 +13,19 @@ import (
 	"github.com/pquerna/otp/totp"
 )
 
+const (
+	// totpPeriodSeconds is the TOTP time-step (seconds per code).
+	totpPeriodSeconds = 30
+	// totpSkewSteps is how many periods of clock drift ValidateCodeWithSkew
+	// tolerates on each side of the current step.
+	totpSkewSteps = 1
+)
+
+// TOTPReplayWindow is the longest a single TOTP code stays acceptable under
+// ValidateCodeWithSkew: period*(2*skew+1). A used-code cache must remember a
+// code at least this long to fully block replay within the skew window.
+const TOTPReplayWindow = totpPeriodSeconds * (2*totpSkewSteps + 1) * time.Second
+
 // TOTPManager handles TOTP secret generation, encryption, and validation.
 type TOTPManager struct {
 	encryptionKey []byte // derived from API secret
@@ -36,7 +49,7 @@ func (tm *TOTPManager) GenerateSecret(email string) (encryptedSecret, provisioni
 	key, err := totp.Generate(totp.GenerateOpts{
 		Issuer:      tm.issuer,
 		AccountName: email,
-		Period:      30,
+		Period:      totpPeriodSeconds,
 		Digits:      otp.DigitsSix,
 		Algorithm:   otp.AlgorithmSHA1,
 	})
@@ -71,9 +84,9 @@ func (tm *TOTPManager) ValidateCodeWithSkew(encryptedSecret, code string) (bool,
 	}
 
 	valid, err := totp.ValidateCustom(code, secret, time.Now().UTC(), totp.ValidateOpts{
-		Period:    30,
-		Skew:     1,
-		Digits:   otp.DigitsSix,
+		Period:    totpPeriodSeconds,
+		Skew:      totpSkewSteps,
+		Digits:    otp.DigitsSix,
 		Algorithm: otp.AlgorithmSHA1,
 	})
 	return valid, err
