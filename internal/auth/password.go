@@ -67,6 +67,31 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	return subtle.ConstantTimeCompare(existingHash, computedHash) == 1, nil
 }
 
+// dummyPasswordHash is computed once at startup with the standard Argon2id
+// params. The unknown-account login path verifies a submitted password against
+// it (see VerifyDummyPassword) so an attacker cannot tell "no such admin" apart
+// from "wrong password" by response latency — Argon2id dominates that latency,
+// so skipping it for unknown accounts would leak which emails are real (#179).
+// The plaintext is a fixed throwaway and never authenticates anyone.
+var dummyPasswordHash = func() string {
+	h, err := HashPassword("vectis-login-timing-equalizer")
+	if err != nil {
+		// HashPassword only fails if the RNG fails — effectively impossible.
+		// Fall back to a structurally valid, standard-param hash so the dummy
+		// verify still performs real Argon2id work and equalizes timing.
+		return "$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	}
+	return h
+}()
+
+// VerifyDummyPassword runs a full Argon2id verification against a fixed dummy
+// hash and discards the result. Call it on the unknown-account login path so
+// that the response does the same KDF work a real password verify would,
+// closing the user-enumeration timing side channel (#179).
+func VerifyDummyPassword(password string) {
+	_, _ = VerifyPassword(password, dummyPasswordHash)
+}
+
 // ValidatePasswordStrength checks that a password meets minimum complexity requirements.
 // Returns nil if valid, or an error describing the issue.
 func ValidatePasswordStrength(password string) error {
