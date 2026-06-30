@@ -165,6 +165,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if admin == nil {
+		// Equalize timing with the known-account path: run the same Argon2id
+		// work a real password verify would before returning the identical
+		// generic error, so response latency doesn't reveal whether the email
+		// maps to a real admin (user enumeration, #179).
+		auth.VerifyDummyPassword(req.Password)
 		respondError(w, r, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password")
 		return
 	}
