@@ -242,11 +242,19 @@ CREATE USER vectis_dovecot WITH PASSWORD '{from secrets.yaml}';
 GRANT SELECT ON domains, mailboxes TO vectis_dovecot;
 
 CREATE USER vectis_api WITH PASSWORD '{from secrets.yaml}';
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO vectis_api;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO vectis_api;
+-- vectis_api owns the application schema rather than receiving a blanket grant:
+-- it is given CREATE ON SCHEMA public and runs the migrations, which CREATE the
+-- tables (so vectis_api owns them, with full rights on its own objects) and
+-- grant the specific DML each table needs. There is NO
+-- `GRANT ALL PRIVILEGES ON ALL TABLES`; every migration grants only the
+-- SELECT/INSERT/UPDATE/DELETE (and sequence USAGE/SELECT) that table requires.
+GRANT CREATE ON SCHEMA public TO vectis_api;
+-- e.g. per-table, in the migration that creates it:
+--   GRANT SELECT, INSERT, UPDATE, DELETE ON <table> TO vectis_api;
+--   GRANT USAGE, SELECT ON SEQUENCE <table>_id_seq TO vectis_api;
 ```
 
-**Security rationale:** If Postfix or Dovecot is compromised, the attacker gets read-only access to domains and mailbox metadata (email addresses, quota info). They cannot modify data, cannot read other tables (sessions, admins, audit logs), and cannot access password hashes through the Postfix user.
+**Security rationale:** If Postfix or Dovecot is compromised, the attacker gets read-only access to domains and mailbox metadata (email addresses, quota info). They cannot modify data, cannot read other tables (sessions, admins, audit logs), and cannot access password hashes through the Postfix user. vectis_api is more privileged (it owns the schema), but it is the application's own role — it is never exposed to the mail daemons, and it still holds no superuser rights (no access outside the public schema, no role management).
 
 ---
 

@@ -14,14 +14,7 @@
 # clears when Roundcube republishes. Re-check on the next roundcube base bump.
 CVE-2026-43494
 
-# CVE-2024-25176 / CVE-2024-25177 / CVE-2024-25178 — luajit in the rspamd
-# image. These are LuaJIT bytecode-loader memory-safety bugs. They are only
-# reachable by loading attacker-controlled Lua/bytecode; rspamd executes only
-# its own bundled rules and our generated config, never untrusted Lua from
-# mail, so the flaw is not reachable in our usage. No fix is available to us:
-# the fixed package (2.1_p20240815-r1) is NOT published in the Alpine 3.21
-# branch — its repo still serves only -r0 (verified 2026-05-29) — so a rebuild
-# cannot clear it. Re-check when Alpine 3.21 ships luajit r1, or on a base bump.
-CVE-2024-25176
-CVE-2024-25177
-CVE-2024-25178
+# NOTE: the former luajit suppressions (CVE-2024-25176/25177/25178) were removed
+# 2026-06-30 — they are FIXED in the current rspamd image. The base moved to
+# alpine:3.24, which ships luajit 2.1_p20251030-r0, well past the 2.1_p20240815-r1
+# fix, so trivy no longer flags them and the suppression is obsolete.

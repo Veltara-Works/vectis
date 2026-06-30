@@ -53,15 +53,15 @@ jobs:
       matrix:
         service: [api, orchestrator, postfix, dovecot, rspamd, clamav, cert-extractor, webmail]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
 
       # Build locally (push: false, load: true) so Trivy can scan it by ref.
       # Reuses the release job's layer cache, so this is cheap when a release
       # ran recently. No cache-to: PR/scan builds must not evict release cache.
       - name: Build image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
           file: docker/${{ matrix.service }}/Dockerfile
@@ -74,7 +74,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
 
       - name: Trivy scan -> SARIF
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: vectis-${{ matrix.service }}:scan
           scanners: vuln
@@ -92,14 +92,14 @@ jobs:
           always() &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
         with:
           sarif_file: trivy-${{ matrix.service }}.sarif
           category: trivy-${{ matrix.service }}
 
       - name: Trivy scan -> run summary
         if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: vectis-${{ matrix.service }}:scan
           scanners: vuln
@@ -124,7 +124,7 @@ jobs:
       # upload + run summary above (report-only) always complete first. To also
       # gate on HIGH later, change `severity` to CRITICAL,HIGH.
       - name: Trivy gate (fail on CRITICAL)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: vectis-${{ matrix.service }}:scan
           scanners: vuln
