@@ -83,7 +83,7 @@ func TestCSRFProtect(t *testing.T) {
 		{"POST no cookie (bearer/api-key) bypasses", http.MethodPost, false, "https://evil.example", "", "", true, http.StatusOK},
 		{"POST cookie same-origin allowed", http.MethodPost, true, "https://mail.example.com", "", "", true, http.StatusOK},
 		{"POST cookie cross-origin rejected", http.MethodPost, true, "https://evil.example", "", "", false, http.StatusForbidden},
-		{"POST cookie no origin/referer rejected", http.MethodPost, true, "", "", "", false, http.StatusForbidden},
+		{"POST cookie no origin/referer defers to SameSite", http.MethodPost, true, "", "", "", true, http.StatusOK},
 		{"POST cookie referer fallback allowed", http.MethodPost, true, "", "https://mail.example.com/admin/", "", true, http.StatusOK},
 		{"POST cookie matches configured hostname when Host differs", http.MethodPost, true, "https://mail.example.com", "", "internal-backend:8080", true, http.StatusOK},
 		{"POST cookie null origin rejected", http.MethodPost, true, "null", "", "", false, http.StatusForbidden},

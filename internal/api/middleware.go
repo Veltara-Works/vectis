@@ -246,13 +246,21 @@ func isSafeMethod(method string) bool {
 // own host. The browser sets Origin from the page issuing the request and won't
 // let a cross-site page forge it, while Host is the host the request was
 // actually sent to — so an evil.example page hitting us carries
-// Origin: https://evil.example against Host: mail.example and is rejected. A
-// missing/garbage Origin AND Referer on a cookie-bearing unsafe request is
-// treated as cross-origin (fail closed); real browsers always send Origin here.
+// Origin: https://evil.example against Host: mail.example and is rejected.
+//
+// It verifies Origin/Referer only when at least one is present. With neither, it
+// defers to the SameSite=Strict cookie (the primary defence) rather than failing
+// closed — some legitimate setups (older browsers, privacy proxies) strip both,
+// and an attacker cannot suppress Origin on their own cross-origin request, so
+// deferring opens no hole. A present-but-non-matching or opaque ("null") Origin
+// is still rejected.
 func (s *Server) originAllowed(r *http.Request) bool {
+	if r.Header.Get("Origin") == "" && r.Header.Get("Referer") == "" {
+		return true // no signal; rely on SameSite=Strict
+	}
 	got := requestOriginHost(r)
 	if got == "" {
-		return false
+		return false // header present but opaque/unparseable → not same-origin
 	}
 	if strings.EqualFold(got, hostWithoutPort(r.Host)) {
 		return true
@@ -283,8 +291,9 @@ func requestOriginHost(r *http.Request) string {
 	return ""
 }
 
-// hostWithoutPort strips a trailing :port from a host[:port] value, leaving the
-// host (or bracketed IPv6 literal) intact.
+// hostWithoutPort returns the host from a host[:port] value. For a host:port it
+// returns the bare host (an IPv6 literal comes back unbracketed, e.g.
+// "[::1]:443" -> "::1"); for a value with no port it is returned unchanged.
 func hostWithoutPort(h string) string {
 	if host, _, err := net.SplitHostPort(h); err == nil {
 		return host
