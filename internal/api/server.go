@@ -403,6 +403,12 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 
 // Start begins listening for HTTP requests.
 func (s *Server) Start() error {
+	// Precompute the login-timing dummy hash off the request path so the first
+	// unknown-account login doesn't pay the one-time Argon2id cost. It's lazy
+	// (sync.Once) so non-auth binaries never allocate the 64MB Argon2id buffer
+	// — see auth.WarmDummyPasswordHash and auth.VerifyDummyPassword.
+	go auth.WarmDummyPasswordHash()
+
 	s.logger.Info("starting API server", "addr", s.httpServer.Addr)
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("listen: %w", err)
