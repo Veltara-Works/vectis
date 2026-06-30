@@ -40,9 +40,9 @@ jobs:
     name: govulncheck (Go)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
 
@@ -63,9 +63,9 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 22
           cache: npm
@@ -77,3 +77,29 @@ jobs:
       # and re-run; do not lower the threshold to make a real finding go away.
       - name: npm audit (high+)
         run: npm audit --audit-level=high
+
+  license-check:
+    name: License compliance (go-licenses)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      # Pinned to match the tooling THIRD_PARTY_LICENSES.md was generated with.
+      - name: Install go-licenses
+        run: go install github.com/google/go-licenses@v1.6.0
+
+      # Blocks any forbidden/restricted (copyleft) license from being compiled
+      # into the Vectis binaries — the central guarantee documented in
+      # THIRD_PARTY_LICENSES.md ("no copyleft linked into the binaries"). This
+      # automates the highest-risk dependency drift (a new copyleft module); the
+      # manual discipline of keeping that file's module list current lapsed once
+      # (robfig/cron was missed, #119). First-party packages are --ignore'd: the
+      # repo's BSL-1.1 LICENSE isn't an OSS license go-licenses can classify and
+      # they aren't third-party. Exhaustive list reconciliation stays the
+      # documented manual step (THIRD_PARTY_LICENSES.md "Regenerating this file").
+      - name: go-licenses check (no forbidden/restricted)
+        run: go-licenses check ./... --disallowed_types=forbidden,restricted --ignore github.com/Veltara-Works/vectis
