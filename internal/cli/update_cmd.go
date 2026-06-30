@@ -526,22 +526,18 @@ func runUpdateSelf(cmd *cobra.Command, args []string) error {
 
 // getCurrentImage returns the image tag currently used by a running container.
 func getCurrentImage(containerName string) string {
-	out, err := exec.Command("docker", "inspect", "--format", "{{.Config.Image}}", containerName).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+	image, _ := dockerInspect(containerName, "{{.Config.Image}}")
+	return image
 }
 
 // waitForContainerHealth waits until a container reports healthy or the timeout expires.
 func waitForContainerHealth(containerName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		out, err := exec.Command("docker", "inspect", "--format",
-			"{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
-			containerName).Output()
+		out, err := dockerInspect(containerName,
+			"{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}")
 		if err == nil {
-			parts := strings.Split(strings.TrimSpace(string(out)), "|")
+			parts := strings.Split(out, "|")
 			if len(parts) >= 2 {
 				state := parts[0]
 				health := parts[1]

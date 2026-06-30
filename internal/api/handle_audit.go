@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
@@ -29,12 +30,5 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasMore := len(entries) > page.Limit
-	var nextCursor string
-	if hasMore {
-		entries = entries[:page.Limit]
-		nextCursor = encodeCursor(entries[page.Limit-1].CreatedAt)
-	}
-
-	respondPaginated(w, r, http.StatusOK, entries, nextCursor, hasMore)
+	respondPaginatedSlice(w, r, http.StatusOK, entries, page.Limit, func(e repository.AuditEntry) time.Time { return e.CreatedAt })
 }

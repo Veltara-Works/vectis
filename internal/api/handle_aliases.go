@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -48,14 +49,7 @@ func (s *Server) handleListAliases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasMore := len(aliases) > page.Limit
-	var nextCursor string
-	if hasMore {
-		aliases = aliases[:page.Limit]
-		nextCursor = encodeCursor(aliases[page.Limit-1].CreatedAt)
-	}
-
-	respondPaginated(w, r, http.StatusOK, aliases, nextCursor, hasMore)
+	respondPaginatedSlice(w, r, http.StatusOK, aliases, page.Limit, func(a repository.Alias) time.Time { return a.CreatedAt })
 }
 
 func (s *Server) handleCreateAlias(w http.ResponseWriter, r *http.Request) {

@@ -40,21 +40,10 @@ func respond(w http.ResponseWriter, r *http.Request, status int, data any) {
 	}
 }
 
+// respondError writes a JSON error envelope with no details. It is
+// respondErrorWithDetails with a nil details payload (omitted via omitempty).
 func respondError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
-	resp := apiResponse{
-		Error: &apiError{
-			Code:    code,
-			Message: message,
-		},
-		Meta: apiMeta{
-			RequestID: getRequestID(r.Context()),
-			Timestamp: time.Now().UTC(),
-		},
-	}
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("failed to encode error response", "error", err, "request_id", getRequestID(r.Context()))
-	}
+	respondErrorWithDetails(w, r, status, code, message, nil)
 }
 
 func respondErrorWithDetails(w http.ResponseWriter, r *http.Request, status int, code, message string, details any) {

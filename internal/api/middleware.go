@@ -202,7 +202,7 @@ func (s *Server) authenticateAPIKey(w http.ResponseWriter, r *http.Request, next
 // extractSignedToken gets the signed token from the cookie or Authorization header.
 func extractSignedToken(r *http.Request) string {
 	// Try cookie first.
-	if cookie, err := r.Cookie("vectis_session"); err == nil && cookie.Value != "" {
+	if cookie, err := r.Cookie(sessionCookieName); err == nil && cookie.Value != "" {
 		return cookie.Value
 	}
 

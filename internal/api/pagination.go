@@ -62,3 +62,18 @@ func parsePagination(r *http.Request) (paginationParams, error) {
 func encodeCursor(t time.Time) string {
 	return base64.URLEncoding.EncodeToString([]byte(t.UTC().Format(time.RFC3339Nano)))
 }
+
+// respondPaginatedSlice writes a cursor-paginated list response. Repositories
+// fetch limit+1 rows so the handler can detect a further page; this trims the
+// slice back to limit, derives the next cursor from the last returned item's
+// timestamp (via createdAt), and emits the standard paginated envelope. It
+// replaces the identical hasMore/nextCursor tail that every list handler had.
+func respondPaginatedSlice[T any](w http.ResponseWriter, r *http.Request, status int, items []T, limit int, createdAt func(T) time.Time) {
+	hasMore := len(items) > limit
+	var nextCursor string
+	if hasMore {
+		items = items[:limit]
+		nextCursor = encodeCursor(createdAt(items[len(items)-1]))
+	}
+	respondPaginated(w, r, status, items, nextCursor, hasMore)
+}

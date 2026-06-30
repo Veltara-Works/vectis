@@ -1167,24 +1167,10 @@ func (m *Manager) ensureDBUp(ctx context.Context) error {
 }
 
 // archiveDirectory creates a tar of a directory. If the source directory
-// does not exist, returns os.ErrNotExist.
+// does not exist, returns os.ErrNotExist. It is archiveDirectoryExcluding
+// with an empty exclude set.
 func (m *Manager) archiveDirectory(ctx context.Context, srcDir, dstPath string) error {
-	if _, err := os.Stat(srcDir); err != nil {
-		return err
-	}
-
-	cmd := exec.CommandContext(ctx, "tar",
-		"-cf", dstPath,
-		"-C", filepath.Dir(srcDir),
-		filepath.Base(srcDir),
-	)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("tar failed for %s: %w: %s", srcDir, err, string(output))
-	}
-
-	return nil
+	return m.archiveDirectoryExcluding(ctx, srcDir, dstPath, nil)
 }
 
 // archiveDirectoryExcluding creates a tar of a directory, excluding files

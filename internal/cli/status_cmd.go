@@ -11,6 +11,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// dockerInspect runs `docker inspect --format <format> <container>` and returns
+// the trimmed output, or an error if the container is missing / docker fails.
+func dockerInspect(container, format string) (string, error) {
+	out, err := exec.Command("docker", "inspect", "--format", format, container).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show status of all Vectis services",
@@ -91,9 +101,8 @@ func runHealth(cmd *cobra.Command, args []string) error {
 	for _, svc := range services {
 		d := healthDetail{Name: strings.TrimPrefix(svc, "vectis-")}
 
-		out, err := exec.Command("docker", "inspect", "--format",
-			`{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.Config.Image}}|{{.State.StartedAt}}|{{.RestartCount}}`,
-			svc).Output()
+		out, err := dockerInspect(svc,
+			`{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.Config.Image}}|{{.State.StartedAt}}|{{.RestartCount}}`)
 		if err != nil {
 			d.Status = "not found"
 			d.Health = "unknown"
@@ -102,7 +111,7 @@ func runHealth(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		parts := strings.Split(strings.TrimSpace(string(out)), "|")
+		parts := strings.Split(out, "|")
 		if len(parts) >= 5 {
 			d.Status = parts[0]
 			d.Health = parts[1]
@@ -169,9 +178,8 @@ func getServiceStatuses() ([]serviceStatus, int) {
 	for _, svc := range vectisServices {
 		s := serviceStatus{Name: strings.TrimPrefix(svc, "vectis-")}
 
-		out, err := exec.Command("docker", "inspect", "--format",
-			`{{.State.Status}}|{{.State.Health.Status}}|{{.State.StartedAt}}`,
-			svc).Output()
+		out, err := dockerInspect(svc,
+			`{{.State.Status}}|{{.State.Health.Status}}|{{.State.StartedAt}}`)
 		if err != nil {
 			s.Status = "not found"
 			s.Health = "unknown"
@@ -180,7 +188,7 @@ func getServiceStatuses() ([]serviceStatus, int) {
 			continue
 		}
 
-		parts := strings.Split(strings.TrimSpace(string(out)), "|")
+		parts := strings.Split(out, "|")
 		if len(parts) >= 3 {
 			s.Status = parts[0]
 			s.Health = parts[1]

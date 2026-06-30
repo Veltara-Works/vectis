@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Veltara-Works/vectis/internal/config"
-	"github.com/Veltara-Works/vectis/internal/database"
 	"github.com/Veltara-Works/vectis/internal/dsar"
 	"github.com/Veltara-Works/vectis/internal/logging"
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -80,11 +79,7 @@ func dsarBuild(cmd *cobra.Command) (*dsar.Service, context.Context, context.Canc
 	logger := logging.NewLogger("warn")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 
-	dbCfg := database.ConfigFromSecrets(
-		secrets.Database.Host, secrets.Database.Port, secrets.Database.Name,
-		secrets.Database.APIUser, secrets.Database.APIPassword,
-	)
-	pool, err := database.NewPool(ctx, dbCfg, logger)
+	pool, err := openPool(ctx, secrets, "", logger)
 	if err != nil {
 		cancel()
 		return nil, nil, nil, nil, fmt.Errorf("connect to database: %w", err)

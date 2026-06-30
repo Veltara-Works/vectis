@@ -176,16 +176,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 	s.admins.UpdateLastLogin(r.Context(), admin.ID)
 
-	signedToken := s.sessions.SignToken(token)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "vectis_session",
-		Value:    signedToken,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		Expires:  session.ExpiresAt,
-	})
+	s.setSessionCookie(w, token, session.ExpiresAt)
 
 	// Audit log.
 	ip := clientIP(r)

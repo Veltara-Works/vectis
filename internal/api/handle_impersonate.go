@@ -35,21 +35,9 @@ func (s *Server) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch the mailbox.
-	mailbox, err := s.mailboxes.GetByID(r.Context(), mailboxID)
-	if err != nil {
-		s.logger.Error("get mailbox for impersonation failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get mailbox")
-		return
-	}
-	if mailbox == nil {
-		respondError(w, r, http.StatusNotFound, "NOT_FOUND", "Mailbox not found")
-		return
-	}
-
-	// RBAC: check domain access.
-	if !s.canAccessDomain(r.Context(), mailbox.DomainID) {
-		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this mailbox")
+	// Fetch the mailbox and verify domain access (IDOR guard).
+	mailbox, ok := s.requireMailboxAccess(w, r, mailboxID)
+	if !ok {
 		return
 	}
 
@@ -102,14 +90,8 @@ func (s *Server) handleRevokeImpersonation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	mailbox, err := s.mailboxes.GetByID(r.Context(), mailboxID)
-	if err != nil || mailbox == nil {
-		respondError(w, r, http.StatusNotFound, "NOT_FOUND", "Mailbox not found")
-		return
-	}
-
-	if !s.canAccessDomain(r.Context(), mailbox.DomainID) {
-		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this mailbox")
+	mailbox, ok := s.requireMailboxAccess(w, r, mailboxID)
+	if !ok {
 		return
 	}
 

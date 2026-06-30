@@ -463,8 +463,8 @@ func copyBackupFile(src, dst string) error {
 // apiContainerRunning reports whether the vectis-api container is up. A FULL
 // backup (including mail) can only run inside that container.
 func apiContainerRunning() bool {
-	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", apiContainerName).Output()
-	return err == nil && strings.TrimSpace(string(out)) == "true"
+	out, err := dockerInspect(apiContainerName, "{{.State.Running}}")
+	return err == nil && out == "true"
 }
 
 // containerBackupArgs builds the `docker exec` argv that triggers a full backup
