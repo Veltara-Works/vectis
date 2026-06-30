@@ -27,6 +27,13 @@ const (
 	importPurpose = "import"
 	tokenTTL      = 12 * time.Hour
 
+	// revokeTimeout bounds the post-run token revocation. It runs on a context
+	// detached from the (possibly already-cancelled) run context so the token is
+	// still cleaned up, but a hung token store must not block the import
+	// goroutine from returning — that would never release the concurrency slot
+	// (worker.go's sem) and would wedge the importer (#153).
+	revokeTimeout = 10 * time.Second
+
 	// destSeparator is Dovecot's namespace hierarchy separator (dovecot.conf
 	// `separator = /`). Source folder delimiters are normalised to this.
 	destSeparator = "/"
@@ -164,7 +171,9 @@ func (im *Importer) run(ctx context.Context, log *slog.Logger, job *repository.I
 		return fmt.Errorf("mint dovecot auth token: %w", err)
 	}
 	defer func() {
-		if rerr := im.tokens.Revoke(context.WithoutCancel(ctx), token.ID); rerr != nil {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
+		defer cancel()
+		if rerr := im.tokens.Revoke(rctx, token.ID); rerr != nil {
 			log.Error("import: revoke auth token failed", "error", rerr, "token_id", token.ID)
 		}
 	}()
@@ -253,6 +262,13 @@ func (im *Importer) run(ctx context.Context, log *slog.Logger, job *repository.I
 		im.reportProgress(ctx, log, job.ID, processed, total, destFolder, imported, skipped)
 	}
 
+	// Final cancellation check before the terminal transition: a cancel that
+	// landed after the last in-loop check must not be reported as a completed
+	// import (#184). store.Complete's conditional UPDATE closes the residual
+	// race atomically; stopping here keeps the status and the log honest.
+	if err := im.checkCancelled(ctx, job.ID); err != nil {
+		return err
+	}
 	if err := im.store.Complete(ctx, job.ID, imported, skipped); err != nil {
 		return fmt.Errorf("mark job complete: %w", err)
 	}

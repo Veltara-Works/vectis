@@ -219,13 +219,16 @@ func (r *IMAPImportRepo) UpdateProgress(ctx context.Context, jobID string, progr
 	return nil
 }
 
-// Complete marks a job completed with final counts.
+// Complete marks a job completed with final counts. The `status = 'running'`
+// guard makes the transition conditional: if a cancel (or failure) raced in
+// after the runner's last check, this is a no-op and the cancelled/failed status
+// stands rather than being overwritten with 'completed' (#184).
 func (r *IMAPImportRepo) Complete(ctx context.Context, jobID string, imported, skipped int) error {
 	_, err := r.db.Exec(ctx,
 		`UPDATE imap_import_jobs
 		   SET status = 'completed', progress = 100, imported_count = $1, skipped_count = $2,
 		       current_folder = NULL, completed_at = $3
-		 WHERE id = $4`,
+		 WHERE id = $4 AND status = 'running'`,
 		imported, skipped, time.Now().UTC(), jobID)
 	if err != nil {
 		return fmt.Errorf("complete import job: %w", err)
