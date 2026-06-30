@@ -1,15 +1,9 @@
 package api
 
 import (
-	"errors"
 	"net/http"
-	"strings"
-	"time"
 
-	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/mail"
-	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
-	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
 const maxBatchSize = 100
@@ -57,6 +51,8 @@ func (s *Server) handleBatchSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the auth/abuse caller context once for the whole batch, then run
+	// each message through the shared sendMessage core (audit finding #156).
 	adminID := getAdminID(r.Context())
 	adminRole := getAdminRole(r.Context())
 	apiKeyID := getAPIKeyID(r.Context())
@@ -68,14 +64,15 @@ func (s *Server) handleBatchSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for i, msg := range req.Messages {
-		result := s.processSingleSend(r, msg, adminID, adminRole, apiKeyID, ip)
+		out := s.sendMessage(r, msg, adminID, adminRole, apiKeyID, ip,
+			sendVariant{auditAction: "mail.batch_send", batch: true})
 		resp.Results[i] = batchSendResult{
 			Index:     i,
-			MessageID: result.messageID,
-			Error:     result.err,
-			Code:      result.code,
+			MessageID: out.messageID,
+			Error:     out.message,
+			Code:      out.code,
 		}
-		if result.err == "" {
+		if out.code == "" {
 			resp.Succeeded++
 		} else {
 			resp.Failed++
@@ -83,181 +80,6 @@ func (s *Server) handleBatchSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond(w, r, http.StatusOK, resp)
-}
-
-type singleSendResult struct {
-	messageID string
-	err       string
-	code      string
-}
-
-func (s *Server) processSingleSend(r *http.Request, req sendRequest, adminID, adminRole, apiKeyID, ip string) singleSendResult {
-	// Validate required fields.
-	if req.From.Email == "" {
-		return singleSendResult{code: "MISSING_FIELDS", err: "from.email is required"}
-	}
-	if len(req.To) == 0 {
-		return singleSendResult{code: "MISSING_FIELDS", err: "at least one recipient in 'to' is required"}
-	}
-	for _, a := range req.To {
-		if a.Email == "" {
-			return singleSendResult{code: "MISSING_FIELDS", err: "to[].email is required"}
-		}
-	}
-	if req.Subject == "" {
-		return singleSendResult{code: "MISSING_FIELDS", err: "subject is required"}
-	}
-	if req.TextBody == "" && req.HTMLBody == "" {
-		return singleSendResult{code: "MISSING_FIELDS", err: "text_body or html_body is required"}
-	}
-
-	// Validate sender domain.
-	senderDomain := extractDomain(req.From.Email)
-	if senderDomain == "" {
-		return singleSendResult{code: "INVALID_SENDER", err: "Invalid sender email address"}
-	}
-
-	domain, err := s.domains.GetByName(r.Context(), senderDomain)
-	if err != nil {
-		return singleSendResult{code: "INTERNAL_ERROR", err: "Failed to verify sender domain"}
-	}
-	if domain == nil {
-		return singleSendResult{code: "DOMAIN_NOT_FOUND", err: "Sender domain '" + senderDomain + "' is not managed by this server"}
-	}
-	if !domain.Active {
-		return singleSendResult{code: "DOMAIN_INACTIVE", err: "Sender domain '" + senderDomain + "' is inactive"}
-	}
-
-	// RBAC check.
-	if !auth.CanAccessAllDomains(adminRole) {
-		ok, _ := s.adminDomains.HasAccess(r.Context(), adminID, domain.ID)
-		if !ok {
-			return singleSendResult{code: "FORBIDDEN", err: "You do not have access to send from domain '" + senderDomain + "'"}
-		}
-	}
-
-	// API key domain scoping.
-	if apiKeyID != "" {
-		apiKey, err := s.apiKeys.GetByID(r.Context(), apiKeyID)
-		if err == nil && apiKey != nil && len(apiKey.ScopedDomainIDs) > 0 {
-			scoped := false
-			for _, did := range apiKey.ScopedDomainIDs {
-				if did == domain.ID {
-					scoped = true
-					break
-				}
-			}
-			if !scoped {
-				return singleSendResult{code: "API_KEY_DOMAIN_SCOPE", err: "This API key does not have access to domain '" + senderDomain + "'"}
-			}
-		}
-	}
-
-	// Abuse detection.
-	senderLocalPart := extractLocalPart(req.From.Email)
-	if senderLocalPart != "" {
-		mailbox, _ := s.mailboxes.GetByEmail(r.Context(), domain.ID, senderLocalPart)
-		if mailbox != nil {
-			suspended, reason, _ := s.abuseEvents.IsMailboxSuspended(r.Context(), mailbox.ID)
-			if suspended {
-				return singleSendResult{code: "MAILBOX_SUSPENDED", err: "Sending suspended: " + reason}
-			}
-			if s.abuseDetector != nil {
-				check, checkErr := s.abuseDetector.CheckAndRecord(r.Context(), mailbox.ID, domain.ID)
-				if checkErr == nil && !check.Allowed {
-					s.abuseEvents.SuspendMailbox(r.Context(), mailbox.ID, check.Reason)
-					vectismetrics.EmailsSendSuspended.Inc()
-					return singleSendResult{code: "RATE_LIMIT_EXCEEDED", err: check.Reason}
-				}
-			}
-		}
-	}
-
-	// Validate headers.
-	for k := range req.Headers {
-		if !strings.HasPrefix(k, "X-") {
-			return singleSendResult{code: "INVALID_HEADER", err: "Custom headers must start with 'X-': " + k}
-		}
-	}
-
-	// Build and send.
-	msg := &mail.Message{
-		From:        req.From,
-		To:          req.To,
-		CC:          req.CC,
-		BCC:         req.BCC,
-		ReplyTo:     req.ReplyTo,
-		Subject:     req.Subject,
-		TextBody:    req.TextBody,
-		HTMLBody:    req.HTMLBody,
-		Attachments: req.Attachments,
-		Headers:     req.Headers,
-	}
-	s.applyEngagementTracking(msg, req.TrackOpens, req.TrackClicks)
-
-	result, err := s.mailSender.Send(msg)
-	if err != nil {
-		if errors.Is(err, mail.ErrHeaderInjection) {
-			return singleSendResult{code: "INVALID_HEADER", err: "Message rejected: a header field contains illegal characters"}
-		}
-		return singleSendResult{code: "SEND_FAILED", err: "Failed to send: " + err.Error()}
-	}
-
-	vectismetrics.EmailsSent.Inc()
-	vectismetrics.BatchMessagesSent.Inc()
-
-	// Audit log.
-	s.audit.Log(r.Context(), &adminID, "mail.batch_send", "domain", &domain.ID,
-		map[string]any{
-			"message_id": result.MessageID,
-			"from":       req.From.Email,
-			"to_count":   len(req.To),
-			"subject":    req.Subject,
-			"api_key":    apiKeyID != "",
-		}, &ip)
-
-	// Store message metadata.
-	if s.messages != nil {
-		toEmails := allRecipients(req.To, req.CC, req.BCC)
-		s.messages.Create(r.Context(), &repository.Message{
-			DomainID:   domain.ID,
-			MessageID:  result.MessageID,
-			Direction:  "outbound",
-			Sender:     req.From.Email,
-			Recipients: toEmails,
-			Subject:    req.Subject,
-			Status:     "sent",
-			CreatedAt:  time.Now().UTC(),
-		})
-	}
-
-	// Increment domain stats.
-	if s.mailStats != nil {
-		s.mailStats.Increment(r.Context(), domain.ID, "sent", 0)
-	}
-
-	// Webhook dispatch.
-	if s.webhookDispatcher != nil {
-		toEmails := make([]string, len(req.To))
-		for j, a := range req.To {
-			toEmails[j] = a.Email
-		}
-		s.webhookDispatcher.Dispatch(r.Context(), domain.ID, mail.WebhookEvent{
-			ID:        result.MessageID,
-			Event:     "mail.sent",
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Data: map[string]any{
-				"message_id": result.MessageID,
-				"from":       req.From.Email,
-				"to":         toEmails,
-				"subject":    req.Subject,
-				"domain":     senderDomain,
-				"batch":      true,
-			},
-		})
-	}
-
-	return singleSendResult{messageID: result.MessageID}
 }
 
 func allRecipients(to, cc, bcc []mail.Address) []string {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/mail"
 	vectismetrics "github.com/Veltara-Works/vectis/internal/metrics"
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -31,8 +32,38 @@ type sendResponse struct {
 	MessageID string `json:"message_id"`
 }
 
+// sendVariant captures the only legitimate differences between the single-send
+// and batch-send paths: the audit action recorded and the batch-only metric /
+// webhook flag. Everything else — validation, sender-domain authorization, abuse
+// control, the SMTP submission and its side effects — is identical and lives in
+// sendMessage, so the two entry points can never drift on the auth/abuse rules
+// again (the prior drift is audit finding #156).
+type sendVariant struct {
+	auditAction string // "mail.send" or "mail.batch_send"
+	batch       bool   // true → increment BatchMessagesSent and set webhook "batch":true
+}
+
+// sendOutcome is the rendered result of one send attempt, in a form both the
+// HTTP single-send handler (status + error envelope) and the per-message batch
+// handler (code/error fields) can consume. A zero code means success.
+type sendOutcome struct {
+	messageID  string
+	httpStatus int    // 200 on success; the appropriate 4xx/5xx on failure
+	code       string // error code, "" on success
+	message    string // human-readable error, "" on success
+}
+
+func sendOK(messageID string) sendOutcome {
+	return sendOutcome{messageID: messageID, httpStatus: http.StatusOK}
+}
+
+func sendErr(status int, code, message string) sendOutcome {
+	return sendOutcome{httpStatus: status, code: code, message: message}
+}
+
 // handleSend accepts a JSON email payload, validates it, and submits to Postfix.
-// Requires API key or session auth. Enforces domain ownership.
+// Requires API key or session auth. Enforces domain ownership. The heavy lifting
+// is shared with the batch endpoint via sendMessage.
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	var req sendRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -40,114 +71,117 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate required fields.
-	if req.From.Email == "" {
-		respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS", "from.email is required")
+	adminID := getAdminID(r.Context())
+	adminRole := getAdminRole(r.Context())
+	apiKeyID := getAPIKeyID(r.Context())
+	ip := clientIP(r)
+
+	out := s.sendMessage(r, req, adminID, adminRole, apiKeyID, ip, sendVariant{auditAction: "mail.send"})
+	if out.code != "" {
+		respondError(w, r, out.httpStatus, out.code, out.message)
 		return
 	}
+	respond(w, r, http.StatusOK, sendResponse{MessageID: out.messageID})
+}
+
+// sendMessage runs the full outbound pipeline for a single message: required-field
+// validation, sender-domain authorization (API-key scoping + RBAC), abuse control
+// (suspension/rate/spike), the SMTP submission, and the post-send side effects
+// (metrics, message storage, domain stats, audit, webhook). It performs no HTTP
+// I/O itself — it returns a sendOutcome the caller renders — so handleSend and
+// handleBatchSend share one authoritative copy of the rules.
+//
+// The auth/abuse caller context (adminID, adminRole, apiKeyID, ip) is resolved
+// once by the caller and passed in: the batch handler resolves it a single time
+// for the whole request rather than re-reading it per message.
+func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRole, apiKeyID, ip string, v sendVariant) sendOutcome {
+	ctx := r.Context()
+
+	// Validate required fields.
+	if req.From.Email == "" {
+		return sendErr(http.StatusBadRequest, "MISSING_FIELDS", "from.email is required")
+	}
 	if len(req.To) == 0 {
-		respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS", "at least one recipient in 'to' is required")
-		return
+		return sendErr(http.StatusBadRequest, "MISSING_FIELDS", "at least one recipient in 'to' is required")
 	}
 	for i, a := range req.To {
 		if a.Email == "" {
-			respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS",
-				fmt.Sprintf("to[%d].email is required", i))
-			return
+			return sendErr(http.StatusBadRequest, "MISSING_FIELDS", fmt.Sprintf("to[%d].email is required", i))
 		}
 	}
 	if req.Subject == "" {
-		respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS", "subject is required")
-		return
+		return sendErr(http.StatusBadRequest, "MISSING_FIELDS", "subject is required")
 	}
 	if req.TextBody == "" && req.HTMLBody == "" {
-		respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS", "text_body or html_body is required")
-		return
+		return sendErr(http.StatusBadRequest, "MISSING_FIELDS", "text_body or html_body is required")
 	}
 
 	// Validate sender domain — must be a domain managed by Vectis.
 	senderDomain := extractDomain(req.From.Email)
 	if senderDomain == "" {
-		respondError(w, r, http.StatusBadRequest, "INVALID_SENDER", "Invalid sender email address")
-		return
+		return sendErr(http.StatusBadRequest, "INVALID_SENDER", "Invalid sender email address")
 	}
 
-	domain, err := s.domains.GetByName(r.Context(), senderDomain)
+	domain, err := s.domains.GetByName(ctx, senderDomain)
 	if err != nil {
 		s.logger.Error("domain lookup failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to verify sender domain")
-		return
+		return sendErr(http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to verify sender domain")
 	}
 	if domain == nil {
-		respondError(w, r, http.StatusForbidden, "DOMAIN_NOT_FOUND",
+		return sendErr(http.StatusForbidden, "DOMAIN_NOT_FOUND",
 			"Sender domain '"+senderDomain+"' is not managed by this server")
-		return
 	}
 	if !domain.Active {
-		respondError(w, r, http.StatusForbidden, "DOMAIN_INACTIVE",
+		return sendErr(http.StatusForbidden, "DOMAIN_INACTIVE",
 			"Sender domain '"+senderDomain+"' is inactive")
-		return
 	}
 
-	// Check domain access (RBAC + API key scoping).
-	if !s.canAccessDomain(r.Context(), domain.ID) {
-		respondError(w, r, http.StatusForbidden, "FORBIDDEN",
-			"You do not have access to send from domain '"+senderDomain+"'")
-		return
+	// Authorize the sender domain: API-key scoping first (specific code), then
+	// RBAC. These are the two halves of canAccessDomain, split so a scoped-key
+	// violation reports API_KEY_DOMAIN_SCOPE rather than a generic FORBIDDEN.
+	if !s.apiKeyAllowsDomain(ctx, domain.ID) {
+		return sendErr(http.StatusForbidden, "API_KEY_DOMAIN_SCOPE",
+			"This API key does not have access to domain '"+senderDomain+"'")
 	}
-
-	// If authenticated via API key, check domain scoping.
-	if apiKeyID := getAPIKeyID(r.Context()); apiKeyID != "" {
-		apiKey, err := s.apiKeys.GetByID(r.Context(), apiKeyID)
-		if err == nil && apiKey != nil && len(apiKey.ScopedDomainIDs) > 0 {
-			scoped := false
-			for _, did := range apiKey.ScopedDomainIDs {
-				if did == domain.ID {
-					scoped = true
-					break
-				}
-			}
-			if !scoped {
-				respondError(w, r, http.StatusForbidden, "API_KEY_DOMAIN_SCOPE",
-					"This API key does not have access to domain '"+senderDomain+"'")
-				return
-			}
+	if !auth.CanAccessAllDomains(adminRole) {
+		ok, _ := s.adminDomains.HasAccess(ctx, adminID, domain.ID)
+		if !ok {
+			return sendErr(http.StatusForbidden, "FORBIDDEN",
+				"You do not have access to send from domain '"+senderDomain+"'")
 		}
 	}
 
 	// Abuse detection: check sender mailbox suspension and rate limits.
 	senderLocalPart := extractLocalPart(req.From.Email)
 	if senderLocalPart != "" {
-		mailbox, _ := s.mailboxes.GetByEmail(r.Context(), domain.ID, senderLocalPart)
+		mailbox, _ := s.mailboxes.GetByEmail(ctx, domain.ID, senderLocalPart)
 		if mailbox != nil {
 			// Check if mailbox is suspended from sending.
-			suspended, reason, _ := s.abuseEvents.IsMailboxSuspended(r.Context(), mailbox.ID)
+			suspended, reason, _ := s.abuseEvents.IsMailboxSuspended(ctx, mailbox.ID)
 			if suspended {
-				respondError(w, r, http.StatusForbidden, "MAILBOX_SUSPENDED",
+				return sendErr(http.StatusForbidden, "MAILBOX_SUSPENDED",
 					"Sending suspended for this mailbox: "+reason)
-				return
 			}
 
 			// Rate check + spike detection.
 			if s.abuseDetector != nil {
-				check, err := s.abuseDetector.CheckAndRecord(r.Context(), mailbox.ID, domain.ID)
+				check, err := s.abuseDetector.CheckAndRecord(ctx, mailbox.ID, domain.ID)
 				if err != nil {
 					s.logger.Error("abuse check failed", "error", err)
 					// Fail open — don't block sending on abuse check errors.
 				} else if !check.Allowed {
 					// Auto-suspend the mailbox.
-					s.abuseEvents.SuspendMailbox(r.Context(), mailbox.ID, check.Reason)
+					s.abuseEvents.SuspendMailbox(ctx, mailbox.ID, check.Reason)
 					action := "suspend"
-					s.abuseEvents.LogEvent(r.Context(), &domain.ID, &mailbox.ID, "auto_suspend", "critical",
+					s.abuseEvents.LogEvent(ctx, &domain.ID, &mailbox.ID, "auto_suspend", "critical",
 						map[string]any{"reason": check.Reason, "hourly_count": check.MailboxCount}, &action)
 
 					vectismetrics.EmailsSendSuspended.Inc()
-					respondError(w, r, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", check.Reason)
-					return
+					return sendErr(http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", check.Reason)
 				} else if check.SpikeDetected {
 					// Log spike alert but allow the send.
 					action := "alert"
-					s.abuseEvents.LogEvent(r.Context(), &domain.ID, &mailbox.ID, "rate_spike", "warn",
+					s.abuseEvents.LogEvent(ctx, &domain.ID, &mailbox.ID, "rate_spike", "warn",
 						map[string]any{"mailbox_hourly": check.MailboxCount, "domain_hourly": check.DomainCount}, &action)
 				}
 			}
@@ -157,17 +191,15 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	// Validate custom headers — only X-* allowed.
 	for k := range req.Headers {
 		if !strings.HasPrefix(k, "X-") {
-			respondError(w, r, http.StatusBadRequest, "INVALID_HEADER",
+			return sendErr(http.StatusBadRequest, "INVALID_HEADER",
 				"Custom headers must start with 'X-': "+k)
-			return
 		}
 	}
 
 	// Check mail sender is initialized.
 	if s.mailSender == nil {
-		respondError(w, r, http.StatusServiceUnavailable, "SEND_UNAVAILABLE",
+		return sendErr(http.StatusServiceUnavailable, "SEND_UNAVAILABLE",
 			"Sending is not configured on this server")
-		return
 	}
 
 	// Build and send.
@@ -190,36 +222,27 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		// Header-injection attempts are client errors, not server faults.
 		if errors.Is(err, mail.ErrHeaderInjection) {
 			s.logger.Warn("send rejected: header injection", "error", err, "from", req.From.Email)
-			respondError(w, r, http.StatusBadRequest, "INVALID_HEADER",
+			return sendErr(http.StatusBadRequest, "INVALID_HEADER",
 				"Message rejected: a header field contains illegal characters")
-			return
 		}
 		s.logger.Error("send failed", "error", err, "from", req.From.Email)
-		respondError(w, r, http.StatusInternalServerError, "SEND_FAILED",
+		return sendErr(http.StatusInternalServerError, "SEND_FAILED",
 			"Failed to send message: "+err.Error())
-		return
 	}
 
 	vectismetrics.EmailsSent.Inc()
+	if v.batch {
+		vectismetrics.BatchMessagesSent.Inc()
+	}
 
 	// Store message metadata.
 	if s.messages != nil {
-		toEmails := make([]string, 0, len(req.To)+len(req.CC)+len(req.BCC))
-		for _, a := range req.To {
-			toEmails = append(toEmails, a.Email)
-		}
-		for _, a := range req.CC {
-			toEmails = append(toEmails, a.Email)
-		}
-		for _, a := range req.BCC {
-			toEmails = append(toEmails, a.Email)
-		}
-		s.messages.Create(r.Context(), &repository.Message{
+		s.messages.Create(ctx, &repository.Message{
 			DomainID:   domain.ID,
 			MessageID:  result.MessageID,
 			Direction:  "outbound",
 			Sender:     req.From.Email,
-			Recipients: toEmails,
+			Recipients: allRecipients(req.To, req.CC, req.BCC),
 			Subject:    req.Subject,
 			Status:     "sent",
 			CreatedAt:  time.Now().UTC(),
@@ -228,19 +251,17 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	// Increment domain stats.
 	if s.mailStats != nil {
-		s.mailStats.Increment(r.Context(), domain.ID, "sent", 0)
+		s.mailStats.Increment(ctx, domain.ID, "sent", 0)
 	}
 
 	// Audit log.
-	adminID := getAdminID(r.Context())
-	ip := clientIP(r)
-	s.audit.Log(r.Context(), &adminID, "mail.send", "domain", &domain.ID,
+	s.audit.Log(ctx, &adminID, v.auditAction, "domain", &domain.ID,
 		map[string]any{
 			"message_id": result.MessageID,
 			"from":       req.From.Email,
 			"to_count":   len(req.To),
 			"subject":    req.Subject,
-			"api_key":    getAPIKeyID(r.Context()) != "",
+			"api_key":    apiKeyID != "",
 		}, &ip)
 
 	// Fire mail.sent webhook event.
@@ -249,21 +270,25 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		for i, a := range req.To {
 			toEmails[i] = a.Email
 		}
-		s.webhookDispatcher.Dispatch(r.Context(), domain.ID, mail.WebhookEvent{
+		data := map[string]any{
+			"message_id": result.MessageID,
+			"from":       req.From.Email,
+			"to":         toEmails,
+			"subject":    req.Subject,
+			"domain":     senderDomain,
+		}
+		if v.batch {
+			data["batch"] = true
+		}
+		s.webhookDispatcher.Dispatch(ctx, domain.ID, mail.WebhookEvent{
 			ID:        result.MessageID,
 			Event:     "mail.sent",
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Data: map[string]any{
-				"message_id": result.MessageID,
-				"from":       req.From.Email,
-				"to":         toEmails,
-				"subject":    req.Subject,
-				"domain":     senderDomain,
-			},
+			Data:      data,
 		})
 	}
 
-	respond(w, r, http.StatusOK, sendResponse{MessageID: result.MessageID})
+	return sendOK(result.MessageID)
 }
 
 // extractDomain returns the domain part of an email address.
