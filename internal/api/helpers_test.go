@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -249,7 +250,9 @@ func TestIsValidSpamPattern(t *testing.T) {
 		{"unknown", "anything", false},                  // unknown scope is always invalid
 	}
 	for _, tt := range tests {
-		t.Run(tt.scope+"/"+tt.pattern, func(t *testing.T) {
+		// Quote the pattern in the subtest name so injection cases (e.g. an
+		// embedded newline) can't garble `go test -v` output.
+		t.Run(tt.scope+"/"+strconv.Quote(tt.pattern), func(t *testing.T) {
 			if got := isValidSpamPattern(tt.scope, tt.pattern); got != tt.want {
 				t.Errorf("isValidSpamPattern(%q, %q) = %v, want %v", tt.scope, tt.pattern, got, tt.want)
 			}
