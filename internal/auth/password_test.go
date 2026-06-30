@@ -52,13 +52,14 @@ func TestVerifyInvalidFormat(t *testing.T) {
 // re-opening the timing side channel. We assert it parses cleanly with the same
 // params HashPassword emits, and that it never authenticates a caller password.
 func TestDummyPasswordHashWellFormed(t *testing.T) {
-	if !strings.HasPrefix(dummyPasswordHash, "$argon2id$") {
-		t.Fatalf("dummy hash is not argon2id: %.20q", dummyPasswordHash)
+	dummy := dummyPasswordHash()
+	if !strings.HasPrefix(dummy, "$argon2id$") {
+		t.Fatalf("dummy hash is not argon2id: %.20q", dummy)
 	}
 	// Standard params (m=64MB, t=3, p=4) — must match HashPassword so the dummy
 	// verify costs the same as a real one.
-	if !strings.Contains(dummyPasswordHash, "$m=65536,t=3,p=4$") {
-		t.Errorf("dummy hash uses non-standard params: %q", dummyPasswordHash)
+	if !strings.Contains(dummy, "$m=65536,t=3,p=4$") {
+		t.Errorf("dummy hash uses non-standard params: %q", dummy)
 	}
 	// A well-formed hash makes VerifyPassword run the full KDF and return
 	// (false, nil) for an arbitrary login password — no parse error (which would
@@ -67,7 +68,7 @@ func TestDummyPasswordHashWellFormed(t *testing.T) {
 	// harmless because VerifyDummyPassword discards the result and the
 	// unknown-account path returns 401 regardless.
 	for _, pw := range []string{"", "password", "another-guess", "totally-unrelated-input"} {
-		ok, err := VerifyPassword(pw, dummyPasswordHash)
+		ok, err := VerifyPassword(pw, dummy)
 		if err != nil {
 			t.Errorf("VerifyPassword(%q, dummy) errored (would skip KDF, leaking timing): %v", pw, err)
 		}
@@ -82,4 +83,21 @@ func TestDummyPasswordHashWellFormed(t *testing.T) {
 func TestVerifyDummyPasswordRuns(t *testing.T) {
 	VerifyDummyPassword("")
 	VerifyDummyPassword("some-password-guess")
+}
+
+// TestWarmDummyPasswordHashIdempotent guards the lazy-init path (the v0.1.37
+// canary OOM fix): warming is the same value the verify path uses, and the
+// sync.Once makes repeat warms a no-op. This documents that WarmDummyPasswordHash
+// — called from API server startup — and VerifyDummyPassword share one hash, so
+// non-auth binaries that call neither never allocate the 64MB Argon2id buffer.
+func TestWarmDummyPasswordHashIdempotent(t *testing.T) {
+	WarmDummyPasswordHash()
+	first := dummyPasswordHash()
+	WarmDummyPasswordHash()
+	if second := dummyPasswordHash(); second != first {
+		t.Errorf("dummy hash changed across warms: %q != %q", first, second)
+	}
+	if !strings.HasPrefix(first, "$argon2id$") {
+		t.Fatalf("warmed dummy hash is not argon2id: %.20q", first)
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -67,29 +68,56 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	return subtle.ConstantTimeCompare(existingHash, computedHash) == 1, nil
 }
 
-// dummyPasswordHash is computed once at startup with the standard Argon2id
-// params. The unknown-account login path verifies a submitted password against
-// it (see VerifyDummyPassword) so an attacker cannot tell "no such admin" apart
-// from "wrong password" by response latency — Argon2id dominates that latency,
-// so skipping it for unknown accounts would leak which emails are real (#179).
-// The plaintext is a fixed throwaway and never authenticates anyone.
-var dummyPasswordHash = func() string {
-	h, err := HashPassword("vectis-login-timing-equalizer")
-	if err != nil {
-		// HashPassword only fails if the RNG fails — effectively impossible.
-		// Fall back to a structurally valid, standard-param hash so the dummy
-		// verify still performs real Argon2id work and equalizes timing.
-		return "$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-	}
-	return h
-}()
+// dummyPasswordHash returns a fixed throwaway Argon2id hash with the standard
+// params, computed lazily on first use (NOT at package init). The unknown-
+// account login path verifies a submitted password against it (see
+// VerifyDummyPassword) so an attacker cannot tell "no such admin" apart from
+// "wrong password" by response latency — Argon2id dominates that latency, so
+// skipping it for unknown accounts would leak which emails are real (#179).
+//
+// Why lazy: Argon2id is memory-hard (m=64MB), so computing this at package init
+// allocated ~64MB in EVERY binary that links internal/auth — including the
+// cert-extractor, which is the full vectis binary run as `vectis tls
+// extract-traefik` and never authenticates. That eager init pushed the
+// cert-extractor's RSS over its 64MB mem_limit and OOM-crash-looped it (caught
+// on the v0.1.37 canary). Deferring keeps the 64MB cost in processes that
+// actually authenticate; non-auth subcommands never call this and never
+// allocate. The plaintext is a fixed throwaway and never authenticates anyone.
+var (
+	dummyHashOnce sync.Once
+	dummyHashVal  string
+)
+
+func dummyPasswordHash() string {
+	dummyHashOnce.Do(func() {
+		h, err := HashPassword("vectis-login-timing-equalizer")
+		if err != nil {
+			// HashPassword only fails if the RNG fails — effectively impossible.
+			// Fall back to a structurally valid, standard-param hash so the dummy
+			// verify still performs real Argon2id work and equalizes timing.
+			dummyHashVal = "$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+			return
+		}
+		dummyHashVal = h
+	})
+	return dummyHashVal
+}
+
+// WarmDummyPasswordHash precomputes the dummy hash so the first unknown-account
+// login doesn't pay the one-time Argon2id hash cost on the request path. The
+// API server calls this at startup (in the process where logins happen);
+// non-auth binaries simply never call it — nor VerifyDummyPassword — and so
+// never allocate the 64MB Argon2id buffer.
+func WarmDummyPasswordHash() {
+	_ = dummyPasswordHash()
+}
 
 // VerifyDummyPassword runs a full Argon2id verification against a fixed dummy
 // hash and discards the result. Call it on the unknown-account login path so
 // that the response does the same KDF work a real password verify would,
 // closing the user-enumeration timing side channel (#179).
 func VerifyDummyPassword(password string) {
-	_, _ = VerifyPassword(password, dummyPasswordHash)
+	_, _ = VerifyPassword(password, dummyPasswordHash())
 }
 
 // ValidatePasswordStrength checks that a password meets minimum complexity requirements.
