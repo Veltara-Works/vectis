@@ -106,6 +106,10 @@ type Server struct {
 	abuseDetector     *mail.AbuseDetector
 	postfixTailer     *postfixlog.Tailer
 	policyServer      *policy.Server
+	// inboundAsync bounds the memory of fire-and-forget inbound processing
+	// (full-message webhook, ARF parse) so a mail flood can't OOM the api
+	// container with unbounded goroutines each holding a full message (#120).
+	inboundAsync *inboundAsyncLimiter
 
 	// Sieve filter management
 	sieveClient *mail.SieveClient
@@ -199,6 +203,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		callbackBaseURL:    cfg.CallbackBaseURL,
 		cfg:                cfg.VectisCfg,
 		secrets:            cfg.VectisSecrets,
+		inboundAsync:       newInboundAsyncLimiter(maxInboundAsyncBytes),
 		domains:            repository.NewDomainRepo(db),
 		mailboxes:          repository.NewMailboxRepo(db),
 		aliases:            repository.NewAliasRepo(db),

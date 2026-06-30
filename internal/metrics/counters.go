@@ -70,6 +70,12 @@ var (
 		Help:      "Total FBL (feedback loop) complaints received",
 	})
 
+	InboundAsyncDropped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "inbound_async_dropped_total",
+		Help:      "Inbound async tasks (full webhook / ARF) dropped because the in-flight byte budget was exhausted (#120 DoS bound)",
+	}, []string{"task"}) // "mail.received.full", "arf"
+
 	RBLListings = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Name:      "rbl_listings_current",
@@ -102,6 +108,7 @@ func init() {
 		APIRequests,
 		BatchMessagesSent,
 		FBLComplaints,
+		InboundAsyncDropped,
 		RBLListings,
 		EmailOpens,
 		EmailClicks,

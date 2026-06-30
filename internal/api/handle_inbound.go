@@ -152,7 +152,9 @@ func (s *Server) handleInboundNotify(w http.ResponseWriter, r *http.Request) {
 	// This provides the full parsed email body, attachments, and envelope
 	// for inbound routing integrations (e.g. ValidonX support ticket creation).
 	if notif.RawMessageB64 != "" && s.webhookDispatcher != nil {
-		go s.dispatchFullInbound(domain.ID, notif)
+		s.spawnInboundAsync("mail.received.full", len(notif.RawMessageB64), func() {
+			s.dispatchFullInbound(domain.ID, notif)
+		})
 	}
 
 	// Detect RFC 5965 feedback-loop complaints (ARF). If the inbound is an
@@ -161,7 +163,9 @@ func (s *Server) handleInboundNotify(w http.ResponseWriter, r *http.Request) {
 	// because the parse + lookup is cheap but independent of the main
 	// response path.
 	if notif.RawMessageB64 != "" {
-		go s.handleARFComplaint(domain.ID, notif)
+		s.spawnInboundAsync("arf", len(notif.RawMessageB64), func() {
+			s.handleARFComplaint(domain.ID, notif)
+		})
 	}
 
 	respond(w, r, http.StatusOK, map[string]string{"status": "processed"})
