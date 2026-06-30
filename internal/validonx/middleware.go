@@ -530,18 +530,18 @@ func (fgs *FeatureGateService) checkFeatureAccess(ctx context.Context, tenantID,
 		if refreshed == nil {
 			return false, nil
 		}
-		return refreshed.HasFeature(feature), nil
+		return refreshed.GrantsFeature(feature), nil
 	}
 
 	// Cache row present and fresh — happy path, no network call.
 	if !cached.IsExpired() {
-		return cached.HasFeature(feature), nil
+		return cached.GrantsFeature(feature), nil
 	}
 
 	// Cache row present but stale — try a live refresh.
 	refreshed, refreshErr := fgs.refreshLicense(ctx, tenantID)
 	if refreshErr == nil {
-		return refreshed.HasFeature(feature), nil
+		return refreshed.GrantsFeature(feature), nil
 	}
 
 	// Refresh failed (ValidonX unreachable, transient error, etc.). Fall
@@ -574,8 +574,10 @@ func (fgs *FeatureGateService) checkFeatureAccess(ctx context.Context, tenantID,
 		return false, &licenseExpiredError{tenantID: tenantID}
 	}
 
-	// Stale cache within the license horizon — serve from it.
-	return cached.HasFeature(feature), nil
+	// Stale cache within the license horizon — serve from it. Valid is already
+	// guaranteed true here (the !Valid hard-deny returned above), but use the
+	// authoritative predicate so every grant in this function is gated alike.
+	return cached.GrantsFeature(feature), nil
 }
 
 // offlineHorizonPassed reports whether a stale cached license has passed the

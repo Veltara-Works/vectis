@@ -50,10 +50,10 @@ func TestCachedLicenseHasFeature(t *testing.T) {
 		feature string
 		want    bool
 	}{
-		{FeatureBasicMail, true},     // in Features
-		{FeatureAnalytics, true},     // in Features
+		{FeatureBasicMail, true},      // in Features
+		{FeatureAnalytics, true},      // in Features
 		{FeatureCustomBranding, true}, // in LicenseData.AllowedFeatures (alt list)
-		{FeatureSLA, false}, // enterprise feature, not in either list
+		{FeatureSLA, false},           // enterprise feature, not in either list
 		{"unknown_feature", false},
 	}
 
@@ -62,6 +62,42 @@ func TestCachedLicenseHasFeature(t *testing.T) {
 			got := cl.HasFeature(c.feature)
 			if got != c.want {
 				t.Errorf("HasFeature(%q) = %v, want %v", c.feature, got, c.want)
+			}
+		})
+	}
+}
+
+// TestCachedLicenseGrantsFeature is the regression for the FeatureGate
+// fail-open (#125/178): an entitlement that ValidonX has marked invalid must
+// grant nothing, even when a stale allowed_features list still names the
+// feature. GrantsFeature is the predicate every real grant in checkFeatureAccess
+// now routes through.
+func TestCachedLicenseGrantsFeature(t *testing.T) {
+	cases := []struct {
+		name    string
+		valid   bool
+		feature string
+		want    bool
+	}{
+		{"valid + entitled feature grants", true, FeatureAnalytics, true},
+		{"valid + entitled alt-list feature grants", true, FeatureCustomBranding, true},
+		{"invalid + entitled feature DENIES (fail-closed)", false, FeatureAnalytics, false},
+		{"invalid + alt-list feature DENIES", false, FeatureCustomBranding, false},
+		{"valid + unentitled feature denies", true, FeatureSLA, false},
+		{"invalid + unentitled feature denies", false, FeatureSLA, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cl := &CachedLicense{
+				Features: []string{FeatureBasicMail, FeatureAnalytics},
+				LicenseData: LicenseResponse{
+					Valid:           c.valid,
+					AllowedFeatures: []string{FeatureCustomBranding},
+				},
+			}
+			if got := cl.GrantsFeature(c.feature); got != c.want {
+				t.Errorf("GrantsFeature(%q) with valid=%v = %v, want %v", c.feature, c.valid, got, c.want)
 			}
 		})
 	}
