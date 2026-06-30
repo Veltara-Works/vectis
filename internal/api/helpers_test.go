@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -232,19 +233,26 @@ func TestIsValidSpamPattern(t *testing.T) {
 		want    bool
 	}{
 		{"email", "spammer@bad.com", true},
-		{"email", "bad.com", false},          // missing '@'
-		{"email", "@bad.com", false},         // empty local part
-		{"email", "x@", false},               // empty host
-		{"email", "a@b@c.com", false},        // two '@'
-		{"email", "ok@not_a_host", false},    // host fails domain regex
-		{"domain", "bad.com", true},          //
-		{"domain", "sub.bad.co.uk", true},    //
-		{"domain", "spammer@bad.com", false}, // '@' not allowed in domain scope
-		{"domain", "nodot", false},           //
-		{"unknown", "anything", false},       // unknown scope is always invalid
+		{"email", "first.last+tag_1@example.com", true}, // practical local-part specials allowed
+		{"email", "bad.com", false},                     // missing '@'
+		{"email", "@bad.com", false},                    // empty local part
+		{"email", "x@", false},                          // empty host
+		{"email", "a@b@c.com", false},                   // two '@'
+		{"email", "ok@not_a_host", false},               // host fails domain regex
+		{"email", "foo\nbar@bad.com", false},            // newline → rspamd map line injection (#118/168)
+		{"email", "foo:bar@bad.com", false},             // ':' map field separator
+		{"email", "foo bar@bad.com", false},             // whitespace in local part
+		{"email", "quo\"te@bad.com", false},             // quote outside the practical charset
+		{"domain", "bad.com", true},                     //
+		{"domain", "sub.bad.co.uk", true},               //
+		{"domain", "spammer@bad.com", false},            // '@' not allowed in domain scope
+		{"domain", "nodot", false},                      //
+		{"unknown", "anything", false},                  // unknown scope is always invalid
 	}
 	for _, tt := range tests {
-		t.Run(tt.scope+"/"+tt.pattern, func(t *testing.T) {
+		// Quote the pattern in the subtest name so injection cases (e.g. an
+		// embedded newline) can't garble `go test -v` output.
+		t.Run(tt.scope+"/"+strconv.Quote(tt.pattern), func(t *testing.T) {
 			if got := isValidSpamPattern(tt.scope, tt.pattern); got != tt.want {
 				t.Errorf("isValidSpamPattern(%q, %q) = %v, want %v", tt.scope, tt.pattern, got, tt.want)
 			}

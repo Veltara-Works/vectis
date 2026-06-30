@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -201,19 +202,27 @@ func (s *Server) handleDeleteSpamListEntry(w http.ResponseWriter, r *http.Reques
 	respond(w, r, http.StatusOK, map[string]string{"message": "Spam list entry deleted"})
 }
 
+// validSpamLocalPartRe constrains the local part of an email-scope spam pattern
+// to the practical address charset. This is a security control, not just a
+// validity check: spam patterns are written verbatim into rspamd multimap files
+// as "domain:pattern", one per line, so an unvalidated local part containing a
+// newline (or the ':' field separator) would inject arbitrary allow/block map
+// entries. The host side is already constrained by validDomainRe (audit #118/168).
+var validSpamLocalPartRe = regexp.MustCompile(`^[a-z0-9._%+\-]+$`)
+
 // isValidSpamPattern checks scope-specific pattern shape. scope is assumed
 // already lowercased and limited to {email, domain}.
 func isValidSpamPattern(scope, pattern string) bool {
 	switch scope {
 	case "email":
-		// Exactly one '@', non-empty local part, valid domain on the right.
+		// Exactly one '@', valid local part, valid domain on the right.
 		at := strings.Index(pattern, "@")
 		if at <= 0 || at != strings.LastIndex(pattern, "@") {
 			return false
 		}
 		local := pattern[:at]
 		host := pattern[at+1:]
-		if local == "" || host == "" {
+		if !validSpamLocalPartRe.MatchString(local) || host == "" {
 			return false
 		}
 		return validDomainRe.MatchString(host)

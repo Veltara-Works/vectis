@@ -12,15 +12,15 @@ import (
 )
 
 var validWebhookEvents = map[string]bool{
-	"mail.sent":           true,
-	"mail.delivered":      true,
-	"mail.bounced":        true,
-	"mail.failed":         true,
-	"mail.complained":     true,
-	"mail.received":       true,
-	"mail.received.full":  true,
-	"mail.spam":           true,
-	"*":                   true,
+	"mail.sent":          true,
+	"mail.delivered":     true,
+	"mail.bounced":       true,
+	"mail.failed":        true,
+	"mail.complained":    true,
+	"mail.received":      true,
+	"mail.received.full": true,
+	"mail.spam":          true,
+	"*":                  true,
 }
 
 type createWebhookRequest struct {
@@ -105,9 +105,15 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Generate signing secret.
+	// Generate signing secret. A crypto/rand failure must abort, not silently
+	// persist an all-zero secret that would let anyone forge webhook signatures
+	// (audit #149).
 	secretBytes := make([]byte, 32)
-	rand.Read(secretBytes)
+	if _, err := rand.Read(secretBytes); err != nil {
+		s.logger.Error("generate webhook signing secret failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to generate signing secret")
+		return
+	}
 	secret := hex.EncodeToString(secretBytes)
 
 	wh, err := s.webhooks.Create(r.Context(), repository.WebhookCreate{

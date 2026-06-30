@@ -740,10 +740,17 @@ findtime = 600
 	}
 }
 
-func generateRandomPassword(length int) string {
-	b := make([]byte, length)
-	rand.Read(b)
-	return hex.EncodeToString(b)[:length]
+// generateRandomPassword returns a hex-encoded random password carrying nbytes
+// bytes (nbytes*8 bits) of entropy — a 2*nbytes-character string. It surfaces
+// the crypto/rand error instead of silently emitting an all-zero or low-entropy
+// password if the system RNG is unavailable, and no longer truncates the hex
+// (which previously discarded half the generated entropy — audit #148/176).
+func generateRandomPassword(nbytes int) (string, error) {
+	b := make([]byte, nbytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("read random bytes: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // waitForTrustedCert polls the local Traefik listener on :443 for up to

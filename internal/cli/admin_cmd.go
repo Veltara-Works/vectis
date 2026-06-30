@@ -98,7 +98,12 @@ func runAdminInit(cmd *cobra.Command, args []string) error {
 	password := secrets.API.AdminPassword
 	generated := false
 	if password == "" || password == "CHANGE_ME_admin_password" {
-		password = generateRandomPassword(16)
+		var err error
+		password, err = generateRandomPassword(16)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error generating password: %s\n", err)
+			os.Exit(1)
+		}
 		generated = true
 	}
 
@@ -161,7 +166,11 @@ func runAdminResetPassword(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	password := generateRandomPassword(16)
+	password, err := generateRandomPassword(16)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error generating password: %s\n", err)
+		os.Exit(1)
+	}
 	hash, err := auth.HashPassword(password)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error hashing password: %s\n", err)
