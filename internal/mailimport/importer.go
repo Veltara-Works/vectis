@@ -67,7 +67,7 @@ type JobStore interface {
 	TargetEmail(ctx context.Context, mailboxID string) (string, error)
 	SetRunning(ctx context.Context, jobID string, totalMessages int) error
 	UpdateProgress(ctx context.Context, jobID string, progress int, currentFolder string, imported, skipped int) error
-	Complete(ctx context.Context, jobID string, imported, skipped int) error
+	Complete(ctx context.Context, jobID string, imported, skipped int) (bool, error)
 	Fail(ctx context.Context, jobID, errMsg string) error
 	Status(ctx context.Context, jobID string) (string, error)
 }
@@ -269,8 +269,16 @@ func (im *Importer) run(ctx context.Context, log *slog.Logger, job *repository.I
 	if err := im.checkCancelled(ctx, job.ID); err != nil {
 		return err
 	}
-	if err := im.store.Complete(ctx, job.ID, imported, skipped); err != nil {
+	done, err := im.store.Complete(ctx, job.ID, imported, skipped)
+	if err != nil {
 		return fmt.Errorf("mark job complete: %w", err)
+	}
+	if !done {
+		// A cancel/failure raced in between the check above and the conditional
+		// UPDATE, so Complete was a no-op and the terminal status stands. Don't
+		// log "completed" — the job is not completed.
+		log.Info("import: terminal state changed before completion; leaving as recorded")
+		return nil
 	}
 	log.Info("import: completed", "imported", imported, "skipped", skipped)
 	return nil

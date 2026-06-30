@@ -28,6 +28,7 @@ type fakeStore struct {
 
 	setRunningTotal int
 	completed       *[2]int // imported, skipped
+	completeNoOp    bool    // when true, Complete reports no transition (raced-in terminal state)
 	failed          string
 	progressCalls   int
 }
@@ -49,9 +50,14 @@ func (s *fakeStore) UpdateProgress(_ context.Context, _ string, _ int, _ string,
 	s.progressCalls++
 	return nil
 }
-func (s *fakeStore) Complete(_ context.Context, _ string, imported, skipped int) error {
+func (s *fakeStore) Complete(_ context.Context, _ string, imported, skipped int) (bool, error) {
+	// Mirror the conditional repository UPDATE: if a cancel/failure raced in,
+	// the transition is a no-op and Complete reports false.
+	if s.completeNoOp {
+		return false, nil
+	}
 	s.completed = &[2]int{imported, skipped}
-	return nil
+	return true, nil
 }
 func (s *fakeStore) Fail(_ context.Context, _ string, msg string) error { s.failed = msg; return nil }
 func (s *fakeStore) Status(_ context.Context, _ string) (string, error) {
@@ -318,6 +324,30 @@ func TestImporter_CancelRaceBeforeComplete(t *testing.T) {
 // TestImporter_RevokeIsTimeBounded is the regression for #153: the post-run
 // token revocation must run on a context with a deadline so a hung token store
 // can't block the import goroutine from returning and leak the concurrency slot.
+// TestImporter_CompleteNoOpNotMisreported guards the log-accuracy half of #184:
+// if a cancel/failure races in between the final check and the conditional
+// Complete UPDATE (so Complete reports no transition), the runner must NOT claim
+// the job completed — it leaves the recorded terminal status untouched.
+func TestImporter_CompleteNoOpNotMisreported(t *testing.T) {
+	src := &fakeSource{
+		folders:   []Folder{{Name: "INBOX"}},
+		overviews: map[string][]Overview{"INBOX": {{UID: 1, MessageID: "a@x"}}},
+		bodies:    map[uint32][]byte{1: []byte("m1")},
+	}
+	dst := &fakeDest{existing: map[string]map[string]struct{}{}}
+	store := &fakeStore{job: runnableJob(), completeNoOp: true} // Complete is a no-op
+	minter := &fakeMinter{}
+
+	newTestImporter(store, minter, src, dst).Run(context.Background(), "job-1")
+
+	if store.completed != nil {
+		t.Error("a no-op Complete must not record completion counts")
+	}
+	if store.failed != "" {
+		t.Errorf("must not be marked failed, got %q", store.failed)
+	}
+}
+
 func TestImporter_RevokeIsTimeBounded(t *testing.T) {
 	src := &fakeSource{
 		folders:   []Folder{{Name: "INBOX"}},
