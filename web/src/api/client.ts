@@ -33,10 +33,10 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
   const opts: RequestInit = {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
     credentials: 'include',
   }
   if (body) opts.body = JSON.stringify(body)
@@ -185,17 +185,8 @@ export const api = {
     request<{ id: string; email: string; role: string }>('POST', '/admins', { email, password, role }),
   updateAdmin: (id: string, patch: { email?: string; password?: string; role?: string; domain_ids?: string[]; totp_code?: string }) =>
     request<{ id: string; email: string; role: string; totp_enabled: boolean; created_at: string; last_login_at?: string }>('PATCH', `/admins/${id}`, patch),
-  deleteAdmin: (id: string) => {
-    return fetch(`${BASE}/admins/${id}`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json', 'X-Confirm-Delete': 'true' },
-      credentials: 'include',
-    }).then(async res => {
-      const json = await res.json()
-      if (json.error) throw new Error(json.error.message)
-      return json.data
-    })
-  },
+  deleteAdmin: (id: string) =>
+    request<void>('DELETE', `/admins/${id}`, undefined, { 'X-Confirm-Delete': 'true' }),
 
   // Audit log
   listAudit: (params?: { action?: string; resource_type?: string; admin_id?: string; cursor?: string; limit?: number }) => {
@@ -344,17 +335,8 @@ export const api = {
     request<Array<{ path: string; name: string; size: number; created_at: string }>>('GET', '/backup/list'),
   backupStatus: (jobId: string) =>
     request<{ id: string; status: string; error?: string; started_at: string; completed_at?: string }>('GET', `/backup/status/${jobId}`),
-  backupRestore: (id: string) => {
-    return fetch(`${BASE}/backup/restore/${id}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Confirm-Restore': 'true' },
-      credentials: 'include',
-    }).then(async res => {
-      const json = await res.json()
-      if (json.error) throw new Error(json.error.message)
-      return json.data
-    })
-  },
+  backupRestore: (id: string) =>
+    request<{ message?: string }>('POST', `/backup/restore/${id}`, undefined, { 'X-Confirm-Restore': 'true' }),
   backupGetSettings: () =>
     request<{ enabled: boolean; schedule: string; timezone: string; retain_days: number; from_db: boolean; next_run?: string }>('GET', '/backup/settings'),
   backupUpdateSettings: (s: { enabled: boolean; schedule: string; timezone: string; retain_days: number }) =>

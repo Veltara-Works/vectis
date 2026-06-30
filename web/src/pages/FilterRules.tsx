@@ -1,5 +1,7 @@
 import { useState, useEffect, FormEvent } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
+import DomainSelect from '../components/DomainSelect.tsx'
 
 interface Domain { id: string; name: string }
 interface Mailbox { id: string; domain_id: string; local_part: string; display_name?: string }
@@ -46,7 +48,7 @@ export default function FilterRulesPage() {
       setEditingScript(null)
       api.listSieveScripts(selectedMailbox).then(s => setScripts(s || []))
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to save script')
+      setError(extractError(err, 'Failed to save script'))
     }
   }
 
@@ -57,7 +59,7 @@ export default function FilterRulesPage() {
       setForm({ name: script.name, content: script.content, active: true })
       setShowAdd(true)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load script')
+      setError(extractError(err, 'Failed to load script'))
     }
   }
 
@@ -67,7 +69,7 @@ export default function FilterRulesPage() {
       await api.deleteSieveScript(selectedMailbox, name)
       api.listSieveScripts(selectedMailbox).then(s => setScripts(s || []))
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to delete script')
+      setError(extractError(err, 'Failed to delete script'))
     }
   }
 
@@ -82,9 +84,7 @@ export default function FilterRulesPage() {
       <div className="form-row" style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
         <div className="form-group" style={{ flex: 1 }}>
           <label>Domain</label>
-          <select value={selectedDomain} onChange={e => { setSelectedDomain(e.target.value); setSelectedMailbox('') }}>
-            {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select>
+          <DomainSelect value={selectedDomain} onChange={id => { setSelectedDomain(id); setSelectedMailbox('') }} domains={domains} />
         </div>
         <div className="form-group" style={{ flex: 1 }}>
           <label>Mailbox</label>

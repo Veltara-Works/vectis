@@ -1,5 +1,6 @@
 import { useState, useEffect, FormEvent } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 interface Domain {
   id: string; name: string; active: boolean; dkim_enabled: boolean;
@@ -122,7 +123,7 @@ export default function SetupWizard() {
       setSuccess(`Domain ${result.domain.name} created`)
       setStep(2)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create domain')
+      setError(extractError(err, 'Failed to create domain'))
     }
   }
 
@@ -142,7 +143,7 @@ export default function SetupWizard() {
         setError('TXT record not found yet. Add the record shown below and try again.')
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Verification failed')
+      setError(extractError(err, 'Verification failed'))
     } finally {
       setVerifying(false)
     }
@@ -195,7 +196,7 @@ export default function SetupWizard() {
       setMailboxes(mbs || [])
       setStep(5)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create mailbox')
+      setError(extractError(err, 'Failed to create mailbox'))
     }
   }
 
@@ -207,7 +208,7 @@ export default function SetupWizard() {
       const result = await api.deliverability(activeDomain.id)
       setChecks(result?.checks || [])
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to run checks')
+      setError(extractError(err, 'Failed to run checks'))
     } finally {
       setCheckLoading(false)
     }

@@ -16,6 +16,39 @@ import (
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
+// sessionCookieName is the HMAC-signed session cookie set on login and cleared
+// on logout. ADR-020 (signed cookies); the value is "token.signature".
+const sessionCookieName = "vectis_session"
+
+// setSessionCookie writes the signed session cookie with the standard security
+// attributes (HttpOnly, Secure, SameSite=Strict). expires matches the
+// server-side session lifetime. Shared by password, OIDC, and SAML login.
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expires time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    s.sessions.SignToken(token),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		Expires:  expires,
+	})
+}
+
+// clearSessionCookie expires the session cookie using the same attributes as
+// setSessionCookie — the browser only overwrites a cookie when they match.
+func clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+}
+
 // Credential-endpoint rate limits. chi's Throttle on the login route is a
 // concurrency ceiling, not a rate limiter — it does nothing to stop sequential
 // password/TOTP guessing. These Valkey-backed fixed windows bound brute force:
@@ -232,18 +265,8 @@ func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, admin *re
 	// Update last login.
 	s.admins.UpdateLastLogin(r.Context(), admin.ID)
 
-	// Set HMAC-signed session cookie. The cookie value is "token.signature"
-	// per ADR-020 (signed cookies) and Spec B.6 (token as cookie value).
-	signedToken := s.sessions.SignToken(token)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "vectis_session",
-		Value:    signedToken,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		Expires:  session.ExpiresAt,
-	})
+	// Set HMAC-signed session cookie (token value per ADR-020 / Spec B.6).
+	s.setSessionCookie(w, token, session.ExpiresAt)
 
 	// Audit log.
 	ip := clientIP(r)
@@ -445,16 +468,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("logout failed", "error", err)
 	}
 
-	// Clear cookie.
-	http.SetCookie(w, &http.Cookie{
-		Name:     "vectis_session",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   -1,
-	})
+	clearSessionCookie(w)
 
 	respond(w, r, http.StatusOK, map[string]string{"message": "Logged out"})
 }
@@ -467,15 +481,7 @@ func (s *Server) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     "vectis_session",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   -1,
-	})
+	clearSessionCookie(w)
 
 	respond(w, r, http.StatusOK, map[string]string{"message": "All sessions invalidated"})
 }

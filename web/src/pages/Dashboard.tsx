@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 interface SetupProgress {
   hasDomain: boolean
@@ -58,7 +59,7 @@ export default function DashboardPage() {
       const result = await api.applyConfig()
       setConfigMessage(result.message || 'Configuration applied successfully')
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to apply configuration')
+      setError(extractError(err, 'Failed to apply configuration'))
     } finally {
       setConfigApplying(false)
     }

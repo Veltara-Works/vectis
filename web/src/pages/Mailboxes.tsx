@@ -1,5 +1,7 @@
 import { useState, useEffect, FormEvent } from 'react'
 import { api, type ImportJob } from '../api/client.ts'
+import DomainSelect from '../components/DomainSelect.tsx'
+import { extractError } from '../lib/errors.ts'
 
 interface Domain { id: string; name: string }
 interface Mailbox {
@@ -101,7 +103,7 @@ export default function MailboxesPage() {
       setSuccess(`Mailbox ${form.local_part}@${domainName} created`)
       api.listMailboxes(selectedDomain).then(setMailboxes)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create mailbox')
+      setError(extractError(err, 'Failed to create mailbox'))
     }
   }
 
@@ -125,7 +127,7 @@ export default function MailboxesPage() {
       api.listMailboxes(selectedDomain).then(m => setMailboxes(m || [])).catch(() => setMailboxes([]))
       setTimeout(() => setSuccess(''), 5000)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to delete mailbox')
+      setError(extractError(err, 'Failed to delete mailbox'))
     }
   }
 
@@ -142,7 +144,7 @@ export default function MailboxesPage() {
       setResetTarget(null)
       setResetPassword('')
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to reset password')
+      setError(extractError(err, 'Failed to reset password'))
     }
   }
 
@@ -160,7 +162,7 @@ export default function MailboxesPage() {
       api.listMailboxes(selectedDomain).then(m => setMailboxes(m || [])).catch(() => setMailboxes([]))
       setTimeout(() => setSuccess(''), 5000)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to update sending status')
+      setError(extractError(err, 'Failed to update sending status'))
     }
   }
 
@@ -171,7 +173,7 @@ export default function MailboxesPage() {
       setImpersonation({ ...creds, username: creds.username })
       setSuccess(`Temporary IMAP credentials generated for ${email}`)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to generate impersonation credentials')
+      setError(extractError(err, 'Failed to generate impersonation credentials'))
     }
   }
 
@@ -198,7 +200,7 @@ export default function MailboxesPage() {
       setImportForm({ ...importForm, source_password: '' })
       api.listImports(importTarget.id).then(j => setImportJobs(j || [])).catch(() => {})
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to start import')
+      setError(extractError(err, 'Failed to start import'))
     }
   }
 
@@ -210,7 +212,7 @@ export default function MailboxesPage() {
       setSuccess('Import cancellation requested')
       api.listImports(importTarget.id).then(j => setImportJobs(j || [])).catch(() => {})
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to cancel import')
+      setError(extractError(err, 'Failed to cancel import'))
     }
   }
 
@@ -229,9 +231,7 @@ export default function MailboxesPage() {
       <div className="card">
         <div className="form-group">
           <label>Select Domain</label>
-          <select value={selectedDomain} onChange={e => setSelectedDomain(e.target.value)}>
-            {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select>
+          <DomainSelect value={selectedDomain} onChange={setSelectedDomain} domains={domains} />
         </div>
       </div>
 

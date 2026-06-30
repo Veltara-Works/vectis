@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -173,6 +174,21 @@ func runDomainList(cmd *cobra.Command, args []string) error {
 // value, that value overrides secrets.Database.Host for the connection (useful when
 // running the CLI from the host but Postgres is reachable via a Docker bridge IP).
 // Commands that don't define the flag get the no-op default.
+// openPool builds a pgx pool from the database section of the loaded secrets.
+// dbHost overrides secrets.Database.Host when non-empty (the CLI --db-host
+// flag); pass "" to use the configured host. Centralises the ConfigFromSecrets
+// field mapping that the CLI's DB entry points would otherwise each repeat.
+func openPool(ctx context.Context, secrets *config.VectisSecrets, dbHost string, logger *slog.Logger) (*pgxpool.Pool, error) {
+	if dbHost == "" {
+		dbHost = secrets.Database.Host
+	}
+	dbCfg := database.ConfigFromSecrets(
+		dbHost, secrets.Database.Port, secrets.Database.Name,
+		secrets.Database.APIUser, secrets.Database.APIPassword,
+	)
+	return database.NewPool(ctx, dbCfg, logger)
+}
+
 func connectDB(cmd *cobra.Command) (*pgxpool.Pool, *config.VectisSecrets, func()) {
 	secrets, err := loadSecrets(cmd)
 	if err != nil {
@@ -183,15 +199,8 @@ func connectDB(cmd *cobra.Command) (*pgxpool.Pool, *config.VectisSecrets, func()
 	logger := logging.NewLogger("warn")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
-	dbHost := secrets.Database.Host
-	if override, _ := cmd.Flags().GetString("db-host"); override != "" {
-		dbHost = override
-	}
-	dbCfg := database.ConfigFromSecrets(
-		dbHost, secrets.Database.Port, secrets.Database.Name,
-		secrets.Database.APIUser, secrets.Database.APIPassword,
-	)
-	pool, err := database.NewPool(ctx, dbCfg, logger)
+	dbHost, _ := cmd.Flags().GetString("db-host")
+	pool, err := openPool(ctx, secrets, dbHost, logger)
 	cancel()
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: database connection failed: %s\n", err)

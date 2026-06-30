@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -98,14 +99,7 @@ func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasMore := len(domains) > page.Limit
-	var nextCursor string
-	if hasMore {
-		domains = domains[:page.Limit]
-		nextCursor = encodeCursor(domains[page.Limit-1].CreatedAt)
-	}
-
-	respondPaginated(w, r, http.StatusOK, domains, nextCursor, hasMore)
+	respondPaginatedSlice(w, r, http.StatusOK, domains, page.Limit, func(d repository.Domain) time.Time { return d.CreatedAt })
 }
 
 func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
@@ -421,6 +415,21 @@ func (s *Server) reloadServices(ctx context.Context, actions []engine.ServiceAct
 	return results
 }
 
+// reloadRspamd triggers an Rspamd reload via the orchestrator (the api has no
+// docker socket) and logs the outcome. reason is the ServiceAction reason;
+// logCtx is the suffix for the success/failure log lines.
+func (s *Server) reloadRspamd(ctx context.Context, reason, logCtx string) {
+	for _, r := range s.reloadServices(ctx, []engine.ServiceAction{
+		{Service: "rspamd", Action: "reload", Reason: reason},
+	}) {
+		if !r.Success {
+			s.logger.Warn("rspamd reload failed after "+logCtx, "error", r.Error)
+		} else {
+			s.logger.Info("rspamd reloaded after " + logCtx)
+		}
+	}
+}
+
 // regenerateRspamdDKIMConfig regenerates the Rspamd DKIM signing config from
 // the current domain list and triggers an Rspamd reload (ADR-023).
 func (s *Server) regenerateRspamdDKIMConfig() {
@@ -449,17 +458,7 @@ func (s *Server) regenerateRspamdDKIMConfig() {
 		}
 	}
 
-	// Reload Rspamd (via the orchestrator — the api has no docker socket).
-	results := s.reloadServices(ctx, []engine.ServiceAction{
-		{Service: "rspamd", Action: "reload", Reason: "DKIM config updated"},
-	})
-	for _, r := range results {
-		if !r.Success {
-			s.logger.Warn("rspamd reload failed after DKIM config update", "error", r.Error)
-		} else {
-			s.logger.Info("rspamd reloaded after DKIM config update")
-		}
-	}
+	s.reloadRspamd(ctx, "DKIM config updated", "DKIM config update")
 }
 
 // loadSpamListInfos returns every per-domain allow/block entry mapped into
@@ -544,14 +543,5 @@ func (s *Server) regenerateRspamdSpamConfig() {
 		return
 	}
 
-	results := s.reloadServices(ctx, []engine.ServiceAction{
-		{Service: "rspamd", Action: "reload", Reason: "spam list / per-domain spam config updated"},
-	})
-	for _, r := range results {
-		if !r.Success {
-			s.logger.Warn("rspamd reload failed after spam config update", "error", r.Error)
-		} else {
-			s.logger.Info("rspamd reloaded after spam config update")
-		}
-	}
+	s.reloadRspamd(ctx, "spam list / per-domain spam config updated", "spam config update")
 }

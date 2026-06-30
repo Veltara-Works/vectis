@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -59,17 +60,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasMore := len(messages) > pg.Limit
-	if hasMore {
-		messages = messages[:pg.Limit]
-	}
-
-	nextCursor := ""
-	if hasMore && len(messages) > 0 {
-		nextCursor = encodeCursor(messages[len(messages)-1].CreatedAt)
-	}
-
-	respondPaginated(w, r, http.StatusOK, messages, nextCursor, hasMore)
+	respondPaginatedSlice(w, r, http.StatusOK, messages, pg.Limit, func(m repository.Message) time.Time { return m.CreatedAt })
 }
 
 // handleGetMessage retrieves a single message by ID.

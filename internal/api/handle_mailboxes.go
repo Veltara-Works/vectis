@@ -61,14 +61,7 @@ func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasMore := len(mailboxes) > page.Limit
-	var nextCursor string
-	if hasMore {
-		mailboxes = mailboxes[:page.Limit]
-		nextCursor = encodeCursor(mailboxes[page.Limit-1].CreatedAt)
-	}
-
-	respondPaginated(w, r, http.StatusOK, mailboxes, nextCursor, hasMore)
+	respondPaginatedSlice(w, r, http.StatusOK, mailboxes, page.Limit, func(m repository.Mailbox) time.Time { return m.CreatedAt })
 }
 
 // provisionMaildir creates the Maildir cur/new/tmp tree for a mailbox and chowns

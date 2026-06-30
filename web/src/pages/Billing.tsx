@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 // BillingPage is the customer-facing entrance to subscription management.
 // It does NOT show subscription details itself — those live on the License
@@ -36,7 +37,7 @@ export default function BillingPage() {
         setUnavailable(true)
         setError(e.message)
       } else {
-        setError(e instanceof Error ? e.message : 'Failed to start billing session')
+        setError(extractError(e, 'Failed to start billing session'))
       }
     }
   }

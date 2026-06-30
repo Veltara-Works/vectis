@@ -1,5 +1,6 @@
 import { useState, useEffect, FormEvent } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 const providerLabels: Record<string, string> = {
   google: 'Google',
@@ -43,7 +44,7 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
         }
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Login failed')
+      setError(extractError(err, 'Login failed'))
       if (totpSession) {
         // Clear TOTP session on failure so user can retry from scratch.
         setTotpSession('')

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 interface OrchestratorStatus {
   state: string; current_step?: string; last_operation?: string;
@@ -130,7 +131,7 @@ export default function UpdatesPage() {
         : 'Plan generated successfully. Review the changes below, then click Apply Update to proceed.')
       loadStatus()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to generate plan')
+      setError(extractError(err, 'Failed to generate plan'))
     } finally {
       setPlanning(false)
     }
@@ -156,7 +157,7 @@ export default function UpdatesPage() {
       loadStatus()
       loadHistory()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to apply update')
+      setError(extractError(err, 'Failed to apply update'))
       setApplyTracking('idle')
     } finally {
       setApplying(false)
@@ -173,7 +174,7 @@ export default function UpdatesPage() {
       loadStatus()
       loadHistory()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to rollback')
+      setError(extractError(err, 'Failed to rollback'))
     } finally {
       setRollingBack(false)
     }
