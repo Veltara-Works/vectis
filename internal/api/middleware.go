@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -197,6 +198,98 @@ func (s *Server) authenticateAPIKey(w http.ResponseWriter, r *http.Request, next
 	ctx = context.WithValue(ctx, ctxAdminRole, admin.Role)
 	ctx = context.WithValue(ctx, ctxAPIKeyID, apiKey.ID)
 	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// csrfProtect guards cookie-authenticated, state-changing requests against
+// cross-site request forgery. The session cookie is SameSite=Strict (the
+// primary defence — the browser won't attach it to cross-site requests at all);
+// this adds a stateless Origin/Referer check as defence in depth (#127).
+//
+// It acts ONLY when the browser auto-attached a session cookie on an unsafe
+// method. Bearer/API-key clients send no session cookie and carry no ambient
+// authority, so they're skipped (CLI/integrations have no Origin and must keep
+// working). The unauthenticated login / SAML-ACS / OIDC-callback routes live
+// outside this group, so IdP-initiated cross-origin POSTs are unaffected. The
+// admin UI is same-origin with the API, so legitimate requests always pass with
+// no frontend change.
+func (s *Server) csrfProtect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isSafeMethod(r.Method) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if c, err := r.Cookie(sessionCookieName); err != nil || c.Value == "" {
+			next.ServeHTTP(w, r) // no session cookie → not CSRF-able
+			return
+		}
+		if !s.originAllowed(r) {
+			respondError(w, r, http.StatusForbidden, "CSRF_FAILED",
+				"Cross-origin state-changing request rejected")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isSafeMethod reports whether the HTTP method is read-only (RFC 7231 §4.2.1)
+// and therefore not a CSRF concern.
+func isSafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
+}
+
+// originAllowed reports whether a state-changing request targets this server's
+// own host. The browser sets Origin from the page issuing the request and won't
+// let a cross-site page forge it, while Host is the host the request was
+// actually sent to — so an evil.example page hitting us carries
+// Origin: https://evil.example against Host: mail.example and is rejected. A
+// missing/garbage Origin AND Referer on a cookie-bearing unsafe request is
+// treated as cross-origin (fail closed); real browsers always send Origin here.
+func (s *Server) originAllowed(r *http.Request) bool {
+	got := requestOriginHost(r)
+	if got == "" {
+		return false
+	}
+	if strings.EqualFold(got, hostWithoutPort(r.Host)) {
+		return true
+	}
+	// Also accept the configured public hostname, in case a reverse proxy
+	// presents a different Host to the backend than the browser addressed.
+	if s.cfg != nil && s.cfg.Hostname != "" && strings.EqualFold(got, hostWithoutPort(s.cfg.Hostname)) {
+		return true
+	}
+	return false
+}
+
+// requestOriginHost returns the host of the request's Origin header, falling
+// back to the Referer host. Empty if neither is present or parseable (incl. the
+// "null" origin, which has no host).
+func requestOriginHost(r *http.Request) string {
+	if o := r.Header.Get("Origin"); o != "" {
+		if u, err := url.Parse(o); err == nil {
+			return hostWithoutPort(u.Host)
+		}
+		return ""
+	}
+	if ref := r.Header.Get("Referer"); ref != "" {
+		if u, err := url.Parse(ref); err == nil {
+			return hostWithoutPort(u.Host)
+		}
+	}
+	return ""
+}
+
+// hostWithoutPort strips a trailing :port from a host[:port] value, leaving the
+// host (or bracketed IPv6 literal) intact.
+func hostWithoutPort(h string) string {
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		return host
+	}
+	return h
 }
 
 // extractSignedToken gets the signed token from the cookie or Authorization header.
