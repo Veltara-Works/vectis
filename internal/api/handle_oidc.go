@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/Veltara-Works/vectis/internal/validonx"
 	"github.com/go-chi/chi/v5"
@@ -116,75 +115,31 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up admin: first by OIDC identity (provider+subject), then by email.
-	admin, err := s.admins.GetByOIDC(r.Context(), identity.Provider, identity.Subject)
-	if err != nil {
-		s.logger.Error("oidc admin lookup failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to look up admin")
+	// Resolve the identity to an admin (auto-linking by verified email on first
+	// login). Shared with the SAML ACS via resolveFederatedAdmin so the
+	// verified-email guard cannot drift between the two paths (#159/#172).
+	admin, out := s.resolveFederatedAdmin(r.Context(), federatedIdentity{
+		Provider:      identity.Provider,
+		Subject:       identity.Subject,
+		Email:         identity.Email,
+		EmailVerified: identity.EmailVerified,
+	}, federatedLinker{
+		codePrefix:   "OIDC",
+		logLabel:     "oidc",
+		getBySubject: s.admins.GetByOIDC,
+		link:         s.admins.LinkOIDC,
+		unverifiedMsg: "Your identity provider did not assert a verified email, so this account " +
+			"cannot be auto-linked. Ask a super_admin to link your OIDC identity, " +
+			"or configure the IdP to send email_verified=true.",
+		noAccountMsg: "No admin account exists for this email. Ask a super_admin to create one first.",
+	})
+	if out.code != "" {
+		respondError(w, r, out.httpStatus, out.code, out.message)
 		return
-	}
-
-	if admin == nil {
-		// Falling back to email-based matching auto-links a new IdP subject to
-		// an existing admin account. The email claim is attacker-controllable
-		// at IdPs that emit unverified emails (multi-tenant/consumer providers),
-		// so we MUST require a verified email here — otherwise an attacker who
-		// can assert a super_admin's address gets a silent link + full session.
-		// The provider+subject path above is unaffected: already-linked admins
-		// keep logging in regardless of the email_verified claim.
-		if !identity.EmailVerified {
-			s.logger.Warn("oidc auto-link refused: email not verified by IdP",
-				"provider", identity.Provider, "subject", identity.Subject)
-			respondError(w, r, http.StatusForbidden, "OIDC_EMAIL_UNVERIFIED",
-				"Your identity provider did not assert a verified email, so this account "+
-					"cannot be auto-linked. Ask a super_admin to link your OIDC identity, "+
-					"or configure the IdP to send email_verified=true.")
-			return
-		}
-
-		// Try matching by email — auto-link if admin exists.
-		admin, err = s.admins.GetByEmail(r.Context(), strings.ToLower(identity.Email))
-		if err != nil {
-			s.logger.Error("oidc email lookup failed", "error", err)
-			respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to look up admin")
-			return
-		}
-
-		if admin == nil {
-			// No matching admin — OIDC login requires a pre-existing admin account.
-			respondError(w, r, http.StatusForbidden, "OIDC_NO_ACCOUNT",
-				"No admin account exists for this email. Ask a super_admin to create one first.")
-			return
-		}
-
-		// Link the OIDC identity to this admin.
-		if err := s.admins.LinkOIDC(r.Context(), admin.ID, identity.Provider, identity.Subject); err != nil {
-			s.logger.Error("oidc link failed", "error", err, "admin_id", admin.ID)
-			respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to link OIDC identity")
-			return
-		}
-		s.logger.Info("oidc identity linked to admin", "admin_id", admin.ID, "provider", identity.Provider)
 	}
 
 	// Create session (same as password login — no TOTP required for OIDC).
-	token, session, err := s.sessions.CreateSession(r.Context(), admin.ID, clientIP(r), r.UserAgent())
-	if err != nil {
-		s.logger.Error("create session after oidc login failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create session")
-		return
-	}
-
-	s.admins.UpdateLastLogin(r.Context(), admin.ID)
-
-	s.setSessionCookie(w, token, session.ExpiresAt)
-
-	// Audit log.
-	ip := clientIP(r)
-	s.audit.Log(r.Context(), &admin.ID, "auth.oidc.login", "admin", &admin.ID,
-		map[string]any{"provider": identity.Provider, "ip": ip}, &ip)
-
-	// Redirect to admin UI after successful login.
-	http.Redirect(w, r, "/admin", http.StatusFound)
+	s.establishFederatedSession(w, r, admin, "auth.oidc.login", identity.Provider)
 }
 
 // handleOIDCDisconnect unlinks the OIDC identity from the current admin's account.

@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/Veltara-Works/vectis/internal/validonx"
 	"github.com/go-chi/chi/v5"
@@ -103,51 +102,35 @@ func (s *Server) handleSAMLACS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up admin: first by SAML identity (provider+subject), then by email.
-	admin, err := s.admins.GetBySAML(r.Context(), identity.Provider, identity.Subject)
-	if err != nil {
-		s.logger.Error("saml admin lookup failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to look up admin")
+	// Resolve the identity to an admin (auto-linking by email on first login),
+	// sharing resolveFederatedAdmin with the OIDC callback. A SAML assertion is
+	// signed by the operator-configured IdP, so the asserted email is vouched
+	// for by the signature itself — SAML has no separate email_verified
+	// attribute — hence EmailVerified=true. The shared resolver still refuses to
+	// auto-link an empty or malformed address. This is the SAML half of the
+	// verified-email parity the OIDC path gained in #117 (#172), now enforced
+	// from one place so the two cannot drift again (#159).
+	admin, out := s.resolveFederatedAdmin(r.Context(), federatedIdentity{
+		Provider:      identity.Provider,
+		Subject:       identity.Subject,
+		Email:         identity.Email,
+		EmailVerified: true,
+	}, federatedLinker{
+		codePrefix:   "SAML",
+		logLabel:     "saml",
+		getBySubject: s.admins.GetBySAML,
+		link:         s.admins.LinkSAML,
+		unverifiedMsg: "The SAML assertion did not include a usable email address, so this " +
+			"account cannot be auto-linked. Ask a super_admin to link your SAML identity.",
+		noAccountMsg: "No admin account exists for this email. Ask a super_admin to create one first.",
+	})
+	if out.code != "" {
+		respondError(w, r, out.httpStatus, out.code, out.message)
 		return
-	}
-
-	if admin == nil {
-		admin, err = s.admins.GetByEmail(r.Context(), strings.ToLower(identity.Email))
-		if err != nil {
-			s.logger.Error("saml email lookup failed", "error", err)
-			respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to look up admin")
-			return
-		}
-		if admin == nil {
-			respondError(w, r, http.StatusForbidden, "SAML_NO_ACCOUNT",
-				"No admin account exists for this email. Ask a super_admin to create one first.")
-			return
-		}
-		if err := s.admins.LinkSAML(r.Context(), admin.ID, identity.Provider, identity.Subject); err != nil {
-			s.logger.Error("saml link failed", "error", err, "admin_id", admin.ID)
-			respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to link SAML identity")
-			return
-		}
-		s.logger.Info("saml identity linked to admin", "admin_id", admin.ID, "provider", identity.Provider)
 	}
 
 	// Create session (federated — no TOTP required, same as OIDC).
-	token, session, err := s.sessions.CreateSession(r.Context(), admin.ID, clientIP(r), r.UserAgent())
-	if err != nil {
-		s.logger.Error("create session after saml login failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create session")
-		return
-	}
-
-	s.admins.UpdateLastLogin(r.Context(), admin.ID)
-
-	s.setSessionCookie(w, token, session.ExpiresAt)
-
-	ip := clientIP(r)
-	s.audit.Log(r.Context(), &admin.ID, "auth.saml.login", "admin", &admin.ID,
-		map[string]any{"provider": identity.Provider, "ip": ip}, &ip)
-
-	http.Redirect(w, r, "/admin", http.StatusFound)
+	s.establishFederatedSession(w, r, admin, "auth.saml.login", identity.Provider)
 }
 
 // handleSAMLDisconnect unlinks the SAML identity from the current admin. The
