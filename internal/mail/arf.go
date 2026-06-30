@@ -10,6 +10,12 @@ import (
 	"strings"
 )
 
+// maxARFParts bounds the number of MIME parts ParseARF will walk. A well-formed
+// RFC 5965 report has ~3 (human-readable text, message/feedback-report,
+// message/rfc822); the cap stops a hostile report with a huge number of parts
+// from spinning an unbounded NextPart() loop.
+const maxARFParts = 16
+
 // ARFReport represents a parsed RFC 5965 Abuse Reporting Format (feedback loop)
 // complaint message. Only the fields we act on are populated; the full
 // machine-readable section is retained in Raw for audit storage.
@@ -81,6 +87,7 @@ func ParseARF(raw []byte) (*ARFReport, error) {
 	report := &ARFReport{Raw: make(map[string]string)}
 
 	reader := multipart.NewReader(msg.Body, boundary)
+	parts := 0
 	for {
 		part, err := reader.NextPart()
 		if err == io.EOF {
@@ -88,6 +95,15 @@ func ParseARF(raw []byte) (*ARFReport, error) {
 		}
 		if err != nil {
 			return nil, fmt.Errorf("arf next part: %w", err)
+		}
+		// Bound the part count. Each part body is size-capped below, but the
+		// NextPart() loop itself was unbounded — a hostile report with a huge
+		// number of parts could spin it indefinitely. A well-formed RFC 5965
+		// report has ~3 parts (human-readable, feedback-report, rfc822); reject
+		// anything wildly over that as malformed/abusive. Inbound is untrusted.
+		parts++
+		if parts > maxARFParts {
+			return nil, fmt.Errorf("arf has too many parts (>%d)", maxARFParts)
 		}
 		partCT := part.Header.Get("Content-Type")
 		mediaType, _, _ := mime.ParseMediaType(partCT)

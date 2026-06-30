@@ -101,6 +101,24 @@ func TestParseARF_RejectsNonARF(t *testing.T) {
 	}
 }
 
+// TestParseARF_RejectsTooManyParts is the #173 DoS guard: a feedback report with
+// a huge number of MIME parts must be rejected rather than spinning the
+// NextPart() loop unbounded.
+func TestParseARF_RejectsTooManyParts(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("From: <complaints@isp.example>\r\n")
+	b.WriteString("To: <abuse@mail.example.com>\r\n")
+	b.WriteString("MIME-Version: 1.0\r\n")
+	b.WriteString("Content-Type: multipart/report; report-type=feedback-report; boundary=\"b1\"\r\n\r\n")
+	for i := 0; i < maxARFParts+5; i++ {
+		b.WriteString("--b1\r\nContent-Type: text/plain\r\n\r\njunk\r\n")
+	}
+	b.WriteString("--b1--\r\n")
+	if _, err := ParseARF([]byte(b.String())); err == nil {
+		t.Fatalf("expected error for an ARF report exceeding %d parts", maxARFParts)
+	}
+}
+
 func TestParseARF_DomainDerivedFromMailFrom(t *testing.T) {
 	// Strip Reported-Domain from sample to force derivation fallback.
 	stripped := strings.Replace(sampleARF,
