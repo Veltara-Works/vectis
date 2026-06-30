@@ -1,5 +1,7 @@
 import { useState, useEffect, FormEvent } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
+import DomainSelect from '../components/DomainSelect.tsx'
 
 interface Domain { id: string; name: string }
 interface Alias {
@@ -42,7 +44,7 @@ export default function AliasesPage() {
       setSuccess(`Alias ${source}@${domainName} created`)
       api.listAliases(selectedDomain).then(setAliases)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create alias')
+      setError(extractError(err, 'Failed to create alias'))
     }
   }
 
@@ -53,7 +55,7 @@ export default function AliasesPage() {
       await api.deleteAlias(id)
       api.listAliases(selectedDomain).then(setAliases)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to delete alias')
+      setError(extractError(err, 'Failed to delete alias'))
     }
   }
 
@@ -72,9 +74,7 @@ export default function AliasesPage() {
       <div className="card">
         <div className="form-group">
           <label>Select Domain</label>
-          <select value={selectedDomain} onChange={e => setSelectedDomain(e.target.value)}>
-            {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select>
+          <DomainSelect value={selectedDomain} onChange={setSelectedDomain} domains={domains} />
         </div>
       </div>
 

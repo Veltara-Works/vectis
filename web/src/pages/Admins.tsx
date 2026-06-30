@@ -1,5 +1,6 @@
 import { useState, useEffect, FormEvent } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 interface Admin {
   id: string; email: string; role: string; totp_enabled: boolean;
@@ -118,7 +119,7 @@ export default function AdminsPage() {
       closeEdit()
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to update admin')
+      setError(extractError(err, 'Failed to update admin'))
     }
   }
 
@@ -132,7 +133,7 @@ export default function AdminsPage() {
       setSuccess(`Admin ${form.email} created`)
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create admin')
+      setError(extractError(err, 'Failed to create admin'))
     }
   }
 
@@ -144,7 +145,7 @@ export default function AdminsPage() {
       setSuccess(`Admin ${email} deleted`)
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to delete admin')
+      setError(extractError(err, 'Failed to delete admin'))
     }
   }
 
@@ -154,7 +155,7 @@ export default function AdminsPage() {
       const result = await api.totpSetup()
       setTotpURI(result.provisioning_uri)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to setup TOTP')
+      setError(extractError(err, 'Failed to setup TOTP'))
     }
   }
 
@@ -168,7 +169,7 @@ export default function AdminsPage() {
       setTotpCode('')
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Invalid TOTP code')
+      setError(extractError(err, 'Invalid TOTP code'))
     }
   }
 
@@ -181,7 +182,7 @@ export default function AdminsPage() {
       setSuccess('TOTP disabled')
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Invalid code or failed to disable TOTP')
+      setError(extractError(err, 'Invalid code or failed to disable TOTP'))
     }
   }
 

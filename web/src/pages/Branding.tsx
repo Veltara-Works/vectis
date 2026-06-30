@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api, type BrandingResponse } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 interface Props {
   features: string[]
@@ -39,7 +40,7 @@ export default function BrandingPage({ features, onBrandingChanged }: Props) {
       setState(s)
       syncForm(s)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load branding')
+      setError(extractError(e, 'Failed to load branding'))
     } finally {
       setLoading(false)
     }
@@ -67,7 +68,7 @@ export default function BrandingPage({ features, onBrandingChanged }: Props) {
       setSuccess('Branding updated.')
       onBrandingChanged?.(next)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to save branding')
+      setError(extractError(e, 'Failed to save branding'))
     } finally {
       setSubmitting(false)
     }
@@ -85,7 +86,7 @@ export default function BrandingPage({ features, onBrandingChanged }: Props) {
       setSuccess('Branding reset to Vectis defaults.')
       onBrandingChanged?.(next)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to reset branding')
+      setError(extractError(e, 'Failed to reset branding'))
     } finally {
       setRemoving(false)
     }

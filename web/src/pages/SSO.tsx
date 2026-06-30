@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 // Single Sign-On settings. Two concerns live here:
 //
@@ -51,7 +52,7 @@ export default function SSOPage() {
       setSuccess('SCIM token generated. Copy it now — it is shown only once.')
       loadScim()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to generate SCIM token')
+      setError(extractError(err, 'Failed to generate SCIM token'))
     }
   }
 
@@ -63,7 +64,7 @@ export default function SSOPage() {
       setSuccess(r.message || 'SCIM token revoked')
       loadScim()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to revoke SCIM token')
+      setError(extractError(err, 'Failed to revoke SCIM token'))
     }
   }
 
@@ -75,7 +76,7 @@ export default function SSOPage() {
       setSuccess(r.message || 'SAML disconnected')
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to disconnect SAML')
+      setError(extractError(err, 'Failed to disconnect SAML'))
     }
   }
 
@@ -87,7 +88,7 @@ export default function SSOPage() {
       setSuccess(r.message || 'OIDC disconnected')
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to disconnect OIDC')
+      setError(extractError(err, 'Failed to disconnect OIDC'))
     }
   }
 

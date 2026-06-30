@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
+import DomainSelect from '../components/DomainSelect.tsx'
 
 interface Domain { id: string; name: string }
 interface Check { name: string; status: string; value?: string; hint?: string }
@@ -45,7 +47,7 @@ export default function DeliverabilityPage() {
     setChecks([])
     api.deliverability(selectedDomain)
       .then(result => setChecks(result?.checks || []))
-      .catch(err => setError(err instanceof Error ? err.message : 'Failed to run deliverability checks'))
+      .catch(err => setError(extractError(err, 'Failed to run deliverability checks')))
       .finally(() => setLoading(false))
   }
 
@@ -72,9 +74,7 @@ export default function DeliverabilityPage() {
       <div className="card">
         <div className="form-group">
           <label>Select Domain</label>
-          <select value={selectedDomain} onChange={e => setSelectedDomain(e.target.value)}>
-            {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select>
+          <DomainSelect value={selectedDomain} onChange={setSelectedDomain} domains={domains} />
         </div>
       </div>
 

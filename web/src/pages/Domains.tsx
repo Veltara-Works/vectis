@@ -1,6 +1,7 @@
 import { useState, useEffect, FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 interface Domain {
   id: string; name: string; active: boolean; dkim_enabled: boolean;
@@ -53,7 +54,7 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
       if (result.dkim) setDkimInfo(result.dkim)
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create domain')
+      setError(extractError(err, 'Failed to create domain'))
     }
   }
 
@@ -63,7 +64,7 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
       await api.deleteDomain(id)
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to delete domain')
+      setError(extractError(err, 'Failed to delete domain'))
     }
   }
 
@@ -80,7 +81,7 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
       }
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Verification failed')
+      setError(extractError(err, 'Verification failed'))
     }
   }
 
@@ -108,7 +109,7 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
       cancelEditAdvanced()
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to update domain')
+      setError(extractError(err, 'Failed to update domain'))
     } finally {
       setSavingEdit(false)
     }

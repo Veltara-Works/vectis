@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 interface Session {
   id: string; ip_address: string; user_agent: string; created_at: string;
@@ -20,7 +21,7 @@ export default function SessionsPage() {
       setSuccess('Session revoked')
       load()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to revoke session')
+      setError(extractError(err, 'Failed to revoke session'))
     }
   }
 
@@ -33,7 +34,7 @@ export default function SessionsPage() {
       // After logout-all, current session is also invalidated — reload will redirect to login.
       setTimeout(() => window.location.reload(), 1500)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to revoke sessions')
+      setError(extractError(err, 'Failed to revoke sessions'))
     }
   }
 

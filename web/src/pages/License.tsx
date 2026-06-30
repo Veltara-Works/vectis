@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 // LicenseState mirrors the GET /api/v1/license response. The masked id is
 // what we render — never the full subscription_id (that would leak per-
@@ -81,7 +82,7 @@ export default function LicensePage() {
       const s = await api.getLicense()
       setState(s)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load license state')
+      setError(extractError(e, 'Failed to load license state'))
     } finally {
       setLoading(false)
     }
@@ -108,7 +109,7 @@ export default function LicensePage() {
       setForm({ license_key: '', service_key: '', tenant_id: '', subscription_id: '', base_url: '', server_id: '' })
       await load()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to activate license')
+      setError(extractError(e, 'Failed to activate license'))
     } finally {
       setSubmitting(false)
     }
@@ -127,7 +128,7 @@ export default function LicensePage() {
       setSuccess('License re-validated against ValidonX.')
       await load()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Re-validation failed')
+      setError(extractError(e, 'Re-validation failed'))
     } finally {
       setSubmitting(false)
     }
@@ -147,7 +148,7 @@ export default function LicensePage() {
       const { url } = await api.createUpgradeCheckoutSession({})
       window.location.assign(url)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Could not start checkout')
+      setError(extractError(e, 'Could not start checkout'))
       setUpgrading(false)
     }
   }
@@ -161,7 +162,7 @@ export default function LicensePage() {
       const { url } = await api.createBillingPortalSession()
       window.location.assign(url)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Could not open billing portal')
+      setError(extractError(e, 'Could not open billing portal'))
     }
   }
 
@@ -175,7 +176,7 @@ export default function LicensePage() {
       setSuccess('License removed. Server is now in Free tier.')
       await load()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to remove license')
+      setError(extractError(e, 'Failed to remove license'))
     } finally {
       setRemoving(false)
     }

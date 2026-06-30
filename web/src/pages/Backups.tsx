@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
+import { formatSize } from '../lib/format.ts'
 
 interface BackupInfo {
   path: string; name: string; size: number; created_at: string;
@@ -9,13 +11,6 @@ interface BackupInfo {
 // which is what the friendly time picker produces and reads back. Anything
 // more complex flips the form into advanced (raw cron) mode.
 const dailyCron = /^(\d{1,2}) (\d{1,2}) \* \* \*$/
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
-}
 
 export default function BackupsPage() {
   const [backups, setBackups] = useState<BackupInfo[]>([])
@@ -77,7 +72,7 @@ export default function BackupsPage() {
       if (dailyCron.exec(s.schedule)) setCron(s.schedule)
       setSuccess('Backup settings saved')
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to save settings')
+      setError(extractError(err, 'Failed to save settings'))
     } finally {
       setSavingSettings(false)
     }
@@ -119,7 +114,7 @@ export default function BackupsPage() {
       setSuccess('Backup job started...')
     } catch (err: unknown) {
       setCreating(false)
-      setError(err instanceof Error ? err.message : 'Failed to create backup')
+      setError(extractError(err, 'Failed to create backup'))
     }
   }
 
@@ -131,7 +126,7 @@ export default function BackupsPage() {
       const result = await api.backupRestore(name)
       setSuccess(result.message || 'Restore job started')
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to start restore')
+      setError(extractError(err, 'Failed to start restore'))
     } finally {
       setRestoring(null)
     }

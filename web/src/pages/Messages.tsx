@@ -1,5 +1,8 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
+import { formatSize } from '../lib/format.ts'
+import DomainSelect from '../components/DomainSelect.tsx'
 
 interface Domain { id: string; name: string }
 interface MessageRow {
@@ -102,7 +105,7 @@ export default function MessagesPage() {
         }
       }))
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load messages')
+      setError(extractError(e, 'Failed to load messages'))
     } finally {
       setLoading(false)
     }
@@ -155,16 +158,7 @@ export default function MessagesPage() {
     load()
   }
 
-  const formatSize = (n: number): string => {
-    if (n < 1024) return `${n} B`
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-    return `${(n / 1024 / 1024).toFixed(2)} MB`
-  }
-
-  const openRate = useMemo(() => {
-    if (!domainStats || domainStats.messages_opened === 0) return 0
-    return domainStats.messages_opened
-  }, [domainStats])
+  const openRate = domainStats?.messages_opened ?? 0
 
   return (
     <div>
@@ -176,10 +170,7 @@ export default function MessagesPage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem' }}>
           <div className="form-group" style={{ margin: 0 }}>
             <label>Domain</label>
-            <select value={selectedDomain} onChange={e => setSelectedDomain(e.target.value)}>
-              {domains.length === 0 && <option value="">No domains</option>}
-              {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
+            <DomainSelect value={selectedDomain} onChange={setSelectedDomain} domains={domains} emptyLabel="No domains" />
           </div>
           <div className="form-group" style={{ margin: 0 }}>
             <label>Direction</label>

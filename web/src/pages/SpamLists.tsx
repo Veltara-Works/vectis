@@ -1,6 +1,7 @@
 import { useState, useEffect, FormEvent } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 interface Entry {
   id: string
@@ -42,7 +43,7 @@ export default function SpamListsPage({ features = [] }: SpamListsPageProps) {
       const items = await api.listSpamListEntries(domainID)
       setEntries(items || [])
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load spam list entries')
+      setError(extractError(e, 'Failed to load spam list entries'))
     }
   }
 
@@ -77,7 +78,7 @@ export default function SpamListsPage({ features = [] }: SpamListsPageProps) {
       setSuccess(`Added ${activeTab} entry: ${pattern.trim()}`)
       await load()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to add entry')
+      setError(extractError(e, 'Failed to add entry'))
     } finally {
       setSubmitting(false)
     }
@@ -92,7 +93,7 @@ export default function SpamListsPage({ features = [] }: SpamListsPageProps) {
       setSuccess(`Removed ${p}`)
       await load()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to delete entry')
+      setError(extractError(e, 'Failed to delete entry'))
     }
   }
 

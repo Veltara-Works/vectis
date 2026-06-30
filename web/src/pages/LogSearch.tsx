@@ -1,5 +1,6 @@
 import { useState, FormEvent } from 'react'
 import { api } from '../api/client.ts'
+import { extractError } from '../lib/errors.ts'
 
 const SERVICES = ['postfix', 'dovecot', 'rspamd', 'clamav', 'postgres', 'valkey', 'traefik']
 
@@ -20,7 +21,7 @@ export default function LogSearchPage() {
       const data = await api.searchLogs({ service, pattern, limit: 500 })
       setResults(data)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Search failed')
+      setError(extractError(err, 'Search failed'))
     } finally {
       setLoading(false)
     }
