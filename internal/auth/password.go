@@ -68,8 +68,10 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	return subtle.ConstantTimeCompare(existingHash, computedHash) == 1, nil
 }
 
-// dummyPasswordHash returns a fixed throwaway Argon2id hash with the standard
-// params, computed lazily on first use (NOT at package init). The unknown-
+// dummyPasswordHash returns a throwaway Argon2id hash — over a fixed plaintext
+// but with a random salt, so the encoded value differs each process restart —
+// using the standard params, computed lazily on first use (NOT at package
+// init). The same value is reused for the process lifetime. The unknown-
 // account login path verifies a submitted password against it (see
 // VerifyDummyPassword) so an attacker cannot tell "no such admin" apart from
 // "wrong password" by response latency — Argon2id dominates that latency, so
