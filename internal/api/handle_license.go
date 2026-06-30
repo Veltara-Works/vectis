@@ -115,13 +115,15 @@ func (s *Server) currentTierAndFeatures(ctx context.Context) (string, []string) 
 }
 
 // tierFromCachedFeatures mirrors validonx.tierFromFeatures (which is package-
-// internal). Kept here so the API doesn't need to expose the helper.
+// internal). Kept here so the API doesn't need to expose the helper. Must stay
+// in sync with the validonx feature lists — TestTierFromCachedFeaturesNoDrift
+// fails the build if an Enterprise/Pro feature is added there but not here.
 func tierFromCachedFeatures(features []string) string {
 	hasEnterprise := false
 	hasPro := false
 	for _, f := range features {
 		switch f {
-		case validonx.FeatureSAMLSSO, validonx.FeatureSLA, validonx.FeatureDSAR:
+		case validonx.FeatureSAMLSSO, validonx.FeatureSLA, validonx.FeatureDSAR, validonx.FeatureSCIM:
 			hasEnterprise = true
 		case validonx.FeatureAnalytics, validonx.FeatureOIDCSSO, validonx.FeatureCustomBranding,
 			validonx.FeatureAdvancedSpam, validonx.FeaturePrioritySupport:
