@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestInboundAsyncLimiterAcquire(t *testing.T) {
@@ -91,7 +92,7 @@ func TestSpawnInboundAsyncRunsWhenAdmitted(t *testing.T) {
 	s := testServerWithLimiter(100)
 	done := make(chan struct{})
 	s.spawnInboundAsync("test", 50, func() { close(done) })
-	<-done // blocks forever if the task never ran
+	mustClose(t, done, "admitted task did not run")
 }
 
 // TestSpawnInboundAsyncNilLimiterFallsBack confirms a bare Server (no limiter,
@@ -100,5 +101,16 @@ func TestSpawnInboundAsyncNilLimiterFallsBack(t *testing.T) {
 	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	done := make(chan struct{})
 	s.spawnInboundAsync("test", 50, func() { close(done) })
-	<-done
+	mustClose(t, done, "nil-limiter fallback task did not run")
+}
+
+// mustClose waits for done with a timeout so a regression fails fast instead of
+// hanging the whole test run.
+func mustClose(t *testing.T, done <-chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal(msg)
+	}
 }
