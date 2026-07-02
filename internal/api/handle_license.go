@@ -14,12 +14,22 @@ import (
 	"github.com/Veltara-Works/vectis/internal/validonx"
 )
 
+// blockedBaseURLIP reports whether an IP is one the ValidonX base_url must
+// never target — private, link-local (incl. cloud-metadata 169.254.169.254),
+// unspecified, or multicast. Loopback is handled by the caller (allowed as a
+// literal dev hatch, blocked when a hostname resolves to it).
+func blockedBaseURLIP(ip net.IP) bool {
+	return ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsUnspecified()
+}
+
 // validateLicenseBaseURL hardens the admin-settable ValidonX base_url against
 // SSRF / service-key exfiltration (audit C-h1). The service_key is sent to this
 // host as X-API-Key, so a super_admin (or a CSRF against one) must not be able
 // to aim it at cloud-metadata or internal-network endpoints. Loopback is
 // allowed as a local dev/self-host escape hatch; every other host must be https
-// and must not be a private, link-local, or unspecified address literal.
+// and must not be — or resolve to — a private, link-local, or unspecified
+// address.
 func validateLicenseBaseURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -33,13 +43,25 @@ func validateLicenseBaseURL(raw string) error {
 		if ip.IsLoopback() {
 			return nil
 		}
-		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-			ip.IsUnspecified() || ip.IsInterfaceLocalMulticast() {
+		if blockedBaseURLIP(ip) {
 			return fmt.Errorf("base_url must not point at a private or link-local address")
 		}
 	}
 	if u.Scheme != "https" {
 		return fmt.Errorf("base_url must use https")
+	}
+	// Reject hostnames that RESOLVE to a private/metadata address (audit P2-1):
+	// the IP-literal checks above miss e.g. an internal DNS name pointing at
+	// 169.254.169.254 or 10.x. Best-effort — a name that doesn't resolve can't
+	// be an SSRF target (the outbound call just fails to connect), so a lookup
+	// error is not itself a rejection. This is a set-time check, not a defence
+	// against DNS rebinding (out of scope for this super_admin-gated setter).
+	if ips, lookupErr := net.LookupIP(host); lookupErr == nil {
+		for _, ip := range ips {
+			if ip.IsLoopback() || blockedBaseURLIP(ip) {
+				return fmt.Errorf("base_url host %q resolves to a private or link-local address", host)
+			}
+		}
 	}
 	return nil
 }
@@ -113,7 +135,15 @@ func (s *Server) buildLicenseStateResponse(ctx context.Context) licenseStateResp
 
 	if cache := s.featureGate.Cache(); cache != nil && resp.TenantID != "" {
 		if cached, err := cache.GetCached(ctx, resp.TenantID); err == nil && cached != nil {
-			resp.Tier = tierFromCachedFeatures(cached.Features)
+			// Only elevate the reported tier above Free when the license is
+			// actually valid, mirroring currentTierAndFeatures / ResolveTier /
+			// GrantsFeature (audit D-M1 / P2-4). Otherwise the License page
+			// showed Pro for a revoked/suspended license, contradicting
+			// /auth/me and the server-side gate. Status/dates still populate so
+			// the page can explain the downgrade.
+			if cached.LicenseData.Valid {
+				resp.Tier = tierFromCachedFeatures(cached.Features)
+			}
 			resp.Status = cached.Status
 			resp.LastCheckAt = cached.LastCheckAt
 			resp.ExpiresAt = cached.ExpiresAt

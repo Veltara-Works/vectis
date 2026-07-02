@@ -231,9 +231,9 @@ Domain scoping: handlers enforce that a session/api-key may only act on domains 
 | DELETE | /api/v1/webhooks/{webhookID} | Delete webhook subscription | admin+ |
 | GET | /api/v1/audit | List audit-log entries (platform-wide; handler returns unfiltered) | super |
 | GET | /api/v1/audit/export | Export audit log (CSV) | super |
-| GET | /api/v1/tracking/stats | Aggregate engagement stats | admin+ |
-| GET | /api/v1/tracking/messages/{messageID} | Per-message engagement summary | admin+ |
-| GET | /api/v1/tracking/messages/{messageID}/events | Per-message engagement event stream | admin+ |
+| GET | /api/v1/tracking/stats | Aggregate engagement stats | admin+ & Pro (FeatureAnalytics) |
+| GET | /api/v1/tracking/messages/{messageID} | Per-message engagement summary | admin+ & Pro (FeatureAnalytics) |
+| GET | /api/v1/tracking/messages/{messageID}/events | Per-message engagement event stream | admin+ & Pro (FeatureAnalytics) |
 
 Webhook events emitted: `mail.queued`, `mail.delivered`, `mail.bounced`, `mail.deferred`, `mail.complained`, `mail.opened`, `mail.clicked` (all 7 firing on prod since 2026-04-19).
 

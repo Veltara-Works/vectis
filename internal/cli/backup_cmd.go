@@ -39,6 +39,21 @@ func safeBackupPath(p string) (string, error) {
 	if clean != hostBackupsDir && !strings.HasPrefix(clean, hostBackupsDir+string(os.PathSeparator)) {
 		return "", fmt.Errorf("backup path %q is outside %s", p, hostBackupsDir)
 	}
+	// filepath.Clean is lexical: it does NOT resolve symlinks. hostBackupsDir is
+	// RW-bind-mounted into the api container, so a compromised container could
+	// plant a symlink there and redirect the root `docker cp` to an arbitrary
+	// host path (audit P2-2). Resolve the parent dir and re-check containment,
+	// and refuse a destination that is itself a symlink. The parent may legitly
+	// not exist yet on installs without the bind-mount — in that case there is
+	// no symlink to abuse and the lexical containment above already holds.
+	if resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(clean)); err == nil {
+		if resolvedParent != hostBackupsDir && !strings.HasPrefix(resolvedParent, hostBackupsDir+string(os.PathSeparator)) {
+			return "", fmt.Errorf("backup path %q resolves outside %s", p, hostBackupsDir)
+		}
+	}
+	if fi, err := os.Lstat(clean); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("backup path %q is a symlink", p)
+	}
 	return clean, nil
 }
 
@@ -482,6 +497,12 @@ func copyBackupFile(src, dst string) error {
 		return err
 	}
 	defer out.Close()
+
+	// O_CREATE|0600 only sets the mode when creating; a pre-existing dst keeps
+	// its old (possibly world-readable) mode, so force it (audit P2-9).
+	if err := out.Chmod(0o600); err != nil {
+		return err
+	}
 
 	if _, err := out.ReadFrom(in); err != nil {
 		return err

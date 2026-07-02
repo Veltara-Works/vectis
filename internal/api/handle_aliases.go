@@ -196,6 +196,21 @@ func (s *Server) handleUpdateAlias(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bound the destination on update too — the create-path caps (audit D-L3)
+	// otherwise leave PATCH as an equivalent fan-out DoS vector (P2-7).
+	if req.Destination != nil {
+		if len(*req.Destination) > maxAliasDestinationText {
+			respondError(w, r, http.StatusBadRequest, "DESTINATION_TOO_LONG",
+				fmt.Sprintf("destination must be at most %d characters", maxAliasDestinationText))
+			return
+		}
+		if len(strings.Split(*req.Destination, ",")) > maxAliasDestinations {
+			respondError(w, r, http.StatusBadRequest, "TOO_MANY_DESTINATIONS",
+				fmt.Sprintf("an alias may fan out to at most %d destinations", maxAliasDestinations))
+			return
+		}
+	}
+
 	alias, err := s.aliases.Update(r.Context(), aliasID, repository.AliasUpdate{
 		Destination: req.Destination,
 		Active:      req.Active,

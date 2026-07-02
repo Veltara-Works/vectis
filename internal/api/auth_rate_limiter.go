@@ -77,11 +77,15 @@ func (l *fixedWindowLimiter) sweepLocked(now time.Time) {
 
 // rateLimitByIP is middleware that rejects requests from a client IP that has
 // exceeded the limiter's window, returning 429. Used to bound the
-// password-reset endpoints per source IP.
+// password-reset endpoints per source IP. It keys on trackingClientIP (XFF /
+// X-Real-IP aware): the API sits behind Traefik, so RemoteAddr is always the
+// proxy and clientIP would collapse every client into one global bucket —
+// making the per-IP arm a platform-wide self-DoS on password recovery rather
+// than real per-client limiting (audit P2-3).
 func (s *Server) rateLimitByIP(limiter *fixedWindowLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if limiter != nil && !limiter.allow("ip:"+clientIP(r), time.Now()) {
+			if limiter != nil && !limiter.allow("ip:"+trackingClientIP(r), time.Now()) {
 				respondError(w, r, http.StatusTooManyRequests, "RATE_LIMITED",
 					"Too many requests. Please wait a few minutes and try again.")
 				return

@@ -214,8 +214,8 @@ func (s *Server) handleARFComplaint(deliveredDomainID string, notif inboundNotif
 		verified        bool
 	)
 	if report.OriginalMessageID != "" {
-		if om, err := s.messages.GetByMessageID(ctx, report.OriginalMessageID); err == nil &&
-			om != nil && om.Direction == "outbound" {
+		if om, err := s.messages.GetOutboundByMessageID(ctx, report.OriginalMessageID); err == nil &&
+			om != nil {
 			claimedID := ""
 			if report.ReportedDomain != "" {
 				if d, derr := s.domains.GetByName(ctx, report.ReportedDomain); derr == nil && d != nil {
