@@ -146,6 +146,63 @@ func TestRestoreDirectoryPreservesSecrets(t *testing.T) {
 	}
 }
 
+// F-R1: a truncated/corrupt archive must fail the restore WITHOUT destroying the
+// live target. Restore is exactly the moment the operator is already in trouble,
+// so a restore that wipes /etc/vectis (incl. the only surviving copy of
+// secrets.yaml) before the replacement is verified is a DR footgun with no
+// rollback. The stage-and-swap fix leaves the live install completely untouched
+// on any extract failure.
+func TestRestoreDirectoryTruncatedArchiveKeepsTarget(t *testing.T) {
+	root := t.TempDir()
+
+	// A corrupt "archive": not a valid tar, so `tar -xf` fails.
+	archive := filepath.Join(root, "config.tar")
+	if err := os.WriteFile(archive, []byte("this is not a tar file\x00\x01\x02"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Live target with the operator's secrets + an existing config.
+	target := filepath.Join(root, "etc", "vectis")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "config.yaml"), []byte("version: live\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "secrets.yaml"), []byte("api:\n  secret: KEEPME\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{}
+	if err := m.restoreDirectory(context.Background(), archive, target, "secrets.yaml*"); err == nil {
+		t.Fatal("expected restoreDirectory to fail on a corrupt archive, got nil")
+	}
+
+	// The live target and its secrets must be completely intact.
+	got, err := os.ReadFile(filepath.Join(target, "secrets.yaml"))
+	if err != nil {
+		t.Fatalf("secrets.yaml destroyed by failed restore (F-R1 regression): %v", err)
+	}
+	if !strings.Contains(string(got), "KEEPME") {
+		t.Errorf("secrets.yaml content changed: %q", got)
+	}
+	cfg, err := os.ReadFile(filepath.Join(target, "config.yaml"))
+	if err != nil {
+		t.Fatalf("config.yaml destroyed by failed restore: %v", err)
+	}
+	if !strings.Contains(string(cfg), "live") {
+		t.Errorf("config.yaml should be unchanged (still 'live'), got: %q", cfg)
+	}
+
+	// No staging/backup leftovers beside the target.
+	entries, _ := os.ReadDir(filepath.Dir(target))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".vectis-restore-") {
+			t.Errorf("leftover restore temp not cleaned up: %s", e.Name())
+		}
+	}
+}
+
 // TestCreateHostPathNilPool guards the Finding-B follow-up: `vectis backup create`
 // runs on the host without a DB pool (the host cannot resolve the Docker-internal
 // "postgres" hostname), so Create must not panic on the absent backup_jobs repo

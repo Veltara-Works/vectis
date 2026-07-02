@@ -231,7 +231,9 @@ func (r *MessageRepo) DeleteOlderThan(ctx context.Context, before time.Time) (in
 func (r *MessageRepo) ListBySubject(ctx context.Context, mailboxID, email string) ([]Message, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT id, domain_id, mailbox_id, message_id, direction, sender, recipients, subject, size_bytes, status, spam_score, spam_action, queue_id, headers, created_at
-		 FROM messages WHERE ($1 <> '' AND mailbox_id = $1::uuid) OR sender = $2 OR $2 = ANY(recipients)
+		 FROM messages WHERE ($1 <> '' AND mailbox_id = $1::uuid)
+		    OR LOWER(sender) = LOWER($2)
+		    OR EXISTS (SELECT 1 FROM unnest(recipients) AS rcpt WHERE LOWER(rcpt) = LOWER($2))
 		 ORDER BY created_at ASC`, mailboxID, email)
 	if err != nil {
 		return nil, fmt.Errorf("list messages by subject: %w", err)
@@ -264,9 +266,17 @@ func (r *MessageRepo) ListBySubject(ctx context.Context, mailboxID, email string
 // recipients. The mailbox_id branch is largely belt-and-suspenders today
 // (outbound rows that carry it) since the sender/recipients clauses already
 // cover both directions regardless of the mailbox link. Returns the count.
+//
+// The sender/recipients match is case-insensitive (audit G-M1): mail is stored
+// with the verbatim envelope address, so a message to John.Doe@corp.example must
+// still be erased when the DSAR names the canonical john.doe@corp.example, or
+// mixed-case mail survives an Art.17 erasure. LOWER() on both sides also matches
+// already-stored mixed-case rows, so no data migration is required.
 func (r *MessageRepo) DeleteBySubject(ctx context.Context, mailboxID, email string) (int64, error) {
 	tag, err := r.db.Exec(ctx,
-		`DELETE FROM messages WHERE ($1 <> '' AND mailbox_id = $1::uuid) OR sender = $2 OR $2 = ANY(recipients)`,
+		`DELETE FROM messages WHERE ($1 <> '' AND mailbox_id = $1::uuid)
+		    OR LOWER(sender) = LOWER($2)
+		    OR EXISTS (SELECT 1 FROM unnest(recipients) AS rcpt WHERE LOWER(rcpt) = LOWER($2))`,
 		mailboxID, email)
 	if err != nil {
 		return 0, fmt.Errorf("delete messages by subject: %w", err)

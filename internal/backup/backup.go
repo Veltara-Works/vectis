@@ -1196,19 +1196,27 @@ func (m *Manager) archiveDirectoryExcluding(ctx context.Context, srcDir, dstPath
 	return nil
 }
 
-// restoreDirectory extracts a tar archive, then replaces the target directory
-// with the extracted contents.
+// restoreDirectory extracts a tar archive and atomically swaps it into place at
+// targetDir. The live target is never removed until the replacement is fully
+// extracted and staged, so a truncated/corrupt archive (interrupted create,
+// disk-full, partial upload) fails harmlessly with the existing install intact
+// — restore is exactly when things are already broken, so it must never be able
+// to destroy the data it was meant to recover (audit F-R1). The staging dir is
+// created as a sibling of targetDir so the final swap is a same-filesystem
+// rename (no EXDEV) rather than a copy.
 func (m *Manager) restoreDirectory(ctx context.Context, archivePath, targetDir string, preserveGlobs ...string) error {
-	// Ensure target parent exists.
-	if err := os.MkdirAll(filepath.Dir(targetDir), 0755); err != nil {
+	parent := filepath.Dir(targetDir)
+	base := filepath.Base(targetDir)
+	if err := os.MkdirAll(parent, 0755); err != nil {
 		return fmt.Errorf("create parent dir: %w", err)
 	}
 
-	// Stash files that must survive the restore before wiping the target. The
-	// config restore passes "secrets.yaml*": secrets are NEVER in a backup
-	// (excluded for security), so without this the RemoveAll below would delete
-	// /etc/vectis/secrets.yaml and leave the install unbootable — a DR-breaking
-	// bug found by the 2026-05-30 Scenario-B drill (Finding E).
+	// Stash files that must survive the restore. The config restore passes
+	// "secrets.yaml*": secrets are NEVER in a backup (excluded for security), so
+	// without this the swap below would drop /etc/vectis/secrets.yaml and leave
+	// the install unbootable — a DR-breaking bug found by the 2026-05-30
+	// Scenario-B drill (Finding E). Copied out of the LIVE target (untouched at
+	// this point) and folded into the staged replacement before the swap.
 	stash, err := os.MkdirTemp("", "vectis-restore-keep-*")
 	if err != nil {
 		return fmt.Errorf("create preserve stash: %w", err)
@@ -1232,40 +1240,68 @@ func (m *Manager) restoreDirectory(ctx context.Context, archivePath, targetDir s
 				}
 				continue
 			}
-			base := filepath.Base(src)
-			if err := copyFilePreserve(src, filepath.Join(stash, base)); err != nil {
+			pbase := filepath.Base(src)
+			if err := copyFilePreserve(src, filepath.Join(stash, pbase)); err != nil {
 				return fmt.Errorf("stash preserved file %s: %w", src, err)
 			}
-			preserved = append(preserved, base)
+			preserved = append(preserved, pbase)
 		}
 	}
 
-	// Remove existing target directory.
-	if err := os.RemoveAll(targetDir); err != nil {
-		return fmt.Errorf("remove existing directory %s: %w", targetDir, err)
+	// Extract into a staging dir on the SAME filesystem as targetDir. The archive
+	// contains `base` as its top-level directory, so it lands at staging/base. A
+	// failure here leaves the live target completely untouched.
+	staging, err := os.MkdirTemp(parent, ".vectis-restore-stage-*")
+	if err != nil {
+		return fmt.Errorf("create restore staging dir: %w", err)
 	}
+	defer os.RemoveAll(staging)
 
-	// Extract tar to the parent directory (tar contains the base directory name).
-	cmd := exec.CommandContext(ctx, "tar",
-		"-xf", archivePath,
-		"-C", filepath.Dir(targetDir),
-	)
-
+	cmd := exec.CommandContext(ctx, "tar", "-xf", archivePath, "-C", staging)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tar extract failed for %s: %w: %s", archivePath, err, string(output))
 	}
 
-	// Put the preserved files back (the extract recreated targetDir).
-	if len(preserved) > 0 {
-		if err := os.MkdirAll(targetDir, 0o755); err != nil {
-			return fmt.Errorf("recreate target dir: %w", err)
+	// Verify the archive actually produced the expected directory before we touch
+	// the live target — guards against a truncated inner tar that extracted
+	// nothing useful (validateArchive only checks the outer .tar.gz).
+	staged := filepath.Join(staging, base)
+	if fi, statErr := os.Stat(staged); statErr != nil || !fi.IsDir() {
+		return fmt.Errorf("restore archive did not contain expected directory %q", base)
+	}
+
+	// Fold the preserved files into the staged copy so the swapped-in directory
+	// carries them.
+	for _, pbase := range preserved {
+		if err := copyFilePreserve(filepath.Join(stash, pbase), filepath.Join(staged, pbase)); err != nil {
+			return fmt.Errorf("restore preserved file %s: %w", pbase, err)
 		}
-		for _, base := range preserved {
-			if err := copyFilePreserve(filepath.Join(stash, base), filepath.Join(targetDir, base)); err != nil {
-				return fmt.Errorf("restore preserved file %s: %w", base, err)
+	}
+
+	// Atomic-ish swap: move the live target aside, move the staged copy into
+	// place, then delete the old copy. If the second rename fails, roll the old
+	// copy back so the live target is never left missing.
+	backup := filepath.Join(parent, "."+base+".vectis-restore-old")
+	_ = os.RemoveAll(backup) // clear any stale leftover from a prior crashed restore
+	hadTarget := false
+	if _, statErr := os.Stat(targetDir); statErr == nil {
+		if err := os.Rename(targetDir, backup); err != nil {
+			return fmt.Errorf("move existing target %s aside: %w", targetDir, err)
+		}
+		hadTarget = true
+	}
+	if err := os.Rename(staged, targetDir); err != nil {
+		if hadTarget {
+			if rbErr := os.Rename(backup, targetDir); rbErr != nil && m.logger != nil {
+				m.logger.Error("restore: swap failed AND rollback failed — target left aside",
+					"target", targetDir, "aside", backup, "swap_err", err, "rollback_err", rbErr)
 			}
 		}
+		return fmt.Errorf("swap restored directory into place: %w", err)
+	}
+	if hadTarget {
+		_ = os.RemoveAll(backup)
 	}
 
 	return nil
