@@ -1022,10 +1022,15 @@ func (s *Server) buildRouter() chi.Router {
 			// Log search — super_admin only.
 			r.With(requireSuperAdmin()).Get("/logs/search", s.handleLogSearch)
 
-			// Engagement tracking stats — admin and super_admin.
-			r.With(requireAdminOrAbove()).Get("/tracking/stats", s.handleTrackingStats)
-			r.With(requireAdminOrAbove()).Get("/tracking/messages/{messageID}", s.handleMessageEngagement)
-			r.With(requireAdminOrAbove()).Get("/tracking/messages/{messageID}/events", s.handleMessageEngagementEvents)
+			// Engagement tracking stats — admin and super_admin, and a Pro
+			// feature: the open/click analytics these expose are the same
+			// FeatureAnalytics surface as /analytics below, so gate them the
+			// same way. The public /track/* collection endpoints (above) stay
+			// open — email clients must reach them regardless of tier.
+			trackingGate := s.featureGate.FeatureGate(validonx.FeatureAnalytics)
+			r.With(requireAdminOrAbove(), trackingGate).Get("/tracking/stats", s.handleTrackingStats)
+			r.With(requireAdminOrAbove(), trackingGate).Get("/tracking/messages/{messageID}", s.handleMessageEngagement)
+			r.With(requireAdminOrAbove(), trackingGate).Get("/tracking/messages/{messageID}/events", s.handleMessageEngagementEvents)
 
 			// Abuse detection — admin and super_admin.
 			r.With(requireAdminOrAbove()).Get("/abuse/dashboard", s.handleAbuseDashboard)
