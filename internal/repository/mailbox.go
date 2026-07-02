@@ -130,6 +130,30 @@ func (r *MailboxRepo) GetByEmail(ctx context.Context, domainID, localPart string
 	return m, nil
 }
 
+// GetByEmailFold is a case-insensitive variant of GetByEmail used only by DSAR
+// resolution. A mailbox provisioned with a mixed-case local part (e.g.
+// John.Doe) must still resolve for an erasure/export issued against the
+// canonical lowercase address (audit U-1 / G-M1), or Art.17 erase / Art.15
+// export would 404 and silently do nothing. Normal delivery/auth/provisioning
+// paths keep the exact-match GetByEmail — this stays DSAR-scoped so it can't
+// change who mail is delivered to or who may authenticate. If two mailboxes
+// differ only by local-part case (possible: the unique index is on the verbatim
+// value), the lexically-first is returned deterministically.
+func (r *MailboxRepo) GetByEmailFold(ctx context.Context, domainID, localPart string) (*Mailbox, error) {
+	m := &Mailbox{}
+	err := scanMailbox(r.db.QueryRow(ctx,
+		`SELECT `+mailboxColumns+` FROM mailboxes
+		 WHERE domain_id = $1 AND LOWER(local_part) = LOWER($2)
+		 ORDER BY local_part LIMIT 1`, domainID, localPart), m)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get mailbox by email (fold): %w", err)
+	}
+	return m, nil
+}
+
 // GetByExternalID fetches a mailbox by its SCIM externalId (IdP user id). The
 // partial unique index (migration 000021) guarantees at most one match. Returns
 // nil if no IdP-managed mailbox carries that externalId.

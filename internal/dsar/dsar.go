@@ -132,7 +132,23 @@ func (s *Service) resolve(ctx context.Context, email string) (*resolved, error) 
 		if err != nil {
 			return nil, fmt.Errorf("resolve mailbox: %w", err)
 		}
+		if mb == nil {
+			// Exact match missed — retry case-insensitively so a mailbox
+			// provisioned with a mixed-case local part (John.Doe) still resolves
+			// for a DSAR issued against the canonical john.doe (audit U-1 / G-M1).
+			// Without this the erase/export gate below 404s and nothing happens.
+			mb, err = s.mailboxes.GetByEmailFold(ctx, domain.ID, local)
+			if err != nil {
+				return nil, fmt.Errorf("resolve mailbox (fold): %w", err)
+			}
+		}
 		r.mailbox = mb
+		if mb != nil {
+			// Anchor the local part to the mailbox's STORED case so the maildir
+			// path (mailRoot/domain/local_part/Maildir) and alias-source matching
+			// target the real on-disk/DB values, not the canonicalized request.
+			r.localPart = mb.LocalPart
+		}
 	}
 	admin, err := s.admins.GetByEmail(ctx, email)
 	if err != nil {

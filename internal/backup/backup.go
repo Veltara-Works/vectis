@@ -1196,19 +1196,34 @@ func (m *Manager) archiveDirectoryExcluding(ctx context.Context, srcDir, dstPath
 	return nil
 }
 
-// restoreDirectory extracts a tar archive, then replaces the target directory
-// with the extracted contents.
+// restoreDirectory replaces the contents of targetDir with the contents of a tar
+// archive, without ever removing the live data until the replacement has been
+// fully extracted and verified (audit F-R1). Restore is exactly when things are
+// already broken, so a truncated/corrupt archive (interrupted create, disk-full,
+// partial upload) must fail harmlessly with the existing install intact — a
+// restore that can destroy the data it was meant to recover, with no rollback,
+// is a DR footgun.
+//
+// Staging is created INSIDE targetDir so it always lands on the same filesystem
+// as the final content — this works whether targetDir is an ordinary directory
+// or its own mountpoint (e.g. a dedicated MailDataDir volume), and the swap is a
+// series of same-filesystem renames with no EXDEV copy and no EBUSY from trying
+// to rename a mountpoint (audit U-2). Trade-off: the staged copy coexists with
+// the live data until the swap, so restore transiently needs ~2x the directory's
+// size free on that volume (audit U-3) — inherent to extracting and verifying
+// before wiping.
 func (m *Manager) restoreDirectory(ctx context.Context, archivePath, targetDir string, preserveGlobs ...string) error {
-	// Ensure target parent exists.
-	if err := os.MkdirAll(filepath.Dir(targetDir), 0755); err != nil {
-		return fmt.Errorf("create parent dir: %w", err)
+	base := filepath.Base(targetDir)
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return fmt.Errorf("create target dir: %w", err)
 	}
 
-	// Stash files that must survive the restore before wiping the target. The
-	// config restore passes "secrets.yaml*": secrets are NEVER in a backup
-	// (excluded for security), so without this the RemoveAll below would delete
-	// /etc/vectis/secrets.yaml and leave the install unbootable — a DR-breaking
-	// bug found by the 2026-05-30 Scenario-B drill (Finding E).
+	// Stash files that must survive the restore. The config restore passes
+	// "secrets.yaml*": secrets are NEVER in a backup (excluded for security), so
+	// without this the swap below would drop /etc/vectis/secrets.yaml and leave
+	// the install unbootable — a DR-breaking bug found by the 2026-05-30
+	// Scenario-B drill (Finding E). Copied out of the LIVE target (untouched at
+	// this point) and folded into the staged replacement before the swap.
 	stash, err := os.MkdirTemp("", "vectis-restore-keep-*")
 	if err != nil {
 		return fmt.Errorf("create preserve stash: %w", err)
@@ -1232,39 +1247,75 @@ func (m *Manager) restoreDirectory(ctx context.Context, archivePath, targetDir s
 				}
 				continue
 			}
-			base := filepath.Base(src)
-			if err := copyFilePreserve(src, filepath.Join(stash, base)); err != nil {
+			pbase := filepath.Base(src)
+			if err := copyFilePreserve(src, filepath.Join(stash, pbase)); err != nil {
 				return fmt.Errorf("stash preserved file %s: %w", src, err)
 			}
-			preserved = append(preserved, base)
+			preserved = append(preserved, pbase)
 		}
 	}
 
-	// Remove existing target directory.
-	if err := os.RemoveAll(targetDir); err != nil {
-		return fmt.Errorf("remove existing directory %s: %w", targetDir, err)
+	// Extract into a staging dir INSIDE targetDir (always same filesystem as the
+	// final content). The archive contains `base` as its top-level directory, so
+	// it lands at staging/base. A failure here leaves the live target completely
+	// untouched.
+	staging, err := os.MkdirTemp(targetDir, ".vectis-restore-stage-*")
+	if err != nil {
+		return fmt.Errorf("create restore staging dir: %w", err)
 	}
+	defer os.RemoveAll(staging)
 
-	// Extract tar to the parent directory (tar contains the base directory name).
-	cmd := exec.CommandContext(ctx, "tar",
-		"-xf", archivePath,
-		"-C", filepath.Dir(targetDir),
-	)
-
+	cmd := exec.CommandContext(ctx, "tar", "-xf", archivePath, "-C", staging)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tar extract failed for %s: %w: %s", archivePath, err, string(output))
 	}
 
-	// Put the preserved files back (the extract recreated targetDir).
-	if len(preserved) > 0 {
-		if err := os.MkdirAll(targetDir, 0o755); err != nil {
-			return fmt.Errorf("recreate target dir: %w", err)
+	// Verify the archive actually produced the expected directory before we touch
+	// the live target — guards against a truncated inner tar that extracted
+	// nothing useful (validateArchive only checks the outer .tar.gz). Lstat, not
+	// Stat, so a symlinked top-level entry can't masquerade as the real directory
+	// and be swapped in / written through (audit U-5).
+	staged := filepath.Join(staging, base)
+	if fi, statErr := os.Lstat(staged); statErr != nil || !fi.IsDir() {
+		return fmt.Errorf("restore archive did not contain expected directory %q", base)
+	}
+
+	// Fold the preserved files into the staged copy so the swapped-in content
+	// carries them.
+	for _, pbase := range preserved {
+		if err := copyFilePreserve(filepath.Join(stash, pbase), filepath.Join(staged, pbase)); err != nil {
+			return fmt.Errorf("restore preserved file %s: %w", pbase, err)
 		}
-		for _, base := range preserved {
-			if err := copyFilePreserve(filepath.Join(stash, base), filepath.Join(targetDir, base)); err != nil {
-				return fmt.Errorf("restore preserved file %s: %w", base, err)
-			}
+	}
+
+	// Swap: the replacement is now fully staged and verified, so it is finally
+	// safe to drop the live content. Remove every existing child of targetDir
+	// except the staging dir, then move the staged children into place with
+	// same-filesystem renames. targetDir itself is never renamed, so a mountpoint
+	// target is fine.
+	stagingName := filepath.Base(staging)
+	entries, err := os.ReadDir(targetDir)
+	if err != nil {
+		return fmt.Errorf("read target dir: %w", err)
+	}
+	for _, e := range entries {
+		if e.Name() == stagingName {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(targetDir, e.Name())); err != nil {
+			return fmt.Errorf("clear target entry %s: %w", e.Name(), err)
+		}
+	}
+	stagedEntries, err := os.ReadDir(staged)
+	if err != nil {
+		return fmt.Errorf("read staged dir: %w", err)
+	}
+	for _, e := range stagedEntries {
+		from := filepath.Join(staged, e.Name())
+		to := filepath.Join(targetDir, e.Name())
+		if err := os.Rename(from, to); err != nil {
+			return fmt.Errorf("move restored entry %s into place: %w", e.Name(), err)
 		}
 	}
 

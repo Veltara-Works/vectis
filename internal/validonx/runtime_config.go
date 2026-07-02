@@ -112,7 +112,12 @@ func LoadRuntimeConfig(ctx context.Context, db *pgxpool.Pool, secrets *config.Va
 		}
 	}
 
-	if cfg.IsConfigured() && cfg.BaseURL == "" {
+	// A service_key with no explicit base_url (neither secrets.yaml nor the DB
+	// row set one) must resolve against ValidonX's default endpoint, not silently
+	// drop to Free (audit F-R2). The previous guard checked IsConfigured() first,
+	// which already requires BaseURL != "", so the fallback was dead code and a
+	// paying service_key-only install lost its Pro/Enterprise entitlement.
+	if cfg.BaseURL == "" && cfg.ServiceKey != "" {
 		cfg.BaseURL = DefaultBaseURL
 	}
 
