@@ -477,6 +477,20 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 	applyCtx, cancel := context.WithTimeout(ctx, o.cfg.ApplyTimeout)
 	defer cancel()
 
+	// Install the apply Operation as the current lastOp up front, so Status()
+	// reflects THIS apply job (matching the returned jobID) even on the no-op
+	// short-circuit below. Previously the short-circuit mutated the stale Plan
+	// operation still in lastOp, so the returned jobID did not match Status()
+	// and, had Plan not always set lastOp, could nil-deref (audit E-L4).
+	o.mu.Lock()
+	o.lastOp = &Operation{
+		JobID:     jobID,
+		Type:      "apply",
+		State:     StateValidating,
+		StartedAt: time.Now().UTC(),
+	}
+	o.mu.Unlock()
+
 	// Record the operation as running.
 	opID, err := o.sm.RecordOperation(applyCtx, "apply", "running", plan.ConfigHash, nil, plan.BaselineVersions)
 	if err != nil {
@@ -497,15 +511,6 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		o.mu.Unlock()
 		return jobID, nil
 	}
-
-	o.mu.Lock()
-	o.lastOp = &Operation{
-		JobID:     jobID,
-		Type:      "apply",
-		State:     StateValidating,
-		StartedAt: time.Now().UTC(),
-	}
-	o.mu.Unlock()
 
 	// ===== PHASE 1: VALIDATE =====
 	if err := o.sm.Transition(applyCtx, StateValidating); err != nil {
