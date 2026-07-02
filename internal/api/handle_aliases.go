@@ -11,6 +11,15 @@ import (
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
+// Alias destination bounds (audit D-L3): each destination in the loop below
+// issues synchronous DB lookups, so an unbounded comma-separated list is an
+// authenticated DoS against the shared pool. RFC-realistic aliases fan out to a
+// handful of addresses; these ceilings are far above any legitimate use.
+const (
+	maxAliasDestinations    = 100
+	maxAliasDestinationText = 4000
+)
+
 type createAliasRequest struct {
 	DomainID        string `json:"domain_id"`
 	SourceLocalPart string `json:"source_local_part"`
@@ -94,8 +103,22 @@ func (s *Server) handleCreateAlias(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bound the destination list before the O(n) chaining check below, which
+	// issues a DB lookup per entry (audit D-L3 authenticated DoS).
+	if len(req.Destination) > maxAliasDestinationText {
+		respondError(w, r, http.StatusBadRequest, "DESTINATION_TOO_LONG",
+			fmt.Sprintf("destination must be at most %d characters", maxAliasDestinationText))
+		return
+	}
+	destinations := strings.Split(req.Destination, ",")
+	if len(destinations) > maxAliasDestinations {
+		respondError(w, r, http.StatusBadRequest, "TOO_MANY_DESTINATIONS",
+			fmt.Sprintf("an alias may fan out to at most %d destinations", maxAliasDestinations))
+		return
+	}
+
 	// Validate no alias chaining (Spec B.4): destination must not point to another alias.
-	for _, dest := range strings.Split(req.Destination, ",") {
+	for _, dest := range destinations {
 		dest = strings.TrimSpace(dest)
 		parts := strings.SplitN(dest, "@", 2)
 		if len(parts) == 2 {

@@ -111,6 +111,11 @@ type Server struct {
 	// container with unbounded goroutines each holding a full message (#120).
 	inboundAsync *inboundAsyncLimiter
 
+	// resetLimiter rate-limits the password-reset endpoints per source IP and
+	// per target email (audit D-L2). nil in bare test servers, which fall back
+	// to no rate limiting.
+	resetLimiter *fixedWindowLimiter
+
 	// Sieve filter management
 	sieveClient *mail.SieveClient
 
@@ -204,6 +209,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		cfg:                cfg.VectisCfg,
 		secrets:            cfg.VectisSecrets,
 		inboundAsync:       newInboundAsyncLimiter(maxInboundAsyncBytes),
+		resetLimiter:       newFixedWindowLimiter(5, 15*time.Minute),
 		domains:            repository.NewDomainRepo(db),
 		mailboxes:          repository.NewMailboxRepo(db),
 		aliases:            repository.NewAliasRepo(db),
@@ -857,8 +863,8 @@ func (s *Server) buildRouter() chi.Router {
 		// scrapes it; an external scraper authenticates with a super_admin
 		// API-key bearer token.
 		r.With(chimw.Throttle(5)).Post("/auth/login", s.handleLogin)
-		r.With(chimw.Throttle(3)).Post("/auth/reset-request", s.handleRequestPasswordReset)
-		r.With(chimw.Throttle(3)).Post("/auth/reset-password", s.handleResetPassword)
+		r.With(chimw.Throttle(3), s.rateLimitByIP(s.resetLimiter)).Post("/auth/reset-request", s.handleRequestPasswordReset)
+		r.With(chimw.Throttle(3), s.rateLimitByIP(s.resetLimiter)).Post("/auth/reset-password", s.handleResetPassword)
 
 		// Internal service-to-service endpoints (token-authenticated, not session).
 		r.Post("/internal/inbound", s.handleInboundNotify)
