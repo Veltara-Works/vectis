@@ -45,11 +45,13 @@ func (s *Server) handleTrackClick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	messageID, ok := s.verifyTrackingToken(token)
+	// The token's HMAC covers messageID + the exact target URL, so a token
+	// captured from a real tracked email cannot be reused to redirect to a
+	// different destination (audit D-M2 open redirect). Forged/expired tokens
+	// and any tampering with the url query param fail verification and never
+	// redirect.
+	messageID, ok := s.verifyClickToken(token, targetURL)
 	if !ok {
-		// Forged/expired token: never redirect to an attacker-supplied URL.
-		// The redirect used to run unconditionally — an unauthenticated open
-		// redirect (audit P3-H1).
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
@@ -255,12 +257,17 @@ func (s *Server) applyEngagementTracking(msg *mail.Message, trackOpens, trackCli
 	if msg.MessageID == "" {
 		msg.MessageID = mail.GenerateMessageID(s.hostname)
 	}
-	token := s.GenerateTrackingToken(msg.MessageID)
+	openToken := s.GenerateTrackingToken(msg.MessageID)
 	baseURL := "https://" + s.hostname
-	msg.HTMLBody = mail.InjectTracking(msg.HTMLBody, token, baseURL, trackOpens, trackClicks)
+	messageID := msg.MessageID
+	clickToken := func(rawURL string) string {
+		return s.GenerateClickToken(messageID, rawURL)
+	}
+	msg.HTMLBody = mail.InjectTracking(msg.HTMLBody, openToken, baseURL, trackOpens, trackClicks, clickToken)
 }
 
-// GenerateTrackingToken creates an HMAC-signed token for a message ID.
+// GenerateTrackingToken creates an HMAC-signed token for a message ID. Used for
+// the open pixel, where the message ID is the only bound value.
 func (s *Server) GenerateTrackingToken(messageID string) string {
 	mac := hmac.New(sha256.New, []byte(s.internalToken))
 	mac.Write([]byte(messageID))
@@ -281,6 +288,42 @@ func (s *Server) verifyTrackingToken(token string) (string, bool) {
 	mac.Write([]byte(messageID))
 	expectedSig := hex.EncodeToString(mac.Sum(nil))[:16]
 
+	if !hmac.Equal([]byte(providedSig), []byte(expectedSig)) {
+		return "", false
+	}
+	return messageID, true
+}
+
+// clickMAC computes the HMAC over messageID + a domain-separator byte + the
+// exact redirect URL. The separator prevents an open-pixel token (message ID
+// only) from ever being accepted as a click token, and vice versa.
+func (s *Server) clickMAC(messageID, rawURL string) string {
+	mac := hmac.New(sha256.New, []byte(s.internalToken))
+	mac.Write([]byte(messageID))
+	mac.Write([]byte{0})
+	mac.Write([]byte(rawURL))
+	return hex.EncodeToString(mac.Sum(nil))[:16]
+}
+
+// GenerateClickToken creates an HMAC-signed token binding a message ID to a
+// specific redirect URL, so the click endpoint can refuse any url that wasn't
+// signed for this exact link (audit D-M2 open redirect).
+func (s *Server) GenerateClickToken(messageID, rawURL string) string {
+	return messageID + "." + s.clickMAC(messageID, rawURL)
+}
+
+// verifyClickToken validates a click token against the URL actually requested.
+// It returns the bound message ID only when the signature covers exactly this
+// messageID + rawURL pair.
+func (s *Server) verifyClickToken(token, rawURL string) (string, bool) {
+	dot := lastDot(token)
+	if dot < 0 || dot >= len(token)-1 {
+		return "", false
+	}
+	messageID := token[:dot]
+	providedSig := token[dot+1:]
+
+	expectedSig := s.clickMAC(messageID, rawURL)
 	if !hmac.Equal([]byte(providedSig), []byte(expectedSig)) {
 		return "", false
 	}

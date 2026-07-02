@@ -125,7 +125,7 @@ func TestWebhook_CRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create webhook: %v", err)
 	}
-	defer repo.Delete(ctx, wh.ID)
+	defer repo.Delete(ctx, wh.ID, nil)
 
 	if wh.URL == "" {
 		t.Error("url should be set on returned webhook")
@@ -164,7 +164,7 @@ func TestWebhook_CRUD(t *testing.T) {
 		t.Error("created webhook not found in list")
 	}
 
-	ok, err := repo.Delete(ctx, wh.ID)
+	ok, err := repo.Delete(ctx, wh.ID, nil)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestWebhook_EncryptLegacySecrets(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert legacy webhook: %v", err)
 	}
-	defer repo.Delete(ctx, legacyID)
+	defer repo.Delete(ctx, legacyID, nil)
 
 	n, err := repo.EncryptLegacySecrets(ctx)
 	if err != nil {
@@ -969,7 +969,7 @@ func TestAbuse_SuspendCycle(t *testing.T) {
 		t.Error("mailbox should not be suspended after Unsuspend")
 	}
 
-	unresolved, err := repo.ListUnresolved(ctx, 50)
+	unresolved, err := repo.ListUnresolved(ctx, 50, nil)
 	if err != nil {
 		t.Fatalf("ListUnresolved: %v", err)
 	}
@@ -983,11 +983,11 @@ func TestAbuse_SuspendCycle(t *testing.T) {
 		t.Error("new event should appear in ListUnresolved")
 	}
 
-	if err := repo.Resolve(ctx, evID, admin.ID); err != nil {
+	if err := repo.Resolve(ctx, evID, admin.ID, nil); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 
-	unresolved2, _ := repo.ListUnresolved(ctx, 50)
+	unresolved2, _ := repo.ListUnresolved(ctx, 50, nil)
 	for _, e := range unresolved2 {
 		if e.ID == evID {
 			t.Error("resolved event should not be in ListUnresolved")
@@ -1119,7 +1119,7 @@ func TestFBLReport_CRUD(t *testing.T) {
 		t.Error("ListByDomain.ID mismatch")
 	}
 
-	recent, err := repo.ListRecent(ctx, 10)
+	recent, err := repo.ListRecent(ctx, 10, nil)
 	if err != nil {
 		t.Fatalf("ListRecent: %v", err)
 	}

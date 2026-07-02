@@ -19,31 +19,39 @@ var closingBodyRE = regexp.MustCompile(`(?i)</\s*body\s*>`)
 // through the Vectis tracking endpoints. Returns the HTML unchanged if tracking
 // is disabled or the body is empty.
 //
-//   - token:    HMAC-signed message token from Server.GenerateTrackingToken
-//   - baseURL:  public base URL of the Vectis API (e.g. https://mail.example.com), no trailing slash
-//   - opens:    when true, appends a 1x1 pixel to /api/v1/track/open/{token}
-//   - clicks:   when true, rewrites http(s) anchor hrefs via /api/v1/track/click/{token}?url=...
+//   - openToken:  HMAC-signed message token from Server.GenerateTrackingToken,
+//                 embedded in the open pixel (/api/v1/track/open/{openToken}).
+//   - baseURL:    public base URL of the Vectis API (e.g. https://mail.example.com), no trailing slash
+//   - opens:      when true, appends a 1x1 pixel to /api/v1/track/open/{openToken}
+//   - clicks:     when true, rewrites http(s) anchor hrefs via /api/v1/track/click/{token}?url=...
+//   - clickToken: mints the per-link click token for a given raw href; the HMAC
+//                 covers the destination URL so a token can't be reused to
+//                 redirect elsewhere. Must be non-nil when clicks is true.
 //
 // Link rewriting skips: mailto:, tel:, sms:, javascript:, fragment (#...)
 // anchors, empty hrefs, and URLs already pointing at our own click endpoint.
-func InjectTracking(htmlBody, token, baseURL string, opens, clicks bool) string {
-	if htmlBody == "" || token == "" || baseURL == "" || (!opens && !clicks) {
+func InjectTracking(htmlBody, openToken, baseURL string, opens, clicks bool, clickToken func(rawURL string) string) string {
+	if htmlBody == "" || baseURL == "" || (!opens && !clicks) {
 		return htmlBody
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	out := htmlBody
-	if clicks {
-		out = rewriteLinks(out, token, baseURL)
+	if clicks && clickToken != nil {
+		out = rewriteLinks(out, baseURL, clickToken)
 	}
-	if opens {
-		out = appendPixel(out, token, baseURL)
+	if opens && openToken != "" {
+		out = appendPixel(out, openToken, baseURL)
 	}
 	return out
 }
 
-func rewriteLinks(html, token, baseURL string) string {
-	clickPrefix := baseURL + "/api/v1/track/click/" + token + "?url="
+// rewriteLinks wraps each eligible anchor href in a click-tracking redirect.
+// The token is minted per-link via clickToken(href) so that the HMAC covers
+// the exact destination URL — a signed token can no longer be reused to
+// redirect anywhere else (audit D-M2 open redirect).
+func rewriteLinks(html, baseURL string, clickToken func(rawURL string) string) string {
+	clickBase := baseURL + "/api/v1/track/click/"
 	return anchorHrefRE.ReplaceAllStringFunc(html, func(match string) string {
 		sub := anchorHrefRE.FindStringSubmatch(match)
 		if len(sub) < 5 {
@@ -61,7 +69,7 @@ func rewriteLinks(html, token, baseURL string) string {
 		if !shouldRewriteHref(href, baseURL) {
 			return match
 		}
-		return prefix + quote + clickPrefix + url.QueryEscape(href) + quote + suffix
+		return prefix + quote + clickBase + clickToken(href) + "?url=" + url.QueryEscape(href) + quote + suffix
 	})
 }
 

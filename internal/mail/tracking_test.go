@@ -8,30 +8,35 @@ import (
 const testBase = "https://mail.example.com"
 const testToken = "abc123.deadbeef00001111"
 
+// stubClickToken stands in for Server.GenerateClickToken in these unit tests,
+// returning a fixed token so link-rewrite assertions stay deterministic. The
+// URL-binding property of the real token is covered in the api package.
+func stubClickToken(string) string { return testToken }
+
 func TestInjectTracking_NoopWhenDisabled(t *testing.T) {
 	html := `<html><body><a href="https://x.example/">x</a></body></html>`
-	got := InjectTracking(html, testToken, testBase, false, false)
+	got := InjectTracking(html, testToken, testBase, false, false, stubClickToken)
 	if got != html {
 		t.Fatalf("expected no change, got %q", got)
 	}
 }
 
 func TestInjectTracking_NoopWhenEmpty(t *testing.T) {
-	if got := InjectTracking("", testToken, testBase, true, true); got != "" {
+	if got := InjectTracking("", testToken, testBase, true, true, stubClickToken); got != "" {
 		t.Fatalf("expected empty, got %q", got)
 	}
 }
 
 func TestInjectTracking_NoopWhenMissingToken(t *testing.T) {
 	html := `<p>hi</p>`
-	if got := InjectTracking(html, "", testBase, true, true); got != html {
+	if got := InjectTracking(html, "", testBase, true, true, nil); got != html {
 		t.Fatalf("expected unchanged without token, got %q", got)
 	}
 }
 
 func TestInjectTracking_AppendsPixelBeforeBody(t *testing.T) {
 	html := `<html><body><p>hi</p></body></html>`
-	got := InjectTracking(html, testToken, testBase, true, false)
+	got := InjectTracking(html, testToken, testBase, true, false, nil)
 	wantPixel := `<img src="https://mail.example.com/api/v1/track/open/` + testToken + `"`
 	if !strings.Contains(got, wantPixel) {
 		t.Fatalf("missing pixel: %q", got)
@@ -44,7 +49,7 @@ func TestInjectTracking_AppendsPixelBeforeBody(t *testing.T) {
 
 func TestInjectTracking_AppendsPixelWithNoBodyTag(t *testing.T) {
 	html := `<p>hi</p>`
-	got := InjectTracking(html, testToken, testBase, true, false)
+	got := InjectTracking(html, testToken, testBase, true, false, nil)
 	if !strings.HasSuffix(got, `/>`) || !strings.Contains(got, "/api/v1/track/open/"+testToken) {
 		t.Fatalf("expected pixel appended at end, got %q", got)
 	}
@@ -52,7 +57,7 @@ func TestInjectTracking_AppendsPixelWithNoBodyTag(t *testing.T) {
 
 func TestInjectTracking_RewritesHttpLinks(t *testing.T) {
 	html := `<a href="https://example.com/path?a=1&b=2">click</a>`
-	got := InjectTracking(html, testToken, testBase, false, true)
+	got := InjectTracking(html, testToken, testBase, false, true, stubClickToken)
 	want := `/api/v1/track/click/` + testToken + `?url=https%3A%2F%2Fexample.com%2Fpath%3Fa%3D1%26b%3D2`
 	if !strings.Contains(got, want) {
 		t.Fatalf("link not rewritten:\n got: %s\nwant substring: %s", got, want)
@@ -69,7 +74,7 @@ func TestInjectTracking_SkipsNonHttpSchemes(t *testing.T) {
 		`<a href="">x</a>`,
 	}
 	for _, in := range cases {
-		got := InjectTracking(in, testToken, testBase, false, true)
+		got := InjectTracking(in, testToken, testBase, false, true, stubClickToken)
 		if got != in {
 			t.Errorf("expected unchanged for %q, got %q", in, got)
 		}
@@ -79,7 +84,7 @@ func TestInjectTracking_SkipsNonHttpSchemes(t *testing.T) {
 func TestInjectTracking_DoesNotDoubleWrap(t *testing.T) {
 	existing := testBase + "/api/v1/track/click/" + testToken + "?url=https%3A%2F%2Fx"
 	html := `<a href="` + existing + `">x</a>`
-	got := InjectTracking(html, testToken, testBase, false, true)
+	got := InjectTracking(html, testToken, testBase, false, true, stubClickToken)
 	if got != html {
 		t.Fatalf("double-wrapped already-tracked link: %q", got)
 	}
@@ -87,7 +92,7 @@ func TestInjectTracking_DoesNotDoubleWrap(t *testing.T) {
 
 func TestInjectTracking_HandlesSingleQuotedHrefAndAttrs(t *testing.T) {
 	html := `<a class="btn" href='https://example.com/x' target="_blank">go</a>`
-	got := InjectTracking(html, testToken, testBase, false, true)
+	got := InjectTracking(html, testToken, testBase, false, true, stubClickToken)
 	if !strings.Contains(got, `/api/v1/track/click/`+testToken+`?url=https%3A%2F%2Fexample.com%2Fx`) {
 		t.Fatalf("single-quoted href not rewritten: %q", got)
 	}
@@ -98,7 +103,7 @@ func TestInjectTracking_HandlesSingleQuotedHrefAndAttrs(t *testing.T) {
 
 func TestInjectTracking_PixelAndLinksTogether(t *testing.T) {
 	html := `<html><body><a href="https://x.test/">x</a></body></html>`
-	got := InjectTracking(html, testToken, testBase, true, true)
+	got := InjectTracking(html, testToken, testBase, true, true, stubClickToken)
 	if !strings.Contains(got, "/api/v1/track/click/"+testToken) {
 		t.Fatalf("expected click rewrite in %q", got)
 	}
@@ -109,7 +114,7 @@ func TestInjectTracking_PixelAndLinksTogether(t *testing.T) {
 
 func TestInjectTracking_TrimsTrailingSlashOnBaseURL(t *testing.T) {
 	html := `<a href="https://x.test/">x</a>`
-	got := InjectTracking(html, testToken, testBase+"/", false, true)
+	got := InjectTracking(html, testToken, testBase+"/", false, true, stubClickToken)
 	if strings.Contains(got, "com//api/") {
 		t.Fatalf("trailing slash produced double slash: %q", got)
 	}

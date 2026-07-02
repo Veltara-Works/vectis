@@ -58,8 +58,22 @@ func NewServer(orch *Orchestrator, cfg ServerConfig, logger *slog.Logger) *Serve
 	return s
 }
 
+// requireAuthConfigured returns an error if the server would accept requests
+// without any authentication — no mTLS and an empty bearer token. The
+// orchestrator control plane is root-equivalent (it drives Docker), so it must
+// refuse to boot in that state rather than serve fail-open (E-H1).
+func (s *Server) requireAuthConfigured() error {
+	if s.tlsConfig == nil && s.token == "" {
+		return fmt.Errorf("orchestrator refusing to start: no authentication configured (set a bearer token or enable mTLS)")
+	}
+	return nil
+}
+
 // Start begins listening for HTTP requests. Uses TLS when configured.
 func (s *Server) Start() error {
+	if err := s.requireAuthConfigured(); err != nil {
+		return err
+	}
 	if s.tlsConfig != nil {
 		s.logger.Info("starting orchestrator HTTPS server (mTLS)", "addr", s.httpServer.Addr)
 		// Certs are already in TLSConfig; pass empty strings to use them.
@@ -121,6 +135,18 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// certificate against the CA — no bearer token needed.
 		if s.tlsConfig != nil && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Fail closed when no bearer token is configured and mTLS is not in use.
+		// Otherwise an empty s.token would ConstantTimeCompare-equal an empty
+		// presented token ("Bearer " with nothing after it), authenticating an
+		// unauthenticated caller on a root-equivalent control plane (E-H1). An
+		// unconfigured token must always deny. (Boot also refuses to start in
+		// this state — see requireAuthConfigured — this is defence in depth.)
+		if s.token == "" {
+			s.respondError(w, http.StatusServiceUnavailable, "AUTH_MISCONFIGURED",
+				"Orchestrator authentication is not configured")
 			return
 		}
 

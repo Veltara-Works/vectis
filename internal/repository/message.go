@@ -87,11 +87,14 @@ func (r *MessageRepo) GetByID(ctx context.Context, id string) (*Message, error) 
 	return &m, nil
 }
 
-// GetByMessageID retrieves a message by its RFC 5322 Message-ID.
+// GetByMessageID retrieves a message by its RFC 5322 Message-ID. message_id is
+// not unique (an inbound copy and our outbound original can share one, and the
+// value is attacker-controllable on inbound), so the result is pinned to the
+// most recent row for determinism (audit P2-6) rather than an arbitrary one.
 func (r *MessageRepo) GetByMessageID(ctx context.Context, messageID string) (*Message, error) {
 	row := r.db.QueryRow(ctx,
 		`SELECT id, domain_id, mailbox_id, message_id, direction, sender, recipients, subject, size_bytes, status, spam_score, spam_action, queue_id, headers, created_at
-		 FROM messages WHERE message_id = $1`, messageID)
+		 FROM messages WHERE message_id = $1 ORDER BY created_at DESC LIMIT 1`, messageID)
 
 	var m Message
 	if err := scanMessage(row, &m); err != nil {
@@ -99,6 +102,26 @@ func (r *MessageRepo) GetByMessageID(ctx context.Context, messageID string) (*Me
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get message by message_id: %w", err)
+	}
+	return &m, nil
+}
+
+// GetOutboundByMessageID retrieves the most recent OUTBOUND message with the
+// given Message-ID. Used for ARF/FBL attribution (audit D-M3/P2-6): a complaint
+// may only be attributed to a message we actually sent, and message_id can
+// collide with an inbound copy, so the query filters on direction and pins to
+// the newest row for a deterministic answer.
+func (r *MessageRepo) GetOutboundByMessageID(ctx context.Context, messageID string) (*Message, error) {
+	row := r.db.QueryRow(ctx,
+		`SELECT id, domain_id, mailbox_id, message_id, direction, sender, recipients, subject, size_bytes, status, spam_score, spam_action, queue_id, headers, created_at
+		 FROM messages WHERE message_id = $1 AND direction = 'outbound' ORDER BY created_at DESC LIMIT 1`, messageID)
+
+	var m Message
+	if err := scanMessage(row, &m); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get outbound message by message_id: %w", err)
 	}
 	return &m, nil
 }

@@ -111,6 +111,11 @@ type Server struct {
 	// container with unbounded goroutines each holding a full message (#120).
 	inboundAsync *inboundAsyncLimiter
 
+	// resetLimiter rate-limits the password-reset endpoints per source IP and
+	// per target email (audit D-L2). nil in bare test servers, which fall back
+	// to no rate limiting.
+	resetLimiter *fixedWindowLimiter
+
 	// Sieve filter management
 	sieveClient *mail.SieveClient
 
@@ -204,6 +209,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		cfg:                cfg.VectisCfg,
 		secrets:            cfg.VectisSecrets,
 		inboundAsync:       newInboundAsyncLimiter(maxInboundAsyncBytes),
+		resetLimiter:       newFixedWindowLimiter(5, 15*time.Minute),
 		domains:            repository.NewDomainRepo(db),
 		mailboxes:          repository.NewMailboxRepo(db),
 		aliases:            repository.NewAliasRepo(db),
@@ -850,10 +856,15 @@ func (s *Server) buildRouter() chi.Router {
 		// Public endpoints.
 		r.Get("/health", s.handleHealth)
 		r.Get("/version", s.handleVersion)
-		r.Handle("/metrics/prometheus", promhttp.Handler())
+		// NOTE: /metrics/prometheus is NOT public — it is registered behind
+		// requireSuperAdmin in the authenticated group below (G-M2). The bare
+		// promhttp collector exposes cross-tenant domain/mailbox/admin counts,
+		// so it must not be reachable unauthenticated. No bundled service
+		// scrapes it; an external scraper authenticates with a super_admin
+		// API-key bearer token.
 		r.With(chimw.Throttle(5)).Post("/auth/login", s.handleLogin)
-		r.With(chimw.Throttle(3)).Post("/auth/reset-request", s.handleRequestPasswordReset)
-		r.With(chimw.Throttle(3)).Post("/auth/reset-password", s.handleResetPassword)
+		r.With(chimw.Throttle(3), s.rateLimitByIP(s.resetLimiter)).Post("/auth/reset-request", s.handleRequestPasswordReset)
+		r.With(chimw.Throttle(3), s.rateLimitByIP(s.resetLimiter)).Post("/auth/reset-password", s.handleResetPassword)
 
 		// Internal service-to-service endpoints (token-authenticated, not session).
 		r.Post("/internal/inbound", s.handleInboundNotify)
@@ -922,18 +933,41 @@ func (s *Server) buildRouter() chi.Router {
 			r.Delete("/auth/oidc/disconnect", s.handleOIDCDisconnect)
 			r.Post("/auth/saml/disconnect", s.handleSAMLDisconnect)
 
-			// Domains — all roles (domain_admin scoped in handlers).
+			// Domains collection — list + create (all roles; scoping in handler).
 			r.Get("/domains", s.handleListDomains)
-			r.Get("/domains/{domainID}", s.handleGetDomain)
-			r.Get("/domains/{domainID}/dkim", s.handleGetDKIM)
-			r.Get("/domains/{domainID}/deliverability", s.handleDeliverability)
-			// Domain mutations — admin and super_admin only.
 			r.With(requireAdminOrAbove()).Post("/domains", s.handleCreateDomain)
-			r.With(requireAdminOrAbove()).Patch("/domains/{domainID}", s.handleUpdateDomain)
-			r.With(requireAdminOrAbove()).Delete("/domains/{domainID}", s.handleDeleteDomain)
-			r.With(requireAdminOrAbove()).Post("/domains/{domainID}/dkim/generate", s.handleGenerateDKIM)
-			r.With(requireAdminOrAbove()).Post("/domains/{domainID}/dkim/rotate", s.handleRotateDKIM)
-			r.With(requireAdminOrAbove()).Post("/domains/{domainID}/verify", s.handleVerifyDomain)
+
+			// Domain-scoped subtree. requireDomainAccess is the single R1 choke
+			// point: every /domains/{domainID}/... route — current and future —
+			// inherits API-key-scope + domain_admin enforcement, so no handler
+			// can silently skip it (the #119 scope class). Per-route RBAC and
+			// Pro feature gates layer on top. advancedSpamGate is defined here
+			// (was inline below) so the spam-list routes can join the subtree.
+			advancedSpamGate := s.featureGate.FeatureGate(validonx.FeatureAdvancedSpam)
+			r.Route("/domains/{domainID}", func(r chi.Router) {
+				r.Use(s.requireDomainAccess)
+
+				// Reads — all roles (scope already enforced by the choke point).
+				r.Get("/", s.handleGetDomain)
+				r.Get("/dkim", s.handleGetDKIM)
+				r.Get("/deliverability", s.handleDeliverability)
+
+				// Mutations — admin and super_admin only.
+				r.With(requireAdminOrAbove()).Patch("/", s.handleUpdateDomain)
+				r.With(requireAdminOrAbove()).Delete("/", s.handleDeleteDomain)
+				r.With(requireAdminOrAbove()).Post("/dkim/generate", s.handleGenerateDKIM)
+				r.With(requireAdminOrAbove()).Post("/dkim/rotate", s.handleRotateDKIM)
+				r.With(requireAdminOrAbove()).Post("/verify", s.handleVerifyDomain)
+
+				// Per-domain allow/block lists — Pro feature (Advanced Spam).
+				// The field-level extensions to PATCH /domains/{id}
+				// (reject_threshold, greylist_enabled) stay in handle_domains.go
+				// since the domain CRUD route must remain open to Free for
+				// ungated fields like spam_threshold.
+				r.With(advancedSpamGate, requireAdminOrAbove()).Get("/spam-lists", s.handleListSpamListEntries)
+				r.With(advancedSpamGate, requireAdminOrAbove()).Post("/spam-lists", s.handleCreateSpamListEntry)
+				r.With(advancedSpamGate, requireAdminOrAbove()).Delete("/spam-lists/{entryID}", s.handleDeleteSpamListEntry)
+			})
 
 			// Mailboxes — all roles (domain_admin scoped in handlers).
 			r.Get("/mailboxes", s.handleListMailboxes)
@@ -994,10 +1028,15 @@ func (s *Server) buildRouter() chi.Router {
 			// Log search — super_admin only.
 			r.With(requireSuperAdmin()).Get("/logs/search", s.handleLogSearch)
 
-			// Engagement tracking stats — admin and super_admin.
-			r.With(requireAdminOrAbove()).Get("/tracking/stats", s.handleTrackingStats)
-			r.With(requireAdminOrAbove()).Get("/tracking/messages/{messageID}", s.handleMessageEngagement)
-			r.With(requireAdminOrAbove()).Get("/tracking/messages/{messageID}/events", s.handleMessageEngagementEvents)
+			// Engagement tracking stats — admin and super_admin, and a Pro
+			// feature: the open/click analytics these expose are the same
+			// FeatureAnalytics surface as /analytics below, so gate them the
+			// same way. The public /track/* collection endpoints (above) stay
+			// open — email clients must reach them regardless of tier.
+			trackingGate := s.featureGate.FeatureGate(validonx.FeatureAnalytics)
+			r.With(requireAdminOrAbove(), trackingGate).Get("/tracking/stats", s.handleTrackingStats)
+			r.With(requireAdminOrAbove(), trackingGate).Get("/tracking/messages/{messageID}", s.handleMessageEngagement)
+			r.With(requireAdminOrAbove(), trackingGate).Get("/tracking/messages/{messageID}/events", s.handleMessageEngagementEvents)
 
 			// Abuse detection — admin and super_admin.
 			r.With(requireAdminOrAbove()).Get("/abuse/dashboard", s.handleAbuseDashboard)
@@ -1024,16 +1063,6 @@ func (s *Server) buildRouter() chi.Router {
 			// 30-day grace: 403 LICENSE_EXPIRED.
 			r.With(s.featureGate.FeatureGate(validonx.FeatureAnalytics)).
 				Get("/analytics", s.handleDomainAnalytics)
-
-			// Per-domain allow/block lists — Pro feature (Advanced Spam).
-			// Whole subtree gated; the field-level extensions to PATCH
-			// /domains/{id} (reject_threshold, greylist_enabled) live in
-			// handle_domains.go since the domain CRUD route itself must
-			// stay open to Free for ungated fields like spam_threshold.
-			advancedSpamGate := s.featureGate.FeatureGate(validonx.FeatureAdvancedSpam)
-			r.With(advancedSpamGate, requireAdminOrAbove()).Get("/domains/{domainID}/spam-lists", s.handleListSpamListEntries)
-			r.With(advancedSpamGate, requireAdminOrAbove()).Post("/domains/{domainID}/spam-lists", s.handleCreateSpamListEntry)
-			r.With(advancedSpamGate, requireAdminOrAbove()).Delete("/domains/{domainID}/spam-lists/{entryID}", s.handleDeleteSpamListEntry)
 
 			// License management — super_admin only. The License page is
 			// where customers paste their ValidonX subscription_id post-checkout
@@ -1106,6 +1135,9 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Get("/health/{service}", s.handleServiceHealth)
 			r.With(requireSuperAdmin()).Get("/logs/{service}", s.handleServiceLogs)
 			r.With(requireSuperAdmin()).Get("/metrics", s.handleMetrics)
+			// Prometheus scrape endpoint — super_admin only (G-M2). External
+			// scrapers pass a super_admin API-key bearer token.
+			r.With(requireSuperAdmin()).Handle("/metrics/prometheus", promhttp.Handler())
 
 			// Alerts — super_admin only.
 			r.With(requireSuperAdmin()).Get("/alerts", s.handleListAlerts)

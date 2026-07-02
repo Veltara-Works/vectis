@@ -292,7 +292,10 @@ func (s *Server) handleListFBLReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reports, err := s.fblReports.ListRecent(r.Context(), 100)
+	// No domain_id: return recent reports scoped to the caller's domains (K3).
+	// getAllowedDomainIDs is nil for unrestricted principals (all domains) and a
+	// non-nil allow-list otherwise, filtered in-query before the LIMIT.
+	reports, err := s.fblReports.ListRecent(r.Context(), 100, s.getAllowedDomainIDs(r.Context()))
 	if err != nil {
 		s.logger.Error("list fbl reports failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list FBL reports")

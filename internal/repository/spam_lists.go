@@ -152,8 +152,18 @@ type SpamListJoined struct {
 }
 
 // Delete removes a single spam-list entry. Returns false if not found.
-func (r *SpamListRepo) Delete(ctx context.Context, id string) (bool, error) {
-	result, err := r.db.Exec(ctx, `DELETE FROM domain_spam_lists WHERE id = $1`, id)
+// Delete removes a spam-list entry by id. allowedDomainIDs is a defense-in-depth
+// domain guard (R5): nil = unrestricted; a non-nil slice restricts the delete to
+// entries whose domain_id is in the set, so a handler-layer scope bug can't
+// remove another tenant's filtering rule. Returns false if nothing matched.
+func (r *SpamListRepo) Delete(ctx context.Context, id string, allowedDomainIDs []string) (bool, error) {
+	q := `DELETE FROM domain_spam_lists WHERE id = $1`
+	args := []any{id}
+	if allowedDomainIDs != nil {
+		q += ` AND domain_id = ANY($2)`
+		args = append(args, allowedDomainIDs)
+	}
+	result, err := r.db.Exec(ctx, q, args...)
 	if err != nil {
 		return false, fmt.Errorf("delete spam list entry: %w", err)
 	}

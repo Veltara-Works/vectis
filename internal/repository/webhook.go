@@ -126,8 +126,19 @@ func (r *WebhookRepo) ListAll(ctx context.Context) ([]Webhook, error) {
 }
 
 // Delete removes a webhook.
-func (r *WebhookRepo) Delete(ctx context.Context, id string) (bool, error) {
-	result, err := r.db.Exec(ctx, `DELETE FROM webhooks WHERE id = $1`, id)
+// Delete removes a webhook by id. allowedDomainIDs is a defense-in-depth domain
+// guard (R5): nil means unrestricted (caller already authorized for all domains);
+// a non-nil slice restricts the delete to webhooks whose domain_id is in the set,
+// so a handler-layer scope bug can't delete another tenant's (or a global) webhook
+// at the data layer. Returns false if nothing matched.
+func (r *WebhookRepo) Delete(ctx context.Context, id string, allowedDomainIDs []string) (bool, error) {
+	q := `DELETE FROM webhooks WHERE id = $1`
+	args := []any{id}
+	if allowedDomainIDs != nil {
+		q += ` AND domain_id = ANY($2)`
+		args = append(args, allowedDomainIDs)
+	}
+	result, err := r.db.Exec(ctx, q, args...)
 	if err != nil {
 		return false, fmt.Errorf("delete webhook: %w", err)
 	}

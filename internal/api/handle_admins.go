@@ -70,6 +70,13 @@ func (s *Server) handleListAdmins(w http.ResponseWriter, r *http.Request) {
 
 	views := make([]adminView, 0, len(admins))
 	for _, a := range admins {
+		// Non-super_admin callers must not see the super_admin roster
+		// (emails + last_login_at). Admin mutations are already
+		// super_admin-only, so exposing the full list to a plain admin
+		// leaked exactly what the mutation side hides (audit D-L4/K6).
+		if role != auth.RoleSuperAdmin && a.Role == auth.RoleSuperAdmin {
+			continue
+		}
 		views = append(views, toAdminView(a))
 	}
 

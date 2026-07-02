@@ -246,7 +246,7 @@ func (fgs *FeatureGateService) ResolveTier(ctx context.Context) (string, error) 
 	if fgs.cache != nil {
 		cached, err := fgs.cache.GetCached(ctx, tenantID)
 		if err == nil && cached != nil {
-			return tierFromFeatures(cached.Features), nil
+			return tierFromCachedLicense(cached), nil
 		}
 	}
 
@@ -258,7 +258,22 @@ func (fgs *FeatureGateService) ResolveTier(ctx context.Context) (string, error) 
 	if refreshed == nil {
 		return TierFree, nil
 	}
-	return tierFromFeatures(refreshed.Features), nil
+	return tierFromCachedLicense(refreshed), nil
+}
+
+// tierFromCachedLicense resolves the tier for a cached or freshly-refreshed
+// license, honouring the authoritative LicenseData.Valid flag. A license
+// ValidonX has marked invalid (valid:false — revoked, suspended, past-dunning)
+// resolves to TierFree even when a stale feature list survives in the cache
+// row. This keeps ResolveTier consistent with GrantsFeature (cache.go), the
+// fail-closed predicate that every FeatureGate read uses: deriving the tier
+// from the feature list alone (the prior behaviour) re-granted Pro/Enterprise
+// caps and knobs to a lapsed license (audit D-M1; regression of #125/#178).
+func tierFromCachedLicense(cl *CachedLicense) string {
+	if cl == nil || !cl.LicenseData.Valid {
+		return TierFree
+	}
+	return tierFromFeatures(cl.Features)
 }
 
 // tierFromFeatures infers the license tier from an entitlement list.

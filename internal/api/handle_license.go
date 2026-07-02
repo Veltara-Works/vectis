@@ -3,12 +3,74 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/validonx"
 )
+
+// blockedBaseURLIP reports whether an IP is one the ValidonX base_url must
+// never target — private, link-local (incl. cloud-metadata 169.254.169.254),
+// unspecified, or multicast. Loopback is handled by the caller (allowed as a
+// literal dev hatch, blocked when a hostname resolves to it).
+func blockedBaseURLIP(ip net.IP) bool {
+	return ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsUnspecified()
+}
+
+// validateLicenseBaseURL hardens the admin-settable ValidonX base_url against
+// SSRF / service-key exfiltration (audit C-h1). The service_key is sent to this
+// host as X-API-Key, so a super_admin (or a CSRF against one) must not be able
+// to aim it at cloud-metadata or internal-network endpoints. Loopback is
+// allowed as a local dev/self-host escape hatch; every other host must be https
+// and must not be — or resolve to — a private, link-local, or unspecified
+// address.
+func validateLicenseBaseURL(ctx context.Context, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("base_url must be a valid absolute http(s) URL")
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() {
+			return nil
+		}
+		if blockedBaseURLIP(ip) {
+			return fmt.Errorf("base_url must not point at a private or link-local address")
+		}
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("base_url must use https")
+	}
+	// Reject hostnames that RESOLVE to a private/metadata address (audit P2-1):
+	// the IP-literal checks above miss e.g. an internal DNS name pointing at
+	// 169.254.169.254 or 10.x. Best-effort — a name that doesn't resolve can't
+	// be an SSRF target (the outbound call just fails to connect), so a lookup
+	// error is not itself a rejection. This is a set-time check, not a defence
+	// against DNS rebinding (out of scope for this super_admin-gated setter).
+	//
+	// Bound the lookup with a deadline (audit §L L2): the default resolver has
+	// no timeout, so a hostile/authoritative nameserver could otherwise stall
+	// the super_admin's request indefinitely. 5s is ample for a set-time check.
+	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if ips, lookupErr := net.DefaultResolver.LookupIP(lookupCtx, "ip", host); lookupErr == nil {
+		for _, ip := range ips {
+			if ip.IsLoopback() || blockedBaseURLIP(ip) {
+				return fmt.Errorf("base_url host %q resolves to a private or link-local address", host)
+			}
+		}
+	}
+	return nil
+}
 
 // licenseStateResponse is the shape returned by GET / POST / DELETE /api/v1/license.
 type licenseStateResponse struct {
@@ -79,7 +141,15 @@ func (s *Server) buildLicenseStateResponse(ctx context.Context) licenseStateResp
 
 	if cache := s.featureGate.Cache(); cache != nil && resp.TenantID != "" {
 		if cached, err := cache.GetCached(ctx, resp.TenantID); err == nil && cached != nil {
-			resp.Tier = tierFromCachedFeatures(cached.Features)
+			// Only elevate the reported tier above Free when the license is
+			// actually valid, mirroring currentTierAndFeatures / ResolveTier /
+			// GrantsFeature (audit D-M1 / P2-4). Otherwise the License page
+			// showed Pro for a revoked/suspended license, contradicting
+			// /auth/me and the server-side gate. Status/dates still populate so
+			// the page can explain the downgrade.
+			if cached.LicenseData.Valid {
+				resp.Tier = tierFromCachedFeatures(cached.Features)
+			}
 			resp.Status = cached.Status
 			resp.LastCheckAt = cached.LastCheckAt
 			resp.ExpiresAt = cached.ExpiresAt
@@ -109,6 +179,14 @@ func (s *Server) currentTierAndFeatures(ctx context.Context) (string, []string) 
 	}
 	cached, err := cache.GetCached(ctx, runtimeCfg.TenantID)
 	if err != nil || cached == nil {
+		return validonx.TierFree, []string{}
+	}
+	// Honour the authoritative Valid flag, mirroring GrantsFeature and
+	// validonx.ResolveTier (audit D-M1): a license ValidonX has marked
+	// invalid (revoked/suspended/past-dunning) with a surviving cache row
+	// must present as Free so the UI stops offering Pro/Enterprise
+	// affordances the server gate will now reject.
+	if !cached.LicenseData.Valid {
 		return validonx.TierFree, []string{}
 	}
 	return tierFromCachedFeatures(cached.Features), cached.Features
@@ -175,6 +253,10 @@ func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
 	}
 	if merged.BaseURL == "" {
 		merged.BaseURL = validonx.DefaultBaseURL
+	}
+	if err := validateLicenseBaseURL(r.Context(), merged.BaseURL); err != nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_BASE_URL", err.Error())
+		return
 	}
 
 	if !merged.IsConfigured() {

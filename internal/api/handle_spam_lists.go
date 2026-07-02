@@ -179,7 +179,7 @@ func (s *Server) handleDeleteSpamListEntry(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	deleted, err := s.spamLists.Delete(r.Context(), entryID)
+	deleted, err := s.spamLists.Delete(r.Context(), entryID, s.getAllowedDomainIDs(r.Context()))
 	if err != nil {
 		s.logger.Error("delete spam list entry failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete spam list entry")

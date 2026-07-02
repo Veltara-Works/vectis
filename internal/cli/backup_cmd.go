@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,6 +21,41 @@ import (
 // can reach Postgres over the Docker network — the only place a FULL backup
 // (including mail) can run.
 const apiContainerName = "vectis-api"
+
+// hostBackupsDir is the only host directory a container-reported backup path is
+// allowed to resolve to.
+const hostBackupsDir = "/var/vectis/backups"
+
+// safeBackupPath confines a backup path reported by the api container to
+// hostBackupsDir. res.Path comes from the container's JSON stdout and
+// dockerCopyFromAPI writes to it as root, so an attacker with code-exec inside
+// the api container (or a malicious image) could otherwise clobber arbitrary
+// host files (audit E-L3).
+func safeBackupPath(p string) (string, error) {
+	clean := filepath.Clean(p)
+	if !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("backup path %q is not absolute", p)
+	}
+	if clean != hostBackupsDir && !strings.HasPrefix(clean, hostBackupsDir+string(os.PathSeparator)) {
+		return "", fmt.Errorf("backup path %q is outside %s", p, hostBackupsDir)
+	}
+	// filepath.Clean is lexical: it does NOT resolve symlinks. hostBackupsDir is
+	// RW-bind-mounted into the api container, so a compromised container could
+	// plant a symlink there and redirect the root `docker cp` to an arbitrary
+	// host path (audit P2-2). Resolve the parent dir and re-check containment,
+	// and refuse a destination that is itself a symlink. The parent may legitly
+	// not exist yet on installs without the bind-mount — in that case there is
+	// no symlink to abuse and the lexical containment above already holds.
+	if resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(clean)); err == nil {
+		if resolvedParent != hostBackupsDir && !strings.HasPrefix(resolvedParent, hostBackupsDir+string(os.PathSeparator)) {
+			return "", fmt.Errorf("backup path %q resolves outside %s", p, hostBackupsDir)
+		}
+	}
+	if fi, err := os.Lstat(clean); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("backup path %q is a symlink", p)
+	}
+	return clean, nil
+}
 
 var backupCmd = &cobra.Command{
 	Use:   "backup",
@@ -97,7 +133,12 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 			os.Exit(1)
 		}
 
-		path, size := res.Path, res.Size
+		path, pErr := safeBackupPath(res.Path)
+		if pErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", pErr)
+			os.Exit(1)
+		}
+		size := res.Size
 
 		// The archive was written inside the api container. On current installs
 		// the api service bind-mounts /var/vectis/backups from the host (enforced
@@ -448,11 +489,20 @@ func copyBackupFile(src, dst string) error {
 	}
 	defer in.Close()
 
-	out, err := os.Create(dst)
+	// 0600: the archive holds the full mail store + DB dump. os.Create would
+	// leave it world-readable (0666 & umask) on the EXDEV copy fallback so any
+	// local user could read it (audit E-L2).
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
+
+	// O_CREATE|0600 only sets the mode when creating; a pre-existing dst keeps
+	// its old (possibly world-readable) mode, so force it (audit P2-9).
+	if err := out.Chmod(0o600); err != nil {
+		return err
+	}
 
 	if _, err := out.ReadFrom(in); err != nil {
 		return err

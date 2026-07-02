@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Veltara-Works/vectis/internal/types"
@@ -101,13 +102,24 @@ func (r *AbuseRepo) IsMailboxSuspended(ctx context.Context, mailboxID string) (b
 }
 
 // ListUnresolved returns unresolved abuse events.
-func (r *AbuseRepo) ListUnresolved(ctx context.Context, limit int) ([]AbuseEvent, error) {
+// ListUnresolved returns unresolved abuse events. allowedDomainIDs scopes the
+// result at the DB layer (nil = unrestricted): the domain filter is applied in
+// the WHERE clause BEFORE the LIMIT, so a scoped caller sees their most recent
+// events, not whatever survives a global top-N cut (K4).
+func (r *AbuseRepo) ListUnresolved(ctx context.Context, limit int, allowedDomainIDs []string) ([]AbuseEvent, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := r.db.Query(ctx,
-		`SELECT id, domain_id, mailbox_id, event_type, severity, details, action, resolved, resolved_by, resolved_at, created_at
-		 FROM abuse_events WHERE resolved = false ORDER BY created_at DESC LIMIT $1`, limit)
+	q := `SELECT id, domain_id, mailbox_id, event_type, severity, details, action, resolved, resolved_by, resolved_at, created_at
+		 FROM abuse_events WHERE resolved = false`
+	args := []any{}
+	if allowedDomainIDs != nil {
+		args = append(args, allowedDomainIDs)
+		q += fmt.Sprintf(" AND domain_id = ANY($%d)", len(args))
+	}
+	args = append(args, limit)
+	q += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args))
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list unresolved abuse events: %w", err)
 	}
@@ -116,13 +128,22 @@ func (r *AbuseRepo) ListUnresolved(ctx context.Context, limit int) ([]AbuseEvent
 }
 
 // ListRecent returns recent abuse events (resolved and unresolved).
-func (r *AbuseRepo) ListRecent(ctx context.Context, limit int) ([]AbuseEvent, error) {
+// allowedDomainIDs scopes the result at the DB layer (nil = unrestricted),
+// filtering before the LIMIT — see ListUnresolved (K4).
+func (r *AbuseRepo) ListRecent(ctx context.Context, limit int, allowedDomainIDs []string) ([]AbuseEvent, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := r.db.Query(ctx,
-		`SELECT id, domain_id, mailbox_id, event_type, severity, details, action, resolved, resolved_by, resolved_at, created_at
-		 FROM abuse_events ORDER BY created_at DESC LIMIT $1`, limit)
+	q := `SELECT id, domain_id, mailbox_id, event_type, severity, details, action, resolved, resolved_by, resolved_at, created_at
+		 FROM abuse_events`
+	args := []any{}
+	if allowedDomainIDs != nil {
+		args = append(args, allowedDomainIDs)
+		q += fmt.Sprintf(" WHERE domain_id = ANY($%d)", len(args))
+	}
+	args = append(args, limit)
+	q += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args))
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list recent abuse events: %w", err)
 	}
@@ -130,13 +151,35 @@ func (r *AbuseRepo) ListRecent(ctx context.Context, limit int) ([]AbuseEvent, er
 	return scanAbuseEvents(rows)
 }
 
-// Resolve marks an abuse event as resolved.
-func (r *AbuseRepo) Resolve(ctx context.Context, eventID, adminID string) error {
-	_, err := r.db.Exec(ctx,
-		`UPDATE abuse_events SET resolved = true, resolved_by = $1, resolved_at = NOW() WHERE id = $2`,
-		adminID, eventID,
-	)
+// GetByID returns a single abuse event by id, or nil if not found. Used by the
+// resolve handler to resolve the event's domain for scope enforcement (R2).
+func (r *AbuseRepo) GetByID(ctx context.Context, id string) (*AbuseEvent, error) {
+	var e AbuseEvent
+	err := r.db.QueryRow(ctx,
+		`SELECT id, domain_id, mailbox_id, event_type, severity, details, action, resolved, resolved_by, resolved_at, created_at
+		 FROM abuse_events WHERE id = $1`, id,
+	).Scan(&e.ID, &e.DomainID, &e.MailboxID, &e.EventType, &e.Severity, &e.Details, &e.Action, &e.Resolved, &e.ResolvedBy, &e.ResolvedAt, &e.CreatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
+		return nil, fmt.Errorf("get abuse event: %w", err)
+	}
+	return &e, nil
+}
+
+// Resolve marks an abuse event as resolved. allowedDomainIDs is a
+// defense-in-depth domain guard (R5): nil = unrestricted; a non-nil slice
+// restricts the update to events whose domain_id is in the set, so a
+// handler-layer scope bug can't resolve another tenant's event.
+func (r *AbuseRepo) Resolve(ctx context.Context, eventID, adminID string, allowedDomainIDs []string) error {
+	q := `UPDATE abuse_events SET resolved = true, resolved_by = $1, resolved_at = NOW() WHERE id = $2`
+	args := []any{adminID, eventID}
+	if allowedDomainIDs != nil {
+		q += ` AND domain_id = ANY($3)`
+		args = append(args, allowedDomainIDs)
+	}
+	if _, err := r.db.Exec(ctx, q, args...); err != nil {
 		return fmt.Errorf("resolve abuse event: %w", err)
 	}
 	return nil

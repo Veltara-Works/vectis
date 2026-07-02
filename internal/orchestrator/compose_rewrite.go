@@ -38,7 +38,10 @@ func RewriteComposeTags(composePath string, changes []PlanChange, backupPath str
 
 	// Always write the backup first, so rollback has a restoration target
 	// even if the rewrite partially completes and then fails mid-flight.
-	if err := writeAtomicFile(backupPath, content, 0o644); err != nil {
+	// The compose file and its backups bake in DB superuser + service-role
+	// passwords, so all writes here use 0600 rather than world-readable 0644
+	// (audit E-L1) — root reads them anyway.
+	if err := writeAtomicFile(backupPath, content, 0o600); err != nil {
 		return false, fmt.Errorf("backup compose: %w", err)
 	}
 
@@ -69,7 +72,7 @@ func RewriteComposeTags(composePath string, changes []PlanChange, backupPath str
 		return false, nil
 	}
 
-	if err := writeAtomicFile(composePath, []byte(rewritten), 0o644); err != nil {
+	if err := writeAtomicFile(composePath, []byte(rewritten), 0o600); err != nil {
 		return false, fmt.Errorf("write rewritten compose: %w", err)
 	}
 	return true, nil
@@ -116,7 +119,7 @@ func RegenerateCompose(
 
 	// Always write the backup first so rollback has a restoration target
 	// even if the rewrite fails midway through atomic-rename.
-	if err := writeAtomicFile(backupPath, current, 0o644); err != nil {
+	if err := writeAtomicFile(backupPath, current, 0o600); err != nil {
 		return false, fmt.Errorf("backup compose: %w", err)
 	}
 
@@ -137,7 +140,7 @@ func RegenerateCompose(
 		return false, nil
 	}
 
-	if err := writeAtomicFile(composePath, generated, 0o644); err != nil {
+	if err := writeAtomicFile(composePath, generated, 0o600); err != nil {
 		return false, fmt.Errorf("write regenerated compose: %w", err)
 	}
 	return true, nil
@@ -155,7 +158,7 @@ func RestoreComposeBackup(composePath, backupPath string) error {
 		}
 		return fmt.Errorf("read compose backup: %w", err)
 	}
-	if err := writeAtomicFile(composePath, data, 0o644); err != nil {
+	if err := writeAtomicFile(composePath, data, 0o600); err != nil {
 		return fmt.Errorf("restore compose: %w", err)
 	}
 	return nil

@@ -11,7 +11,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/Veltara-Works/vectis/internal/auth"
 	"github.com/Veltara-Works/vectis/internal/dkim"
 	"github.com/Veltara-Works/vectis/internal/engine"
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -61,12 +60,16 @@ func (req *updateDomainRequest) usesAdvancedSpamFields() bool {
 }
 
 func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
-	// domain_admin: return only assigned domains (no pagination, small set).
-	if getAdminRole(r.Context()) == auth.RoleDomainAdmin {
-		allowedIDs := s.getAllowedDomainIDs(r.Context())
+	// Restricted principals return only their in-scope domains. This covers
+	// domain_admin AND any scoped API key regardless of the owner's role —
+	// getAllowedDomainIDs returns a non-nil allow-list for both, and nil only
+	// for genuinely unrestricted principals. Branching on the resolved scope
+	// (not role) is the K1/B3 fix: an admin-owned scoped key previously fell
+	// through to the all-domains ListPaginated path below.
+	if allowedIDs := s.getAllowedDomainIDs(r.Context()); allowedIDs != nil {
 		domains, err := s.domains.ListByIDs(r.Context(), allowedIDs)
 		if err != nil {
-			s.logger.Error("list domains for domain_admin failed", "error", err)
+			s.logger.Error("list domains for restricted principal failed", "error", err)
 			respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list domains")
 			return
 		}

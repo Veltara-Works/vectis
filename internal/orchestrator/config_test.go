@@ -134,3 +134,34 @@ func TestVectisImageServices_MatchesComposeTemplate(t *testing.T) {
 		t.Errorf("VectisImageServices lists services absent from compose template: %v — remove from config.go", strandedInList)
 	}
 }
+
+// TestConfigValidate_SingleComposeFile locks the E-M1 invariant: the
+// orchestrator supports exactly one compose file, because tag-rewrite / regen /
+// restore / self-heal all operate on ComposePaths[0] only. A zero- or
+// multi-file layout must fail closed rather than silently strand file[1..].
+func TestConfigValidate_SingleComposeFile(t *testing.T) {
+	base := DefaultConfig()
+
+	if err := base.Validate(); err != nil {
+		t.Fatalf("default config (one compose file) should validate: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		paths []string
+	}{
+		{"none", nil},
+		{"empty slice", []string{}},
+		{"two files", []string{"/etc/vectis/docker-compose.yml", "/etc/vectis/docker-compose.mail.yml"}},
+		{"blank path", []string{"   "}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := DefaultConfig()
+			c.ComposePaths = tc.paths
+			if err := c.Validate(); err == nil {
+				t.Fatalf("expected Validate to reject ComposePaths=%v", tc.paths)
+			}
+		})
+	}
+}
