@@ -60,6 +60,21 @@ jobs:
           sha256sum vectis-linux-amd64 | tee vectis-linux-amd64.sha256
           echo "sha256=$(awk '{print $1}' vectis-linux-amd64.sha256)" >> "$GITHUB_OUTPUT"
 
+      # Sign the binary with the OFFLINE Ed25519 release key (audit E-H3). Unlike
+      # the same-origin SHA256 (transport integrity only) and keyless cosign
+      # (verified via an external tool the host doesn't ship), this signature is
+      # verified in-process by `vectis update` against a public key compiled into
+      # the binary — the real supply-chain gate against a dl.vectismail.com / DNS
+      # / TLS compromise. The private key never leaves this secret.
+      - name: Sign binary with the offline release key (Ed25519)
+        env:
+          VECTIS_RELEASE_SIGNING_KEY: ${{ secrets.VECTIS_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${VECTIS_RELEASE_SIGNING_KEY:-}"   # fail the release if the secret is unset
+          go run ./cmd/release-sign vectis-linux-amd64 > vectis-linux-amd64.ed25519
+          test -s vectis-linux-amd64.ed25519
+
       # Generate a Software Bill of Materials for the shipped binary. Syft's
       # go-module-binary cataloger reads the build info embedded by the Go
       # toolchain (same source as `go version -m`), so the SBOM lists the exact
@@ -111,8 +126,9 @@ jobs:
           STABLE=true
           if [[ "$VERSION" == *-rc* || "$VERSION" == *-beta* ]]; then STABLE=false; fi
 
-          # Binary + checksum + SBOM + their cosign bundles
+          # Binary + checksum + Ed25519 signature + SBOM + their cosign bundles
           for obj in vectis-linux-amd64 vectis-linux-amd64.sha256 \
+                     vectis-linux-amd64.ed25519 \
                      vectis-linux-amd64.cosign.bundle \
                      vectis-linux-amd64.sha256.cosign.bundle \
                      vectis-linux-amd64.spdx.json \
@@ -154,6 +170,7 @@ jobs:
           path: |
             vectis-linux-amd64
             vectis-linux-amd64.sha256
+            vectis-linux-amd64.ed25519
             vectis-linux-amd64.cosign.bundle
             vectis-linux-amd64.sha256.cosign.bundle
             vectis-linux-amd64.spdx.json
@@ -274,6 +291,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Needed to sign the release manifest with cmd/release-sign (audit E-H2).
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: vectis-linux-amd64
@@ -356,8 +379,10 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          VECTIS_RELEASE_SIGNING_KEY: ${{ secrets.VECTIS_RELEASE_SIGNING_KEY }}
         run: |
           set -euo pipefail
+          test -n "${VECTIS_RELEASE_SIGNING_KEY:-}"   # fail the release if the secret is unset
           # Release-channel manifests consumed by running orchestrators
           # during Plan (see internal/orchestrator/releases.go).
           #
@@ -385,17 +410,34 @@ jobs:
             "channel": "${CHANNEL}"
           }
           JSON
+
+          # Sign the exact manifest bytes with the offline Ed25519 release key so
+          # the orchestrator can authenticate the manifest before trusting its
+          # `latest` tag (audit E-H2). The signature is served alongside the
+          # manifest at <manifest>.ed25519.
+          go run ./cmd/release-sign "$CHANNEL_FILE" > "$CHANNEL_FILE.ed25519"
+          test -s "$CHANNEL_FILE.ed25519"
+
           aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
             "$CHANNEL_FILE" "s3://$R2_BUCKET/$CHANNEL_FILE" \
             --content-type application/json \
             --cache-control "max-age=300"
+          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+            "$CHANNEL_FILE.ed25519" "s3://$R2_BUCKET/$CHANNEL_FILE.ed25519" \
+            --content-type text/plain \
+            --cache-control "max-age=300"
 
-          # On stable tags ONLY, also publish releases.json (legacy alias)
-          # so existing orchestrators continue to receive stable updates.
+          # On stable tags ONLY, also publish releases.json (legacy alias) + its
+          # signature so existing orchestrators continue to receive stable
+          # updates. The alias is byte-identical, so the same signature applies.
           if [[ "$CHANNEL" == "stable" ]]; then
             aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
               "$CHANNEL_FILE" "s3://$R2_BUCKET/releases.json" \
               --content-type application/json \
+              --cache-control "max-age=300"
+            aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+              "$CHANNEL_FILE.ed25519" "s3://$R2_BUCKET/releases.json.ed25519" \
+              --content-type text/plain \
               --cache-control "max-age=300"
           fi
 

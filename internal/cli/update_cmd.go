@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
+	"github.com/Veltara-Works/vectis/internal/releasesign"
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
 	"github.com/Veltara-Works/vectis/internal/version"
 )
@@ -635,9 +636,10 @@ func refreshCLIBinary() (string, error) {
 		return fmt.Sprintf("already at %s", manifest.Latest), nil
 	}
 
-	// 2. Download binary + checksum.
+	// 2. Download binary + checksum + release signature.
 	binURL := fmt.Sprintf("%s/%s/vectis-linux-amd64", vectisDownloadBase, manifest.Latest)
 	shaURL := binURL + ".sha256"
+	sigURL := binURL + ".ed25519"
 
 	tmpDir, err := os.MkdirTemp("", "vectis-update-")
 	if err != nil {
@@ -664,7 +666,8 @@ func refreshCLIBinary() (string, error) {
 	}
 	expectedSHA := strings.TrimSpace(strings.Fields(string(shaBytes))[0])
 
-	// 3. Verify checksum.
+	// 3. Verify checksum (transport-integrity only — same origin as the binary,
+	// so it defends against a truncated download, not a hostile origin).
 	binBytes, err := os.ReadFile(tmpBin)
 	if err != nil {
 		return "", fmt.Errorf("read downloaded binary: %w", err)
@@ -672,6 +675,29 @@ func refreshCLIBinary() (string, error) {
 	actualSHA := hex.EncodeToString(sha256Sum(binBytes))
 	if actualSHA != expectedSHA {
 		return "", fmt.Errorf("checksum mismatch (expected %s, got %s)", expectedSHA, actualSHA)
+	}
+
+	// 3b. Verify the offline Ed25519 release signature over the binary before
+	// installing it (audit E-H3). This is the real supply-chain gate: unlike the
+	// same-origin SHA256, the signature cannot be forged by a compromise of
+	// dl.vectismail.com / DNS / TLS — only the holder of the offline release key
+	// can produce it. FAIL CLOSED: a missing, unreadable, or invalid signature
+	// (or a binary built without an embedded public key) refuses the install
+	// rather than swapping in an unverified binary at /usr/local/bin/vectis.
+	sigResp, err := httpClient.Get(sigURL)
+	if err != nil {
+		return "", fmt.Errorf("download release signature %s: %w", sigURL, err)
+	}
+	sigBytes, err := io.ReadAll(io.LimitReader(sigResp.Body, 4096))
+	sigResp.Body.Close()
+	if err != nil {
+		return "", fmt.Errorf("read release signature %s: %w", sigURL, err)
+	}
+	if sigResp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("release signature %s returned HTTP %d (refusing unsigned self-update)", sigURL, sigResp.StatusCode)
+	}
+	if err := releasesign.Verify(binBytes, string(sigBytes)); err != nil {
+		return "", fmt.Errorf("release signature verification failed for %s: %w (refusing self-update)", binURL, err)
 	}
 
 	// 4. Make executable and install into place. Linux allows renaming a
