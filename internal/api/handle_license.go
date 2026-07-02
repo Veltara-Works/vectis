@@ -3,12 +3,46 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/validonx"
 )
+
+// validateLicenseBaseURL hardens the admin-settable ValidonX base_url against
+// SSRF / service-key exfiltration (audit C-h1). The service_key is sent to this
+// host as X-API-Key, so a super_admin (or a CSRF against one) must not be able
+// to aim it at cloud-metadata or internal-network endpoints. Loopback is
+// allowed as a local dev/self-host escape hatch; every other host must be https
+// and must not be a private, link-local, or unspecified address literal.
+func validateLicenseBaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("base_url must be a valid absolute http(s) URL")
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() {
+			return nil
+		}
+		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+			ip.IsUnspecified() || ip.IsInterfaceLocalMulticast() {
+			return fmt.Errorf("base_url must not point at a private or link-local address")
+		}
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("base_url must use https")
+	}
+	return nil
+}
 
 // licenseStateResponse is the shape returned by GET / POST / DELETE /api/v1/license.
 type licenseStateResponse struct {
@@ -183,6 +217,10 @@ func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
 	}
 	if merged.BaseURL == "" {
 		merged.BaseURL = validonx.DefaultBaseURL
+	}
+	if err := validateLicenseBaseURL(merged.BaseURL); err != nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_BASE_URL", err.Error())
+		return
 	}
 
 	if !merged.IsConfigured() {
