@@ -63,6 +63,26 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R4 (finding C1): a scoped API key must not mint a broader key. A scoped
+	// caller may only create keys scoped to a subset of its own domains — never
+	// an unscoped ("all domains") key. Session auth and unscoped-key callers are
+	// unrestricted here (their reach is still clamped at use-time by
+	// getAllowedDomainIDs / canAccessDomain).
+	if callerScope, isKey := getAPIKeyScope(r.Context()); isKey && len(callerScope) > 0 {
+		if len(req.ScopedDomainIDs) == 0 {
+			respondError(w, r, http.StatusForbidden, "SCOPE_ESCALATION",
+				"A scoped API key cannot create an unscoped API key")
+			return
+		}
+		for _, d := range req.ScopedDomainIDs {
+			if !domainInScope(callerScope, d) {
+				respondError(w, r, http.StatusForbidden, "SCOPE_ESCALATION",
+					"New API key scope must be within the calling key's domain scope")
+				return
+			}
+		}
+	}
+
 	rawKey, keyHash, keyPrefix, err := auth.GenerateAPIKey()
 	if err != nil {
 		s.logger.Error("generate api key failed", "error", err)

@@ -31,9 +31,17 @@ func (s *Server) handleAbuseDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R2: restrict the per-domain rate display to the caller's domain scope —
+	// this handler previously emitted rates + names for every active domain
+	// regardless of an API key's ScopedDomainIDs (cross-tenant send-rate leak).
+	allowedSet, unrestricted := s.domainFilter(ctx)
+
 	var rates []domainRate
 	if s.abuseDetector != nil {
 		for _, d := range domains {
+			if !unrestricted && !allowedSet[d.ID] {
+				continue
+			}
 			count, _ := s.abuseDetector.GetDomainHourlyCount(ctx, d.ID)
 			if count > 0 {
 				rates = append(rates, domainRate{
@@ -53,6 +61,7 @@ func (s *Server) handleAbuseDashboard(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("list abuse events for dashboard failed", "error", err)
 		events = []repository.AbuseEvent{}
 	}
+	events = s.filterAbuseEventsByScope(ctx, events)
 	if events == nil {
 		events = []repository.AbuseEvent{}
 	}

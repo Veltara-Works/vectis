@@ -922,18 +922,41 @@ func (s *Server) buildRouter() chi.Router {
 			r.Delete("/auth/oidc/disconnect", s.handleOIDCDisconnect)
 			r.Post("/auth/saml/disconnect", s.handleSAMLDisconnect)
 
-			// Domains — all roles (domain_admin scoped in handlers).
+			// Domains collection — list + create (all roles; scoping in handler).
 			r.Get("/domains", s.handleListDomains)
-			r.Get("/domains/{domainID}", s.handleGetDomain)
-			r.Get("/domains/{domainID}/dkim", s.handleGetDKIM)
-			r.Get("/domains/{domainID}/deliverability", s.handleDeliverability)
-			// Domain mutations — admin and super_admin only.
 			r.With(requireAdminOrAbove()).Post("/domains", s.handleCreateDomain)
-			r.With(requireAdminOrAbove()).Patch("/domains/{domainID}", s.handleUpdateDomain)
-			r.With(requireAdminOrAbove()).Delete("/domains/{domainID}", s.handleDeleteDomain)
-			r.With(requireAdminOrAbove()).Post("/domains/{domainID}/dkim/generate", s.handleGenerateDKIM)
-			r.With(requireAdminOrAbove()).Post("/domains/{domainID}/dkim/rotate", s.handleRotateDKIM)
-			r.With(requireAdminOrAbove()).Post("/domains/{domainID}/verify", s.handleVerifyDomain)
+
+			// Domain-scoped subtree. requireDomainAccess is the single R1 choke
+			// point: every /domains/{domainID}/... route — current and future —
+			// inherits API-key-scope + domain_admin enforcement, so no handler
+			// can silently skip it (the #119 scope class). Per-route RBAC and
+			// Pro feature gates layer on top. advancedSpamGate is defined here
+			// (was inline below) so the spam-list routes can join the subtree.
+			advancedSpamGate := s.featureGate.FeatureGate(validonx.FeatureAdvancedSpam)
+			r.Route("/domains/{domainID}", func(r chi.Router) {
+				r.Use(s.requireDomainAccess)
+
+				// Reads — all roles (scope already enforced by the choke point).
+				r.Get("/", s.handleGetDomain)
+				r.Get("/dkim", s.handleGetDKIM)
+				r.Get("/deliverability", s.handleDeliverability)
+
+				// Mutations — admin and super_admin only.
+				r.With(requireAdminOrAbove()).Patch("/", s.handleUpdateDomain)
+				r.With(requireAdminOrAbove()).Delete("/", s.handleDeleteDomain)
+				r.With(requireAdminOrAbove()).Post("/dkim/generate", s.handleGenerateDKIM)
+				r.With(requireAdminOrAbove()).Post("/dkim/rotate", s.handleRotateDKIM)
+				r.With(requireAdminOrAbove()).Post("/verify", s.handleVerifyDomain)
+
+				// Per-domain allow/block lists — Pro feature (Advanced Spam).
+				// The field-level extensions to PATCH /domains/{id}
+				// (reject_threshold, greylist_enabled) stay in handle_domains.go
+				// since the domain CRUD route must remain open to Free for
+				// ungated fields like spam_threshold.
+				r.With(advancedSpamGate, requireAdminOrAbove()).Get("/spam-lists", s.handleListSpamListEntries)
+				r.With(advancedSpamGate, requireAdminOrAbove()).Post("/spam-lists", s.handleCreateSpamListEntry)
+				r.With(advancedSpamGate, requireAdminOrAbove()).Delete("/spam-lists/{entryID}", s.handleDeleteSpamListEntry)
+			})
 
 			// Mailboxes — all roles (domain_admin scoped in handlers).
 			r.Get("/mailboxes", s.handleListMailboxes)
@@ -1024,16 +1047,6 @@ func (s *Server) buildRouter() chi.Router {
 			// 30-day grace: 403 LICENSE_EXPIRED.
 			r.With(s.featureGate.FeatureGate(validonx.FeatureAnalytics)).
 				Get("/analytics", s.handleDomainAnalytics)
-
-			// Per-domain allow/block lists — Pro feature (Advanced Spam).
-			// Whole subtree gated; the field-level extensions to PATCH
-			// /domains/{id} (reject_threshold, greylist_enabled) live in
-			// handle_domains.go since the domain CRUD route itself must
-			// stay open to Free for ungated fields like spam_threshold.
-			advancedSpamGate := s.featureGate.FeatureGate(validonx.FeatureAdvancedSpam)
-			r.With(advancedSpamGate, requireAdminOrAbove()).Get("/domains/{domainID}/spam-lists", s.handleListSpamListEntries)
-			r.With(advancedSpamGate, requireAdminOrAbove()).Post("/domains/{domainID}/spam-lists", s.handleCreateSpamListEntry)
-			r.With(advancedSpamGate, requireAdminOrAbove()).Delete("/domains/{domainID}/spam-lists/{entryID}", s.handleDeleteSpamListEntry)
 
 			// License management — super_admin only. The License page is
 			// where customers paste their ValidonX subscription_id post-checkout

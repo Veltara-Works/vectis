@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Veltara-Works/vectis/internal/types"
@@ -128,6 +129,23 @@ func (r *AbuseRepo) ListRecent(ctx context.Context, limit int) ([]AbuseEvent, er
 	}
 	defer rows.Close()
 	return scanAbuseEvents(rows)
+}
+
+// GetByID returns a single abuse event by id, or nil if not found. Used by the
+// resolve handler to resolve the event's domain for scope enforcement (R2).
+func (r *AbuseRepo) GetByID(ctx context.Context, id string) (*AbuseEvent, error) {
+	var e AbuseEvent
+	err := r.db.QueryRow(ctx,
+		`SELECT id, domain_id, mailbox_id, event_type, severity, details, action, resolved, resolved_by, resolved_at, created_at
+		 FROM abuse_events WHERE id = $1`, id,
+	).Scan(&e.ID, &e.DomainID, &e.MailboxID, &e.EventType, &e.Severity, &e.Details, &e.Action, &e.Resolved, &e.ResolvedBy, &e.ResolvedAt, &e.CreatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get abuse event: %w", err)
+	}
+	return &e, nil
 }
 
 // Resolve marks an abuse event as resolved.

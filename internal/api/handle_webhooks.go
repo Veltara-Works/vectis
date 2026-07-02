@@ -61,8 +61,18 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R2: drop webhooks outside the caller's domain scope. ListAll returns every
+	// tenant's rows (endpoint URLs + domain_id); a scoped key must only see its
+	// own domains' webhooks. Global webhooks (nil DomainID) are visible only to
+	// unrestricted callers (session / unscoped key / all-domains admin).
+	allowedSet, unrestricted := s.domainFilter(r.Context())
 	views := make([]webhookView, 0, len(webhooks))
 	for _, wh := range webhooks {
+		if !unrestricted {
+			if wh.DomainID == nil || !allowedSet[*wh.DomainID] {
+				continue
+			}
+		}
 		views = append(views, toWebhookView(wh))
 	}
 	respond(w, r, http.StatusOK, views)
@@ -151,6 +161,30 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	webhookID := chi.URLParam(r, "webhookID")
+
+	// R2: resolve the row's domain and enforce scope before deleting — this was
+	// a by-id delete with no ownership check (finding A6: delete any tenant's
+	// webhook). A domain-scoped webhook must pass canAccessDomain; a global
+	// webhook (nil DomainID) may only be deleted by an unrestricted caller.
+	wh, err := s.webhooks.GetByID(r.Context(), webhookID)
+	if err != nil {
+		s.logger.Error("get webhook failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get webhook")
+		return
+	}
+	if wh == nil {
+		respondError(w, r, http.StatusNotFound, "NOT_FOUND", "Webhook not found")
+		return
+	}
+	if wh.DomainID != nil {
+		if !s.canAccessDomain(r.Context(), *wh.DomainID) {
+			respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this webhook")
+			return
+		}
+	} else if _, unrestricted := s.domainFilter(r.Context()); !unrestricted {
+		respondError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have access to this webhook")
+		return
+	}
 
 	deleted, err := s.webhooks.Delete(r.Context(), webhookID)
 	if err != nil {
