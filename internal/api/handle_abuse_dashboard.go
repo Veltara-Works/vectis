@@ -56,12 +56,13 @@ func (s *Server) handleAbuseDashboard(w http.ResponseWriter, r *http.Request) {
 		rates = []domainRate{}
 	}
 
-	events, err := s.abuseEvents.ListRecent(ctx, 20)
+	// Scope recent events at the DB layer (R2 + K4): pass the caller's allow-list
+	// (nil = unrestricted) so the domain filter applies before the LIMIT.
+	events, err := s.abuseEvents.ListRecent(ctx, 20, s.getAllowedDomainIDs(ctx))
 	if err != nil {
 		s.logger.Error("list abuse events for dashboard failed", "error", err)
 		events = []repository.AbuseEvent{}
 	}
-	events = s.filterAbuseEventsByScope(ctx, events)
 	if events == nil {
 		events = []repository.AbuseEvent{}
 	}

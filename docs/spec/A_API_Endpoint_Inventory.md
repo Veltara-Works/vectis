@@ -48,7 +48,7 @@ Auth column legend used throughout: `none` = public; `session` = signed admin se
 |--------|----------|---------|------|
 | GET | /api/v1/health | System health summary | none |
 | GET | /api/v1/version | Vectis version + per-container image tags | none |
-| GET | /api/v1/metrics/prometheus | Prometheus scrape endpoint (collector registered in `internal/metrics`) | none |
+| GET | /api/v1/metrics/prometheus | Prometheus scrape endpoint (collector registered in `internal/metrics`) | super_admin |
 | POST | /api/v1/auth/login | Authenticate admin, return session cookie | none |
 | POST | /api/v1/auth/reset-request | Request password-reset email | none |
 | POST | /api/v1/auth/reset-password | Complete password reset with token | none |

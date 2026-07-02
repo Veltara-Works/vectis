@@ -71,13 +71,24 @@ func (r *FBLReportRepo) ListByDomain(ctx context.Context, domainID string, limit
 }
 
 // ListRecent returns recent FBL reports across all domains.
-func (r *FBLReportRepo) ListRecent(ctx context.Context, limit int) ([]FBLReport, error) {
+// ListRecent returns recent FBL reports. allowedDomainIDs scopes the result at
+// the DB layer (nil = unrestricted): the domain filter is applied in the WHERE
+// before the LIMIT so a scoped caller sees their most recent complaints, not
+// whatever survives a global top-N cut (K3, same class as the abuse fix).
+func (r *FBLReportRepo) ListRecent(ctx context.Context, limit int, allowedDomainIDs []string) ([]FBLReport, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := r.db.Query(ctx,
-		`SELECT id, domain_id, mailbox_id, original_message_id, reporter_domain, complaint_type, feedback_id, details, created_at
-		 FROM fbl_reports ORDER BY created_at DESC LIMIT $1`, limit)
+	q := `SELECT id, domain_id, mailbox_id, original_message_id, reporter_domain, complaint_type, feedback_id, details, created_at
+		 FROM fbl_reports`
+	args := []any{}
+	if allowedDomainIDs != nil {
+		args = append(args, allowedDomainIDs)
+		q += fmt.Sprintf(" WHERE domain_id = ANY($%d)", len(args))
+	}
+	args = append(args, limit)
+	q += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args))
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list recent fbl reports: %w", err)
 	}

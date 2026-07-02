@@ -102,13 +102,24 @@ func (r *AbuseRepo) IsMailboxSuspended(ctx context.Context, mailboxID string) (b
 }
 
 // ListUnresolved returns unresolved abuse events.
-func (r *AbuseRepo) ListUnresolved(ctx context.Context, limit int) ([]AbuseEvent, error) {
+// ListUnresolved returns unresolved abuse events. allowedDomainIDs scopes the
+// result at the DB layer (nil = unrestricted): the domain filter is applied in
+// the WHERE clause BEFORE the LIMIT, so a scoped caller sees their most recent
+// events, not whatever survives a global top-N cut (K4).
+func (r *AbuseRepo) ListUnresolved(ctx context.Context, limit int, allowedDomainIDs []string) ([]AbuseEvent, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := r.db.Query(ctx,
-		`SELECT id, domain_id, mailbox_id, event_type, severity, details, action, resolved, resolved_by, resolved_at, created_at
-		 FROM abuse_events WHERE resolved = false ORDER BY created_at DESC LIMIT $1`, limit)
+	q := `SELECT id, domain_id, mailbox_id, event_type, severity, details, action, resolved, resolved_by, resolved_at, created_at
+		 FROM abuse_events WHERE resolved = false`
+	args := []any{}
+	if allowedDomainIDs != nil {
+		args = append(args, allowedDomainIDs)
+		q += fmt.Sprintf(" AND domain_id = ANY($%d)", len(args))
+	}
+	args = append(args, limit)
+	q += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args))
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list unresolved abuse events: %w", err)
 	}
@@ -117,13 +128,22 @@ func (r *AbuseRepo) ListUnresolved(ctx context.Context, limit int) ([]AbuseEvent
 }
 
 // ListRecent returns recent abuse events (resolved and unresolved).
-func (r *AbuseRepo) ListRecent(ctx context.Context, limit int) ([]AbuseEvent, error) {
+// allowedDomainIDs scopes the result at the DB layer (nil = unrestricted),
+// filtering before the LIMIT — see ListUnresolved (K4).
+func (r *AbuseRepo) ListRecent(ctx context.Context, limit int, allowedDomainIDs []string) ([]AbuseEvent, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := r.db.Query(ctx,
-		`SELECT id, domain_id, mailbox_id, event_type, severity, details, action, resolved, resolved_by, resolved_at, created_at
-		 FROM abuse_events ORDER BY created_at DESC LIMIT $1`, limit)
+	q := `SELECT id, domain_id, mailbox_id, event_type, severity, details, action, resolved, resolved_by, resolved_at, created_at
+		 FROM abuse_events`
+	args := []any{}
+	if allowedDomainIDs != nil {
+		args = append(args, allowedDomainIDs)
+		q += fmt.Sprintf(" WHERE domain_id = ANY($%d)", len(args))
+	}
+	args = append(args, limit)
+	q += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args))
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list recent abuse events: %w", err)
 	}

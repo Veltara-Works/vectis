@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -9,42 +8,30 @@ import (
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
-// filterAbuseEventsByScope drops abuse events outside the caller's domain scope
-// (R2 — the list paths did no scope check, leaking cross-tenant abuse data to a
-// scoped key). Events with no domain (system-level) are visible only to
-// unrestricted callers.
-func (s *Server) filterAbuseEventsByScope(ctx context.Context, events []repository.AbuseEvent) []repository.AbuseEvent {
-	set, unrestricted := s.domainFilter(ctx)
-	if unrestricted {
-		return events
-	}
-	out := make([]repository.AbuseEvent, 0, len(events))
-	for _, e := range events {
-		if e.DomainID != nil && set[*e.DomainID] {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
 // --- GET /api/v1/abuse/events ---
 
 func (s *Server) handleListAbuseEvents(w http.ResponseWriter, r *http.Request) {
 	unresolvedOnly := r.URL.Query().Get("unresolved") == "true"
 
+	// Scope the query at the DB layer (R2 + K4): getAllowedDomainIDs is nil for
+	// unrestricted principals (all domains) and a non-nil allow-list otherwise,
+	// applied in the WHERE before the LIMIT so a scoped caller isn't truncated
+	// by a global top-N.
+	allowed := s.getAllowedDomainIDs(r.Context())
+
 	var events []repository.AbuseEvent
 	var err error
 	if unresolvedOnly {
-		events, err = s.abuseEvents.ListUnresolved(r.Context(), 100)
+		events, err = s.abuseEvents.ListUnresolved(r.Context(), 100, allowed)
 	} else {
-		events, err = s.abuseEvents.ListRecent(r.Context(), 100)
+		events, err = s.abuseEvents.ListRecent(r.Context(), 100, allowed)
 	}
 	if err != nil {
 		s.logger.Error("list abuse events failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list abuse events")
 		return
 	}
-	respond(w, r, http.StatusOK, s.filterAbuseEventsByScope(r.Context(), events))
+	respond(w, r, http.StatusOK, events)
 }
 
 // --- POST /api/v1/abuse/events/{eventID}/resolve ---

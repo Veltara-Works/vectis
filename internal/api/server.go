@@ -850,7 +850,12 @@ func (s *Server) buildRouter() chi.Router {
 		// Public endpoints.
 		r.Get("/health", s.handleHealth)
 		r.Get("/version", s.handleVersion)
-		r.Handle("/metrics/prometheus", promhttp.Handler())
+		// NOTE: /metrics/prometheus is NOT public — it is registered behind
+		// requireSuperAdmin in the authenticated group below (G-M2). The bare
+		// promhttp collector exposes cross-tenant domain/mailbox/admin counts,
+		// so it must not be reachable unauthenticated. No bundled service
+		// scrapes it; an external scraper authenticates with a super_admin
+		// API-key bearer token.
 		r.With(chimw.Throttle(5)).Post("/auth/login", s.handleLogin)
 		r.With(chimw.Throttle(3)).Post("/auth/reset-request", s.handleRequestPasswordReset)
 		r.With(chimw.Throttle(3)).Post("/auth/reset-password", s.handleResetPassword)
@@ -1119,6 +1124,9 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Get("/health/{service}", s.handleServiceHealth)
 			r.With(requireSuperAdmin()).Get("/logs/{service}", s.handleServiceLogs)
 			r.With(requireSuperAdmin()).Get("/metrics", s.handleMetrics)
+			// Prometheus scrape endpoint — super_admin only (G-M2). External
+			// scrapers pass a super_admin API-key bearer token.
+			r.With(requireSuperAdmin()).Handle("/metrics/prometheus", promhttp.Handler())
 
 			// Alerts — super_admin only.
 			r.With(requireSuperAdmin()).Get("/alerts", s.handleListAlerts)

@@ -63,21 +63,27 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// R4 (finding C1): a scoped API key must not mint a broader key. A scoped
-	// caller may only create keys scoped to a subset of its own domains — never
-	// an unscoped ("all domains") key. Session auth and unscoped-key callers are
-	// unrestricted here (their reach is still clamped at use-time by
-	// getAllowedDomainIDs / canAccessDomain).
-	if callerScope, isKey := getAPIKeyScope(r.Context()); isKey && len(callerScope) > 0 {
+	// R4 (findings C1 + K2): the new key's scope must sit within the caller's own
+	// effective domain scope. getAllowedDomainIDs is nil only for genuinely
+	// unrestricted principals (session/unscoped-key super_admin or admin), who
+	// may create any scope; otherwise it is the caller's allow-list — a scoped
+	// API key's ScopedDomainIDs (via R3) or a domain_admin's junction. A
+	// restricted caller may only mint a key scoped to a subset of that list, and
+	// never an unscoped ("all domains") key.
+	if allowed := s.getAllowedDomainIDs(r.Context()); allowed != nil {
 		if len(req.ScopedDomainIDs) == 0 {
 			respondError(w, r, http.StatusForbidden, "SCOPE_ESCALATION",
-				"A scoped API key cannot create an unscoped API key")
+				"You cannot create an unscoped API key")
 			return
 		}
+		allowedSet := make(map[string]bool, len(allowed))
+		for _, d := range allowed {
+			allowedSet[d] = true
+		}
 		for _, d := range req.ScopedDomainIDs {
-			if !domainInScope(callerScope, d) {
+			if !allowedSet[d] {
 				respondError(w, r, http.StatusForbidden, "SCOPE_ESCALATION",
-					"New API key scope must be within the calling key's domain scope")
+					"New API key scope must be within your own domain scope")
 				return
 			}
 		}
