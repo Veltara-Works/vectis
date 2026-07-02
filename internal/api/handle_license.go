@@ -111,6 +111,14 @@ func (s *Server) currentTierAndFeatures(ctx context.Context) (string, []string) 
 	if err != nil || cached == nil {
 		return validonx.TierFree, []string{}
 	}
+	// Honour the authoritative Valid flag, mirroring GrantsFeature and
+	// validonx.ResolveTier (audit D-M1): a license ValidonX has marked
+	// invalid (revoked/suspended/past-dunning) with a surviving cache row
+	// must present as Free so the UI stops offering Pro/Enterprise
+	// affordances the server gate will now reject.
+	if !cached.LicenseData.Valid {
+		return validonx.TierFree, []string{}
+	}
 	return tierFromCachedFeatures(cached.Features), cached.Features
 }
 
