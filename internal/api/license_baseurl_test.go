@@ -1,6 +1,9 @@
 package api
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // TestValidateLicenseBaseURL locks the C-h1 SSRF hardening: the ValidonX
 // base_url (which carries the service_key) may only be https to a public host,
@@ -27,7 +30,7 @@ func TestValidateLicenseBaseURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateLicenseBaseURL(tc.raw)
+			err := validateLicenseBaseURL(context.Background(), tc.raw)
 			if tc.ok && err != nil {
 				t.Fatalf("expected %q to be accepted, got error: %v", tc.raw, err)
 			}

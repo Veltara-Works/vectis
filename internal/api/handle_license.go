@@ -30,7 +30,7 @@ func blockedBaseURLIP(ip net.IP) bool {
 // allowed as a local dev/self-host escape hatch; every other host must be https
 // and must not be — or resolve to — a private, link-local, or unspecified
 // address.
-func validateLicenseBaseURL(raw string) error {
+func validateLicenseBaseURL(ctx context.Context, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return fmt.Errorf("base_url must be a valid absolute http(s) URL")
@@ -56,7 +56,13 @@ func validateLicenseBaseURL(raw string) error {
 	// be an SSRF target (the outbound call just fails to connect), so a lookup
 	// error is not itself a rejection. This is a set-time check, not a defence
 	// against DNS rebinding (out of scope for this super_admin-gated setter).
-	if ips, lookupErr := net.LookupIP(host); lookupErr == nil {
+	//
+	// Bound the lookup with a deadline (audit §L L2): the default resolver has
+	// no timeout, so a hostile/authoritative nameserver could otherwise stall
+	// the super_admin's request indefinitely. 5s is ample for a set-time check.
+	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if ips, lookupErr := net.DefaultResolver.LookupIP(lookupCtx, "ip", host); lookupErr == nil {
 		for _, ip := range ips {
 			if ip.IsLoopback() || blockedBaseURLIP(ip) {
 				return fmt.Errorf("base_url host %q resolves to a private or link-local address", host)
@@ -248,7 +254,7 @@ func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
 	if merged.BaseURL == "" {
 		merged.BaseURL = validonx.DefaultBaseURL
 	}
-	if err := validateLicenseBaseURL(merged.BaseURL); err != nil {
+	if err := validateLicenseBaseURL(r.Context(), merged.BaseURL); err != nil {
 		respondError(w, r, http.StatusBadRequest, "INVALID_BASE_URL", err.Error())
 		return
 	}
