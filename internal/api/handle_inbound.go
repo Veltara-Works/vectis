@@ -200,25 +200,43 @@ func (s *Server) handleARFComplaint(deliveredDomainID string, notif inboundNotif
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Try to attribute the complaint to one of our managed domains (the
-	// originating domain, not the complainer's ISP domain).
+	// Attribute the complaint to one of our managed domains — but ONLY when we
+	// can prove it concerns a message we actually originated. The ARF body is
+	// attacker-controllable (any inbound email can carry a synthetic report
+	// naming Reported-Domain: victim.com), so trusting Reported-Domain alone
+	// lets an attacker forge a complaint + mail.complained webhook against
+	// another tenant (audit D-M3 cross-tenant FBL injection). The authoritative
+	// signal is the original message: it must exist in our store, be outbound,
+	// and — when the report names a domain — belong to that domain.
 	var (
 		originDomainID  *string
 		originMailboxID *string
+		verified        bool
 	)
-	if report.ReportedDomain != "" {
-		if d, err := s.domains.GetByName(ctx, report.ReportedDomain); err == nil && d != nil {
-			originDomainID = &d.ID
-			// Link to mailbox if the original sender matches one of ours.
-			if report.OriginalMailFrom != "" {
-				local := extractLocalPart(report.OriginalMailFrom)
-				if local != "" {
-					if mb, _ := s.mailboxes.GetByEmail(ctx, d.ID, local); mb != nil {
-						originMailboxID = &mb.ID
-					}
+	if report.OriginalMessageID != "" {
+		if om, err := s.messages.GetByMessageID(ctx, report.OriginalMessageID); err == nil &&
+			om != nil && om.Direction == "outbound" {
+			claimedID := ""
+			if report.ReportedDomain != "" {
+				if d, derr := s.domains.GetByName(ctx, report.ReportedDomain); derr == nil && d != nil {
+					claimedID = d.ID
 				}
 			}
+			// No Reported-Domain claim, or a claim that matches the domain we
+			// actually sent from → trust our own record for attribution.
+			if claimedID == "" || claimedID == om.DomainID {
+				did := om.DomainID
+				originDomainID = &did
+				originMailboxID = om.MailboxID
+				verified = true
+			}
 		}
+	}
+	if !verified {
+		s.logger.Warn("arf complaint not attributable to an outbound message; recording unattributed, not dispatching",
+			"message_id", notif.MessageID,
+			"reported_domain", report.ReportedDomain,
+			"original_message_id", report.OriginalMessageID)
 	}
 
 	// Persist the report. Details JSON carries every machine-readable field
@@ -253,13 +271,16 @@ func (s *Server) handleARFComplaint(deliveredDomainID string, notif inboundNotif
 		return
 	}
 
-	// Dispatch target: prefer the origin domain (subscribers to that domain
-	// care about complaints against their mail). Fall back to the domain
-	// that received the complaint so it isn't silently dropped.
-	dispatchDomainID := deliveredDomainID
-	if originDomainID != nil {
-		dispatchDomainID = *originDomainID
+	// Only dispatch mail.complained for a verified complaint, and only to the
+	// domain we proved originated the message. An unverified/forged report is
+	// recorded unattributed above but must NOT fire a webhook — firing to the
+	// delivered domain (the old fallback) is exactly the cross-tenant
+	// abuse-signal forgery D-M3 closes. The inbound is still delivered and
+	// processed through the normal mail.received webhooks.
+	if !verified || originDomainID == nil {
+		return
 	}
+	dispatchDomainID := *originDomainID
 
 	payload := map[string]any{
 		"feedback_type":       report.FeedbackType,
