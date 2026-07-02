@@ -195,10 +195,12 @@ func run(logger *slog.Logger) error {
 	}
 
 	// VECTIS_ORCH_COMPOSE_PATHS lets the operator point the orchestrator at the
-	// actually-deployed compose files. Useful when prod runs from a two-file
-	// setup (e.g. /opt/vectis/docker-compose.yml + docker-compose.mail.yml) that
-	// differs from the config-engine-generated /etc/vectis/docker-compose.yml.
-	// Colon-separated list, order matters (matches docker compose -f precedence).
+	// actually-deployed compose file when it differs from the config-engine-
+	// generated /etc/vectis/docker-compose.yml. Exactly ONE path is supported:
+	// tag-rewrite/regen/restore/self-heal only operate on the first path, so a
+	// multi-file layout is rejected at orchestrator start (Config.Validate,
+	// audit E-M1). Colon-separated parsing is retained only to give a clear
+	// "exactly one compose file" error instead of silently using file[0].
 	if raw := os.Getenv("VECTIS_ORCH_COMPOSE_PATHS"); raw != "" {
 		parts := strings.Split(raw, ":")
 		paths := make([]string, 0, len(parts))

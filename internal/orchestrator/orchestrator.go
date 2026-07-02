@@ -75,6 +75,9 @@ type Orchestrator struct {
 // New creates and initialises a new Orchestrator.
 // It recovers state from Postgres on startup (Spec D.4).
 func New(ctx context.Context, db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) (*Orchestrator, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("orchestrator config invalid: %w", err)
+	}
 	sm, err := NewStateMachine(ctx, db, vk, logger.With("component", "state_machine"))
 	if err != nil {
 		return nil, fmt.Errorf("init state machine: %w", err)

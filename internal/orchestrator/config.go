@@ -1,6 +1,32 @@
 package orchestrator
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Validate enforces orchestrator config invariants that must hold before any
+// Apply / rollback / self-heal can run safely. It is called from New so a
+// misconfiguration fails closed at boot rather than surfacing mid-upgrade.
+func (c Config) Validate() error {
+	// Single canonical compose file (audit E-M1). Tag-rewrite, RegenerateCompose,
+	// restore, self-replace and boot self-heal all operate on ComposePaths[0]
+	// only, while configHash covers every path. A multi-file layout therefore
+	// (a) silently leaves services defined in file[1..] on a stale/vulnerable
+	// image while Apply reports success, and (b) makes rollback restore an
+	// inconsistent pre/post mix with no clean recovery. Rather than partially
+	// iterate, the supported topology is exactly one compose file — this ruling
+	// supersedes the historical two-file escape hatch (see
+	// feedback_legacy_compose_two_file / feedback_cross_version_apply_strips_mounts).
+	if len(c.ComposePaths) != 1 {
+		return fmt.Errorf("orchestrator requires exactly one compose file (VECTIS_ORCH_COMPOSE_PATHS): got %d %v", len(c.ComposePaths), c.ComposePaths)
+	}
+	if strings.TrimSpace(c.ComposePaths[0]) == "" {
+		return fmt.Errorf("orchestrator compose path must not be empty")
+	}
+	return nil
+}
 
 // Config holds the orchestrator's runtime configuration.
 type Config struct {
