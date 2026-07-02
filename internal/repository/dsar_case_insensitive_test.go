@@ -91,6 +91,54 @@ func TestMessageDeleteBySubject_CaseInsensitive(t *testing.T) {
 	}
 }
 
+// U-1 (G-M1 gate): a mailbox provisioned with a mixed-case local part must still
+// resolve for a DSAR issued against the canonical lowercase address. The DSAR
+// resolve() gate calls GetByEmail (exact) then falls back to GetByEmailFold;
+// without the fold, erase/export 404 with ErrSubjectNotFound and nothing is
+// erased even though the repo-level SQL is case-insensitive.
+func TestMailboxGetByEmailFold_CaseInsensitive(t *testing.T) {
+	ctx := context.Background()
+	domainRepo := repository.NewDomainRepo(testPool)
+	repo := repository.NewMailboxRepo(testPool)
+
+	suffix := uniqueSuffix()
+	domain, err := domainRepo.Create(ctx, repository.DomainCreate{Name: "mbox-fold-" + suffix + ".test"})
+	if err != nil {
+		t.Fatalf("create domain: %v", err)
+	}
+	defer domainRepo.Delete(ctx, domain.ID)
+
+	mb, err := repo.Create(ctx, repository.MailboxCreate{
+		DomainID:     domain.ID,
+		LocalPart:    "John.Doe",
+		PasswordHash: "{PLAIN}dummy",
+	})
+	if err != nil {
+		t.Fatalf("create mailbox: %v", err)
+	}
+	defer repo.Delete(ctx, mb.ID)
+
+	// Exact-case lookup still works and is unaffected.
+	if got, err := repo.GetByEmail(ctx, domain.ID, "John.Doe"); err != nil || got == nil {
+		t.Fatalf("GetByEmail exact: got=%v err=%v", got, err)
+	}
+	// Canonical lowercase must miss the exact lookup...
+	if got, err := repo.GetByEmail(ctx, domain.ID, "john.doe"); err != nil || got != nil {
+		t.Fatalf("GetByEmail(lowercase) should miss exact-match: got=%v err=%v", got, err)
+	}
+	// ...but resolve via the fold lookup, returning the STORED mixed-case value.
+	got, err := repo.GetByEmailFold(ctx, domain.ID, "john.doe")
+	if err != nil {
+		t.Fatalf("GetByEmailFold: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetByEmailFold(john.doe) returned nil — mixed-case mailbox unresolvable for canonical DSAR (U-1)")
+	}
+	if got.LocalPart != "John.Doe" {
+		t.Errorf("GetByEmailFold.LocalPart = %q, want stored case John.Doe", got.LocalPart)
+	}
+}
+
 // G-M1b: forwarding-alias destinations are matched case-insensitively on erase
 // and export, mirroring the message fix.
 func TestAliasDeleteBySubject_CaseInsensitiveDestination(t *testing.T) {

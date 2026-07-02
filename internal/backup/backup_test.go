@@ -194,11 +194,12 @@ func TestRestoreDirectoryTruncatedArchiveKeepsTarget(t *testing.T) {
 		t.Errorf("config.yaml should be unchanged (still 'live'), got: %q", cfg)
 	}
 
-	// No staging/backup leftovers beside the target.
-	entries, _ := os.ReadDir(filepath.Dir(target))
+	// No staging leftovers inside the target (staging is created inside targetDir
+	// so it lands on the same filesystem, incl. a mountpoint target).
+	entries, _ := os.ReadDir(target)
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), ".vectis-restore-") {
-			t.Errorf("leftover restore temp not cleaned up: %s", e.Name())
+			t.Errorf("leftover restore staging not cleaned up: %s", e.Name())
 		}
 	}
 }
