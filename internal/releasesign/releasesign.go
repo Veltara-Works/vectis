@@ -24,11 +24,13 @@ import (
 )
 
 // PublicKeyB64 is the standard-base64 encoding of the 32-byte Ed25519 public
-// key that signs Vectis release artifacts. It is EMPTY until the release keypair
-// is generated for v0.1.39 (`go run ./cmd/release-sign -genkey`) and the public
-// half is pasted here. While empty, Verify fails closed (ErrNotConfigured) so a
-// binary built without the key can never silently accept an unsigned artifact.
-const PublicKeyB64 = ""
+// key that signs Vectis release artifacts. Generated for v0.1.39 via
+// `go run ./cmd/release-sign -genkey`; the matching private half lives ONLY as
+// the VECTIS_RELEASE_SIGNING_KEY GitHub Actions secret. If this is ever emptied,
+// Verify fails closed (ErrNotConfigured) so a binary built without the key can
+// never silently accept an unsigned artifact — release.yml enforces a non-empty
+// value before building a release (audit U-7).
+const PublicKeyB64 = "GYnHjxJS1l3QQmlZ9+36BuNwxtHh758C0X8jfy9IaN8="
 
 // ErrNotConfigured means this build has no embedded release public key, so no
 // signature can be trusted. Callers that gate an install/update on Verify must

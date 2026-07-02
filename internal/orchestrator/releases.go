@@ -6,11 +6,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Veltara-Works/vectis/internal/releasesign"
+)
+
+// Release-channel identifiers as published in a manifest's `channel` field and
+// as bound to the well-known manifest filenames (see ExpectedChannelForURL).
+const (
+	ChannelStable = "stable"
+	ChannelRC     = "rc"
 )
 
 // DefaultReleaseChannelURL is the well-known location of the Vectis release
@@ -23,8 +33,8 @@ const DefaultReleaseChannelURL = "https://dl.vectismail.com/releases.json"
 // lockstep tag applied to every vectis-* container image. `channel` lets
 // future manifests distinguish stable from rc without changing the URL.
 type ReleaseManifest struct {
-	Latest     string    `json:"latest"`           // e.g. "v0.1.0-rc24"
-	ReleasedAt time.Time `json:"released_at"`      // when the release workflow published the manifest
+	Latest     string    `json:"latest"`            // e.g. "v0.1.0-rc24"
+	ReleasedAt time.Time `json:"released_at"`       // when the release workflow published the manifest
 	Channel    string    `json:"channel,omitempty"` // "rc" or "stable"; optional
 }
 
@@ -39,20 +49,126 @@ const releaseServicePrefix = "ghcr.io/veltara-works/vectis-"
 // release manifest cannot drive the orchestrator to pull an arbitrary or
 // floating image (audit E-H2). This is the manifest→tag trust boundary; it does
 // not authenticate the manifest itself (that is the signature layer).
-var releaseTagRe = regexp.MustCompile(`^v\d+\.\d+\.\d+(-rc\d+)?$`)
+var releaseTagRe = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?$`)
 
 // validReleaseTag reports whether tag is a well-formed lockstep release tag.
+// Deliberately package-private; ValidReleaseTag is the exported alias reused by
+// other packages (e.g. internal/cli) so this regex stays the single source of
+// truth for the manifest→tag trust boundary.
 func validReleaseTag(tag string) bool {
 	return releaseTagRe.MatchString(tag)
 }
 
-// fetchReleaseManifest does an HTTP GET against url, decodes a ReleaseManifest,
-// and returns it. All failure modes — network, non-200, bad JSON, missing
-// `latest` — return an error so the caller can decide whether to surface it
-// as a hard plan failure or a soft warning. Callers should pass a ctx with a
-// sensible timeout; this function adds none of its own.
-func fetchReleaseManifest(ctx context.Context, httpClient *http.Client, url string) (*ReleaseManifest, error) {
-	body, err := httpGetBytes(ctx, httpClient, url, "application/json", 64*1024)
+// ValidReleaseTag is the exported form of validReleaseTag: a bare vX.Y.Z or
+// vX.Y.Z-rcN and nothing else (no digest/path/whitespace/`latest`). Callers
+// outside this package (the host self-update path) MUST allowlist a manifest's
+// `latest` through this before using it to choose which artifact to install.
+func ValidReleaseTag(tag string) bool { return validReleaseTag(tag) }
+
+// CompareReleaseTags orders two release tags: -1 if a<b, 0 if equal, +1 if a>b.
+// It errors when either side is not a valid release tag. Precedence: numeric
+// major.minor.patch, then a final release outranks any of its -rc pre-releases
+// (v0.1.39 > v0.1.39-rc9 > v0.1.39-rc1), with rc numbers compared numerically.
+// This is the anti-rollback comparator: a signed-but-older manifest is rejected
+// by comparing its `latest` against the running version (audit U-2).
+func CompareReleaseTags(a, b string) (int, error) {
+	pa, ok := parseReleaseTag(a)
+	if !ok {
+		return 0, fmt.Errorf("not a valid release tag: %q", a)
+	}
+	pb, ok := parseReleaseTag(b)
+	if !ok {
+		return 0, fmt.Errorf("not a valid release tag: %q", b)
+	}
+	for _, d := range []int{pa.major - pb.major, pa.minor - pb.minor, pa.patch - pb.patch} {
+		if d != 0 {
+			return sign(d), nil
+		}
+	}
+	// Same X.Y.Z: a final release (not rc) sorts above any rc of that version.
+	switch {
+	case !pa.isRC && !pb.isRC:
+		return 0, nil
+	case !pa.isRC: // a is final, b is rc
+		return 1, nil
+	case !pb.isRC: // a is rc, b is final
+		return -1, nil
+	default:
+		return sign(pa.rc - pb.rc), nil
+	}
+}
+
+type parsedReleaseTag struct {
+	major, minor, patch int
+	isRC                bool
+	rc                  int
+}
+
+func parseReleaseTag(tag string) (parsedReleaseTag, bool) {
+	m := releaseTagRe.FindStringSubmatch(tag)
+	if m == nil {
+		return parsedReleaseTag{}, false
+	}
+	// Groups are all \d+ that already matched, so Atoi cannot fail.
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	patch, _ := strconv.Atoi(m[3])
+	p := parsedReleaseTag{major: major, minor: minor, patch: patch}
+	if m[4] != "" {
+		p.isRC = true
+		p.rc, _ = strconv.Atoi(m[4])
+	}
+	return p, true
+}
+
+func sign(n int) int {
+	switch {
+	case n < 0:
+		return -1
+	case n > 0:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// ExpectedChannelForURL derives the release channel a manifest URL is expected
+// to serve, from its well-known filename: releases-rc.json → "rc";
+// releases-stable.json or the legacy releases.json alias → "stable". Any other
+// path (a custom/self-hosted mirror) returns "" — channel binding is then
+// skipped, leaving the signature, tag-allowlist and anti-rollback checks intact.
+// Binding the fetched filename to the manifest's declared `channel` closes the
+// attack where genuine, validly-signed rc manifest bytes are served at the
+// stable URL to push a stable install onto pre-release images (audit U-1).
+func ExpectedChannelForURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	switch path.Base(u.Path) {
+	case "releases-rc.json":
+		return ChannelRC
+	case "releases-stable.json", "releases.json":
+		return ChannelStable
+	default:
+		return ""
+	}
+}
+
+// fetchReleaseManifest does an HTTP GET against manifestURL, decodes a
+// ReleaseManifest, and returns it. All failure modes — network, non-200, bad
+// JSON, missing `latest`, signature, channel-mismatch, rollback — return an
+// error so the caller can decide whether to surface it as a hard plan failure or
+// a soft warning. Callers should pass a ctx with a sensible timeout; this
+// function adds none of its own.
+//
+// versionFloor is the running stack version (version.Version). When it is a
+// valid release tag, a manifest whose `latest` is OLDER than it is rejected as a
+// signed-rollback attempt (audit U-2); pass "" (or a dev/non-tag value) to skip
+// that check. Channel binding (audit U-1) is derived from manifestURL and needs
+// no caller input.
+func fetchReleaseManifest(ctx context.Context, httpClient *http.Client, manifestURL, versionFloor string) (*ReleaseManifest, error) {
+	body, err := httpGetBytes(ctx, httpClient, manifestURL, "application/json", 64*1024)
 	if err != nil {
 		return nil, fmt.Errorf("fetch release manifest: %w", err)
 	}
@@ -69,7 +185,7 @@ func fetchReleaseManifest(ctx context.Context, httpClient *http.Client, url stri
 	// "release channel unavailable" warning and falls back to local compose-vs-
 	// running drift — so a forged or unsigned manifest yields "no update info",
 	// never a bad/downgrade pull.
-	sig, err := httpGetBytes(ctx, httpClient, url+".ed25519", "", 4*1024)
+	sig, err := httpGetBytes(ctx, httpClient, manifestURL+".ed25519", "", 4*1024)
 	if err != nil {
 		return nil, fmt.Errorf("fetch release manifest signature: %w", err)
 	}
@@ -89,6 +205,35 @@ func fetchReleaseManifest(ctx context.Context, httpClient *http.Client, url stri
 	// clear invariant that m.Latest is a bare vX.Y.Z[-rcN] with no digest/path.
 	if !validReleaseTag(m.Latest) {
 		return nil, fmt.Errorf("release manifest `latest` = %q is not a valid release tag", m.Latest)
+	}
+	// Channel binding (audit U-1): the signature proves "some release key signed
+	// these bytes", not "these bytes belong at this URL". One key signs every
+	// channel's manifest, so genuine, validly-signed releases-rc.json bytes served
+	// at the stable URL would otherwise push a stable install onto rc images. Bind
+	// the well-known filename to the manifest's declared channel and reject a
+	// mismatch (or a missing channel at a known-channel URL).
+	if expected := ExpectedChannelForURL(manifestURL); expected != "" {
+		if m.Channel == "" {
+			return nil, fmt.Errorf("release manifest at %s declares no channel (want %q)", manifestURL, expected)
+		}
+		if m.Channel != expected {
+			return nil, fmt.Errorf("release manifest channel mismatch: URL %s expects %q but manifest declares %q", manifestURL, expected, m.Channel)
+		}
+	}
+	// Anti-rollback (audit U-2): a manifest is public, so a MITM/replay can serve
+	// a genuine OLDER signed manifest to force the whole stack downgrade to older,
+	// possibly-vulnerable images. Refuse anything older than the running version.
+	// Skipped when versionFloor isn't a valid release tag (dev builds), and an
+	// equal version is fine (a no-op plan). An intentional downgrade stays a
+	// deliberate, pinned manual operation — never an automatic manifest-driven one.
+	if validReleaseTag(versionFloor) {
+		cmp, err := CompareReleaseTags(m.Latest, versionFloor)
+		if err != nil {
+			return nil, fmt.Errorf("compare release tags: %w", err)
+		}
+		if cmp < 0 {
+			return nil, fmt.Errorf("release manifest `latest` = %q is older than the running version %q (refusing signed rollback)", m.Latest, versionFloor)
+		}
 	}
 	return &m, nil
 }
