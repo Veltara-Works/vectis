@@ -67,8 +67,11 @@ before acting on it. This is the gate that defends against a compromised downloa
 origin (`dl.vectismail.com` / DNS / a TLS-strip MITM): such an attacker can serve
 bytes but cannot forge a signature without the offline key.
 
-The public key is `GYnHjxJS1l3QQmlZ9+36BuNwxtHh758C0X8jfy9IaN8=`. To verify a
-downloaded binary manually:
+The public key is `GYnHjxJS1l3QQmlZ9+36BuNwxtHh758C0X8jfy9IaN8=` (the value
+compiled into `internal/releasesign.PublicKeyB64`). **If the release key is ever
+rotated, update this value too** — the per-release notes auto-extract the key from
+source, but this static doc does not, so it would otherwise go stale and point
+users at the wrong key. To verify a downloaded binary manually:
 
 ```bash
 BASE=https://dl.vectismail.com/latest      # or a pinned version

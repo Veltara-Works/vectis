@@ -29,6 +29,19 @@ jobs:
       - id: version
         run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
+      # Validate the tag shape in the FIRST job, before any binary/image is built
+      # or pushed (audit V-2). The manifest job also rejects unsupported tags, but
+      # that runs last — a malformed/-beta tag would otherwise leave orphan
+      # ghcr.io/…:<tag> images with no release. Must match the manifest routing
+      # and internal/orchestrator.ValidReleaseTag exactly.
+      - name: Validate release tag shape
+        run: |
+          set -euo pipefail
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]; then
+            echo "::error::unsupported release tag '${GITHUB_REF_NAME}' — only vX.Y.Z or vX.Y.Z-rcN are published"
+            exit 1
+          fi
+
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
@@ -140,9 +153,14 @@ jobs:
           STABLE=true
           if [[ "$VERSION" == *-rc* || "$VERSION" == *-beta* ]]; then STABLE=false; fi
 
-          # Binary + checksum + Ed25519 signature + SBOM + their cosign bundles
-          for obj in vectis-linux-amd64 vectis-linux-amd64.sha256 \
-                     vectis-linux-amd64.ed25519 \
+          # Binary + checksum + Ed25519 signature + SBOM + their cosign bundles.
+          # The detached .ed25519 is listed FIRST so it lands before the binary it
+          # signs: post-U-5 a client that GETs the binary (200) but 404s its
+          # signature treats the 404 as tampering and exits non-zero. Sig-before-
+          # artifact closes that self-inflicted window (audit V-1); CF caches the
+          # interim 404 for up to max-age, so ordering matters beyond the raw gap.
+          for obj in vectis-linux-amd64.ed25519 \
+                     vectis-linux-amd64 vectis-linux-amd64.sha256 \
                      vectis-linux-amd64.cosign.bundle \
                      vectis-linux-amd64.sha256.cosign.bundle \
                      vectis-linux-amd64.spdx.json \
@@ -467,26 +485,32 @@ jobs:
           go run ./cmd/release-sign "$CHANNEL_FILE" > "$CHANNEL_FILE.ed25519"
           test -s "$CHANNEL_FILE.ed25519"
 
-          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
-            "$CHANNEL_FILE" "s3://$R2_BUCKET/$CHANNEL_FILE" \
-            --content-type application/json \
-            --cache-control "max-age=300"
+          # Upload the signature BEFORE the manifest it signs (audit V-1): a client
+          # that reads the manifest (200) but 404s its signature treats the 404 as
+          # tampering post-U-5 (orchestrator soft-fails, but the host self-update
+          # exits non-zero with a false alarm). CF caches the interim 404 up to
+          # max-age, so sig-first is what actually closes the window.
           aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
             "$CHANNEL_FILE.ed25519" "s3://$R2_BUCKET/$CHANNEL_FILE.ed25519" \
             --content-type text/plain \
+            --cache-control "max-age=300"
+          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+            "$CHANNEL_FILE" "s3://$R2_BUCKET/$CHANNEL_FILE" \
+            --content-type application/json \
             --cache-control "max-age=300"
 
           # On stable tags ONLY, also publish releases.json (legacy alias) + its
           # signature so existing orchestrators continue to receive stable
           # updates. The alias is byte-identical, so the same signature applies.
+          # Signature first here too (audit V-1).
           if [[ "$CHANNEL" == "stable" ]]; then
-            aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
-              "$CHANNEL_FILE" "s3://$R2_BUCKET/releases.json" \
-              --content-type application/json \
-              --cache-control "max-age=300"
             aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
               "$CHANNEL_FILE.ed25519" "s3://$R2_BUCKET/releases.json.ed25519" \
               --content-type text/plain \
+              --cache-control "max-age=300"
+            aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+              "$CHANNEL_FILE" "s3://$R2_BUCKET/releases.json" \
+              --content-type application/json \
               --cache-control "max-age=300"
           fi
 
