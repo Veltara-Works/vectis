@@ -77,7 +77,7 @@ func (s *Server) handleResolveAbuseEvent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := s.abuseEvents.Resolve(r.Context(), eventID, adminID); err != nil {
+	if err := s.abuseEvents.Resolve(r.Context(), eventID, adminID, s.getAllowedDomainIDs(r.Context())); err != nil {
 		s.logger.Error("resolve abuse event failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to resolve event")
 		return

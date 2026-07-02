@@ -148,13 +148,18 @@ func (r *AbuseRepo) GetByID(ctx context.Context, id string) (*AbuseEvent, error)
 	return &e, nil
 }
 
-// Resolve marks an abuse event as resolved.
-func (r *AbuseRepo) Resolve(ctx context.Context, eventID, adminID string) error {
-	_, err := r.db.Exec(ctx,
-		`UPDATE abuse_events SET resolved = true, resolved_by = $1, resolved_at = NOW() WHERE id = $2`,
-		adminID, eventID,
-	)
-	if err != nil {
+// Resolve marks an abuse event as resolved. allowedDomainIDs is a
+// defense-in-depth domain guard (R5): nil = unrestricted; a non-nil slice
+// restricts the update to events whose domain_id is in the set, so a
+// handler-layer scope bug can't resolve another tenant's event.
+func (r *AbuseRepo) Resolve(ctx context.Context, eventID, adminID string, allowedDomainIDs []string) error {
+	q := `UPDATE abuse_events SET resolved = true, resolved_by = $1, resolved_at = NOW() WHERE id = $2`
+	args := []any{adminID, eventID}
+	if allowedDomainIDs != nil {
+		q += ` AND domain_id = ANY($3)`
+		args = append(args, allowedDomainIDs)
+	}
+	if _, err := r.db.Exec(ctx, q, args...); err != nil {
 		return fmt.Errorf("resolve abuse event: %w", err)
 	}
 	return nil

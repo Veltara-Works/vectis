@@ -186,7 +186,7 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deleted, err := s.webhooks.Delete(r.Context(), webhookID)
+	deleted, err := s.webhooks.Delete(r.Context(), webhookID, s.getAllowedDomainIDs(r.Context()))
 	if err != nil {
 		s.logger.Error("delete webhook failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete webhook")
