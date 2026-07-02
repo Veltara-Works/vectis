@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
+	"github.com/Veltara-Works/vectis/internal/releasesign"
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
 	"github.com/Veltara-Works/vectis/internal/version"
 )
@@ -238,6 +240,16 @@ func runUpdateApply(cmd *cobra.Command, args []string) error {
 				fmt.Fprintln(cmd.OutOrStdout(), cliMsg)
 			}
 		}
+		// A signature-verification failure on the host-CLI refresh is an active-
+		// attack signal, not a benign skip — surface it loudly on stderr in BOTH
+		// modes (stdout carries the ApplyResult JSON) and exit non-zero so
+		// automation can't mistake tampering for a network blip (audit U-5). The
+		// apply itself already succeeded; exit code 3 distinguishes this case.
+		if errors.Is(cliErr, errReleaseVerification) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "\nSECURITY: host CLI refresh signature verification FAILED: %v\n", cliErr)
+			fmt.Fprintln(cmd.ErrOrStderr(), "Containers were updated, but /usr/local/bin/vectis was NOT refreshed because the downloaded binary/manifest failed offline signature verification — possible compromise of the download origin (dl.vectismail.com / DNS / TLS). Investigate before running further updates.")
+			os.Exit(3)
+		}
 		return nil
 	case "rolled_back":
 		if !jsonOutput {
@@ -430,6 +442,14 @@ func runUpdateSelf(cmd *cobra.Command, args []string) error {
 		fmt.Fprint(cmd.OutOrStdout(), "  [1/5] Refreshing CLI binary... ")
 	}
 	if msg, err := refreshCLIBinary(); err != nil {
+		if errors.Is(err, errReleaseVerification) {
+			// Fail closed: a tampered/stripped signature on the host binary is a
+			// strong signal the release origin is compromised. Abort the self-update
+			// before recreating containers rather than pressing on (audit U-5).
+			fmt.Fprintf(cmd.ErrOrStderr(), "SECURITY: CLI binary signature verification FAILED: %v\n", err)
+			fmt.Fprintln(cmd.ErrOrStderr(), "Aborting self-update — the downloaded binary/manifest could not be authenticated (possible compromise of dl.vectismail.com / DNS / TLS).")
+			os.Exit(3)
+		}
 		if !jsonOutput {
 			fmt.Fprintln(cmd.OutOrStdout(), "skipped")
 			fmt.Fprintf(cmd.OutOrStdout(), "    ! %s\n", err.Error())
@@ -593,6 +613,47 @@ func revertSelf(cmd *cobra.Command, orchImage, apiImage string, jsonOutput bool)
 // "already at v0.1.8") and a non-nil error explaining why the refresh
 // was skipped on any failure (best-effort: callers must not treat the
 // error as fatal).
+// errReleaseVerification marks a failure of the offline Ed25519 signature gate
+// (a tampered signature, or a stripped/missing signature while a public key IS
+// embedded) — the strongest active-attack signal on the self-update path. It is
+// deliberately DISTINCT from a benign skip (offline, custom install path, or a
+// build with no embedded key): callers unwrap it with errors.Is to surface an
+// alert loudly and exit non-zero, so automation can tell tampering apart from a
+// network blip (audit U-5).
+var errReleaseVerification = errors.New("release signature verification failed")
+
+// classifyVerifyErr wraps a releasesign.Verify result so the caller can
+// distinguish attack from benign-skip. A nil error stays nil; ErrNotConfigured
+// (this build has no embedded key) is a benign skip; anything else is a genuine
+// verification failure tagged with errReleaseVerification.
+func classifyVerifyErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, releasesign.ErrNotConfigured):
+		return fmt.Errorf("release signature check unavailable: %w", err)
+	default:
+		return fmt.Errorf("%w: %v", errReleaseVerification, err)
+	}
+}
+
+// httpGetBody GETs url and returns up to limit bytes of the body plus whether the
+// status was 200. A transport failure returns a non-nil error; a non-200 status
+// returns ok=false with a nil error so the caller can classify it (e.g. a
+// stripped signature is attack-class only when a key is embedded).
+func httpGetBody(client *http.Client, url string, limit int64) (body []byte, ok bool, err error) {
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false, nil
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	return b, true, err
+}
+
 func refreshCLIBinary() (string, error) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		return "", fmt.Errorf("only linux/amd64 binaries are published; running on %s/%s", runtime.GOOS, runtime.GOARCH)
@@ -612,32 +673,72 @@ func refreshCLIBinary() (string, error) {
 
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
-	// 1. Discover the latest stable tag.
-	resp, err := httpClient.Get(vectisDownloadBase + "/releases-stable.json")
+	// 1. Discover the latest stable release — and AUTHENTICATE the manifest before
+	// trusting the tag it names (audit U-3). Previously this step chose which
+	// signed binary to install from an UNsigned, un-allowlisted manifest, so a
+	// forged/replayed releases-stable.json could name an older, still-validly-
+	// signed release and force a downgrade — the binary signature at 3b blocks
+	// RCE, not rollback. We now verify the manifest's Ed25519 signature, allowlist
+	// the tag, bind the channel, and refuse anything not strictly newer, mirroring
+	// the orchestrator's manifest trust boundary.
+	stableURL := vectisDownloadBase + "/releases-stable.json"
+	manifestBytes, ok, err := httpGetBody(httpClient, stableURL, 64*1024)
 	if err != nil {
 		return "", fmt.Errorf("fetch releases-stable.json: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("releases-stable.json returned HTTP %d", resp.StatusCode)
+	if !ok {
+		return "", fmt.Errorf("releases-stable.json fetch failed (non-200)")
 	}
+	sigManifest, sok, err := httpGetBody(httpClient, stableURL+".ed25519", 4*1024)
+	if err != nil {
+		return "", fmt.Errorf("fetch releases-stable.json signature: %w", err)
+	}
+	if !sok {
+		if releasesign.Configured() {
+			return "", fmt.Errorf("releases-stable.json signature missing (refusing unsigned release selector): %w", errReleaseVerification)
+		}
+		return "", fmt.Errorf("releases-stable.json signature unavailable")
+	}
+	if err := classifyVerifyErr(releasesign.Verify(manifestBytes, string(sigManifest))); err != nil {
+		return "", fmt.Errorf("releases-stable.json signature: %w", err)
+	}
+
 	var manifest struct {
-		Latest string `json:"latest"`
+		Latest  string `json:"latest"`
+		Channel string `json:"channel"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		return "", fmt.Errorf("decode releases-stable.json: %w", err)
 	}
 	if manifest.Latest == "" {
 		return "", fmt.Errorf("releases-stable.json missing 'latest' field")
 	}
+	if !orchestrator.ValidReleaseTag(manifest.Latest) {
+		return "", fmt.Errorf("releases-stable.json `latest` = %q is not a valid release tag", manifest.Latest)
+	}
+	if want := orchestrator.ExpectedChannelForURL(stableURL); want != "" && manifest.Channel != want {
+		return "", fmt.Errorf("releases-stable.json channel mismatch: want %q, got %q", want, manifest.Channel)
+	}
 
-	if manifest.Latest == version.Version {
+	// Anti-rollback: never self-update to an older-or-equal binary (audit U-2/U-3).
+	// version.Version is "dev" in local builds, so fall back to string equality
+	// when it isn't a comparable release tag.
+	if orchestrator.ValidReleaseTag(version.Version) {
+		cmp, cerr := orchestrator.CompareReleaseTags(manifest.Latest, version.Version)
+		if cerr != nil {
+			return "", fmt.Errorf("compare release tags: %w", cerr)
+		}
+		if cmp <= 0 {
+			return fmt.Sprintf("already at %s (no newer stable release)", version.Version), nil
+		}
+	} else if manifest.Latest == version.Version {
 		return fmt.Sprintf("already at %s", manifest.Latest), nil
 	}
 
-	// 2. Download binary + checksum.
+	// 2. Download binary + checksum + release signature.
 	binURL := fmt.Sprintf("%s/%s/vectis-linux-amd64", vectisDownloadBase, manifest.Latest)
 	shaURL := binURL + ".sha256"
+	sigURL := binURL + ".ed25519"
 
 	tmpDir, err := os.MkdirTemp("", "vectis-update-")
 	if err != nil {
@@ -664,7 +765,8 @@ func refreshCLIBinary() (string, error) {
 	}
 	expectedSHA := strings.TrimSpace(strings.Fields(string(shaBytes))[0])
 
-	// 3. Verify checksum.
+	// 3. Verify checksum (transport-integrity only — same origin as the binary,
+	// so it defends against a truncated download, not a hostile origin).
 	binBytes, err := os.ReadFile(tmpBin)
 	if err != nil {
 		return "", fmt.Errorf("read downloaded binary: %w", err)
@@ -672,6 +774,27 @@ func refreshCLIBinary() (string, error) {
 	actualSHA := hex.EncodeToString(sha256Sum(binBytes))
 	if actualSHA != expectedSHA {
 		return "", fmt.Errorf("checksum mismatch (expected %s, got %s)", expectedSHA, actualSHA)
+	}
+
+	// 3b. Verify the offline Ed25519 release signature over the binary before
+	// installing it (audit E-H3). This is the real supply-chain gate: unlike the
+	// same-origin SHA256, the signature cannot be forged by a compromise of
+	// dl.vectismail.com / DNS / TLS — only the holder of the offline release key
+	// can produce it. FAIL CLOSED: a missing, unreadable, or invalid signature
+	// (or a binary built without an embedded public key) refuses the install
+	// rather than swapping in an unverified binary at /usr/local/bin/vectis.
+	sigBytes, sigOK, err := httpGetBody(httpClient, sigURL, 4096)
+	if err != nil {
+		return "", fmt.Errorf("download release signature %s: %w", sigURL, err)
+	}
+	if !sigOK {
+		if releasesign.Configured() {
+			return "", fmt.Errorf("release signature %s missing (refusing unsigned self-update): %w", sigURL, errReleaseVerification)
+		}
+		return "", fmt.Errorf("release signature %s unavailable", sigURL)
+	}
+	if err := classifyVerifyErr(releasesign.Verify(binBytes, string(sigBytes))); err != nil {
+		return "", fmt.Errorf("release signature for %s: %w", binURL, err)
 	}
 
 	// 4. Make executable and install into place. Linux allows renaming a

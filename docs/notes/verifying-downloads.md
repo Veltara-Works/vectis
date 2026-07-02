@@ -56,6 +56,42 @@ cosign verify-blob \
 
 A successful run prints `Verified OK`.
 
+## Offline release signature (Ed25519)
+
+In addition to keyless cosign, the binary and each release-channel manifest carry
+a companion `.ed25519` detached signature made with an **offline** Ed25519 release
+key. Its public half is compiled into every Vectis binary, so `vectis update`
+verifies this signature **in-process** — with no external tool — before applying a
+self-update, and the orchestrator verifies the release manifest the same way
+before acting on it. This is the gate that defends against a compromised download
+origin (`dl.vectismail.com` / DNS / a TLS-strip MITM): such an attacker can serve
+bytes but cannot forge a signature without the offline key.
+
+The public key is `GYnHjxJS1l3QQmlZ9+36BuNwxtHh758C0X8jfy9IaN8=` (the value
+compiled into `internal/releasesign.PublicKeyB64`). **If the release key is ever
+rotated, update this value too** — the per-release notes auto-extract the key from
+source, but this static doc does not, so it would otherwise go stale and point
+users at the wrong key. To verify a downloaded binary manually:
+
+```bash
+BASE=https://dl.vectismail.com/latest      # or a pinned version
+curl -fsSLO "$BASE/vectis-linux-amd64"
+curl -fsSLO "$BASE/vectis-linux-amd64.ed25519"
+
+python3 - <<'PY'
+import base64, nacl.signing  # pip install pynacl
+pub = base64.b64decode('GYnHjxJS1l3QQmlZ9+36BuNwxtHh758C0X8jfy9IaN8=')
+sig = base64.b64decode(open('vectis-linux-amd64.ed25519').read().strip())
+nacl.signing.VerifyKey(pub).verify(open('vectis-linux-amd64', 'rb').read(), sig)
+print('OK: Ed25519 signature valid')
+PY
+```
+
+Unlike cosign (transport/provenance), this signature is the mandatory,
+fail-closed check on the auto-update path — a missing or invalid `.ed25519`
+refuses the update rather than falling back to the SHA256 (which only proves
+transport integrity from the same origin).
+
 ## Verify a container image
 
 Each image is signed by its immutable manifest digest, so the signature is

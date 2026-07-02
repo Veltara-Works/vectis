@@ -15,6 +15,7 @@ import (
 
 	"github.com/Veltara-Works/vectis/internal/database"
 	"github.com/Veltara-Works/vectis/internal/types"
+	"github.com/Veltara-Works/vectis/internal/version"
 )
 
 // Constants for the rc36 orchestrator self-replace flow (Phase 7 of Apply).
@@ -340,7 +341,7 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 	var warnings []string
 	if o.cfg.ReleaseChannelURL != "" {
 		releaseCtx, releaseCancel := context.WithTimeout(ctx, 10*time.Second)
-		m, ferr := fetchReleaseManifest(releaseCtx, &http.Client{}, o.cfg.ReleaseChannelURL)
+		m, ferr := fetchReleaseManifest(releaseCtx, &http.Client{}, o.cfg.ReleaseChannelURL, version.Version)
 		releaseCancel()
 		if ferr != nil {
 			o.logger.Warn("release channel fetch failed; planning from local compose only",

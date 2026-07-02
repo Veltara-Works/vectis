@@ -29,6 +29,19 @@ jobs:
       - id: version
         run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
+      # Validate the tag shape in the FIRST job, before any binary/image is built
+      # or pushed (audit V-2). The manifest job also rejects unsupported tags, but
+      # that runs last — a malformed/-beta tag would otherwise leave orphan
+      # ghcr.io/…:<tag> images with no release. Must match the manifest routing
+      # and internal/orchestrator.ValidReleaseTag exactly.
+      - name: Validate release tag shape
+        run: |
+          set -euo pipefail
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]; then
+            echo "::error::unsupported release tag '${GITHUB_REF_NAME}' — only vX.Y.Z or vX.Y.Z-rcN are published"
+            exit 1
+          fi
+
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
@@ -45,6 +58,20 @@ jobs:
           npm ci
           npm run build
 
+      # Release-gate (audit U-7): refuse to cut a release from a binary that has
+      # no embedded release public key. With PublicKeyB64 empty, releasesign.Verify
+      # returns ErrNotConfigured and EVERY self-update / manifest check fails closed
+      # — silently reintroducing the stale-host-binary failure this mechanism
+      # exists to prevent. Fail the build here rather than ship an unverifiable
+      # release.
+      - name: Ensure release signing public key is embedded
+        run: |
+          set -euo pipefail
+          if ! grep -Eq 'PublicKeyB64 = "[A-Za-z0-9+/=]{40,}"' internal/releasesign/releasesign.go; then
+            echo "::error::internal/releasesign.PublicKeyB64 is empty — refusing to build an unverifiable release (audit U-7). Generate the keypair (cmd/release-sign -genkey), set VECTIS_RELEASE_SIGNING_KEY, and paste the public half."
+            exit 1
+          fi
+
       - name: Build binary (linux/amd64, CGO-free)
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -59,6 +86,21 @@ jobs:
         run: |
           sha256sum vectis-linux-amd64 | tee vectis-linux-amd64.sha256
           echo "sha256=$(awk '{print $1}' vectis-linux-amd64.sha256)" >> "$GITHUB_OUTPUT"
+
+      # Sign the binary with the OFFLINE Ed25519 release key (audit E-H3). Unlike
+      # the same-origin SHA256 (transport integrity only) and keyless cosign
+      # (verified via an external tool the host doesn't ship), this signature is
+      # verified in-process by `vectis update` against a public key compiled into
+      # the binary — the real supply-chain gate against a dl.vectismail.com / DNS
+      # / TLS compromise. The private key never leaves this secret.
+      - name: Sign binary with the offline release key (Ed25519)
+        env:
+          VECTIS_RELEASE_SIGNING_KEY: ${{ secrets.VECTIS_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${VECTIS_RELEASE_SIGNING_KEY:-}"   # fail the release if the secret is unset
+          go run ./cmd/release-sign vectis-linux-amd64 > vectis-linux-amd64.ed25519
+          test -s vectis-linux-amd64.ed25519
 
       # Generate a Software Bill of Materials for the shipped binary. Syft's
       # go-module-binary cataloger reads the build info embedded by the Go
@@ -111,8 +153,14 @@ jobs:
           STABLE=true
           if [[ "$VERSION" == *-rc* || "$VERSION" == *-beta* ]]; then STABLE=false; fi
 
-          # Binary + checksum + SBOM + their cosign bundles
-          for obj in vectis-linux-amd64 vectis-linux-amd64.sha256 \
+          # Binary + checksum + Ed25519 signature + SBOM + their cosign bundles.
+          # The detached .ed25519 is listed FIRST so it lands before the binary it
+          # signs: post-U-5 a client that GETs the binary (200) but 404s its
+          # signature treats the 404 as tampering and exits non-zero. Sig-before-
+          # artifact closes that self-inflicted window (audit V-1); CF caches the
+          # interim 404 for up to max-age, so ordering matters beyond the raw gap.
+          for obj in vectis-linux-amd64.ed25519 \
+                     vectis-linux-amd64 vectis-linux-amd64.sha256 \
                      vectis-linux-amd64.cosign.bundle \
                      vectis-linux-amd64.sha256.cosign.bundle \
                      vectis-linux-amd64.spdx.json \
@@ -154,6 +202,7 @@ jobs:
           path: |
             vectis-linux-amd64
             vectis-linux-amd64.sha256
+            vectis-linux-amd64.ed25519
             vectis-linux-amd64.cosign.bundle
             vectis-linux-amd64.sha256.cosign.bundle
             vectis-linux-amd64.spdx.json
@@ -274,6 +323,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Needed to sign the release manifest with cmd/release-sign (audit E-H2).
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: vectis-linux-amd64
@@ -287,6 +342,9 @@ jobs:
           else
             RANGE="${GITHUB_REF_NAME}"
           fi
+          # The embedded Ed25519 release public key, extracted from source so the
+          # verify snippet in the notes always matches the key this build ships.
+          PUBKEY=$(grep -oE 'PublicKeyB64 = "[A-Za-z0-9+/=]+"' internal/releasesign/releasesign.go | sed -E 's/.*"([^"]+)".*/\1/')
           {
             echo "## Install"
             echo ""
@@ -329,6 +387,29 @@ jobs:
             echo ""
             echo "See [docs/notes/verifying-downloads.md](https://github.com/Veltara-Works/vectis/blob/${GITHUB_REF_NAME}/docs/notes/verifying-downloads.md)."
             echo ""
+            echo "## Offline release signature (Ed25519)"
+            echo ""
+            echo "The binary also ships a \`.ed25519\` detached signature made with an"
+            echo "offline Ed25519 release key whose public half is compiled into every"
+            echo "vectis binary. This is the gate \`vectis update\` verifies IN-PROCESS"
+            echo "before a self-update (no external tool, unlike cosign) — it defends"
+            echo "against a compromised download origin (dl.vectismail.com / DNS / TLS)."
+            echo "Manual verification (public key: \`${PUBKEY}\`):"
+            echo ""
+            echo '```bash'
+            echo "BASE=https://dl.vectismail.com/${GITHUB_REF_NAME}"
+            echo "curl -fsSLO \$BASE/vectis-linux-amd64"
+            echo "curl -fsSLO \$BASE/vectis-linux-amd64.ed25519"
+            echo "# base64-decode the signature, then verify with the embedded public key:"
+            echo "python3 - <<'PY'"
+            echo "import base64, nacl.signing  # pip install pynacl"
+            echo "pub = base64.b64decode('${PUBKEY}')"
+            echo "sig = base64.b64decode(open('vectis-linux-amd64.ed25519').read().strip())"
+            echo "nacl.signing.VerifyKey(pub).verify(open('vectis-linux-amd64','rb').read(), sig)"
+            echo "print('OK: Ed25519 signature valid')"
+            echo "PY"
+            echo '```'
+            echo ""
             echo "## Software Bill of Materials (SBOM)"
             echo ""
             echo "An SPDX-JSON SBOM is published for the binary (cosign-signed,"
@@ -356,13 +437,15 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          VECTIS_RELEASE_SIGNING_KEY: ${{ secrets.VECTIS_RELEASE_SIGNING_KEY }}
         run: |
           set -euo pipefail
+          test -n "${VECTIS_RELEASE_SIGNING_KEY:-}"   # fail the release if the secret is unset
           # Release-channel manifests consumed by running orchestrators
           # during Plan (see internal/orchestrator/releases.go).
           #
           # - releases-stable.json is updated ONLY on stable tags.
-          # - releases-rc.json is updated ONLY on rc/beta tags.
+          # - releases-rc.json is updated ONLY on rc tags.
           # - releases.json (legacy alias) mirrors stable; rc tags MUST NOT
           #   touch it. This is what existing orchestrators read by default,
           #   so an rc tag must never demote the stable pointer.
@@ -370,12 +453,21 @@ jobs:
           # Published last — after the binary + all images are live — to
           # avoid a window where a tag is advertised before its images
           # exist on ghcr.
-          if [[ "$VERSION" == *-rc* || "$VERSION" == *-beta* ]]; then
+          #
+          # Route strictly by tag shape, matching the orchestrator's allowlist
+          # (internal/orchestrator.ValidReleaseTag): vX.Y.Z-rcN → rc; a bare
+          # vX.Y.Z → stable. Anything else (e.g. a -beta or malformed tag) FAILS
+          # the release rather than silently routing to stable and demoting the
+          # stable pointer (audit U-4).
+          if [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ ]]; then
             CHANNEL=rc
             CHANNEL_FILE=releases-rc.json
-          else
+          elif [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             CHANNEL=stable
             CHANNEL_FILE=releases-stable.json
+          else
+            echo "::error::unsupported release tag '$VERSION' — only vX.Y.Z or vX.Y.Z-rcN are published"
+            exit 1
           fi
           RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           cat > "$CHANNEL_FILE" <<JSON
@@ -385,14 +477,37 @@ jobs:
             "channel": "${CHANNEL}"
           }
           JSON
+
+          # Sign the exact manifest bytes with the offline Ed25519 release key so
+          # the orchestrator can authenticate the manifest before trusting its
+          # `latest` tag (audit E-H2). The signature is served alongside the
+          # manifest at <manifest>.ed25519.
+          go run ./cmd/release-sign "$CHANNEL_FILE" > "$CHANNEL_FILE.ed25519"
+          test -s "$CHANNEL_FILE.ed25519"
+
+          # Upload the signature BEFORE the manifest it signs (audit V-1): a client
+          # that reads the manifest (200) but 404s its signature treats the 404 as
+          # tampering post-U-5 (orchestrator soft-fails, but the host self-update
+          # exits non-zero with a false alarm). CF caches the interim 404 up to
+          # max-age, so sig-first is what actually closes the window.
+          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+            "$CHANNEL_FILE.ed25519" "s3://$R2_BUCKET/$CHANNEL_FILE.ed25519" \
+            --content-type text/plain \
+            --cache-control "max-age=300"
           aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
             "$CHANNEL_FILE" "s3://$R2_BUCKET/$CHANNEL_FILE" \
             --content-type application/json \
             --cache-control "max-age=300"
 
-          # On stable tags ONLY, also publish releases.json (legacy alias)
-          # so existing orchestrators continue to receive stable updates.
+          # On stable tags ONLY, also publish releases.json (legacy alias) + its
+          # signature so existing orchestrators continue to receive stable
+          # updates. The alias is byte-identical, so the same signature applies.
+          # Signature first here too (audit V-1).
           if [[ "$CHANNEL" == "stable" ]]; then
+            aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+              "$CHANNEL_FILE.ed25519" "s3://$R2_BUCKET/releases.json.ed25519" \
+              --content-type text/plain \
+              --cache-control "max-age=300"
             aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
               "$CHANNEL_FILE" "s3://$R2_BUCKET/releases.json" \
               --content-type application/json \
@@ -405,10 +520,11 @@ jobs:
           files: |
             vectis-linux-amd64
             vectis-linux-amd64.sha256
+            vectis-linux-amd64.ed25519
             vectis-linux-amd64.cosign.bundle
             vectis-linux-amd64.sha256.cosign.bundle
             vectis-linux-amd64.spdx.json
             vectis-linux-amd64.spdx.json.cosign.bundle
             install.sh
             install.sh.cosign.bundle
-          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
