@@ -1,12 +1,13 @@
 package backup
 
 import (
+	"bufio"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -1479,56 +1480,145 @@ func deriveKeyLegacy(passphrase string) []byte {
 	return h[:]
 }
 
-// encryptFile encrypts srcPath with AES-256-GCM and writes to dstPath. The
-// output layout is: magic || salt || nonce || ciphertext. A tampered salt or
-// nonce derives the wrong key (or fails the GCM tag), so neither needs separate
-// authentication.
+// encryptFile encrypts srcPath into a VXB2 streaming archive at dstPath in
+// O(chunk) memory (see stream.go), writes it atomically (.tmp -> fsync ->
+// rename), and self-verifies that the archive round-trips to exactly the source
+// length BEFORE publishing it — so a corrupt or unverifiable archive surfaces as
+// a failed backup, never as silent data-loss discovered at restore time.
 func encryptFile(srcPath, dstPath, passphrase string) error {
-	plaintext, err := os.ReadFile(srcPath)
+	fi, err := os.Stat(srcPath)
 	if err != nil {
-		return fmt.Errorf("read plaintext: %w", err)
+		return fmt.Errorf("stat plaintext: %w", err)
 	}
+	srcSize := fi.Size()
 
-	salt := make([]byte, backupSaltLen)
-	if _, err := rand.Read(salt); err != nil {
-		return fmt.Errorf("generate salt: %w", err)
-	}
-
-	block, err := aes.NewCipher(deriveKeyArgon2(passphrase, salt))
+	src, err := os.Open(srcPath)
 	if err != nil {
-		return fmt.Errorf("create cipher: %w", err)
+		return fmt.Errorf("open plaintext: %w", err)
 	}
+	defer src.Close()
 
-	gcm, err := cipher.NewGCM(block)
+	tmpPath := dstPath + ".tmp"
+	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
-		return fmt.Errorf("create GCM: %w", err)
+		return fmt.Errorf("create archive temp: %w", err)
+	}
+	bw := bufio.NewWriterSize(tmp, 128*1024)
+	if err := streamEncrypt(bw, src, passphrase); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := bw.Flush(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("flush archive: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("fsync archive: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close archive: %w", err)
 	}
 
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return fmt.Errorf("generate nonce: %w", err)
+	// Self-verify the just-written archive before publishing: stream-decrypt to a
+	// discard sink and confirm it recovers exactly srcSize bytes with a valid
+	// final chunk. Only a verified archive is renamed into place.
+	vf, err := os.Open(tmpPath)
+	if err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("reopen archive for verify: %w", err)
+	}
+	verr := verifyVXB2(bufio.NewReaderSize(vf, 128*1024), passphrase, srcSize)
+	vf.Close()
+	if verr != nil {
+		os.Remove(tmpPath)
+		return verr
 	}
 
-	// header = magic || salt || nonce; Seal appends the ciphertext to it.
-	header := append([]byte(backupMagicV1), salt...)
-	header = append(header, nonce...)
-	out := gcm.Seal(header, nonce, plaintext, nil)
-
-	if err := os.WriteFile(dstPath, out, 0600); err != nil {
-		return fmt.Errorf("write encrypted file: %w", err)
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("publish archive: %w", err)
 	}
-
 	return nil
 }
 
-// decryptFile decrypts an AES-256-GCM archive and writes to dstPath. It detects
-// the format by the leading magic: a VXB1 archive carries a salt and is keyed
-// with Argon2id; anything else is treated as a legacy (unsalted SHA-256) archive
-// so pre-#177 backups still restore.
+// decryptFile decrypts a backup archive at srcPath to dstPath, streaming the
+// current VXB2 format in O(chunk) memory and falling back to the whole-file path
+// for pre-existing VXB1 (salted Argon2id) and legacy (unsalted SHA-256)
+// archives. Output is written atomically (.tmp -> rename).
 func decryptFile(srcPath, dstPath, passphrase string) error {
-	data, err := os.ReadFile(srcPath)
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("open encrypted file: %w", err)
+	}
+	defer src.Close()
+
+	magic := make([]byte, len(streamMagicV2))
+	if _, err := io.ReadFull(src, magic); err != nil {
+		return fmt.Errorf("read archive magic: %w", err)
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek archive: %w", err)
+	}
+
+	tmpPath := dstPath + ".tmp"
+	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("create decrypt temp: %w", err)
+	}
+	bw := bufio.NewWriterSize(tmp, 128*1024)
+
+	if string(magic) == streamMagicV2 {
+		err = streamDecrypt(bw, bufio.NewReaderSize(src, 128*1024), passphrase)
+	} else {
+		err = decryptWholeFile(bw, src, passphrase)
+	}
+	if err == nil {
+		err = bw.Flush()
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("publish decrypted file: %w", err)
+	}
+	return nil
+}
+
+// decryptWholeFile handles pre-VXB2 archives (VXB1 salted-Argon2id, or legacy
+// unsalted SHA-256), which are not streamable. It reads the whole archive into
+// memory (bounded by legacyWholeFileMax unless VECTIS_ALLOW_LARGE_LEGACY_RESTORE
+// is set) and GCM-Opens it. The cap stops a bit-flipped VXB2->VXB1 magic from
+// routing a large archive down this 2x-RAM path (OOM DoS); a genuine large
+// legacy restore sets the override and runs where memory is ample (host CLI).
+func decryptWholeFile(dst io.Writer, src io.Reader, passphrase string) error {
+	if s, ok := src.(io.Seeker); ok {
+		if _, err := s.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("seek archive: %w", err)
+		}
+	}
+	limit := int64(legacyWholeFileMax)
+	if os.Getenv(allowLargeLegacyEnv) == "1" {
+		limit = 1 << 62
+	}
+	data, err := io.ReadAll(io.LimitReader(src, limit+1))
 	if err != nil {
 		return fmt.Errorf("read encrypted file: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return fmt.Errorf("legacy (non-VXB2) archive exceeds %d bytes; refusing whole-file decrypt to avoid OOM — set %s=1 and restore where memory is ample", limit, allowLargeLegacyEnv)
 	}
 
 	var key, body []byte
@@ -1549,26 +1639,21 @@ func decryptFile(srcPath, dstPath, passphrase string) error {
 	if err != nil {
 		return fmt.Errorf("create cipher: %w", err)
 	}
-
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return fmt.Errorf("create GCM: %w", err)
 	}
-
 	nonceSize := gcm.NonceSize()
 	if len(body) < nonceSize {
 		return fmt.Errorf("encrypted file is too short")
 	}
-
 	nonce, ciphertext := body[:nonceSize], body[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return fmt.Errorf("decrypt failed (wrong key?): %w", err)
 	}
-
-	if err := os.WriteFile(dstPath, plaintext, 0600); err != nil {
+	if _, err := dst.Write(plaintext); err != nil {
 		return fmt.Errorf("write decrypted file: %w", err)
 	}
-
 	return nil
 }
