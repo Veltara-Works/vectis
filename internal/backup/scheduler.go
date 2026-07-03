@@ -58,6 +58,39 @@ func NextScheduledRun(schedule, timezone string, from time.Time) (time.Time, err
 	return sched.Next(from), nil
 }
 
+// StaleGraceFactor multiplies the expected backup interval to yield the age at
+// which a backup is considered stale, so a single slightly-late run does not
+// flap the health signal. 1.5x means a daily backup flags at ~36h. Single source
+// of truth for both the health monitor and the settings endpoint. (Locked with
+// Ian 2026-07-03.)
+const StaleGraceFactor = 1.5
+
+// ExpectedInterval returns the largest gap between consecutive fires of the
+// schedule, sampled over the next `samples` runs starting from `from`. This is
+// the longest a healthy install should ever go between backups: for a uniform
+// daily cron it is ~24h, but for schedules with uneven gaps (e.g. weekday-only)
+// it is the widest gap (the weekend), so a health check built on it does not
+// false-alarm across the expected quiet stretch. samples < 2 is clamped to 2.
+func ExpectedInterval(schedule, timezone string, from time.Time, samples int) (time.Duration, error) {
+	sched, err := buildCronSchedule(schedule, timezone)
+	if err != nil {
+		return 0, err
+	}
+	if samples < 2 {
+		samples = 2
+	}
+	var maxGap time.Duration
+	t := from
+	for i := 0; i < samples; i++ {
+		next := sched.Next(t)
+		if gap := next.Sub(t); gap > maxGap {
+			maxGap = gap
+		}
+		t = next
+	}
+	return maxGap, nil
+}
+
 // Scheduler runs full backups on a cron schedule and prunes old archives.
 // It follows the same Start/Stop pattern as audit.Pruner. The scheduler only
 // creates FULL backups, so retention never orphans an incremental chain.
@@ -69,6 +102,7 @@ type Scheduler struct {
 	stopCh   chan struct{}
 	now      func() time.Time                                                      // injectable for tests
 	createFn func(ctx context.Context, triggeredBy *string) (string, int64, error) // injectable for tests
+	onError  func(ctx context.Context, err error)                                  // optional: called when a scheduled run fails (C-2 alerting)
 }
 
 // NewScheduler parses the cron schedule and returns a ready scheduler. It
@@ -88,6 +122,15 @@ func NewScheduler(mgr *Manager, cfg SchedulerConfig, logger *slog.Logger) (*Sche
 		now:      time.Now,
 		createFn: mgr.Create,
 	}, nil
+}
+
+// SetOnError registers a callback invoked when a scheduled backup run fails.
+// It exists so the API layer can raise an alert (the scheduled path calls
+// mgr.Create synchronously and never fires the manager's onComplete callback,
+// so the completion-notification wiring is dead for nightly backups). Injected
+// as a plain callback so this package never imports internal/monitor.
+func (s *Scheduler) SetOnError(fn func(ctx context.Context, err error)) {
+	s.onError = fn
 }
 
 // Start launches the scheduling loop in a background goroutine.
@@ -134,6 +177,9 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 	path, size, err := s.createFn(ctx, nil)
 	if err != nil {
 		s.logger.Error("scheduled backup failed", "error", err)
+		if s.onError != nil {
+			s.onError(ctx, err)
+		}
 		return
 	}
 	s.logger.Info("scheduled backup complete", "path", path, "size_bytes", size)

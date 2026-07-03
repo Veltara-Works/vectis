@@ -159,3 +159,60 @@ func TestSchedulerPruneKeepsNewest(t *testing.T) {
 		t.Errorf("newest archive must be kept: %v", err)
 	}
 }
+
+// TestExpectedInterval verifies the max-gap sampling used by the backup-age
+// health check: a uniform daily cron yields ~24h, but a schedule with an uneven
+// gap (weekday-only) must yield the widest gap (across the weekend), so the
+// health check never false-alarms during the expected quiet stretch.
+func TestExpectedInterval(t *testing.T) {
+	from := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC) // a Monday
+
+	t.Run("uniform daily is ~24h", func(t *testing.T) {
+		got, err := ExpectedInterval("0 2 * * *", "", from, 8)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 24*time.Hour {
+			t.Errorf("ExpectedInterval(daily) = %v, want 24h", got)
+		}
+	})
+
+	t.Run("weekday-only spans the weekend", func(t *testing.T) {
+		// Fires 02:00 Mon-Fri. The largest consecutive gap is Fri 02:00 -> Mon
+		// 02:00 = 72h. Sampling from Monday noon, 8 samples covers >1 week.
+		got, err := ExpectedInterval("0 2 * * 1-5", "", from, 8)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 72*time.Hour {
+			t.Errorf("ExpectedInterval(weekday-only) = %v, want 72h", got)
+		}
+	})
+
+	t.Run("timezone honoured", func(t *testing.T) {
+		// Daily in Sydney is still a 24h interval regardless of tz.
+		got, err := ExpectedInterval("0 2 * * *", "Australia/Sydney", from, 4)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 24*time.Hour {
+			t.Errorf("ExpectedInterval(sydney daily) = %v, want 24h", got)
+		}
+	})
+
+	t.Run("samples clamped to >=2", func(t *testing.T) {
+		got, err := ExpectedInterval("0 2 * * *", "", from, 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 24*time.Hour {
+			t.Errorf("ExpectedInterval(samples=0 clamped) = %v, want 24h", got)
+		}
+	})
+
+	t.Run("invalid schedule errors", func(t *testing.T) {
+		if _, err := ExpectedInterval("nope", "", from, 4); err == nil {
+			t.Error("expected error for invalid schedule")
+		}
+	})
+}

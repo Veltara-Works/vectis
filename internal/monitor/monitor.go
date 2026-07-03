@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
 
+	"github.com/Veltara-Works/vectis/internal/backup"
+	"github.com/Veltara-Works/vectis/internal/repository"
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
 )
 
@@ -23,6 +25,13 @@ type Config struct {
 	QueueWarnSize   int           // default 100
 	CertWarnDays    int           // default 14
 	CertDir         string        // path to TLS certificate directory
+
+	// Backup-age check (C-1). When BackupEnabled is true the monitor flags a
+	// stale or absent last-successful-backup. Schedule/Timezone are the effective
+	// backup cron settings, used to derive the expected interval between runs.
+	BackupEnabled  bool
+	BackupSchedule string
+	BackupTimezone string
 }
 
 // DefaultConfig returns Config with sensible defaults.
@@ -45,8 +54,15 @@ type Monitor struct {
 	logger      *slog.Logger
 	cfg         Config
 	stopCh      chan struct{}
-	dockerCLI   bool // whether the `docker` CLI is on PATH
-	postfixExec bool // whether `docker exec vectis-postfix` is viable (implies dockerCLI)
+	dockerCLI   bool             // whether the `docker` CLI is on PATH
+	postfixExec bool             // whether `docker exec vectis-postfix` is viable (implies dockerCLI)
+	now         func() time.Time // injectable for tests; defaults to time.Now
+
+	// backupProvider, when set, returns the LIVE effective backup settings on
+	// every check. Preferred over the static cfg.Backup* fields so a runtime
+	// schedule change (admin UI) can't leave the staleness threshold pinned to a
+	// stale, longer interval — which would under-alert (a reintroduced blind spot).
+	backupProvider func() (enabled bool, schedule, timezone string)
 }
 
 // New creates a new health monitor.
@@ -85,7 +101,16 @@ func New(db *pgxpool.Pool, vk valkey.Client, alerter *Alerter, cfg Config, logge
 		stopCh:      make(chan struct{}),
 		dockerCLI:   dockerCLI,
 		postfixExec: dockerCLI,
+		now:         time.Now,
 	}
+}
+
+// SetBackupSettingsProvider installs a callback returning the live effective
+// backup settings, used by the backup-age check (C-1) in preference to the
+// static cfg.Backup* snapshot so runtime schedule changes take effect without a
+// restart. Call before Start.
+func (m *Monitor) SetBackupSettingsProvider(fn func() (enabled bool, schedule, timezone string)) {
+	m.backupProvider = fn
 }
 
 // Start begins the monitoring loop in a background goroutine.
@@ -115,6 +140,7 @@ func (m *Monitor) RunCheck(ctx context.Context) {
 	m.checkCertExpiry(ctx)
 	m.checkPostgres(ctx)
 	m.checkValkey(ctx)
+	m.checkBackupAge(ctx)
 }
 
 func (m *Monitor) loop() {
@@ -243,6 +269,75 @@ func (m *Monitor) checkCertExpiry(ctx context.Context) {
 			fmt.Sprintf("TLS certificate expires in %d days (subject: %s)", info.DaysLeft, info.Subject))
 	} else {
 		m.alerter.Resolve(ctx, "tls:warn")
+	}
+}
+
+// backupAgeState is the outcome of the backup-age decision.
+type backupAgeState int
+
+const (
+	backupAgeOK    backupAgeState = iota // a recent successful backup exists
+	backupAgeNever                       // no backup has ever completed
+	backupAgeStale                       // the newest backup is older than the grace-adjusted interval
+)
+
+// evalBackupAge is the pure decision for the backup-age check, split out so the
+// staleness logic is unit-testable without a database. last is the newest
+// completed-backup time (nil = none ever), maxInterval is the expected longest
+// gap between scheduled runs; a backup is stale once it is older than
+// maxInterval * backup.StaleGraceFactor.
+func evalBackupAge(last *time.Time, now time.Time, maxInterval time.Duration) backupAgeState {
+	if last == nil {
+		return backupAgeNever
+	}
+	threshold := time.Duration(float64(maxInterval) * backup.StaleGraceFactor)
+	if now.Sub(*last) > threshold {
+		return backupAgeStale
+	}
+	return backupAgeOK
+}
+
+// checkBackupAge flags a stale or absent last-successful-backup (C-1). It closes
+// the invisibility gap that let nightly backups fail unnoticed: "no backup on
+// record" fires WARN, an existing-but-stale backup escalates to CRITICAL, and a
+// healthy edge resolves both. Skipped entirely when backups are disabled.
+func (m *Monitor) checkBackupAge(ctx context.Context) {
+	// Prefer the live provider (reflects runtime schedule changes); fall back to
+	// the static snapshot captured at construction.
+	enabled, schedule, timezone := m.cfg.BackupEnabled, m.cfg.BackupSchedule, m.cfg.BackupTimezone
+	if m.backupProvider != nil {
+		enabled, schedule, timezone = m.backupProvider()
+	}
+	if !enabled || m.db == nil {
+		return
+	}
+	last, err := repository.NewBackupRepo(m.db).LatestCompleted(ctx)
+	if err != nil {
+		m.logger.Debug("backup age check: query failed", "error", err)
+		return
+	}
+	now := m.now()
+
+	if last == nil {
+		m.alerter.Send(ctx, "WARN", "backup", "no completed backup on record")
+		return
+	}
+
+	maxInterval, err := backup.ExpectedInterval(schedule, timezone, now, 8)
+	if err != nil {
+		m.logger.Debug("backup age check: schedule parse failed", "error", err)
+		return
+	}
+
+	switch evalBackupAge(last, now, maxInterval) {
+	case backupAgeStale:
+		age := now.Sub(*last).Round(time.Minute)
+		m.alerter.Send(ctx, "CRITICAL", "backup",
+			fmt.Sprintf("last successful backup was %s ago (expected within ~%s)",
+				age, time.Duration(float64(maxInterval)*backup.StaleGraceFactor).Round(time.Minute)))
+	default: // backupAgeOK
+		m.alerter.Resolve(ctx, "backup:warn")
+		m.alerter.Resolve(ctx, "backup:critical")
 	}
 }
 
