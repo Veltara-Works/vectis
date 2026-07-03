@@ -130,6 +130,7 @@ type Server struct {
 
 	// Background services
 	monitor          *monitor.Monitor
+	alerter          *monitor.Alerter // shared by the health monitor and the backup scheduler's failure alert
 	auditPruner      *audit.Pruner
 	retentionSweeper *retention.Sweeper
 	sessionCleaner   *auth.SessionCleaner
@@ -438,7 +439,10 @@ func (s *Server) StartMonitor() {
 		emailCfg.Recipients = []string{s.secrets.API.AdminEmail}
 	}
 
-	alerter := monitor.NewAlerter(
+	// Build the Alerter once and retain it on the Server: the health monitor
+	// uses it for its checks, and the backup scheduler reuses it to alert on
+	// scheduled-backup failures (see startBackupSchedulerLocked).
+	s.alerter = monitor.NewAlerter(
 		s.alerts,
 		emailCfg,
 		s.cfg.Alerts.Webhook,
@@ -452,7 +456,16 @@ func (s *Server) StartMonitor() {
 		monCfg.CertDir = s.dkimBasePath + "/../certs"
 	}
 
-	s.monitor = monitor.New(s.db, s.vk, alerter, monCfg, s.logger.With("component", "monitor"))
+	s.monitor = monitor.New(s.db, s.vk, s.alerter, monCfg, s.logger.With("component", "monitor"))
+	// Feed the LIVE effective backup settings into the monitor so it can flag a
+	// stale/absent last-successful-backup (C-1). A provider (not a snapshot) so a
+	// runtime schedule change via the admin UI takes effect without a restart —
+	// otherwise a shortened cadence would leave the staleness threshold pinned to
+	// the old, longer interval and under-alert.
+	s.monitor.SetBackupSettingsProvider(func() (bool, string, string) {
+		st := s.effectiveBackupSettings(context.Background())
+		return st.Enabled, st.Schedule, st.Timezone
+	})
 	s.monitor.Start()
 }
 
@@ -555,6 +568,44 @@ func (s *Server) effectiveBackupSettings(ctx context.Context) backup.Settings {
 	return st
 }
 
+// ReconcileIncompleteBackups marks any backup job still in a non-terminal state
+// (pending/running) as failed. It MUST be called once at startup, synchronously,
+// BEFORE StartBackupScheduler and before the server serves create requests: the
+// backup manager is a single writer, so any job left pending/running at boot was
+// orphaned by a crash or restart and will otherwise linger forever, masking the
+// true "no successful backup" state (the invisibility defect this fix targets).
+// Failures are logged, never fatal — a marking error must not block boot.
+func (s *Server) ReconcileIncompleteBackups() {
+	if s.db == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	n, err := repository.NewBackupRepo(s.db).FailIncomplete(ctx, "server restarted; job interrupted")
+	if err != nil {
+		s.logger.Error("backup: crash-reconcile of interrupted jobs failed", "error", err)
+		return
+	}
+	if n > 0 {
+		s.logger.Warn("backup: marked interrupted jobs failed on startup", "count", n)
+	}
+}
+
+// SweepBackupTempDirs reclaims orphaned backup/restore temp working dirs and
+// *.tmp sidecars left by a SIGKILLed (OOM) backup process. Call once at startup,
+// synchronously, before StartBackupScheduler and before create requests are
+// served — at that instant no backup goroutine exists, so every match is a stale
+// orphan. Non-fatal: a sweep error must not block boot.
+func (s *Server) SweepBackupTempDirs() {
+	mgr := s.backupManager()
+	if mgr == nil {
+		return
+	}
+	if n := mgr.SweepOrphanTemp(); n > 0 {
+		s.logger.Warn("backup: swept orphaned temp files/dirs on startup", "count", n)
+	}
+}
+
 // StartBackupScheduler starts the periodic backup scheduler when backups are
 // enabled. It is a no-op (with a log line) when disabled or misconfigured, so
 // a bad schedule never crashes the server — it just doesn't run scheduled
@@ -586,6 +637,26 @@ func (s *Server) startBackupSchedulerLocked() {
 	if err != nil {
 		s.logger.Error("backup scheduler not started: invalid schedule", "error", err)
 		return
+	}
+	// C-2: a scheduled backup failure must be visible. The scheduled path calls
+	// mgr.Create synchronously and never fires the onComplete callback, so the
+	// notification wiring on the async/UI path is dead here — alert via the
+	// shared Alerter instead. Uses the "backup-run" service (its OWN dedup key,
+	// distinct from the C-1 staleness signal's "backup" key) so the monitor's
+	// last-success health check can't auto-resolve a real run-failure: after a
+	// single night's failure the last success is still recent, so C-1 reads
+	// healthy and would otherwise clear the alert within a minute. CRITICAL
+	// bypasses the 15-min dedup so a nightly failure is never suppressed. A
+	// subsequent successful run resolves it. Injected as callbacks so
+	// internal/backup never imports internal/monitor (avoids an import cycle).
+	if s.alerter != nil {
+		alerter := s.alerter
+		sched.SetOnError(func(ctx context.Context, err error) {
+			alerter.Send(ctx, "CRITICAL", "backup-run", "scheduled backup failed: "+err.Error())
+		})
+		sched.SetOnSuccess(func(ctx context.Context) {
+			alerter.Resolve(ctx, "backup-run:critical")
+		})
 	}
 	s.backupScheduler = sched
 	s.backupScheduler.Start()

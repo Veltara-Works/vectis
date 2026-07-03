@@ -116,6 +116,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	srv.StartRetentionSweeper()
 	srv.ReconcileErasureTombstones() // re-apply DSAR erasures that a restore may have resurrected
 	srv.StartSessionCleaner()
+	srv.ReconcileIncompleteBackups() // fail crash-orphaned backup jobs before the scheduler (C-3); synchronous, must precede StartBackupScheduler
+	srv.SweepBackupTempDirs()        // reclaim SIGKILL-orphaned backup/restore temp dirs + *.tmp sidecars before the scheduler
 	srv.StartBackupScheduler()
 	srv.StartWebhookDispatcher()
 	srv.StartImportWorker()

@@ -2,10 +2,12 @@ package backup
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -106,8 +108,9 @@ func TestSchedulerPruneOlderThan(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.now = func() time.Time { return now }
+	s.validateFn = func(context.Context, string) error { return nil } // dummy files aren't real archives
 
-	removed := s.pruneOlderThan(30)
+	removed := s.pruneOlderThan(context.Background(), 30)
 	if removed != 2 {
 		t.Errorf("removed = %d, want 2 (old1, old2)", removed)
 	}
@@ -149,8 +152,9 @@ func TestSchedulerPruneKeepsNewest(t *testing.T) {
 
 	s, _ := NewScheduler(mgr, SchedulerConfig{Schedule: "0 2 * * *", RetainDays: 30}, quietLogger())
 	s.now = func() time.Time { return now }
+	s.validateFn = func(context.Context, string) error { return nil } // dummy files aren't real archives
 
-	removed := s.pruneOlderThan(30)
+	removed := s.pruneOlderThan(context.Background(), 30)
 	if removed != 1 {
 		t.Errorf("removed = %d, want 1 (newest kept)", removed)
 	}
@@ -158,4 +162,237 @@ func TestSchedulerPruneKeepsNewest(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "vectis-a.tar.gz.enc")); err != nil {
 		t.Errorf("newest archive must be kept: %v", err)
 	}
+}
+
+// TestSchedulerPruneProtectsRestoreChain is the core manifest-aware guard: an
+// incremental's base full is OLDER than the cutoff, but must survive because a
+// newer incremental depends on it. A standalone full that predates the chain
+// (not a RestoreChain member) is still reaped. Without this, blind age-based
+// prune deletes the base full and makes restore hard-fail its pre-flight.
+func TestSchedulerPruneProtectsRestoreChain(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.BackupDir = dir
+	mgr := NewManager(nil, quietLogger(), cfg)
+
+	now := time.Date(2026, 5, 30, 0, 0, 0, 0, time.UTC)
+	// name -> (ageDays, type, id, parentID)
+	base := filepath.Join(dir, "vectis-base.tar.gz.enc")             // chain base full, 40d (older than 30d cutoff)
+	incr := filepath.Join(dir, "vectis-incr-new.tar.gz.enc")         // incremental on base, 5d (newest)
+	standalone := filepath.Join(dir, "vectis-standalone.tar.gz.enc") // pre-chain full, 100d (prunable)
+	writeAged := func(path string, ageDays int) {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mod := now.Add(-time.Duration(ageDays) * 24 * time.Hour)
+		if err := os.Chtimes(path, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeAged(standalone, 100)
+	writeAged(base, 40)
+	writeAged(incr, 5)
+
+	// Manifest order matters: LastFull walks backwards, so `base` (the later of
+	// the two fulls) is the chain base. RestoreChain = {base, incr}.
+	manifest, _ := LoadManifest(dir)
+	if err := manifest.Add(ManifestEntry{ID: "standalone", Type: BackupFull, Path: standalone, CreatedAt: now.Add(-100 * 24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manifest.Add(ManifestEntry{ID: "base", Type: BackupFull, Path: base, CreatedAt: now.Add(-40 * 24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manifest.Add(ManifestEntry{ID: "incr", Type: BackupIncremental, ParentID: "base", Path: incr, CreatedAt: now.Add(-5 * 24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := NewScheduler(mgr, SchedulerConfig{Schedule: "0 2 * * *", RetainDays: 30}, quietLogger())
+	s.now = func() time.Time { return now }
+	s.validateFn = func(context.Context, string) error { return nil } // dummy files aren't real archives
+
+	removed := s.pruneOlderThan(context.Background(), 30)
+	if removed != 1 {
+		t.Errorf("removed = %d, want 1 (only the pre-chain standalone full)", removed)
+	}
+	// The chain base full must survive despite being older than the cutoff.
+	if _, err := os.Stat(base); err != nil {
+		t.Errorf("RestoreChain base full must be protected from prune: %v", err)
+	}
+	if _, err := os.Stat(incr); err != nil {
+		t.Errorf("newest incremental must be kept: %v", err)
+	}
+	// The standalone pre-chain full is not a chain member and is older than the
+	// cutoff, so it is correctly reaped.
+	if _, err := os.Stat(standalone); !os.IsNotExist(err) {
+		t.Errorf("pre-chain standalone full should have been pruned; stat err = %v", err)
+	}
+	// Manifest reconciled: the standalone entry is dropped, chain intact.
+	reloaded, _ := LoadManifest(dir)
+	if reloaded.LastFull() == nil || reloaded.LastFull().ID != "base" {
+		t.Errorf("manifest LastFull after prune = %v, want base", reloaded.LastFull())
+	}
+	if len(reloaded.Entries) != 2 {
+		t.Errorf("manifest entries after prune = %d, want 2 (base+incr)", len(reloaded.Entries))
+	}
+}
+
+// TestManifestConcurrentWriters proves manifestMu serialises the manifest's
+// load→mutate→rewrite so concurrent recordBackup calls (UI backups) racing the
+// prune reconcile can't drop a just-recorded entry (the lost-update the review
+// flagged). Run under -race to also catch any shared-state data race.
+func TestManifestConcurrentWriters(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.BackupDir = dir
+	mgr := NewManager(nil, quietLogger(), cfg)
+
+	const n = 24
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			p := filepath.Join(dir, fmt.Sprintf("vectis-%03d.tar.gz.enc", i))
+			if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+				t.Errorf("write archive: %v", err)
+				return
+			}
+			mgr.recordBackup(fmt.Sprintf("job-%d", i), p, 1, BackupFull, nil)
+		}(i)
+	}
+	// Interleave reconciles (as the scheduler's prune would). Every archive file
+	// exists, so reconcile drops nothing — but without the lock its stale
+	// load+save would clobber concurrently-added entries.
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); mgr.reconcileManifest() }()
+	}
+	wg.Wait()
+
+	m, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if len(m.Entries) != n {
+		t.Errorf("manifest has %d entries, want %d — a concurrent write was lost", len(m.Entries), n)
+	}
+}
+
+// TestSweepOrphanTemp verifies the startup sweep removes only OUR orphaned temp
+// working dirs (in TMPDIR) and *.tmp sidecars (in BackupDir), leaving unrelated
+// dirs, stray files, and real archives untouched.
+func TestSweepOrphanTemp(t *testing.T) {
+	tmpParent := t.TempDir()
+	t.Setenv("TMPDIR", tmpParent) // os.TempDir() honours $TMPDIR on unix
+	backupDir := t.TempDir()
+
+	// Orphaned working dirs (all five worker prefixes).
+	orphanDirs := []string{
+		"vectis-backup-123", "vectis-backup-incr-9", "vectis-incr-apply-4",
+		"vectis-restore-7", "vectis-restore-keep-1",
+	}
+	for _, n := range orphanDirs {
+		if err := os.MkdirAll(filepath.Join(tmpParent, n), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Must survive: unrelated dir, and a stray file that happens to match a prefix
+	// (we only remove DIRS in /tmp).
+	if err := os.MkdirAll(filepath.Join(tmpParent, "unrelated-dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpParent, "vectis-backup-stray-file"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Orphaned .tmp sidecars in the backup dir, plus a real archive that must stay.
+	for _, n := range []string{"vectis-20260101-000000.tar.gz.enc.tmp", "manifest.json.tmp"} {
+		if err := os.WriteFile(filepath.Join(backupDir, n), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	realArchive := filepath.Join(backupDir, "vectis-20260101-000000.tar.gz.enc")
+	if err := os.WriteFile(realArchive, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.BackupDir = backupDir
+	mgr := NewManager(nil, quietLogger(), cfg)
+
+	n := mgr.SweepOrphanTemp()
+	if n != 7 { // 5 dirs + 2 .tmp files
+		t.Errorf("SweepOrphanTemp removed %d, want 7", n)
+	}
+	for _, name := range orphanDirs {
+		if _, err := os.Stat(filepath.Join(tmpParent, name)); !os.IsNotExist(err) {
+			t.Errorf("orphan dir %s should be swept; stat err = %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(tmpParent, "unrelated-dir")); err != nil {
+		t.Errorf("unrelated dir must survive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpParent, "vectis-backup-stray-file")); err != nil {
+		t.Errorf("stray file (not a dir) must survive: %v", err)
+	}
+	if _, err := os.Stat(realArchive); err != nil {
+		t.Errorf("real archive must survive: %v", err)
+	}
+}
+
+// TestExpectedInterval verifies the max-gap sampling used by the backup-age
+// health check: a uniform daily cron yields ~24h, but a schedule with an uneven
+// gap (weekday-only) must yield the widest gap (across the weekend), so the
+// health check never false-alarms during the expected quiet stretch.
+func TestExpectedInterval(t *testing.T) {
+	from := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC) // a Monday
+
+	t.Run("uniform daily is ~24h", func(t *testing.T) {
+		got, err := ExpectedInterval("0 2 * * *", "", from, 8)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 24*time.Hour {
+			t.Errorf("ExpectedInterval(daily) = %v, want 24h", got)
+		}
+	})
+
+	t.Run("weekday-only spans the weekend", func(t *testing.T) {
+		// Fires 02:00 Mon-Fri. The largest consecutive gap is Fri 02:00 -> Mon
+		// 02:00 = 72h. Sampling from Monday noon, 8 samples covers >1 week.
+		got, err := ExpectedInterval("0 2 * * 1-5", "", from, 8)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 72*time.Hour {
+			t.Errorf("ExpectedInterval(weekday-only) = %v, want 72h", got)
+		}
+	})
+
+	t.Run("timezone honoured", func(t *testing.T) {
+		// Daily in Sydney is still a 24h interval regardless of tz.
+		got, err := ExpectedInterval("0 2 * * *", "Australia/Sydney", from, 4)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 24*time.Hour {
+			t.Errorf("ExpectedInterval(sydney daily) = %v, want 24h", got)
+		}
+	})
+
+	t.Run("samples clamped to >=2", func(t *testing.T) {
+		got, err := ExpectedInterval("0 2 * * *", "", from, 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 24*time.Hour {
+			t.Errorf("ExpectedInterval(samples=0 clamped) = %v, want 24h", got)
+		}
+	})
+
+	t.Run("invalid schedule errors", func(t *testing.T) {
+		if _, err := ExpectedInterval("nope", "", from, 4); err == nil {
+			t.Error("expected error for invalid schedule")
+		}
+	})
 }

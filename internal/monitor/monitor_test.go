@@ -153,3 +153,46 @@ func TestIsHexPrefix(t *testing.T) {
 		})
 	}
 }
+
+// TestEvalBackupAge pins the pure backup-age decision (C-1): none-on-record,
+// fresh, exactly-at-grace, and past-grace. Grace factor is 1.5x the interval.
+func TestEvalBackupAge(t *testing.T) {
+	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	daily := 24 * time.Hour // threshold = 36h
+
+	t.Run("nil is never", func(t *testing.T) {
+		if got := evalBackupAge(nil, now, daily); got != backupAgeNever {
+			t.Errorf("evalBackupAge(nil) = %v, want backupAgeNever", got)
+		}
+	})
+
+	t.Run("recent is ok", func(t *testing.T) {
+		last := now.Add(-2 * time.Hour)
+		if got := evalBackupAge(&last, now, daily); got != backupAgeOK {
+			t.Errorf("evalBackupAge(2h ago) = %v, want backupAgeOK", got)
+		}
+	})
+
+	t.Run("just under grace is ok", func(t *testing.T) {
+		last := now.Add(-35 * time.Hour) // < 36h threshold
+		if got := evalBackupAge(&last, now, daily); got != backupAgeOK {
+			t.Errorf("evalBackupAge(35h ago) = %v, want backupAgeOK", got)
+		}
+	})
+
+	t.Run("past grace is stale", func(t *testing.T) {
+		last := now.Add(-37 * time.Hour) // > 36h threshold
+		if got := evalBackupAge(&last, now, daily); got != backupAgeStale {
+			t.Errorf("evalBackupAge(37h ago) = %v, want backupAgeStale", got)
+		}
+	})
+
+	t.Run("weekend-wide interval tolerates the gap", func(t *testing.T) {
+		// Weekday-only cron: expected interval 72h, threshold 108h. A backup 80h
+		// old (over a weekend) is still healthy.
+		last := now.Add(-80 * time.Hour)
+		if got := evalBackupAge(&last, now, 72*time.Hour); got != backupAgeOK {
+			t.Errorf("evalBackupAge(80h ago, 72h interval) = %v, want backupAgeOK", got)
+		}
+	})
+}

@@ -235,6 +235,8 @@ func suggestAction(service string) string {
 		return "Check mail queue: docker exec vectis-postfix postqueue -p"
 	case "tls":
 		return "Check TLS certificate and renewal: vectis tls status"
+	case "backup", "backup-run":
+		return "Check backup status and logs: vectis backup list; vectis logs api"
 	default:
 		return "Check service logs: vectis logs " + service
 	}

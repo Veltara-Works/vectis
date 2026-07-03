@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Veltara-Works/vectis/internal/backup"
+	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
 // --- POST /api/v1/backup/create ---
@@ -210,15 +211,28 @@ func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 // the schedule is invalid). from_db reports whether the values came from the
 // admin-UI override (true) or the file config defaults (false).
 type backupSettingsResponse struct {
-	Enabled    bool       `json:"enabled"`
-	Schedule   string     `json:"schedule"`
-	Timezone   string     `json:"timezone"`
-	RetainDays int        `json:"retain_days"`
-	FromDB     bool       `json:"from_db"`
-	NextRun    *time.Time `json:"next_run,omitempty"`
+	Enabled    bool          `json:"enabled"`
+	Schedule   string        `json:"schedule"`
+	Timezone   string        `json:"timezone"`
+	RetainDays int           `json:"retain_days"`
+	FromDB     bool          `json:"from_db"`
+	NextRun    *time.Time    `json:"next_run,omitempty"`
+	Backup     *backupHealth `json:"last_successful_backup,omitempty"`
 }
 
-func (s *Server) backupSettingsResponseFor(st backup.Settings) backupSettingsResponse {
+// backupHealth surfaces the last-successful-backup signal (C-1) on the
+// authenticated settings endpoint — deliberately NOT on the public /health, so
+// backup cadence is not exposed to unauthenticated callers. Status mirrors the
+// monitor's decision: "never" (none on record), "stale" (older than the
+// grace-adjusted expected interval), or "ok".
+type backupHealth struct {
+	Status        string     `json:"status"` // "ok" | "stale" | "never"
+	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	AgeSeconds    int64      `json:"age_seconds,omitempty"`
+	MaxAgeSeconds int64      `json:"max_age_seconds,omitempty"` // grace-adjusted interval used as the stale threshold
+}
+
+func (s *Server) backupSettingsResponseFor(ctx context.Context, st backup.Settings) backupSettingsResponse {
 	resp := backupSettingsResponse{
 		Enabled:    st.Enabled,
 		Schedule:   st.Schedule,
@@ -231,12 +245,47 @@ func (s *Server) backupSettingsResponseFor(st backup.Settings) backupSettingsRes
 			resp.NextRun = &next
 		}
 	}
+	resp.Backup = s.backupHealthFor(ctx, st)
 	return resp
+}
+
+// backupHealthFor computes the last-successful-backup health from the backup_jobs
+// table and the effective schedule. Returns nil (field omitted) when the DB is
+// unavailable or the query fails — a health read must never break the settings
+// endpoint.
+func (s *Server) backupHealthFor(ctx context.Context, st backup.Settings) *backupHealth {
+	if s.db == nil {
+		return nil
+	}
+	last, err := repository.NewBackupRepo(s.db).LatestCompleted(ctx)
+	if err != nil {
+		s.logger.Debug("backup settings: last-successful query failed", "error", err)
+		return nil
+	}
+	if last == nil {
+		return &backupHealth{Status: "never"}
+	}
+	h := &backupHealth{
+		Status:      "ok",
+		CompletedAt: last,
+		AgeSeconds:  int64(time.Since(*last).Seconds()),
+	}
+	// Staleness only means something when a schedule is configured.
+	if st.Enabled {
+		if maxInterval, err := backup.ExpectedInterval(st.Schedule, st.Timezone, time.Now(), 8); err == nil {
+			threshold := time.Duration(float64(maxInterval) * backup.StaleGraceFactor)
+			h.MaxAgeSeconds = int64(threshold.Seconds())
+			if time.Since(*last) > threshold {
+				h.Status = "stale"
+			}
+		}
+	}
+	return h
 }
 
 func (s *Server) handleGetBackupSettings(w http.ResponseWriter, r *http.Request) {
 	st := s.effectiveBackupSettings(r.Context())
-	respond(w, r, http.StatusOK, s.backupSettingsResponseFor(st))
+	respond(w, r, http.StatusOK, s.backupSettingsResponseFor(r.Context(), st))
 }
 
 // --- PUT /api/v1/backup/settings ---
@@ -292,5 +341,5 @@ func (s *Server) handleUpdateBackupSettings(w http.ResponseWriter, r *http.Reque
 		}, &ip)
 
 	st.FromDB = true
-	respond(w, r, http.StatusOK, s.backupSettingsResponseFor(st))
+	respond(w, r, http.StatusOK, s.backupSettingsResponseFor(r.Context(), st))
 }

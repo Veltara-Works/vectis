@@ -24,6 +24,14 @@ type Settings struct {
 	FromDB     bool
 }
 
+// MaxRetainDays caps backup retention (~10 years). It bounds both the validated
+// input AND the prune cutoff arithmetic: without an upper bound,
+// time.Duration(retainDays)*24h overflows int64 nanoseconds and flips the cutoff
+// into the FUTURE, which would delete every archive except the most recent
+// (data loss). The prune path clamps to this independently because a value read
+// straight from the DB bypasses Validate.
+const MaxRetainDays = 3650
+
 // Validate enforces the input invariants. A schedule is always required (the
 // UI keeps the last schedule even when backups are toggled off) and must
 // parse; the timezone, when set, must be a known IANA location.
@@ -33,6 +41,9 @@ func (s Settings) Validate() error {
 	}
 	if s.RetainDays < 0 {
 		return errors.New("retain_days must be >= 0")
+	}
+	if s.RetainDays > MaxRetainDays {
+		return fmt.Errorf("retain_days must be <= %d", MaxRetainDays)
 	}
 	// buildCronSchedule validates both the cron expression and the timezone.
 	if _, err := buildCronSchedule(s.Schedule, s.Timezone); err != nil {

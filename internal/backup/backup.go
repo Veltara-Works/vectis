@@ -1,18 +1,22 @@
 package backup
 
 import (
+	"archive/tar"
+	"bufio"
+	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -117,6 +121,13 @@ type Manager struct {
 	cfg        Config
 	repo       *repository.BackupRepo
 	onComplete CompletionCallback
+
+	// manifestMu serialises the manifest's load→mutate→whole-file-rewrite
+	// sequence. Backups are single-writer in practice, but a UI-triggered backup
+	// (recordBackup) can run concurrently with the scheduler's prune reconcile,
+	// and both rewrite manifest.json wholesale — without this a just-recorded
+	// backup could be dropped from the chain (silent DR loss).
+	manifestMu sync.Mutex
 
 	// Service-control hooks used by restore. They default to the docker
 	// compose implementations below; the backup-restore integration test
@@ -243,27 +254,8 @@ func (m *Manager) Create(ctx context.Context, triggeredBy *string) (string, int6
 		m.logger.Error("failed to mark backup job complete", "error", err)
 	}
 
-	// Record in manifest. The manifest ID must be UNIQUE per backup — it keys the
-	// full→incremental chain in LastFull/IncrementalsSince/RestoreChain/Prune. On
-	// the host CLI path there is no DB job row, so jobID is the non-unique sentinel
-	// "no-db-create"; using it would make every host backup collide in the chain
-	// (Copilot review, PR #3). Fall back to the archive's timestamped basename,
-	// which is as unique as the archives themselves.
-	manifest, _ := LoadManifest(m.cfg.BackupDir)
-	if manifest != nil {
-		manifestID := jobID
-		if m.repo == nil {
-			manifestID = filepath.Base(path)
-		}
-		manifest.Add(ManifestEntry{
-			ID:        manifestID,
-			Type:      BackupFull,
-			Path:      path,
-			Size:      size,
-			CreatedAt: time.Now().UTC(),
-		})
-	}
-
+	// Manifest recording happens inside runCreate (the shared choke point for all
+	// create paths), so no per-caller manifest write is needed here.
 	return path, size, nil
 }
 
@@ -359,29 +351,146 @@ func (m *Manager) CreateIncrementalAsync(ctx context.Context, triggeredBy *strin
 			m.logger.Error("failed to mark backup complete", "job_id", job.ID, "error", err)
 		}
 
-		// Record in manifest.
-		parentID := ""
-		if backupType == BackupIncremental && lastFull != nil {
-			parentID = lastFull.ID
-		}
-		entry := ManifestEntry{
-			ID:        job.ID,
-			Type:      backupType,
-			Path:      path,
-			ParentID:  parentID,
-			Size:      size,
-			CreatedAt: time.Now().UTC(),
-		}
-		if err := manifest.Add(entry); err != nil {
-			m.logger.Error("failed to update manifest", "error", err)
-		}
-
+		// Manifest recording happens inside the create workers (runCreate /
+		// runCreateIncremental), the shared choke point for all create paths.
 		if m.onComplete != nil {
 			m.onComplete(path, size/(1024*1024), duration, nil)
 		}
 	}()
 
 	return job.ID, backupType, nil
+}
+
+// recordBackup appends a just-created archive to the backup manifest so it
+// participates in chain detection, restore, chain-depth accounting, and
+// manifest-aware prune. It is called from the internal create workers (runCreate,
+// runCreateIncremental) — the single choke point every create path funnels
+// through — so ALL paths record consistently. Previously CreateAsync (the UI
+// full-backup path) wrote no manifest entry, making UI fulls invisible to the
+// restore chain (silent DR data loss). Failures are logged at ERROR but never
+// fail the backup: the archive is already on disk and valid, and failing the job
+// would not un-write it — but an unrecorded backup is a real problem worth loud
+// logging. parent is nil for full backups; for incrementals it is the base full.
+func (m *Manager) recordBackup(jobID, path string, size int64, typ BackupType, parent *ManifestEntry) {
+	m.manifestMu.Lock()
+	defer m.manifestMu.Unlock()
+
+	manifest, err := LoadManifest(m.cfg.BackupDir)
+	if err != nil {
+		m.logger.Error("backup: load manifest to record backup", "path", path, "error", err)
+		return
+	}
+	// The manifest ID must be UNIQUE per backup — it keys the full→incremental
+	// chain in LastFull/IncrementalsSince/RestoreChain/Prune. On the host CLI path
+	// there is no DB job row, so jobID is the non-unique sentinel "no-db-create";
+	// fall back to the archive's timestamped basename, which is as unique as the
+	// archives themselves (Copilot review, PR #3).
+	id := jobID
+	if m.repo == nil {
+		id = filepath.Base(path)
+	}
+	entry := ManifestEntry{
+		ID:        id,
+		Type:      typ,
+		Path:      path,
+		Size:      size,
+		CreatedAt: time.Now().UTC(),
+	}
+	if parent != nil {
+		entry.ParentID = parent.ID
+	}
+	if err := manifest.Add(entry); err != nil {
+		m.logger.Error("backup: record backup in manifest", "path", path, "id", id, "error", err)
+	}
+}
+
+// reconcileManifest drops manifest entries whose archive no longer exists on
+// disk (and any now-orphaned incrementals). It loads a FRESH manifest under the
+// lock so it can't clobber an entry a concurrent recordBackup just added — the
+// caller (prune) may have loaded its own stale copy earlier for the protected
+// set, which must never be the copy that gets written back.
+func (m *Manager) reconcileManifest() {
+	m.manifestMu.Lock()
+	defer m.manifestMu.Unlock()
+
+	manifest, err := LoadManifest(m.cfg.BackupDir)
+	if err != nil {
+		m.logger.Error("backup: load manifest to reconcile", "error", err)
+		return
+	}
+	if n := manifest.Prune(); n > 0 {
+		if err := manifest.Save(); err != nil {
+			m.logger.Error("backup: save reconciled manifest", "error", err)
+		}
+	}
+}
+
+// tempDirPrefixes are the os.MkdirTemp prefixes the create/restore workers use
+// in os.TempDir(). A SIGKILL (OOM, container kill) skips their deferred
+// os.RemoveAll, orphaning the working tree — which for a full backup holds the
+// whole mail-data.tar (tens of GB) — in /tmp until the host-root disk fills.
+// "vectis-backup-" also covers "vectis-backup-incr-"; "vectis-restore-" also
+// covers "vectis-restore-keep-". The restore staging dir (.vectis-restore-stage-)
+// is deliberately NOT here: it lives inside the restore target dir, never /tmp.
+var tempDirPrefixes = []string{"vectis-backup-", "vectis-incr-apply-", "vectis-restore-"}
+
+// SweepOrphanTemp reclaims backup/restore temp working dirs (in os.TempDir()) and
+// *.tmp sidecars (in BackupDir — the VXB2 encrypt tmp and manifest tmp) left
+// behind when a backup/restore process was SIGKILLed before its defers could run.
+// It is safe ONLY at startup, before any backup/restore goroutine can exist: at
+// that point every matching entry is definitionally an orphan from a previous
+// process, so no age guard is needed. Returns the number of entries removed.
+func (m *Manager) SweepOrphanTemp() int {
+	removed := 0
+
+	// 1. Orphaned working directories in os.TempDir().
+	tmp := os.TempDir()
+	if entries, err := os.ReadDir(tmp); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue // we only ever create dirs here; leave stray files alone
+			}
+			name := e.Name()
+			matched := false
+			for _, p := range tempDirPrefixes {
+				if strings.HasPrefix(name, p) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+			full := filepath.Join(tmp, name)
+			if err := os.RemoveAll(full); err != nil {
+				m.logger.Warn("temp-sweep: remove orphan dir", "path", full, "error", err)
+				continue
+			}
+			m.logger.Info("temp-sweep: removed orphaned backup temp dir", "path", full)
+			removed++
+		}
+	} else {
+		m.logger.Warn("temp-sweep: read temp dir", "path", tmp, "error", err)
+	}
+
+	// 2. Orphaned *.tmp sidecars in the backup dir (interrupted atomic writes:
+	// vectis-*.tar.gz[.enc].tmp from encryptFile, manifest.json.tmp from Save).
+	if entries, err := os.ReadDir(m.cfg.BackupDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".tmp") {
+				continue
+			}
+			full := filepath.Join(m.cfg.BackupDir, e.Name())
+			if err := os.Remove(full); err != nil {
+				m.logger.Warn("temp-sweep: remove orphan tmp file", "path", full, "error", err)
+				continue
+			}
+			m.logger.Info("temp-sweep: removed orphaned tmp sidecar", "path", full)
+			removed++
+		}
+	}
+
+	return removed
 }
 
 func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, error) {
@@ -503,6 +612,7 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 		"size_bytes", info.Size(),
 	)
 
+	m.recordBackup(jobID, archivePath, info.Size(), BackupFull, nil)
 	return archivePath, info.Size(), nil
 }
 
@@ -612,6 +722,7 @@ func (m *Manager) runCreateIncremental(ctx context.Context, jobID string, parent
 		"size_bytes", info.Size(),
 	)
 
+	m.recordBackup(jobID, archivePath, info.Size(), BackupIncremental, parent)
 	return archivePath, info.Size(), nil
 }
 
@@ -744,11 +855,10 @@ func (m *Manager) applyIncremental(ctx context.Context, archivePath string) erro
 // it stops services, restores database, mail data, config, and DKIM keys,
 // then restarts services and runs a health check.
 func (m *Manager) Restore(ctx context.Context, backupPath string, triggeredBy *string) error {
-	// Validate the archive first.
-	if err := m.validateArchive(ctx, backupPath); err != nil {
-		return fmt.Errorf("invalid backup archive: %w", err)
-	}
-
+	// No separate validate pre-flight: runRestore decrypts/extracts the archive
+	// as its first step (before any service is stopped or data is dropped), so a
+	// corrupt or tampered archive already fails there — validating here would
+	// decrypt the whole (multi-GB) archive a second time.
 	jobID, err := m.jobCreate(ctx, "restore", triggeredBy)
 	if err != nil {
 		return fmt.Errorf("create restore job: %w", err)
@@ -768,11 +878,11 @@ func (m *Manager) Restore(ctx context.Context, backupPath string, triggeredBy *s
 
 // RestoreAsync triggers a restore asynchronously and returns the job ID.
 func (m *Manager) RestoreAsync(ctx context.Context, backupPath string, triggeredBy *string) (string, error) {
-	// Validate synchronously before starting async work.
-	if err := m.validateArchive(ctx, backupPath); err != nil {
-		return "", fmt.Errorf("invalid backup archive: %w", err)
-	}
-
+	// No synchronous validate pre-flight: it would fully decrypt a multi-GB .enc
+	// archive before returning the 202 (blocking the request past its timeout,
+	// which validateArchive couldn't honour anyway). runRestore decrypts as its
+	// first step, before any destructive action, so a bad archive still fails the
+	// job cleanly — surfaced via job status, not a hung request.
 	jobID, err := m.jobCreate(ctx, "restore", triggeredBy)
 	if err != nil {
 		return "", fmt.Errorf("create restore job: %w", err)
@@ -1376,32 +1486,115 @@ func (m *Manager) createFinalArchive(ctx context.Context, srcDir, dstPath string
 
 // validateArchive checks that the archive is a valid tar.gz (or .tar.gz.enc) file.
 func (m *Manager) validateArchive(ctx context.Context, archivePath string) error {
-	if _, err := os.Stat(archivePath); err != nil {
+	f, err := os.Open(archivePath)
+	if err != nil {
 		return fmt.Errorf("archive file not found: %w", err)
 	}
+	defer f.Close()
 
-	// Encrypted archives can't be validated without decryption; just check the file exists.
+	// Encrypted archives: FULLY stream-decrypt (O(chunk) memory) and scan the
+	// tar. For VXB2 this proves crypto integrity end to end — a truncated or
+	// tampered archive fails the AEAD/final-flag checks here instead of surfacing
+	// as an undetected partial at restore. (A first-chunk probe would miss tail
+	// truncation, so nothing short of a full decrypt is enough.)
 	if strings.HasSuffix(archivePath, ".enc") {
 		if m.cfg.EncryptionKey == "" {
 			return fmt.Errorf("backup is encrypted but no encryption key is configured")
 		}
-		m.logger.Info("encrypted backup detected — content validation deferred to restore")
+		pr, pw := io.Pipe()
+		var decErr error
+		done := make(chan struct{})
+		go func() {
+			decErr = decryptStream(pw, f, m.cfg.EncryptionKey)
+			pw.CloseWithError(decErr)
+			close(done)
+		}()
+		// Read the decrypted plaintext through a ctx-aware reader so a cancelled
+		// context (restore deadline / shutdown) aborts the read; closing the pipe
+		// then unblocks and stops the decrypt goroutine. The old plaintext path
+		// had this cancellation via exec.CommandContext(tar).
+		cpr := newCtxReader(ctx, pr)
+		hasDB, verr := validateTarGzStream(cpr)
+		if verr != nil {
+			pr.CloseWithError(verr) // stop the decrypt goroutine early
+			<-done
+			return fmt.Errorf("archive validation failed: %w", verr)
+		}
+		// tar's logical EOF (two zero blocks) precedes the physical end, so
+		// validateTarGzStream returns before the archive tail is decrypted. Drain
+		// the rest so the decrypt goroutine verifies the TAIL (final-flag, tail
+		// AEAD tag, gzip footer) — otherwise a tail-truncated or tampered archive
+		// passes — then surface the goroutine's error.
+		if _, derr := io.Copy(io.Discard, cpr); derr != nil {
+			pr.CloseWithError(derr)
+			<-done
+			return fmt.Errorf("archive validation failed: %w", derr)
+		}
+		pr.CloseWithError(nil)
+		<-done
+		if decErr != nil {
+			return fmt.Errorf("archive decrypt validation failed: %w", decErr)
+		}
+		if !hasDB {
+			m.logger.Warn("backup archive missing database.sql — partial backup")
+		}
 		return nil
 	}
 
-	cmd := exec.CommandContext(ctx, "tar", "-tzf", archivePath)
-	output, err := cmd.CombinedOutput()
+	// Plaintext .tar.gz: stream the listing (no whole-archive/whole-listing
+	// buffer), through the ctx-aware reader so cancellation is honoured.
+	hasDB, err := validateTarGzStream(newCtxReader(ctx, f))
 	if err != nil {
-		return fmt.Errorf("archive validation failed: %w: %s", err, string(output))
+		return fmt.Errorf("archive validation failed: %w", err)
 	}
-
-	// Check that it contains expected files.
-	contents := string(output)
-	if !strings.Contains(contents, "database.sql") {
+	if !hasDB {
 		m.logger.Warn("backup archive missing database.sql — partial backup")
 	}
-
 	return nil
+}
+
+// ctxReader aborts a Read when ctx is cancelled, giving the streaming validate
+// path the cancellation the old exec.CommandContext(tar) provided.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func newCtxReader(ctx context.Context, r io.Reader) *ctxReader {
+	return &ctxReader{ctx: ctx, r: r}
+}
+
+func (c *ctxReader) Read(p []byte) (int, error) {
+	if c.ctx != nil {
+		if err := c.ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
+	return c.r.Read(p)
+}
+
+// validateTarGzStream reads a gzip'd tar stream, verifying it parses cleanly and
+// reporting whether it contains a database.sql member. It streams entry headers
+// (O(entry), not O(archive)) and never buffers the whole listing.
+func validateTarGzStream(r io.Reader) (hasDB bool, err error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return false, fmt.Errorf("open gzip: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		h, nerr := tr.Next()
+		if nerr == io.EOF {
+			return hasDB, nil
+		}
+		if nerr != nil {
+			return hasDB, fmt.Errorf("read tar: %w", nerr)
+		}
+		if strings.HasSuffix(h.Name, "database.sql") {
+			hasDB = true
+		}
+	}
 }
 
 // stopServices stops all Docker Compose services.
@@ -1479,56 +1672,150 @@ func deriveKeyLegacy(passphrase string) []byte {
 	return h[:]
 }
 
-// encryptFile encrypts srcPath with AES-256-GCM and writes to dstPath. The
-// output layout is: magic || salt || nonce || ciphertext. A tampered salt or
-// nonce derives the wrong key (or fails the GCM tag), so neither needs separate
-// authentication.
+// encryptFile encrypts srcPath into a VXB2 streaming archive at dstPath in
+// O(chunk) memory (see stream.go), writes it atomically (.tmp -> fsync ->
+// rename), and self-verifies that the archive round-trips to exactly the source
+// length BEFORE publishing it — so a corrupt or unverifiable archive surfaces as
+// a failed backup, never as silent data-loss discovered at restore time.
 func encryptFile(srcPath, dstPath, passphrase string) error {
-	plaintext, err := os.ReadFile(srcPath)
+	fi, err := os.Stat(srcPath)
 	if err != nil {
-		return fmt.Errorf("read plaintext: %w", err)
+		return fmt.Errorf("stat plaintext: %w", err)
 	}
+	srcSize := fi.Size()
 
-	salt := make([]byte, backupSaltLen)
-	if _, err := rand.Read(salt); err != nil {
-		return fmt.Errorf("generate salt: %w", err)
-	}
-
-	block, err := aes.NewCipher(deriveKeyArgon2(passphrase, salt))
+	src, err := os.Open(srcPath)
 	if err != nil {
-		return fmt.Errorf("create cipher: %w", err)
+		return fmt.Errorf("open plaintext: %w", err)
 	}
+	defer src.Close()
 
-	gcm, err := cipher.NewGCM(block)
+	tmpPath := dstPath + ".tmp"
+	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
-		return fmt.Errorf("create GCM: %w", err)
+		return fmt.Errorf("create archive temp: %w", err)
+	}
+	bw := bufio.NewWriterSize(tmp, 128*1024)
+	if err := streamEncrypt(bw, src, passphrase); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := bw.Flush(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("flush archive: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("fsync archive: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close archive: %w", err)
 	}
 
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return fmt.Errorf("generate nonce: %w", err)
+	// Self-verify the just-written archive before publishing: stream-decrypt to a
+	// discard sink and confirm it recovers exactly srcSize bytes with a valid
+	// final chunk. Only a verified archive is renamed into place.
+	vf, err := os.Open(tmpPath)
+	if err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("reopen archive for verify: %w", err)
+	}
+	verr := verifyVXB2(bufio.NewReaderSize(vf, 128*1024), passphrase, srcSize)
+	vf.Close()
+	if verr != nil {
+		os.Remove(tmpPath)
+		return verr
 	}
 
-	// header = magic || salt || nonce; Seal appends the ciphertext to it.
-	header := append([]byte(backupMagicV1), salt...)
-	header = append(header, nonce...)
-	out := gcm.Seal(header, nonce, plaintext, nil)
-
-	if err := os.WriteFile(dstPath, out, 0600); err != nil {
-		return fmt.Errorf("write encrypted file: %w", err)
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("publish archive: %w", err)
 	}
-
 	return nil
 }
 
-// decryptFile decrypts an AES-256-GCM archive and writes to dstPath. It detects
-// the format by the leading magic: a VXB1 archive carries a salt and is keyed
-// with Argon2id; anything else is treated as a legacy (unsalted SHA-256) archive
-// so pre-#177 backups still restore.
+// decryptFile decrypts a backup archive at srcPath to dstPath, streaming the
+// current VXB2 format in O(chunk) memory and falling back to the whole-file path
+// for pre-existing VXB1 (salted Argon2id) and legacy (unsalted SHA-256)
+// archives. Output is written atomically (.tmp -> rename).
 func decryptFile(srcPath, dstPath, passphrase string) error {
-	data, err := os.ReadFile(srcPath)
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("open encrypted file: %w", err)
+	}
+	defer src.Close()
+
+	tmpPath := dstPath + ".tmp"
+	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("create decrypt temp: %w", err)
+	}
+	bw := bufio.NewWriterSize(tmp, 128*1024)
+
+	err = decryptStream(bw, src, passphrase)
+	if err == nil {
+		err = bw.Flush()
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("publish decrypted file: %w", err)
+	}
+	return nil
+}
+
+// decryptStream decrypts an open archive to dst, dispatching on the leading
+// magic: VXB2 streams in O(chunk) memory; VXB1/legacy fall back to the
+// size-capped whole-file path. src is rewound to the start before decrypting.
+func decryptStream(dst io.Writer, src *os.File, passphrase string) error {
+	magic := make([]byte, len(streamMagicV2))
+	if _, err := io.ReadFull(src, magic); err != nil {
+		return fmt.Errorf("read archive magic: %w", err)
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek archive: %w", err)
+	}
+	if string(magic) == streamMagicV2 {
+		return streamDecrypt(dst, bufio.NewReaderSize(src, 128*1024), passphrase)
+	}
+	return decryptWholeFile(dst, src, passphrase)
+}
+
+// decryptWholeFile handles pre-VXB2 archives (VXB1 salted-Argon2id, or legacy
+// unsalted SHA-256), which are not streamable. It reads the whole archive into
+// memory (bounded by legacyWholeFileMax unless VECTIS_ALLOW_LARGE_LEGACY_RESTORE
+// is set) and GCM-Opens it. The cap stops a bit-flipped VXB2->VXB1 magic from
+// routing a large archive down this 2x-RAM path (OOM DoS); a genuine large
+// legacy restore sets the override and runs where memory is ample (host CLI).
+func decryptWholeFile(dst io.Writer, src io.Reader, passphrase string) error {
+	if s, ok := src.(io.Seeker); ok {
+		if _, err := s.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("seek archive: %w", err)
+		}
+	}
+	limit := int64(legacyWholeFileMax)
+	if os.Getenv(allowLargeLegacyEnv) == "1" {
+		limit = 1 << 62
+	}
+	data, err := io.ReadAll(io.LimitReader(src, limit+1))
 	if err != nil {
 		return fmt.Errorf("read encrypted file: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return fmt.Errorf("legacy (non-VXB2) archive exceeds %d bytes; refusing whole-file decrypt to avoid OOM — set %s=1 and restore where memory is ample", limit, allowLargeLegacyEnv)
 	}
 
 	var key, body []byte
@@ -1549,26 +1836,21 @@ func decryptFile(srcPath, dstPath, passphrase string) error {
 	if err != nil {
 		return fmt.Errorf("create cipher: %w", err)
 	}
-
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return fmt.Errorf("create GCM: %w", err)
 	}
-
 	nonceSize := gcm.NonceSize()
 	if len(body) < nonceSize {
 		return fmt.Errorf("encrypted file is too short")
 	}
-
 	nonce, ciphertext := body[:nonceSize], body[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return fmt.Errorf("decrypt failed (wrong key?): %w", err)
 	}
-
-	if err := os.WriteFile(dstPath, plaintext, 0600); err != nil {
+	if _, err := dst.Write(plaintext); err != nil {
 		return fmt.Errorf("write decrypted file: %w", err)
 	}
-
 	return nil
 }

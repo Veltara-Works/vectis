@@ -35,8 +35,8 @@ func writeLegacyEncrypted(t *testing.T, path, passphrase string, plaintext []byt
 	}
 }
 
-// TestEncryptDecryptRoundTrip covers the new salted Argon2id format end to end,
-// and asserts the archive carries the VXB1 magic + a per-archive salt (two
+// TestEncryptDecryptRoundTrip covers the streaming VXB2 format end to end, and
+// asserts the archive carries the VXB2 magic + a per-archive salt (two
 // encryptions of the same input never produce identical ciphertext).
 func TestEncryptDecryptRoundTrip(t *testing.T) {
 	dir := t.TempDir()
@@ -57,8 +57,8 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read enc: %v", err)
 	}
-	if string(raw[:len(backupMagicV1)]) != backupMagicV1 {
-		t.Errorf("archive missing %q magic; got % x", backupMagicV1, raw[:len(backupMagicV1)])
+	if string(raw[:len(streamMagicV2)]) != streamMagicV2 {
+		t.Errorf("archive missing %q magic; got % x", streamMagicV2, raw[:len(streamMagicV2)])
 	}
 	if bytes.Contains(raw, plain) {
 		t.Error("plaintext leaked into ciphertext")
@@ -102,6 +102,56 @@ func TestDecryptLegacyArchive(t *testing.T) {
 	got, _ := os.ReadFile(out)
 	if !bytes.Equal(got, plain) {
 		t.Errorf("legacy restore mismatch:\n got %q\nwant %q", got, plain)
+	}
+}
+
+// writeVXB1Encrypted reproduces the whole-file VXB1 format (magic || salt ||
+// nonce || ciphertext, Argon2id key) that shipped before the VXB2 streaming
+// change, so the test proves decryptFile's dispatch still restores VXB1 archives
+// already sitting on production hosts.
+func writeVXB1Encrypted(t *testing.T, path, passphrase string, plaintext []byte) {
+	t.Helper()
+	salt := make([]byte, backupSaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		t.Fatalf("vxb1 salt: %v", err)
+	}
+	block, err := aes.NewCipher(deriveKeyArgon2(passphrase, salt))
+	if err != nil {
+		t.Fatalf("vxb1 cipher: %v", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("vxb1 gcm: %v", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("vxb1 nonce: %v", err)
+	}
+	header := append([]byte(backupMagicV1), salt...)
+	header = append(header, nonce...)
+	out := gcm.Seal(header, nonce, plaintext, nil)
+	if err := os.WriteFile(path, out, 0600); err != nil {
+		t.Fatalf("write vxb1 file: %v", err)
+	}
+}
+
+// TestDecryptVXB1Archive is the backward-compatibility guard for the VXB2 change:
+// a whole-file VXB1 archive must still restore via decryptFile's magic dispatch.
+func TestDecryptVXB1Archive(t *testing.T) {
+	dir := t.TempDir()
+	const pass = "vxb1-passphrase"
+	plain := []byte("a backup written in the whole-file VXB1 format")
+
+	arch := filepath.Join(dir, "vxb1.enc")
+	writeVXB1Encrypted(t, arch, pass, plain)
+
+	out := filepath.Join(dir, "restored.tar")
+	if err := decryptFile(arch, out, pass); err != nil {
+		t.Fatalf("decryptFile(VXB1): %v", err)
+	}
+	got, _ := os.ReadFile(out)
+	if !bytes.Equal(got, plain) {
+		t.Errorf("VXB1 restore mismatch:\n got %q\nwant %q", got, plain)
 	}
 }
 
