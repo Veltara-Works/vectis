@@ -49,10 +49,10 @@ const (
 	// large VXB2 archive's magic (VXB2->VXB1) would route it to the 2x-RAM path
 	// = OOM DoS. No legitimate large legacy archive exists; a genuine large
 	// legacy restore uses the host CLI (no cgroup) with the override env.
-	legacyWholeFileMax    = 256 << 20 // 256 MiB
-	allowLargeLegacyEnv   = "VECTIS_ALLOW_LARGE_LEGACY_RESTORE"
-	streamHeaderLen       = len(streamMagicV2) + backupSaltLen // 20
-	streamEncChunkMaxLen  = streamChunkSize + streamTagLen
+	legacyWholeFileMax   = 256 << 20 // 256 MiB
+	allowLargeLegacyEnv  = "VECTIS_ALLOW_LARGE_LEGACY_RESTORE"
+	streamHeaderLen      = len(streamMagicV2) + backupSaltLen // 20
+	streamEncChunkMaxLen = streamChunkSize + streamTagLen
 )
 
 // chunkNonce builds the 12-byte nonce for chunk `counter`. Bytes [3:11] hold the
