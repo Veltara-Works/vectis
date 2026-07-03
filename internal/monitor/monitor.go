@@ -311,7 +311,12 @@ func (m *Monitor) checkBackupAge(ctx context.Context) {
 	if !enabled || m.db == nil {
 		return
 	}
-	last, err := repository.NewBackupRepo(m.db).LatestCompleted(ctx)
+	// Bound the DB query so a hung/slow Postgres can't stall the shared monitor
+	// loop (which runs on context.Background()) — same 5s cap the other DB-backed
+	// checks here use (checkPostgres/checkValkey).
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	last, err := repository.NewBackupRepo(m.db).LatestCompleted(queryCtx)
 	if err != nil {
 		m.logger.Debug("backup age check: query failed", "error", err)
 		return
