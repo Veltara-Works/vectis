@@ -179,6 +179,12 @@ func (s *Scheduler) pruneOlderThan(retainDays int) int {
 	// Newest first; never delete archives[0].
 	sort.Slice(archives, func(i, j int) bool { return archives[i].mod.After(archives[j].mod) })
 
+	// Clamp defensively: retainDays can arrive straight from the DB (bypassing
+	// Settings.Validate), and an unbounded value overflows the duration below,
+	// flipping the cutoff into the future and deleting all-but-newest.
+	if retainDays > MaxRetainDays {
+		retainDays = MaxRetainDays
+	}
 	cutoff := s.now().Add(-time.Duration(retainDays) * 24 * time.Hour)
 	removed := 0
 	for i, a := range archives {

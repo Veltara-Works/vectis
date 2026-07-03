@@ -1,7 +1,9 @@
 package backup
 
 import (
+	"archive/tar"
 	"bufio"
+	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -1376,33 +1378,69 @@ func (m *Manager) createFinalArchive(ctx context.Context, srcDir, dstPath string
 }
 
 // validateArchive checks that the archive is a valid tar.gz (or .tar.gz.enc) file.
-func (m *Manager) validateArchive(ctx context.Context, archivePath string) error {
-	if _, err := os.Stat(archivePath); err != nil {
+func (m *Manager) validateArchive(_ context.Context, archivePath string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
 		return fmt.Errorf("archive file not found: %w", err)
 	}
+	defer f.Close()
 
-	// Encrypted archives can't be validated without decryption; just check the file exists.
+	// Encrypted archives: FULLY stream-decrypt (O(chunk) memory) and scan the
+	// tar. For VXB2 this proves crypto integrity end to end — a truncated or
+	// tampered archive fails the AEAD/final-flag checks here, at backup time,
+	// instead of surfacing as an undetected partial at restore. (A first-chunk
+	// probe would miss tail truncation, so nothing short of a full decrypt is
+	// enough.)
 	if strings.HasSuffix(archivePath, ".enc") {
 		if m.cfg.EncryptionKey == "" {
 			return fmt.Errorf("backup is encrypted but no encryption key is configured")
 		}
-		m.logger.Info("encrypted backup detected — content validation deferred to restore")
+		pr, pw := io.Pipe()
+		go func() { pw.CloseWithError(decryptStream(pw, f, m.cfg.EncryptionKey)) }()
+		hasDB, verr := validateTarGzStream(pr)
+		pr.CloseWithError(verr) // unblock the decrypt goroutine if we stop early
+		if verr != nil {
+			return fmt.Errorf("archive validation failed: %w", verr)
+		}
+		if !hasDB {
+			m.logger.Warn("backup archive missing database.sql — partial backup")
+		}
 		return nil
 	}
 
-	cmd := exec.CommandContext(ctx, "tar", "-tzf", archivePath)
-	output, err := cmd.CombinedOutput()
+	// Plaintext .tar.gz: stream the listing (no whole-archive/whole-listing buffer).
+	hasDB, err := validateTarGzStream(f)
 	if err != nil {
-		return fmt.Errorf("archive validation failed: %w: %s", err, string(output))
+		return fmt.Errorf("archive validation failed: %w", err)
 	}
-
-	// Check that it contains expected files.
-	contents := string(output)
-	if !strings.Contains(contents, "database.sql") {
+	if !hasDB {
 		m.logger.Warn("backup archive missing database.sql — partial backup")
 	}
-
 	return nil
+}
+
+// validateTarGzStream reads a gzip'd tar stream, verifying it parses cleanly and
+// reporting whether it contains a database.sql member. It streams entry headers
+// (O(entry), not O(archive)) and never buffers the whole listing.
+func validateTarGzStream(r io.Reader) (hasDB bool, err error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return false, fmt.Errorf("open gzip: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		h, nerr := tr.Next()
+		if nerr == io.EOF {
+			return hasDB, nil
+		}
+		if nerr != nil {
+			return hasDB, fmt.Errorf("read tar: %w", nerr)
+		}
+		if strings.HasSuffix(h.Name, "database.sql") {
+			hasDB = true
+		}
+	}
 }
 
 // stopServices stops all Docker Compose services.
@@ -1557,14 +1595,6 @@ func decryptFile(srcPath, dstPath, passphrase string) error {
 	}
 	defer src.Close()
 
-	magic := make([]byte, len(streamMagicV2))
-	if _, err := io.ReadFull(src, magic); err != nil {
-		return fmt.Errorf("read archive magic: %w", err)
-	}
-	if _, err := src.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("seek archive: %w", err)
-	}
-
 	tmpPath := dstPath + ".tmp"
 	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
@@ -1572,11 +1602,7 @@ func decryptFile(srcPath, dstPath, passphrase string) error {
 	}
 	bw := bufio.NewWriterSize(tmp, 128*1024)
 
-	if string(magic) == streamMagicV2 {
-		err = streamDecrypt(bw, bufio.NewReaderSize(src, 128*1024), passphrase)
-	} else {
-		err = decryptWholeFile(bw, src, passphrase)
-	}
+	err = decryptStream(bw, src, passphrase)
 	if err == nil {
 		err = bw.Flush()
 	}
@@ -1595,6 +1621,23 @@ func decryptFile(srcPath, dstPath, passphrase string) error {
 		return fmt.Errorf("publish decrypted file: %w", err)
 	}
 	return nil
+}
+
+// decryptStream decrypts an open archive to dst, dispatching on the leading
+// magic: VXB2 streams in O(chunk) memory; VXB1/legacy fall back to the
+// size-capped whole-file path. src is rewound to the start before decrypting.
+func decryptStream(dst io.Writer, src *os.File, passphrase string) error {
+	magic := make([]byte, len(streamMagicV2))
+	if _, err := io.ReadFull(src, magic); err != nil {
+		return fmt.Errorf("read archive magic: %w", err)
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek archive: %w", err)
+	}
+	if string(magic) == streamMagicV2 {
+		return streamDecrypt(dst, bufio.NewReaderSize(src, 128*1024), passphrase)
+	}
+	return decryptWholeFile(dst, src, passphrase)
 }
 
 // decryptWholeFile handles pre-VXB2 archives (VXB1 salted-Argon2id, or legacy
