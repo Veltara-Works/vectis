@@ -641,13 +641,21 @@ func (s *Server) startBackupSchedulerLocked() {
 	// C-2: a scheduled backup failure must be visible. The scheduled path calls
 	// mgr.Create synchronously and never fires the onComplete callback, so the
 	// notification wiring on the async/UI path is dead here — alert via the
-	// shared Alerter instead. CRITICAL bypasses the 15-min dedup so a nightly
-	// failure is never suppressed. Injected as a callback so internal/backup
-	// never imports internal/monitor (avoids an import cycle with C-1).
+	// shared Alerter instead. Uses the "backup-run" service (its OWN dedup key,
+	// distinct from the C-1 staleness signal's "backup" key) so the monitor's
+	// last-success health check can't auto-resolve a real run-failure: after a
+	// single night's failure the last success is still recent, so C-1 reads
+	// healthy and would otherwise clear the alert within a minute. CRITICAL
+	// bypasses the 15-min dedup so a nightly failure is never suppressed. A
+	// subsequent successful run resolves it. Injected as callbacks so
+	// internal/backup never imports internal/monitor (avoids an import cycle).
 	if s.alerter != nil {
 		alerter := s.alerter
 		sched.SetOnError(func(ctx context.Context, err error) {
-			alerter.Send(ctx, "CRITICAL", "backup", "scheduled backup failed: "+err.Error())
+			alerter.Send(ctx, "CRITICAL", "backup-run", "scheduled backup failed: "+err.Error())
+		})
+		sched.SetOnSuccess(func(ctx context.Context) {
+			alerter.Resolve(ctx, "backup-run:critical")
 		})
 	}
 	s.backupScheduler = sched

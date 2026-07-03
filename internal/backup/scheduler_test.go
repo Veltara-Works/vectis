@@ -2,10 +2,12 @@ package backup
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -231,6 +233,48 @@ func TestSchedulerPruneProtectsRestoreChain(t *testing.T) {
 	}
 	if len(reloaded.Entries) != 2 {
 		t.Errorf("manifest entries after prune = %d, want 2 (base+incr)", len(reloaded.Entries))
+	}
+}
+
+// TestManifestConcurrentWriters proves manifestMu serialises the manifest's
+// load→mutate→rewrite so concurrent recordBackup calls (UI backups) racing the
+// prune reconcile can't drop a just-recorded entry (the lost-update the review
+// flagged). Run under -race to also catch any shared-state data race.
+func TestManifestConcurrentWriters(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.BackupDir = dir
+	mgr := NewManager(nil, quietLogger(), cfg)
+
+	const n = 24
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			p := filepath.Join(dir, fmt.Sprintf("vectis-%03d.tar.gz.enc", i))
+			if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+				t.Errorf("write archive: %v", err)
+				return
+			}
+			mgr.recordBackup(fmt.Sprintf("job-%d", i), p, 1, BackupFull, nil)
+		}(i)
+	}
+	// Interleave reconciles (as the scheduler's prune would). Every archive file
+	// exists, so reconcile drops nothing — but without the lock its stale
+	// load+save would clobber concurrently-added entries.
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); mgr.reconcileManifest() }()
+	}
+	wg.Wait()
+
+	m, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if len(m.Entries) != n {
+		t.Errorf("manifest has %d entries, want %d — a concurrent write was lost", len(m.Entries), n)
 	}
 }
 

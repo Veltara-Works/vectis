@@ -105,7 +105,8 @@ type Scheduler struct {
 	now        func() time.Time                                                      // injectable for tests
 	createFn   func(ctx context.Context, triggeredBy *string) (string, int64, error) // injectable for tests
 	validateFn func(ctx context.Context, path string) error                          // injectable for tests; validates an archive before prune reaps older ones
-	onError    func(ctx context.Context, err error)                                  // optional: called when a scheduled run fails (C-2 alerting)
+	onError    func(ctx context.Context, err error)                                  // optional: called when a scheduled run FAILS (C-2 alerting)
+	onSuccess  func(ctx context.Context)                                             // optional: called when a scheduled run SUCCEEDS (C-2 alert resolve)
 }
 
 // NewScheduler parses the cron schedule and returns a ready scheduler. It
@@ -135,6 +136,14 @@ func NewScheduler(mgr *Manager, cfg SchedulerConfig, logger *slog.Logger) (*Sche
 // as a plain callback so this package never imports internal/monitor.
 func (s *Scheduler) SetOnError(fn func(ctx context.Context, err error)) {
 	s.onError = fn
+}
+
+// SetOnSuccess registers a callback invoked when a scheduled backup run
+// succeeds. It lets the API layer RESOLVE the scheduled-failure alert raised by
+// onError — the run-failure alert uses its own dedup key (not the health
+// monitor's staleness key), so only a subsequent successful run clears it.
+func (s *Scheduler) SetOnSuccess(fn func(ctx context.Context)) {
+	s.onSuccess = fn
 }
 
 // Start launches the scheduling loop in a background goroutine.
@@ -187,6 +196,9 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 		return
 	}
 	s.logger.Info("scheduled backup complete", "path", path, "size_bytes", size)
+	if s.onSuccess != nil {
+		s.onSuccess(ctx) // clears any prior scheduled-failure alert
+	}
 
 	if s.cfg.RetainDays > 0 {
 		if n := s.pruneOlderThan(ctx, s.cfg.RetainDays); n > 0 {
@@ -282,23 +294,24 @@ func (s *Scheduler) pruneOlderThan(ctx context.Context, retainDays int) int {
 		return 0
 	}
 
-	// Validate the survivors before deleting anything. With a manifest chain,
-	// validate every chain member; without one (legacy), validate the newest
-	// archive we're keeping. Any failure aborts the whole prune so we never
-	// delete good older backups to keep a corrupt newest one.
-	survivors := make([]string, 0, len(chain)+1)
-	for _, e := range chain {
-		survivors = append(survivors, e.Path)
+	// Validate only the load-bearing survivor before reaping older backups: the
+	// chain base full (chain[0], the archive every incremental depends on) if a
+	// chain exists, else the single newest archive we're keeping. This is what
+	// protects the invariant "never delete good older backups to keep a corrupt
+	// newest one". Validating every chain member each night would decrypt
+	// gigabytes of ciphertext for no extra safety on the delete decision.
+	survivor := archives[0].path
+	if len(chain) > 0 {
+		survivor = chain[0].Path // the chain base full (LastFull)
 	}
-	if len(survivors) == 0 {
-		survivors = append(survivors, archives[0].path)
-	}
-	for _, p := range survivors {
-		if err := s.validateFn(ctx, p); err != nil {
-			s.logger.Error("prune: survivor failed validation — aborting prune",
-				"path", p, "error", err)
-			return 0
-		}
+	if err := s.validateFn(ctx, survivor); err != nil {
+		// Loud + operator-visible: retention is intentionally paused (not a
+		// silent no-op) so a corrupt/undecryptable survivor doesn't cause us to
+		// delete good older backups — and so the operator can see why the dir
+		// stops shrinking (e.g. the encryption key was cleared).
+		s.logger.Warn("prune: survivor archive failed validation — retention PAUSED, older backups kept",
+			"path", survivor, "error", err)
+		return 0
 	}
 
 	removed := 0
@@ -310,14 +323,12 @@ func (s *Scheduler) pruneOlderThan(ctx context.Context, retainDays int) int {
 		removed++
 	}
 
-	// Reconcile the manifest with disk so restore's pre-flight stays honest:
-	// drop entries for files we just removed and any now-orphaned incrementals.
+	// Reconcile the manifest with disk (drop entries for the files we removed and
+	// any now-orphaned incrementals). Done via the Manager under manifestMu with
+	// a FRESH load, so it can't clobber an entry a concurrent UI backup added
+	// while this prune ran.
 	if removed > 0 {
-		if n := manifest.Prune(); n > 0 {
-			if err := manifest.Save(); err != nil {
-				s.logger.Error("prune: save reconciled manifest", "error", err)
-			}
-		}
+		s.mgr.reconcileManifest()
 	}
 
 	return removed

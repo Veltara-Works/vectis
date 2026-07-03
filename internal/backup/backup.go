@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -120,6 +121,13 @@ type Manager struct {
 	cfg        Config
 	repo       *repository.BackupRepo
 	onComplete CompletionCallback
+
+	// manifestMu serialises the manifest's load→mutate→whole-file-rewrite
+	// sequence. Backups are single-writer in practice, but a UI-triggered backup
+	// (recordBackup) can run concurrently with the scheduler's prune reconcile,
+	// and both rewrite manifest.json wholesale — without this a just-recorded
+	// backup could be dropped from the chain (silent DR loss).
+	manifestMu sync.Mutex
 
 	// Service-control hooks used by restore. They default to the docker
 	// compose implementations below; the backup-restore integration test
@@ -364,6 +372,9 @@ func (m *Manager) CreateIncrementalAsync(ctx context.Context, triggeredBy *strin
 // would not un-write it — but an unrecorded backup is a real problem worth loud
 // logging. parent is nil for full backups; for incrementals it is the base full.
 func (m *Manager) recordBackup(jobID, path string, size int64, typ BackupType, parent *ManifestEntry) {
+	m.manifestMu.Lock()
+	defer m.manifestMu.Unlock()
+
 	manifest, err := LoadManifest(m.cfg.BackupDir)
 	if err != nil {
 		m.logger.Error("backup: load manifest to record backup", "path", path, "error", err)
@@ -390,6 +401,27 @@ func (m *Manager) recordBackup(jobID, path string, size int64, typ BackupType, p
 	}
 	if err := manifest.Add(entry); err != nil {
 		m.logger.Error("backup: record backup in manifest", "path", path, "id", id, "error", err)
+	}
+}
+
+// reconcileManifest drops manifest entries whose archive no longer exists on
+// disk (and any now-orphaned incrementals). It loads a FRESH manifest under the
+// lock so it can't clobber an entry a concurrent recordBackup just added — the
+// caller (prune) may have loaded its own stale copy earlier for the protected
+// set, which must never be the copy that gets written back.
+func (m *Manager) reconcileManifest() {
+	m.manifestMu.Lock()
+	defer m.manifestMu.Unlock()
+
+	manifest, err := LoadManifest(m.cfg.BackupDir)
+	if err != nil {
+		m.logger.Error("backup: load manifest to reconcile", "error", err)
+		return
+	}
+	if n := manifest.Prune(); n > 0 {
+		if err := manifest.Save(); err != nil {
+			m.logger.Error("backup: save reconciled manifest", "error", err)
+		}
 	}
 }
 
@@ -823,11 +855,10 @@ func (m *Manager) applyIncremental(ctx context.Context, archivePath string) erro
 // it stops services, restores database, mail data, config, and DKIM keys,
 // then restarts services and runs a health check.
 func (m *Manager) Restore(ctx context.Context, backupPath string, triggeredBy *string) error {
-	// Validate the archive first.
-	if err := m.validateArchive(ctx, backupPath); err != nil {
-		return fmt.Errorf("invalid backup archive: %w", err)
-	}
-
+	// No separate validate pre-flight: runRestore decrypts/extracts the archive
+	// as its first step (before any service is stopped or data is dropped), so a
+	// corrupt or tampered archive already fails there — validating here would
+	// decrypt the whole (multi-GB) archive a second time.
 	jobID, err := m.jobCreate(ctx, "restore", triggeredBy)
 	if err != nil {
 		return fmt.Errorf("create restore job: %w", err)
@@ -847,11 +878,11 @@ func (m *Manager) Restore(ctx context.Context, backupPath string, triggeredBy *s
 
 // RestoreAsync triggers a restore asynchronously and returns the job ID.
 func (m *Manager) RestoreAsync(ctx context.Context, backupPath string, triggeredBy *string) (string, error) {
-	// Validate synchronously before starting async work.
-	if err := m.validateArchive(ctx, backupPath); err != nil {
-		return "", fmt.Errorf("invalid backup archive: %w", err)
-	}
-
+	// No synchronous validate pre-flight: it would fully decrypt a multi-GB .enc
+	// archive before returning the 202 (blocking the request past its timeout,
+	// which validateArchive couldn't honour anyway). runRestore decrypts as its
+	// first step, before any destructive action, so a bad archive still fails the
+	// job cleanly — surfaced via job status, not a hung request.
 	jobID, err := m.jobCreate(ctx, "restore", triggeredBy)
 	if err != nil {
 		return "", fmt.Errorf("create restore job: %w", err)
@@ -1454,7 +1485,7 @@ func (m *Manager) createFinalArchive(ctx context.Context, srcDir, dstPath string
 }
 
 // validateArchive checks that the archive is a valid tar.gz (or .tar.gz.enc) file.
-func (m *Manager) validateArchive(_ context.Context, archivePath string) error {
+func (m *Manager) validateArchive(ctx context.Context, archivePath string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("archive file not found: %w", err)
@@ -1463,20 +1494,46 @@ func (m *Manager) validateArchive(_ context.Context, archivePath string) error {
 
 	// Encrypted archives: FULLY stream-decrypt (O(chunk) memory) and scan the
 	// tar. For VXB2 this proves crypto integrity end to end — a truncated or
-	// tampered archive fails the AEAD/final-flag checks here, at backup time,
-	// instead of surfacing as an undetected partial at restore. (A first-chunk
-	// probe would miss tail truncation, so nothing short of a full decrypt is
-	// enough.)
+	// tampered archive fails the AEAD/final-flag checks here instead of surfacing
+	// as an undetected partial at restore. (A first-chunk probe would miss tail
+	// truncation, so nothing short of a full decrypt is enough.)
 	if strings.HasSuffix(archivePath, ".enc") {
 		if m.cfg.EncryptionKey == "" {
 			return fmt.Errorf("backup is encrypted but no encryption key is configured")
 		}
 		pr, pw := io.Pipe()
-		go func() { pw.CloseWithError(decryptStream(pw, f, m.cfg.EncryptionKey)) }()
-		hasDB, verr := validateTarGzStream(pr)
-		pr.CloseWithError(verr) // unblock the decrypt goroutine if we stop early
+		var decErr error
+		done := make(chan struct{})
+		go func() {
+			decErr = decryptStream(pw, f, m.cfg.EncryptionKey)
+			pw.CloseWithError(decErr)
+			close(done)
+		}()
+		// Read the decrypted plaintext through a ctx-aware reader so a cancelled
+		// context (restore deadline / shutdown) aborts the read; closing the pipe
+		// then unblocks and stops the decrypt goroutine. The old plaintext path
+		// had this cancellation via exec.CommandContext(tar).
+		cpr := newCtxReader(ctx, pr)
+		hasDB, verr := validateTarGzStream(cpr)
 		if verr != nil {
+			pr.CloseWithError(verr) // stop the decrypt goroutine early
+			<-done
 			return fmt.Errorf("archive validation failed: %w", verr)
+		}
+		// tar's logical EOF (two zero blocks) precedes the physical end, so
+		// validateTarGzStream returns before the archive tail is decrypted. Drain
+		// the rest so the decrypt goroutine verifies the TAIL (final-flag, tail
+		// AEAD tag, gzip footer) — otherwise a tail-truncated or tampered archive
+		// passes — then surface the goroutine's error.
+		if _, derr := io.Copy(io.Discard, cpr); derr != nil {
+			pr.CloseWithError(derr)
+			<-done
+			return fmt.Errorf("archive validation failed: %w", derr)
+		}
+		pr.CloseWithError(nil)
+		<-done
+		if decErr != nil {
+			return fmt.Errorf("archive decrypt validation failed: %w", decErr)
 		}
 		if !hasDB {
 			m.logger.Warn("backup archive missing database.sql — partial backup")
@@ -1484,8 +1541,9 @@ func (m *Manager) validateArchive(_ context.Context, archivePath string) error {
 		return nil
 	}
 
-	// Plaintext .tar.gz: stream the listing (no whole-archive/whole-listing buffer).
-	hasDB, err := validateTarGzStream(f)
+	// Plaintext .tar.gz: stream the listing (no whole-archive/whole-listing
+	// buffer), through the ctx-aware reader so cancellation is honoured.
+	hasDB, err := validateTarGzStream(newCtxReader(ctx, f))
 	if err != nil {
 		return fmt.Errorf("archive validation failed: %w", err)
 	}
@@ -1493,6 +1551,24 @@ func (m *Manager) validateArchive(_ context.Context, archivePath string) error {
 		m.logger.Warn("backup archive missing database.sql — partial backup")
 	}
 	return nil
+}
+
+// ctxReader aborts a Read when ctx is cancelled, giving the streaming validate
+// path the cancellation the old exec.CommandContext(tar) provided.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func newCtxReader(ctx context.Context, r io.Reader) *ctxReader {
+	return &ctxReader{ctx: ctx, r: r}
+}
+
+func (c *ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }
 
 // validateTarGzStream reads a gzip'd tar stream, verifying it parses cleanly and
