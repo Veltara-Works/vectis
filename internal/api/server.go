@@ -591,6 +591,21 @@ func (s *Server) ReconcileIncompleteBackups() {
 	}
 }
 
+// SweepBackupTempDirs reclaims orphaned backup/restore temp working dirs and
+// *.tmp sidecars left by a SIGKILLed (OOM) backup process. Call once at startup,
+// synchronously, before StartBackupScheduler and before create requests are
+// served — at that instant no backup goroutine exists, so every match is a stale
+// orphan. Non-fatal: a sweep error must not block boot.
+func (s *Server) SweepBackupTempDirs() {
+	mgr := s.backupManager()
+	if mgr == nil {
+		return
+	}
+	if n := mgr.SweepOrphanTemp(); n > 0 {
+		s.logger.Warn("backup: swept orphaned temp files/dirs on startup", "count", n)
+	}
+}
+
 // StartBackupScheduler starts the periodic backup scheduler when backups are
 // enabled. It is a no-op (with a log line) when disabled or misconfigured, so
 // a bad schedule never crashes the server — it just doesn't run scheduled

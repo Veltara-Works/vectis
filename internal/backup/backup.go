@@ -246,27 +246,8 @@ func (m *Manager) Create(ctx context.Context, triggeredBy *string) (string, int6
 		m.logger.Error("failed to mark backup job complete", "error", err)
 	}
 
-	// Record in manifest. The manifest ID must be UNIQUE per backup — it keys the
-	// full→incremental chain in LastFull/IncrementalsSince/RestoreChain/Prune. On
-	// the host CLI path there is no DB job row, so jobID is the non-unique sentinel
-	// "no-db-create"; using it would make every host backup collide in the chain
-	// (Copilot review, PR #3). Fall back to the archive's timestamped basename,
-	// which is as unique as the archives themselves.
-	manifest, _ := LoadManifest(m.cfg.BackupDir)
-	if manifest != nil {
-		manifestID := jobID
-		if m.repo == nil {
-			manifestID = filepath.Base(path)
-		}
-		manifest.Add(ManifestEntry{
-			ID:        manifestID,
-			Type:      BackupFull,
-			Path:      path,
-			Size:      size,
-			CreatedAt: time.Now().UTC(),
-		})
-	}
-
+	// Manifest recording happens inside runCreate (the shared choke point for all
+	// create paths), so no per-caller manifest write is needed here.
 	return path, size, nil
 }
 
@@ -362,29 +343,122 @@ func (m *Manager) CreateIncrementalAsync(ctx context.Context, triggeredBy *strin
 			m.logger.Error("failed to mark backup complete", "job_id", job.ID, "error", err)
 		}
 
-		// Record in manifest.
-		parentID := ""
-		if backupType == BackupIncremental && lastFull != nil {
-			parentID = lastFull.ID
-		}
-		entry := ManifestEntry{
-			ID:        job.ID,
-			Type:      backupType,
-			Path:      path,
-			ParentID:  parentID,
-			Size:      size,
-			CreatedAt: time.Now().UTC(),
-		}
-		if err := manifest.Add(entry); err != nil {
-			m.logger.Error("failed to update manifest", "error", err)
-		}
-
+		// Manifest recording happens inside the create workers (runCreate /
+		// runCreateIncremental), the shared choke point for all create paths.
 		if m.onComplete != nil {
 			m.onComplete(path, size/(1024*1024), duration, nil)
 		}
 	}()
 
 	return job.ID, backupType, nil
+}
+
+// recordBackup appends a just-created archive to the backup manifest so it
+// participates in chain detection, restore, chain-depth accounting, and
+// manifest-aware prune. It is called from the internal create workers (runCreate,
+// runCreateIncremental) — the single choke point every create path funnels
+// through — so ALL paths record consistently. Previously CreateAsync (the UI
+// full-backup path) wrote no manifest entry, making UI fulls invisible to the
+// restore chain (silent DR data loss). Failures are logged at ERROR but never
+// fail the backup: the archive is already on disk and valid, and failing the job
+// would not un-write it — but an unrecorded backup is a real problem worth loud
+// logging. parent is nil for full backups; for incrementals it is the base full.
+func (m *Manager) recordBackup(jobID, path string, size int64, typ BackupType, parent *ManifestEntry) {
+	manifest, err := LoadManifest(m.cfg.BackupDir)
+	if err != nil {
+		m.logger.Error("backup: load manifest to record backup", "path", path, "error", err)
+		return
+	}
+	// The manifest ID must be UNIQUE per backup — it keys the full→incremental
+	// chain in LastFull/IncrementalsSince/RestoreChain/Prune. On the host CLI path
+	// there is no DB job row, so jobID is the non-unique sentinel "no-db-create";
+	// fall back to the archive's timestamped basename, which is as unique as the
+	// archives themselves (Copilot review, PR #3).
+	id := jobID
+	if m.repo == nil {
+		id = filepath.Base(path)
+	}
+	entry := ManifestEntry{
+		ID:        id,
+		Type:      typ,
+		Path:      path,
+		Size:      size,
+		CreatedAt: time.Now().UTC(),
+	}
+	if parent != nil {
+		entry.ParentID = parent.ID
+	}
+	if err := manifest.Add(entry); err != nil {
+		m.logger.Error("backup: record backup in manifest", "path", path, "id", id, "error", err)
+	}
+}
+
+// tempDirPrefixes are the os.MkdirTemp prefixes the create/restore workers use
+// in os.TempDir(). A SIGKILL (OOM, container kill) skips their deferred
+// os.RemoveAll, orphaning the working tree — which for a full backup holds the
+// whole mail-data.tar (tens of GB) — in /tmp until the host-root disk fills.
+// "vectis-backup-" also covers "vectis-backup-incr-"; "vectis-restore-" also
+// covers "vectis-restore-keep-". The restore staging dir (.vectis-restore-stage-)
+// is deliberately NOT here: it lives inside the restore target dir, never /tmp.
+var tempDirPrefixes = []string{"vectis-backup-", "vectis-incr-apply-", "vectis-restore-"}
+
+// SweepOrphanTemp reclaims backup/restore temp working dirs (in os.TempDir()) and
+// *.tmp sidecars (in BackupDir — the VXB2 encrypt tmp and manifest tmp) left
+// behind when a backup/restore process was SIGKILLed before its defers could run.
+// It is safe ONLY at startup, before any backup/restore goroutine can exist: at
+// that point every matching entry is definitionally an orphan from a previous
+// process, so no age guard is needed. Returns the number of entries removed.
+func (m *Manager) SweepOrphanTemp() int {
+	removed := 0
+
+	// 1. Orphaned working directories in os.TempDir().
+	tmp := os.TempDir()
+	if entries, err := os.ReadDir(tmp); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue // we only ever create dirs here; leave stray files alone
+			}
+			name := e.Name()
+			matched := false
+			for _, p := range tempDirPrefixes {
+				if strings.HasPrefix(name, p) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+			full := filepath.Join(tmp, name)
+			if err := os.RemoveAll(full); err != nil {
+				m.logger.Warn("temp-sweep: remove orphan dir", "path", full, "error", err)
+				continue
+			}
+			m.logger.Info("temp-sweep: removed orphaned backup temp dir", "path", full)
+			removed++
+		}
+	} else {
+		m.logger.Warn("temp-sweep: read temp dir", "path", tmp, "error", err)
+	}
+
+	// 2. Orphaned *.tmp sidecars in the backup dir (interrupted atomic writes:
+	// vectis-*.tar.gz[.enc].tmp from encryptFile, manifest.json.tmp from Save).
+	if entries, err := os.ReadDir(m.cfg.BackupDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".tmp") {
+				continue
+			}
+			full := filepath.Join(m.cfg.BackupDir, e.Name())
+			if err := os.Remove(full); err != nil {
+				m.logger.Warn("temp-sweep: remove orphan tmp file", "path", full, "error", err)
+				continue
+			}
+			m.logger.Info("temp-sweep: removed orphaned tmp sidecar", "path", full)
+			removed++
+		}
+	}
+
+	return removed
 }
 
 func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, error) {
@@ -506,6 +580,7 @@ func (m *Manager) runCreate(ctx context.Context, jobID string) (string, int64, e
 		"size_bytes", info.Size(),
 	)
 
+	m.recordBackup(jobID, archivePath, info.Size(), BackupFull, nil)
 	return archivePath, info.Size(), nil
 }
 
@@ -615,6 +690,7 @@ func (m *Manager) runCreateIncremental(ctx context.Context, jobID string, parent
 		"size_bytes", info.Size(),
 	)
 
+	m.recordBackup(jobID, archivePath, info.Size(), BackupIncremental, parent)
 	return archivePath, info.Size(), nil
 }
 
