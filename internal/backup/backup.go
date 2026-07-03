@@ -1565,8 +1565,10 @@ func newCtxReader(ctx context.Context, r io.Reader) *ctxReader {
 }
 
 func (c *ctxReader) Read(p []byte) (int, error) {
-	if err := c.ctx.Err(); err != nil {
-		return 0, err
+	if c.ctx != nil {
+		if err := c.ctx.Err(); err != nil {
+			return 0, err
+		}
 	}
 	return c.r.Read(p)
 }

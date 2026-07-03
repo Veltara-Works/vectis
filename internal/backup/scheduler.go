@@ -294,24 +294,32 @@ func (s *Scheduler) pruneOlderThan(ctx context.Context, retainDays int) int {
 		return 0
 	}
 
-	// Validate only the load-bearing survivor before reaping older backups: the
-	// chain base full (chain[0], the archive every incremental depends on) if a
-	// chain exists, else the single newest archive we're keeping. This is what
-	// protects the invariant "never delete good older backups to keep a corrupt
-	// newest one". Validating every chain member each night would decrypt
-	// gigabytes of ciphertext for no extra safety on the delete decision.
-	survivor := archives[0].path
-	if len(chain) > 0 {
-		survivor = chain[0].Path // the chain base full (LastFull)
+	// Validate the survivors before reaping older backups: this protects the
+	// invariant "never delete good older backups to keep a corrupt newest one".
+	// Validate the whole current RestoreChain (base full + any incrementals); if
+	// there is no chain (a legacy install with no manifest), validate the single
+	// newest archive we are keeping. This is O(1) in the nightly path — prune
+	// runs only from RunOnce, right after the scheduler wrote a fresh FULL, so
+	// the chain is just [that full] — while staying correct if a UI incremental
+	// has raced into the chain (a corrupt incremental then correctly pauses
+	// retention rather than letting us delete older good fulls).
+	survivors := make([]string, 0, len(chain)+1)
+	for _, e := range chain {
+		survivors = append(survivors, e.Path)
 	}
-	if err := s.validateFn(ctx, survivor); err != nil {
-		// Loud + operator-visible: retention is intentionally paused (not a
-		// silent no-op) so a corrupt/undecryptable survivor doesn't cause us to
-		// delete good older backups — and so the operator can see why the dir
-		// stops shrinking (e.g. the encryption key was cleared).
-		s.logger.Warn("prune: survivor archive failed validation — retention PAUSED, older backups kept",
-			"path", survivor, "error", err)
-		return 0
+	if len(survivors) == 0 {
+		survivors = append(survivors, archives[0].path)
+	}
+	for _, p := range survivors {
+		if err := s.validateFn(ctx, p); err != nil {
+			// Loud + operator-visible: retention is intentionally paused (not a
+			// silent no-op) so a corrupt/undecryptable survivor doesn't cause us
+			// to delete good older backups — and so the operator can see why the
+			// dir stops shrinking (e.g. the encryption key was cleared).
+			s.logger.Warn("prune: survivor archive failed validation — retention PAUSED, older backups kept",
+				"path", p, "error", err)
+			return 0
+		}
 	}
 
 	removed := 0
