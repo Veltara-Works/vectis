@@ -156,19 +156,36 @@ func (a *Alerter) Send(ctx context.Context, severity, service, message string) {
 }
 
 // Resolve marks an alert condition as resolved and sends a recovery
-// notification through configured channels.
+// notification through configured channels. Use on a genuine return to health.
 func (a *Alerter) Resolve(ctx context.Context, dedupKey string) {
+	a.resolve(ctx, dedupKey, true)
+}
+
+// resolveSilent clears an alert row WITHOUT a recovery notification. Used for a
+// superseded sibling tier (e.g. a CRITICAL that just downgraded to WARN): the
+// service is still firing at another tier, so a "now healthy" recovery message
+// would be misleading — the operator already got the new-tier alert.
+func (a *Alerter) resolveSilent(ctx context.Context, dedupKey string) {
+	a.resolve(ctx, dedupKey, false)
+}
+
+func (a *Alerter) resolve(ctx context.Context, dedupKey string, notify bool) {
 	resolved, err := a.alerts.Resolve(ctx, dedupKey)
 	if err != nil {
 		a.logger.Error("failed to resolve alert", "dedup_key", dedupKey, "error", err)
 		return
 	}
 
-	// Nothing was actually firing for this key — the monitor calls Resolve on
-	// every healthy check cycle (every 60s), so without this guard we'd log
-	// "alert resolved" and fire a recovery email/webhook every minute for a
-	// service that never alerted. Only notify on a real firing→resolved edge.
+	// Nothing was actually firing for this key — the monitor calls the resolve
+	// helpers on every healthy check cycle (every 60s), so without this guard we'd
+	// log "alert resolved" and fire a recovery email/webhook every minute for a
+	// service that never alerted. Only act on a real firing→resolved edge.
 	if resolved == 0 {
+		return
+	}
+
+	if !notify {
+		a.logger.Info("alert cleared (superseded by another tier)", "dedup_key", dedupKey)
 		return
 	}
 
@@ -204,10 +221,11 @@ func (a *Alerter) ResolveService(ctx context.Context, service string) {
 // ResolveServiceExcept clears the sibling tiers for a service when it fires at
 // keepSeverity, so a critical→warn (or warn→error) transition without an
 // intervening healthy cycle never leaves the previous, now-superseded alert
-// stuck open.
+// stuck open. The clear is SILENT (no "now healthy" recovery notification) —
+// the service is still firing at keepSeverity, not healthy.
 func (a *Alerter) ResolveServiceExcept(ctx context.Context, service, keepSeverity string) {
 	for _, key := range serviceResolveKeysExcept(service, keepSeverity) {
-		a.Resolve(ctx, key)
+		a.resolveSilent(ctx, key)
 	}
 }
 

@@ -353,10 +353,11 @@ func (m *Monitor) checkBackupAge(ctx context.Context) {
 	now := m.now()
 
 	if last == nil {
-		// never: WARN, and clear any prior stale-CRITICAL so an oscillation
-		// (stale → job rows cleared → never) doesn't leave it stuck open.
+		// never: WARN, and silently clear any prior stale-CRITICAL so an
+		// oscillation (stale → job rows cleared → never) doesn't leave it stuck
+		// open (still a WARN condition, so no "now healthy" recovery).
 		m.alerter.Send(ctx, "WARN", "backup", "no completed backup on record")
-		m.alerter.Resolve(ctx, "backup:critical")
+		m.alerter.ResolveServiceExcept(ctx, "backup", "warn")
 		return
 	}
 
@@ -366,18 +367,18 @@ func (m *Monitor) checkBackupAge(ctx context.Context) {
 		return
 	}
 
-	// Each terminal branch resolves the sibling key so a transition without an
-	// intervening healthy cycle never leaves the opposite alert stuck open.
+	// Each terminal branch silently clears the sibling key so a transition without
+	// an intervening healthy cycle never leaves the opposite alert stuck open; the
+	// healthy edge clears both tiers WITH a recovery notification.
 	switch evalBackupAge(last, now, maxInterval) {
 	case backupAgeStale:
 		age := now.Sub(*last).Round(time.Minute)
 		m.alerter.Send(ctx, "CRITICAL", "backup",
 			fmt.Sprintf("last successful backup was %s ago (expected within ~%s)",
 				age, time.Duration(float64(maxInterval)*backup.StaleGraceFactor).Round(time.Minute)))
-		m.alerter.Resolve(ctx, "backup:warn")
+		m.alerter.ResolveServiceExcept(ctx, "backup", "critical")
 	default: // backupAgeOK
-		m.alerter.Resolve(ctx, "backup:warn")
-		m.alerter.Resolve(ctx, "backup:critical")
+		m.alerter.ResolveService(ctx, "backup")
 	}
 }
 
