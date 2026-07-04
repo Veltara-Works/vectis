@@ -77,6 +77,31 @@ func TestDomainDeleteBlockReason(t *testing.T) {
 	}
 }
 
+func TestSplitEmailAddress(t *testing.T) {
+	tests := []struct {
+		in         string
+		wantLocal  string
+		wantDomain string
+		wantOK     bool
+	}{
+		{"alice@example.com", "alice", "example.com", true},
+		{"a.b+tag@sub.example.com", "a.b+tag", "sub.example.com", true},
+		{"noatsign", "", "", false},
+		{"@example.com", "", "", false},
+		{"alice@", "", "", false},
+		{"", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			local, domain, ok := splitEmailAddress(tt.in)
+			if ok != tt.wantOK || local != tt.wantLocal || domain != tt.wantDomain {
+				t.Errorf("splitEmailAddress(%q) = (%q,%q,%v), want (%q,%q,%v)",
+					tt.in, local, domain, ok, tt.wantLocal, tt.wantDomain, tt.wantOK)
+			}
+		})
+	}
+}
+
 // TestMailboxDomainCommandsRegistered guards against the phantom-command drift
 // that this work fixed: the docs referenced `mailbox list` / `domain remove`
 // before they existed. Assert they are wired under their parents with the
@@ -88,6 +113,17 @@ func TestMailboxDomainCommandsRegistered(t *testing.T) {
 	}
 	if mboxList.Flags().Lookup("domain") == nil {
 		t.Error("mailbox list missing --domain flag")
+	}
+
+	mboxRemove, _, err := mailboxCmd.Find([]string{"remove"})
+	if err != nil || mboxRemove.Name() != "remove" {
+		t.Fatalf("mailbox remove not registered: cmd=%v err=%v", mboxRemove, err)
+	}
+	if mboxRemove.Flags().Lookup("email") == nil {
+		t.Error("mailbox remove missing --email flag")
+	}
+	if mboxRemove.Flags().Lookup("confirm") == nil {
+		t.Error("mailbox remove missing --confirm flag")
 	}
 
 	domRemove, _, err := domainCmd.Find([]string{"remove"})

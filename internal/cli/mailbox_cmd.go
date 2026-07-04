@@ -30,12 +30,22 @@ var mailboxListCmd = &cobra.Command{
 	RunE:  runMailboxList,
 }
 
+var mailboxRemoveCmd = &cobra.Command{
+	Use:   "remove",
+	Short: "Remove a mailbox by email address",
+	Long: "Remove a mailbox by --email. Deletes the mailbox metadata row; the " +
+		"on-disk maildir is Dovecot-owned and left untouched. Destructive — requires --confirm.",
+	RunE: runMailboxRemove,
+}
+
 var (
-	mailboxEmail       string
-	mailboxPassword    string
-	mailboxQuota       int
-	mailboxDisplayName string
-	mailboxListDomain  string
+	mailboxEmail         string
+	mailboxPassword      string
+	mailboxQuota         int
+	mailboxDisplayName   string
+	mailboxListDomain    string
+	mailboxRemoveEmail   string
+	mailboxRemoveConfirm bool
 )
 
 // mailboxRow is the display/JSON projection of a mailbox for `mailbox list`.
@@ -75,13 +85,11 @@ func runMailboxAdd(cmd *cobra.Command, args []string) error {
 		os.Exit(2)
 	}
 
-	parts := strings.SplitN(mailboxEmail, "@", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	localPart, domainNameStr, ok := splitEmailAddress(mailboxEmail)
+	if !ok {
 		fmt.Fprintln(cmd.ErrOrStderr(), "Error: --email must be in user@domain format")
 		os.Exit(2)
 	}
-	localPart := parts[0]
-	domainNameStr := parts[1]
 
 	pool, _, cleanup := connectDB(cmd)
 	defer cleanup()
@@ -228,14 +236,96 @@ func runMailboxList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// splitEmailAddress splits user@domain into its parts, reporting ok=false for
+// anything that is not exactly one non-empty local part and one non-empty
+// domain.
+func splitEmailAddress(email string) (local, domain string, ok bool) {
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func runMailboxRemove(cmd *cobra.Command, args []string) error {
+	if mailboxRemoveEmail == "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Error: --email is required")
+		os.Exit(2)
+	}
+	localPart, domainNameStr, ok := splitEmailAddress(mailboxRemoveEmail)
+	if !ok {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Error: --email must be in user@domain format")
+		os.Exit(2)
+	}
+
+	pool, _, cleanup := connectDB(cmd)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+
+	domainRepo := repository.NewDomainRepo(pool)
+	domain, err := domainRepo.GetByName(ctx, domainNameStr)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+	}
+	if domain == nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: domain %s not found\n", domainNameStr)
+		os.Exit(1)
+	}
+
+	mboxRepo := repository.NewMailboxRepo(pool)
+	mailbox, err := mboxRepo.GetByEmail(ctx, domain.ID, localPart)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+	}
+	if mailbox == nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: mailbox %s not found\n", mailboxRemoveEmail)
+		os.Exit(1)
+	}
+
+	if !mailboxRemoveConfirm {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Error: removing a mailbox is destructive. Re-run with --confirm to proceed.")
+		os.Exit(1)
+	}
+
+	deleted, err := mboxRepo.Delete(ctx, mailbox.ID)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+	}
+	if !deleted {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: mailbox %s not found\n", mailboxRemoveEmail)
+		os.Exit(1)
+	}
+
+	if jsonOutput {
+		out, _ := json.MarshalIndent(map[string]string{
+			"message": "Mailbox removed",
+			"mailbox": mailboxRemoveEmail,
+		}, "", "  ")
+		fmt.Fprintln(cmd.OutOrStdout(), string(out))
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Mailbox %s removed.\n", mailboxRemoveEmail)
+	}
+	return nil
+}
+
 func init() {
 	mailboxAddCmd.Flags().StringVar(&mailboxEmail, "email", "", "Email address (user@domain, required)")
 	mailboxAddCmd.Flags().StringVar(&mailboxPassword, "password", "", "Mailbox password (required)")
 	mailboxAddCmd.Flags().IntVar(&mailboxQuota, "quota", 0, "Quota in MB (default: 1024)")
 	mailboxAddCmd.Flags().StringVar(&mailboxDisplayName, "display-name", "", "Display name")
 	mailboxListCmd.Flags().StringVar(&mailboxListDomain, "domain", "", "Only list mailboxes for this domain (default: all domains)")
+	mailboxRemoveCmd.Flags().StringVar(&mailboxRemoveEmail, "email", "", "Email address to remove (user@domain, required)")
+	mailboxRemoveCmd.Flags().BoolVar(&mailboxRemoveConfirm, "confirm", false, "Confirm destructive removal")
 
 	mailboxCmd.AddCommand(mailboxAddCmd)
 	mailboxCmd.AddCommand(mailboxListCmd)
+	mailboxCmd.AddCommand(mailboxRemoveCmd)
 	RootCmd.AddCommand(mailboxCmd)
 }
