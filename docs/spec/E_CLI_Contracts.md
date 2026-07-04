@@ -472,7 +472,7 @@ Check deliverability: vectis domain check example.com
 | **Input** | Optional: `--domain example.com` (default: all domains), `--json` |
 | **Output** | Mailbox list (email, quota, active, sending status, created) |
 | **Side effects** | None |
-| **Exit code 0** | Always |
+| **Exit code 0** | Mailboxes listed |
 | **Exit code 1** | Error (named domain not found) |
 
 ---

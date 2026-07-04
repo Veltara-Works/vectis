@@ -238,13 +238,14 @@ func runMailboxList(cmd *cobra.Command, args []string) error {
 
 // splitEmailAddress splits user@domain into its parts, reporting ok=false for
 // anything that is not exactly one non-empty local part and one non-empty
-// domain.
+// domain. A second '@' (e.g. "a@b@c") is rejected so the domain half can't
+// silently carry one.
 func splitEmailAddress(email string) (local, domain string, ok bool) {
-	parts := strings.SplitN(email, "@", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	local, domain, found := strings.Cut(email, "@")
+	if !found || local == "" || domain == "" || strings.Contains(domain, "@") {
 		return "", "", false
 	}
-	return parts[0], parts[1], true
+	return local, domain, true
 }
 
 func runMailboxRemove(cmd *cobra.Command, args []string) error {

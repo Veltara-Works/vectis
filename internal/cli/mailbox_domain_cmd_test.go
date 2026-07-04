@@ -89,6 +89,7 @@ func TestSplitEmailAddress(t *testing.T) {
 		{"noatsign", "", "", false},
 		{"@example.com", "", "", false},
 		{"alice@", "", "", false},
+		{"a@b@c", "", "", false},
 		{"", "", "", false},
 	}
 	for _, tt := range tests {
