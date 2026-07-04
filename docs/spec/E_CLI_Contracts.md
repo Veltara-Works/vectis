@@ -433,10 +433,23 @@ Check deliverability: vectis domain check example.com
 
 | Property | Value |
 |----------|-------|
-| **Input** | Optional: `--active-only`, `--format table|json` |
+| **Input** | Optional: `--active-only`, `--json` |
 | **Output** | Domain list with status and mailbox count |
 | **Side effects** | None |
 | **Exit code 0** | Always |
+
+---
+
+### vectis domain remove
+
+| Property | Value |
+|----------|-------|
+| **Input** | `--name example.com` (required), `--confirm` (required — destructive) |
+| **Output** | Removal confirmation; reminder to run `vectis config apply` |
+| **Side effects** | Deletes domain from Postgres. Refuses (exit 1) if mailboxes or aliases still exist |
+| **Exit code 0** | Domain removed |
+| **Exit code 1** | Error (not found, mailboxes/aliases present, `--confirm` omitted) |
+| **Exit code 2** | `--name` missing |
 
 ---
 
@@ -449,6 +462,31 @@ Check deliverability: vectis domain check example.com
 | **Side effects** | Inserts mailbox in Postgres; creates Maildir on disk |
 | **Exit code 0** | Mailbox added |
 | **Exit code 1** | Error (domain not found, mailbox exists, validation failed) |
+
+---
+
+### vectis mailbox list
+
+| Property | Value |
+|----------|-------|
+| **Input** | Optional: `--domain example.com` (default: all domains), `--json` |
+| **Output** | Mailbox list (email, quota, active, sending status, created) |
+| **Side effects** | None |
+| **Exit code 0** | Always |
+| **Exit code 1** | Error (named domain not found) |
+
+---
+
+### vectis mailbox remove
+
+| Property | Value |
+|----------|-------|
+| **Input** | `--email user@example.com` (required), `--confirm` (required — destructive) |
+| **Output** | Removal confirmation |
+| **Side effects** | Deletes mailbox metadata from Postgres. The on-disk maildir is Dovecot-owned and left untouched |
+| **Exit code 0** | Mailbox removed |
+| **Exit code 1** | Error (domain/mailbox not found, `--confirm` omitted) |
+| **Exit code 2** | `--email` missing or malformed |
 
 ---
 
