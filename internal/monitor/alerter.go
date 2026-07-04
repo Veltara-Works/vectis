@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/smtp"
 	"strings"
@@ -16,6 +17,53 @@ import (
 )
 
 const dedupWindow = 15 * time.Minute
+
+// emailSendTimeout bounds the whole SMTP exchange (dial + envelope + data). The
+// monitor loop dispatches alert email synchronously on a single goroutine, so an
+// unbounded net/smtp.SendMail against a hung Postfix would stall the ticker and
+// every subsequent health check — the exact stall the DB/Valkey checks already
+// guard with a 5s context. Bound it here too.
+const emailSendTimeout = 15 * time.Second
+
+// alertSeverityTiers are every severity a service health check can raise. The
+// resolve helpers clear these for a service so a firing→lower-severity or
+// firing→healthy transition never strands the opposite key open (the class of
+// bug where checkDiskUsage fired `svc:critical` but only ever resolved a key
+// nothing wrote). Keep in sync with the severities passed to Send.
+var alertSeverityTiers = []string{"warn", "critical", "error"}
+
+// dedupKeyFor is the single source of truth for an alert's dedup key. Send
+// derives the key this way; every Resolve path MUST derive it the same way, so
+// the two can't drift. Severity is lower-cased to match the historical scheme.
+func dedupKeyFor(service, severity string) string {
+	return service + ":" + strings.ToLower(severity)
+}
+
+// serviceResolveKeys returns the dedup keys to clear when a service is healthy —
+// every severity tier for that service. Pure (no I/O) so the key contract is
+// unit-testable without a database.
+func serviceResolveKeys(service string) []string {
+	keys := make([]string, 0, len(alertSeverityTiers))
+	for _, sev := range alertSeverityTiers {
+		keys = append(keys, dedupKeyFor(service, sev))
+	}
+	return keys
+}
+
+// serviceResolveKeysExcept returns the sibling dedup keys to clear when a service
+// fires at keepSeverity — every tier except the one just raised. Pure so it is
+// unit-testable.
+func serviceResolveKeysExcept(service, keepSeverity string) []string {
+	keep := strings.ToLower(keepSeverity)
+	keys := make([]string, 0, len(alertSeverityTiers))
+	for _, sev := range alertSeverityTiers {
+		if sev == keep {
+			continue
+		}
+		keys = append(keys, dedupKeyFor(service, sev))
+	}
+	return keys
+}
 
 // webhookPayload is the JSON body sent to configured webhook endpoints.
 type webhookPayload struct {
@@ -69,7 +117,7 @@ func (a *Alerter) emailReady() bool {
 // checking whether the same dedup key was sent within the last 15 minutes.
 // CRITICAL severity bypasses dedup and is always sent immediately.
 func (a *Alerter) Send(ctx context.Context, severity, service, message string) {
-	dedupKey := service + ":" + strings.ToLower(severity)
+	dedupKey := dedupKeyFor(service, severity)
 
 	// Dedup check: skip if same alert was sent recently (except CRITICAL).
 	if !strings.EqualFold(severity, "CRITICAL") {
@@ -143,6 +191,26 @@ func (a *Alerter) Resolve(ctx context.Context, dedupKey string) {
 	a.logger.Info("alert resolved", "dedup_key", dedupKey)
 }
 
+// ResolveService clears every severity tier for a service — the correct call on
+// a healthy check cycle, since it doesn't need to know which tier (if any) was
+// firing. Each Resolve is a no-op (no recovery notification) when its key isn't
+// active, so calling this every cycle is cheap.
+func (a *Alerter) ResolveService(ctx context.Context, service string) {
+	for _, key := range serviceResolveKeys(service) {
+		a.Resolve(ctx, key)
+	}
+}
+
+// ResolveServiceExcept clears the sibling tiers for a service when it fires at
+// keepSeverity, so a critical→warn (or warn→error) transition without an
+// intervening healthy cycle never leaves the previous, now-superseded alert
+// stuck open.
+func (a *Alerter) ResolveServiceExcept(ctx context.Context, service, keepSeverity string) {
+	for _, key := range serviceResolveKeysExcept(service, keepSeverity) {
+		a.Resolve(ctx, key)
+	}
+}
+
 // sendEmail sends an alert via the local Postfix on port 25.
 func (a *Alerter) sendEmail(severity, service, message, suggestedAction string) {
 	from := fmt.Sprintf("vectis@%s", a.hostname)
@@ -164,13 +232,61 @@ func (a *Alerter) sendEmail(severity, service, message, suggestedAction string) 
 		body,
 	)
 
-	err := smtp.SendMail(a.emailCfg.SMTPHost, nil, from, a.emailCfg.Recipients, []byte(msg))
-	if err != nil {
+	if err := sendMailWithTimeout(a.emailCfg.SMTPHost, from, a.emailCfg.Recipients, []byte(msg), emailSendTimeout); err != nil {
 		a.logger.Error("failed to send alert email",
 			"error", err,
 			"recipients", a.emailCfg.Recipients,
 		)
 	}
+}
+
+// sendMailWithTimeout is a deadline-bounded replacement for smtp.SendMail (which
+// has no timeout). The monitor dispatches alert email inline on its single loop
+// goroutine, so a hung SMTP server must not be able to block the exchange
+// indefinitely. Postfix on the internal network needs no auth/TLS, so this is a
+// plain unauthenticated submission with a hard deadline over the whole session.
+func sendMailWithTimeout(addr, from string, to []string, msg []byte, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return fmt.Errorf("dial %s: %w", addr, err)
+	}
+	// Bound every subsequent read/write on the connection to the same deadline.
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("set deadline: %w", err)
+	}
+
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("smtp handshake: %w", err)
+	}
+	defer c.Close()
+
+	if err := c.Mail(from); err != nil {
+		return fmt.Errorf("MAIL FROM: %w", err)
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("RCPT TO %s: %w", rcpt, err)
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("DATA: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("write body: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("close body: %w", err)
+	}
+	return c.Quit()
 }
 
 // sendWebhook POSTs the alert payload to the configured webhook URL.
@@ -216,7 +332,14 @@ func (a *Alerter) sendWebhook(ctx context.Context, severity, service, message, s
 
 // suggestAction returns a human-readable suggestion for the given service.
 func suggestAction(service string) string {
+	// container-<svc> alerts (checkContainerHealth) are about the container being
+	// down/unreachable; point at the underlying service's logs.
+	if rest, ok := strings.CutPrefix(service, "container-"); ok {
+		return "Check container status and logs: vectis logs " + rest
+	}
 	switch service {
+	case "disk-postgres":
+		return "Free disk space or expand the Postgres data volume"
 	case "postfix":
 		return "Check logs: vectis logs postfix"
 	case "dovecot":

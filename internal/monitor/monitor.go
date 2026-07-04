@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -54,6 +55,8 @@ type Monitor struct {
 	logger      *slog.Logger
 	cfg         Config
 	stopCh      chan struct{}
+	startOnce   sync.Once        // guards Start so a double call can't spawn two loops
+	stopOnce    sync.Once        // guards Stop so a double call can't panic on close(stopCh)
 	dockerCLI   bool             // whether the `docker` CLI is on PATH
 	postfixExec bool             // whether `docker exec vectis-postfix` is viable (implies dockerCLI)
 	now         func() time.Time // injectable for tests; defaults to time.Now
@@ -113,16 +116,22 @@ func (m *Monitor) SetBackupSettingsProvider(fn func() (enabled bool, schedule, t
 	m.backupProvider = fn
 }
 
-// Start begins the monitoring loop in a background goroutine.
+// Start begins the monitoring loop in a background goroutine. Idempotent: a
+// second call is a no-op rather than spawning a duplicate loop.
 func (m *Monitor) Start() {
-	m.logger.Info("starting health monitor", "interval", m.cfg.CheckInterval)
-	go m.loop()
+	m.startOnce.Do(func() {
+		m.logger.Info("starting health monitor", "interval", m.cfg.CheckInterval)
+		go m.loop()
+	})
 }
 
-// Stop signals the monitoring loop to stop.
+// Stop signals the monitoring loop to stop. Idempotent: a second call is a no-op
+// rather than panicking on close of an already-closed channel.
 func (m *Monitor) Stop() {
-	m.logger.Info("stopping health monitor")
-	close(m.stopCh)
+	m.stopOnce.Do(func() {
+		m.logger.Info("stopping health monitor")
+		close(m.stopCh)
+	})
 }
 
 // RunCheck executes all health checks once. Suitable for manual triggering
@@ -179,27 +188,34 @@ var vectisServices = []string{
 // services by running `docker inspect --format`.
 func (m *Monitor) checkContainerHealth(ctx context.Context) {
 	for _, name := range vectisServices {
+		// Namespaced distinctly from the liveness checks (checkPostgres/checkValkey
+		// alert on service "postgres"/"valkey"). A container being "running" must
+		// NOT resolve a "postgres is unreachable" liveness alert — the container can
+		// be up while the DB itself is wedged. Keying container-health on
+		// "container-<svc>" keeps the two failure modes in separate dedup namespaces.
+		service := "container-" + strings.TrimPrefix(name, "vectis-")
+
 		status, err := dockerContainerHealth(ctx, name)
 		if err != nil {
 			m.logger.Debug("container health check failed", "container", name, "error", err)
-			service := strings.TrimPrefix(name, "vectis-")
 			m.alerter.Send(ctx, "ERROR", service,
 				fmt.Sprintf("Container %s is not running or unreachable: %v", name, err))
+			m.alerter.ResolveServiceExcept(ctx, service, "error")
 			continue
 		}
 
-		service := strings.TrimPrefix(name, "vectis-")
-
 		switch status {
 		case "healthy", "running":
-			// Resolve any prior alert for this service.
-			m.alerter.Resolve(ctx, service+":error")
+			// Clear whichever tier (error/warn) was firing for this container.
+			m.alerter.ResolveService(ctx, service)
 		case "unhealthy":
 			m.alerter.Send(ctx, "ERROR", service,
 				fmt.Sprintf("Container %s health check reports unhealthy", name))
+			m.alerter.ResolveServiceExcept(ctx, service, "error")
 		default:
 			m.alerter.Send(ctx, "WARN", service,
 				fmt.Sprintf("Container %s in unexpected state: %s", name, status))
+			m.alerter.ResolveServiceExcept(ctx, service, "warn")
 		}
 	}
 }
@@ -207,12 +223,16 @@ func (m *Monitor) checkContainerHealth(ctx context.Context) {
 // checkDiskUsage checks disk usage on /var/vectis/mail and the Postgres data
 // directory using `df`.
 func (m *Monitor) checkDiskUsage(ctx context.Context) {
+	// The pg-data-dir disk check is namespaced "disk-postgres", NOT "postgres" —
+	// otherwise its WARN collides on dedup key "postgres:warn" with the
+	// connection-pool-hot WARN from checkPostgres, and the 15-min dedup window
+	// lets one silently mask the other.
 	paths := []struct {
 		path    string
 		service string
 	}{
 		{"/var/vectis/mail", "disk"},
-		{"/var/lib/postgresql/data", "postgres"},
+		{"/var/lib/postgresql/data", "disk-postgres"},
 	}
 
 	for _, p := range paths {
@@ -222,15 +242,20 @@ func (m *Monitor) checkDiskUsage(ctx context.Context) {
 			continue
 		}
 
-		dedupKey := p.service + ":disk"
+		// Resolve keys are derived by the alerter from the same (service, severity)
+		// pair Send uses, so a healthy edge clears exactly what a prior WARN/CRITICAL
+		// wrote (the old code resolved a hand-written "<svc>:disk" key that Send never
+		// set → disk alerts never auto-resolved).
 		if pct >= 95 {
 			m.alerter.Send(ctx, "CRITICAL", p.service,
 				fmt.Sprintf("Disk usage at %d%% on %s — critically low space", pct, p.path))
+			m.alerter.ResolveServiceExcept(ctx, p.service, "critical")
 		} else if pct >= m.cfg.DiskWarnPercent {
 			m.alerter.Send(ctx, "WARN", p.service,
 				fmt.Sprintf("Disk usage at %d%% on %s (threshold: %d%%)", pct, p.path, m.cfg.DiskWarnPercent))
+			m.alerter.ResolveServiceExcept(ctx, p.service, "warn")
 		} else {
-			m.alerter.Resolve(ctx, dedupKey)
+			m.alerter.ResolveService(ctx, p.service)
 		}
 	}
 }
@@ -248,7 +273,7 @@ func (m *Monitor) checkMailQueue(ctx context.Context) {
 		m.alerter.Send(ctx, "WARN", "queue",
 			fmt.Sprintf("Mail queue has %d messages (threshold: %d)", size, m.cfg.QueueWarnSize))
 	} else {
-		m.alerter.Resolve(ctx, "queue:warn")
+		m.alerter.ResolveService(ctx, "queue")
 	}
 }
 
@@ -264,11 +289,15 @@ func (m *Monitor) checkCertExpiry(ctx context.Context) {
 	if info.IsExpired {
 		m.alerter.Send(ctx, "CRITICAL", "tls",
 			fmt.Sprintf("TLS certificate has expired (subject: %s)", info.Subject))
+		m.alerter.ResolveServiceExcept(ctx, "tls", "critical")
 	} else if info.DaysLeft <= m.cfg.CertWarnDays {
 		m.alerter.Send(ctx, "WARN", "tls",
 			fmt.Sprintf("TLS certificate expires in %d days (subject: %s)", info.DaysLeft, info.Subject))
+		m.alerter.ResolveServiceExcept(ctx, "tls", "warn")
 	} else {
-		m.alerter.Resolve(ctx, "tls:warn")
+		// Clears both tls:warn and tls:critical — the old code resolved only
+		// tls:warn, so a renewed cert never cleared a prior expiry CRITICAL.
+		m.alerter.ResolveService(ctx, "tls")
 	}
 }
 
@@ -360,6 +389,7 @@ func (m *Monitor) checkPostgres(ctx context.Context) {
 	if err := m.db.Ping(checkCtx); err != nil {
 		m.alerter.Send(ctx, "ERROR", "postgres",
 			fmt.Sprintf("Postgres ping failed: %v", err))
+		m.alerter.ResolveServiceExcept(ctx, "postgres", "error")
 		return
 	}
 
@@ -371,8 +401,11 @@ func (m *Monitor) checkPostgres(ctx context.Context) {
 	if total > 0 && float64(inUse)/float64(total) > 0.8 {
 		m.alerter.Send(ctx, "WARN", "postgres",
 			fmt.Sprintf("Postgres connection pool running hot: %d/%d connections in use", inUse, total))
+		m.alerter.ResolveServiceExcept(ctx, "postgres", "warn")
 	} else {
-		m.alerter.Resolve(ctx, "postgres:error")
+		// Clears both postgres:error and postgres:warn — the old code resolved only
+		// postgres:error, so a cooled-down pool never cleared its prior WARN.
+		m.alerter.ResolveService(ctx, "postgres")
 	}
 }
 
@@ -385,8 +418,9 @@ func (m *Monitor) checkValkey(ctx context.Context) {
 	if err := m.vk.Do(checkCtx, cmd).Error(); err != nil {
 		m.alerter.Send(ctx, "ERROR", "valkey",
 			fmt.Sprintf("Valkey ping failed: %v", err))
+		m.alerter.ResolveServiceExcept(ctx, "valkey", "error")
 	} else {
-		m.alerter.Resolve(ctx, "valkey:error")
+		m.alerter.ResolveService(ctx, "valkey")
 	}
 }
 
