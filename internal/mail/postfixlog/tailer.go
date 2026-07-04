@@ -4,9 +4,9 @@
 //
 // Postfix log lines we care about (examples):
 //
-//   postfix/cleanup[1234]: ABCDEF12: message-id=<abc123@mail.example.com>
-//   postfix/smtp[5678]: ABCDEF12: to=<u@ex.com>, relay=mx.ex.com[1.2.3.4]:25, delay=0.5, delays=0.1/0/0.2/0.2, dsn=2.0.0, status=sent (250 2.0.0 Ok: queued as 123456)
-//   postfix/smtp[5678]: ABCDEF12: to=<u@ex.com>, relay=mx.ex.com[1.2.3.4]:25, delay=1.0, delays=..., dsn=5.1.1, status=bounced (host ... said: 550 5.1.1 <u@ex.com>: User unknown)
+//	postfix/cleanup[1234]: ABCDEF12: message-id=<abc123@mail.example.com>
+//	postfix/smtp[5678]: ABCDEF12: to=<u@ex.com>, relay=mx.ex.com[1.2.3.4]:25, delay=0.5, delays=0.1/0/0.2/0.2, dsn=2.0.0, status=sent (250 2.0.0 Ok: queued as 123456)
+//	postfix/smtp[5678]: ABCDEF12: to=<u@ex.com>, relay=mx.ex.com[1.2.3.4]:25, delay=1.0, delays=..., dsn=5.1.1, status=bounced (host ... said: 550 5.1.1 <u@ex.com>: User unknown)
 //
 // The tailer maintains an in-memory LRU of queue_id → message_id so that a
 // later `status=sent|bounced` line can be resolved back to the Message-ID we
@@ -64,7 +64,7 @@ type Tailer struct {
 	logger  *slog.Logger
 
 	// queue_id → message_id; bounded size (LRU-ish via age + cap).
-	mu      sync.Mutex
+	mu       sync.Mutex
 	queueMap map[string]queueEntry
 	// cap limits how many queue_id entries we cache at once.
 	cap int
@@ -76,7 +76,7 @@ type Tailer struct {
 }
 
 type queueEntry struct {
-	messageID string
+	messageID  string
 	insertedAt time.Time
 }
 
@@ -244,11 +244,11 @@ var (
 	reMessageID = regexp.MustCompile(`message-id=<?([^>\s,]+)>?`)
 
 	// Fields inside a smtp delivery line.
-	reTo       = regexp.MustCompile(`to=<([^>]*)>`)
-	reRelay    = regexp.MustCompile(`relay=([^,\s]+)`)
-	reDSN      = regexp.MustCompile(`dsn=([0-9.]+)`)
-	reStatus   = regexp.MustCompile(`status=(\w+)\s*(?:\((.*)\))?`)
-	reDelay    = regexp.MustCompile(`\bdelay=([0-9.]+)`)
+	reTo     = regexp.MustCompile(`to=<([^>]*)>`)
+	reRelay  = regexp.MustCompile(`relay=([^,\s]+)`)
+	reDSN    = regexp.MustCompile(`dsn=([0-9.]+)`)
+	reStatus = regexp.MustCompile(`status=(\w+)\s*(?:\((.*)\))?`)
+	reDelay  = regexp.MustCompile(`\bdelay=([0-9.]+)`)
 )
 
 // processLine parses a single Postfix log line and, if it contains a delivery

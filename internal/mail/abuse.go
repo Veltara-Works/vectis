@@ -21,11 +21,11 @@ type AbuseDetector struct {
 // AbuseConfig holds thresholds for abuse detection.
 type AbuseConfig struct {
 	// Per-mailbox limits (per hour).
-	MailboxHourlyLimit  int // default 100; 0 = disabled
+	MailboxHourlyLimit   int // default 100; 0 = disabled
 	MailboxHourlySuspend int // auto-suspend above this; default 500
 
 	// Per-domain limits (per hour).
-	DomainHourlyLimit  int // alert threshold; default 1000
+	DomainHourlyLimit   int // alert threshold; default 1000
 	DomainHourlySuspend int // not auto-suspended (too broad); default 0 = disabled
 
 	// Spike detection: if current hour rate > N * previous hour average, flag as spike.
@@ -45,11 +45,11 @@ func DefaultAbuseConfig() AbuseConfig {
 
 // AbuseCheckResult is the outcome of a pre-send abuse check.
 type AbuseCheckResult struct {
-	Allowed        bool
-	Reason         string
-	MailboxCount   int64 // current hour count for the mailbox
-	DomainCount    int64 // current hour count for the domain
-	SpikeDetected  bool
+	Allowed       bool
+	Reason        string
+	MailboxCount  int64 // current hour count for the mailbox
+	DomainCount   int64 // current hour count for the domain
+	SpikeDetected bool
 }
 
 // NewAbuseDetector creates a new abuse detector.

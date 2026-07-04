@@ -185,7 +185,10 @@ func (r *AbuseRepo) Resolve(ctx context.Context, eventID, adminID string, allowe
 	return nil
 }
 
-func scanAbuseEvents(rows interface{ Next() bool; Scan(dest ...any) error }) ([]AbuseEvent, error) {
+func scanAbuseEvents(rows interface {
+	Next() bool
+	Scan(dest ...any) error
+}) ([]AbuseEvent, error) {
 	var events []AbuseEvent
 	for rows.Next() {
 		var e AbuseEvent

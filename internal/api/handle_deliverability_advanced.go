@@ -32,7 +32,7 @@ func (s *Server) handleListWarmup(w http.ResponseWriter, r *http.Request) {
 	// Add schedule info.
 	type warmupEntry struct {
 		repository.IPWarmup
-		ScheduleLimit int     `json:"schedule_limit"` // recommended limit for current day
+		ScheduleLimit  int     `json:"schedule_limit"`  // recommended limit for current day
 		UtilizationPct float64 `json:"utilization_pct"` // daily_sent / daily_limit * 100
 	}
 
@@ -112,10 +112,10 @@ func (s *Server) handleDeleteWarmup(w http.ResponseWriter, r *http.Request) {
 // handleRBLStatus returns the latest RBL check results for all server IPs.
 func (s *Server) handleRBLStatus(w http.ResponseWriter, r *http.Request) {
 	type rblIPStatus struct {
-		IPAddress string               `json:"ip_address"`
+		IPAddress string                `json:"ip_address"`
 		Checks    []repository.RBLCheck `json:"checks"`
-		Listed    int                  `json:"listed_count"`
-		Clean     bool                 `json:"clean"`
+		Listed    int                   `json:"listed_count"`
+		Clean     bool                  `json:"clean"`
 	}
 
 	// Get unique IPs from warmup or configured IPs.

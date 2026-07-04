@@ -16,15 +16,15 @@ import (
 )
 
 const (
-	maxRetries      = 5
-	webhookTimeout  = 10 * time.Second
-	retryInterval   = 30 * time.Second // poll for pending retries
+	maxRetries     = 5
+	webhookTimeout = 10 * time.Second
+	retryInterval  = 30 * time.Second // poll for pending retries
 )
 
 // WebhookEvent is the payload POSTed to webhook endpoints.
 type WebhookEvent struct {
 	ID        string         `json:"id"`
-	Event     string         `json:"event"`      // mail.sent, mail.delivered, mail.bounced, etc.
+	Event     string         `json:"event"` // mail.sent, mail.delivered, mail.bounced, etc.
 	Timestamp string         `json:"timestamp"`
 	Data      map[string]any `json:"data"`
 }

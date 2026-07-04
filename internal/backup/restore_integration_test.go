@@ -159,10 +159,11 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 // docker-compose service control, and asserts the result is a working system.
 //
 // Skipped unless VECTIS_DRILL_ARCHIVE is set. Inputs:
-//   VECTIS_DRILL_ARCHIVE  path to a .tar.gz[.enc] backup archive
-//   VECTIS_DRILL_KEY      backup encryption key (for .enc archives; on this
-//                         deployment that is secrets.api.secret)
-//   VECTIS_TEST_PG_*      a THROWAWAY Postgres — restore is destructive to it.
+//
+//	VECTIS_DRILL_ARCHIVE  path to a .tar.gz[.enc] backup archive
+//	VECTIS_DRILL_KEY      backup encryption key (for .enc archives; on this
+//	                      deployment that is secrets.api.secret)
+//	VECTIS_TEST_PG_*      a THROWAWAY Postgres — restore is destructive to it.
 //
 // NEVER point VECTIS_TEST_PG_* at production. The target DB needs the app
 // roles (vectis_api/postfix/dovecot) pre-created, as a real Scenario-B

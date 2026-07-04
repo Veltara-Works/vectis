@@ -116,14 +116,14 @@ func (s *Server) handleDomainAnalytics(w http.ResponseWriter, r *http.Request) {
 	respond(w, r, http.StatusOK, map[string]any{
 		"period": period,
 		"totals": map[string]any{
-			"sent":         totalSent,
-			"received":     totalReceived,
-			"bounced":      totalBounced,
-			"spam":         totalSpam,
-			"failed":       totalFailed,
-			"size_bytes":   totalSize,
-			"bounce_rate":  bounceRate,
-			"spam_rate":    spamRate,
+			"sent":        totalSent,
+			"received":    totalReceived,
+			"bounced":     totalBounced,
+			"spam":        totalSpam,
+			"failed":      totalFailed,
+			"size_bytes":  totalSize,
+			"bounce_rate": bounceRate,
+			"spam_rate":   spamRate,
 		},
 		"domains": agg,
 	})

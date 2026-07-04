@@ -54,15 +54,15 @@ type dkimResponse struct {
 }
 
 type deliverabilityResponse struct {
-	Domain string                    `json:"domain"`
-	Checks []deliverabilityCheck     `json:"checks"`
+	Domain string                `json:"domain"`
+	Checks []deliverabilityCheck `json:"checks"`
 }
 
 type deliverabilityCheck struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"` // "pass", "fail", "warn", "info"
-	Value   string `json:"value,omitempty"`
-	Hint    string `json:"hint,omitempty"`
+	Name   string `json:"name"`
+	Status string `json:"status"` // "pass", "fail", "warn", "info"
+	Value  string `json:"value,omitempty"`
+	Hint   string `json:"hint,omitempty"`
 }
 
 func (s *Server) handleGenerateDKIM(w http.ResponseWriter, r *http.Request) {

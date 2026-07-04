@@ -9,9 +9,9 @@ import (
 
 // apiResponse is the standard JSON envelope for all API responses.
 type apiResponse struct {
-	Data  any        `json:"data,omitempty"`
-	Error *apiError  `json:"error,omitempty"`
-	Meta  apiMeta    `json:"meta"`
+	Data  any       `json:"data,omitempty"`
+	Error *apiError `json:"error,omitempty"`
+	Meta  apiMeta   `json:"meta"`
 }
 
 type apiError struct {

@@ -36,11 +36,11 @@ var healthCmd = &cobra.Command{
 var healthService string
 
 type serviceStatus struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"`
-	Health   string `json:"health,omitempty"`
-	Uptime   string `json:"uptime,omitempty"`
-	Ports    string `json:"ports,omitempty"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Health string `json:"health,omitempty"`
+	Uptime string `json:"uptime,omitempty"`
+	Ports  string `json:"ports,omitempty"`
 }
 
 var vectisServices = []string{

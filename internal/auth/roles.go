@@ -2,8 +2,8 @@ package auth
 
 // Role constants for admin access control.
 const (
-	RoleSuperAdmin = "super_admin"
-	RoleAdmin      = "admin"
+	RoleSuperAdmin  = "super_admin"
+	RoleAdmin       = "admin"
 	RoleDomainAdmin = "domain_admin"
 )
 

@@ -14,15 +14,15 @@ import (
 
 // Webhook represents a configured webhook endpoint.
 type Webhook struct {
-	ID        string     `json:"id"`
-	DomainID  *string    `json:"domain_id,omitempty"` // NULL = global
-	URL       string     `json:"url"`
-	Secret    string     `json:"-"`                   // never expose in API responses
-	Events    []string   `json:"events"`
-	Active    bool       `json:"active"`
-	CreatedBy string     `json:"created_by"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	ID        string    `json:"id"`
+	DomainID  *string   `json:"domain_id,omitempty"` // NULL = global
+	URL       string    `json:"url"`
+	Secret    string    `json:"-"` // never expose in API responses
+	Events    []string  `json:"events"`
+	Active    bool      `json:"active"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // WebhookCreate holds fields for creating a webhook.
@@ -213,7 +213,10 @@ func (r *WebhookRepo) ListPendingRetries(ctx context.Context, limit int) ([]Webh
 	return deliveries, nil
 }
 
-func (r *WebhookRepo) scanWebhooks(rows interface{ Next() bool; Scan(dest ...any) error }) ([]Webhook, error) {
+func (r *WebhookRepo) scanWebhooks(rows interface {
+	Next() bool
+	Scan(dest ...any) error
+}) ([]Webhook, error) {
 	var webhooks []Webhook
 	for rows.Next() {
 		var w Webhook

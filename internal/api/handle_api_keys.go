@@ -13,12 +13,12 @@ import (
 type createAPIKeyRequest struct {
 	Name            string   `json:"name"`
 	ScopedDomainIDs []string `json:"scoped_domain_ids,omitempty"`
-	RateLimit       *int     `json:"rate_limit,omitempty"`   // requests per minute; default 60
+	RateLimit       *int     `json:"rate_limit,omitempty"`      // requests per minute; default 60
 	ExpiresInDays   *int     `json:"expires_in_days,omitempty"` // 0 or omit = never
 }
 
 type createAPIKeyResponse struct {
-	Key    string          `json:"key"` // raw key — shown only once
+	Key    string            `json:"key"` // raw key — shown only once
 	APIKey repository.APIKey `json:"api_key"`
 }
 

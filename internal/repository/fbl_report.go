@@ -109,7 +109,10 @@ func (r *FBLReportRepo) CountByDomain(ctx context.Context, domainID string, from
 	return count, nil
 }
 
-func scanFBLReports(rows interface{ Next() bool; Scan(dest ...any) error }) ([]FBLReport, error) {
+func scanFBLReports(rows interface {
+	Next() bool
+	Scan(dest ...any) error
+}) ([]FBLReport, error) {
 	var reports []FBLReport
 	for rows.Next() {
 		var r FBLReport

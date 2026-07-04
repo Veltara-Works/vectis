@@ -176,9 +176,9 @@ func (s *Server) handleServiceLogs(w http.ResponseWriter, r *http.Request) {
 // --- GET /api/v1/metrics ---
 
 type metricsResponse struct {
-	MailQueue    *mailQueueMetrics `json:"mail_queue,omitempty"`
-	Disk         *diskMetrics      `json:"disk,omitempty"`
-	CollectedAt  time.Time         `json:"collected_at"`
+	MailQueue   *mailQueueMetrics `json:"mail_queue,omitempty"`
+	Disk        *diskMetrics      `json:"disk,omitempty"`
+	CollectedAt time.Time         `json:"collected_at"`
 }
 
 type mailQueueMetrics struct {
@@ -187,12 +187,12 @@ type mailQueueMetrics struct {
 }
 
 type diskMetrics struct {
-	Path       string `json:"path"`
-	TotalBytes uint64 `json:"total_bytes"`
-	FreeBytes  uint64 `json:"free_bytes"`
-	UsedBytes  uint64 `json:"used_bytes"`
+	Path       string  `json:"path"`
+	TotalBytes uint64  `json:"total_bytes"`
+	FreeBytes  uint64  `json:"free_bytes"`
+	UsedBytes  uint64  `json:"used_bytes"`
 	UsedPct    float64 `json:"used_pct"`
-	Error      string `json:"error,omitempty"`
+	Error      string  `json:"error,omitempty"`
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {

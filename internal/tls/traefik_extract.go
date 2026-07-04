@@ -37,13 +37,13 @@ type traefikDomain struct {
 
 // ExtractOptions configures a single cert-extraction pass (or a watch loop).
 type ExtractOptions struct {
-	ACMEJSONPath   string        // e.g. /var/traefik/acme/acme.json
-	Hostname       string        // cert whose domain.main or sans matches this
-	OutDir         string        // e.g. /etc/ssl/mail
-	ReloadPostfix  string        // container name to SIGHUP on change, "" to skip
-	ReloadDovecot  string        // container name to SIGHUP on change, "" to skip
-	PollInterval   time.Duration // only used by Watch; defaults to 30s
-	Logger         *slog.Logger
+	ACMEJSONPath  string        // e.g. /var/traefik/acme/acme.json
+	Hostname      string        // cert whose domain.main or sans matches this
+	OutDir        string        // e.g. /etc/ssl/mail
+	ReloadPostfix string        // container name to SIGHUP on change, "" to skip
+	ReloadDovecot string        // container name to SIGHUP on change, "" to skip
+	PollInterval  time.Duration // only used by Watch; defaults to 30s
+	Logger        *slog.Logger
 }
 
 // matchedCert returns the first certificate from acme.json whose main or
@@ -115,10 +115,10 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 
 // ExtractResult reports what a single extraction pass did.
 type ExtractResult struct {
-	Found     bool   // cert for hostname present in acme.json
-	Changed   bool   // cert content differed from on-disk and was written
-	Resolver  string // traefik certResolver name the cert was found under
-	CertHash  string // sha256 of fullchain+privkey after this pass
+	Found    bool   // cert for hostname present in acme.json
+	Changed  bool   // cert content differed from on-disk and was written
+	Resolver string // traefik certResolver name the cert was found under
+	CertHash string // sha256 of fullchain+privkey after this pass
 }
 
 // Extract performs one pass: read acme.json, locate the cert, write atomically.
@@ -264,12 +264,14 @@ func reloadMailServices(ctx context.Context, opts ExtractOptions) {
 //   - Stuck path: Traefik never issues (rate limit, bad DNS, :80 blocked,
 //     wrong email in acme account). Poll loop would otherwise go silent
 //     forever. So we:
-//     - emit a WARN after `warnAfterPolls` (default 10 polls = 5min) telling
-//       the operator where to look, and repeat it every `warnEveryPolls`
-//       (default 20 polls = 10min) so the signal doesn't get buried
-//     - emit a plain INFO heartbeat every `heartbeatEveryPolls` so operators
-//       watching `docker logs -f` have evidence the extractor is alive even
-//       during the silent-but-waiting phase
+//
+//   - emit a WARN after `warnAfterPolls` (default 10 polls = 5min) telling
+//     the operator where to look, and repeat it every `warnEveryPolls`
+//     (default 20 polls = 10min) so the signal doesn't get buried
+//
+//   - emit a plain INFO heartbeat every `heartbeatEveryPolls` so operators
+//     watching `docker logs -f` have evidence the extractor is alive even
+//     during the silent-but-waiting phase
 func Watch(ctx context.Context, opts ExtractOptions) error {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()

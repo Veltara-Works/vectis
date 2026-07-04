@@ -10,7 +10,8 @@ import (
 
 // handleExportAudit exports audit log entries as CSV or JSON for compliance archival.
 // Query params: format (csv|json, default json), from, to (RFC3339 dates),
-//   action, resource_type, admin_id (optional filters)
+//
+//	action, resource_type, admin_id (optional filters)
 func (s *Server) handleExportAudit(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
 	if format == "" {
