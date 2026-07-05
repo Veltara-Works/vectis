@@ -159,12 +159,36 @@ func (s *Service) resolve(ctx context.Context, email string) (*resolved, error) 
 }
 
 // maildirPath returns the absolute Maildir path for a resolved subject, or ""
-// when the domain row is unknown.
+// when the domain row is unknown or a path component isn't a safe segment.
+//
+// The domain name and local part become path components here; a crafted value
+// containing "/" or ".." could otherwise escape mailRoot on erase (which
+// deletes) or export (which reads). This is super-admin-gated so the exposure
+// is low, but reject any component that isn't a plain segment (G-L2). Returning
+// "" is the safe failure — callers already skip the maildir step on an empty
+// path (same as the domain-unknown case), so a traversal attempt no-ops rather
+// than touching an out-of-tree path.
 func (s *Service) maildirPath(r *resolved) string {
 	if r.domain == nil {
 		return ""
 	}
+	if !safePathSegment(r.domain.Name) || !safePathSegment(r.localPart) {
+		return ""
+	}
 	return filepath.Join(s.mailRoot, r.domain.Name, r.localPart, "Maildir")
+}
+
+// safePathSegment reports whether s is a single, in-place path segment — not
+// empty, not "." / "..", and free of path separators or any ".." substring — so
+// it can't traverse out of the directory it's joined into.
+func safePathSegment(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	if strings.ContainsAny(s, "/\\") || strings.Contains(s, "..") {
+		return false
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,21 @@ import (
 	"time"
 )
 
+func TestSafePathSegment(t *testing.T) {
+	safe := []string{"example.com", "john.doe", "sales", "a-b_c", "info+tag"}
+	for _, s := range safe {
+		if !safePathSegment(s) {
+			t.Errorf("safePathSegment(%q) = false, want true", s)
+		}
+	}
+	unsafe := []string{"", ".", "..", "../etc", "a/b", `a\b`, "..hidden", "foo/../bar", "a..b"}
+	for _, s := range unsafe {
+		if safePathSegment(s) {
+			t.Errorf("safePathSegment(%q) = true, want false", s)
+		}
+	}
+}
+
 func TestMailRootFromLocation(t *testing.T) {
 	cases := []struct {
 		in, want string

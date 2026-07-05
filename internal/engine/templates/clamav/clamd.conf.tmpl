@@ -57,3 +57,12 @@ MaxFileSize {{ .ClamAV.MaxFileSize }}
 # the on-disk DB; SelfCheck makes clamd reload them in-process without a
 # container restart.
 SelfCheck 600
+
+# Reload the signature DB in place rather than building a second copy alongside
+# the live one. The default (yes) briefly holds two full ~1 GB databases in
+# memory during a reload, which spiked clamd over its cgroup mem_limit and got
+# it OOM-killed on the mx1 canary (2026-07-05). In-place reload roughly halves
+# the reload peak; the cost is a sub-second window where clamd can't scan, which
+# rspamd's antivirus module fails open on (no CLAM_VIRUS symbol → no reject), so
+# no mail is bounced during the daily freshclam update.
+ConcurrentDatabaseReload no

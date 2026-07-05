@@ -147,6 +147,10 @@ func (s *Server) Stop() {
 }
 
 func (s *Server) serve(ln net.Listener) {
+	// POL-3: cap concurrent handler goroutines. Postfix opens very few policy
+	// connections, so reaching this ceiling means something abnormal (or hostile
+	// on the internal net) — refuse rather than fork goroutines unboundedly.
+	sem := make(chan struct{}, maxConcurrentConns)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -161,9 +165,18 @@ func (s *Server) serve(ln net.Listener) {
 			_ = conn.Close()
 			continue
 		}
+		select {
+		case sem <- struct{}{}:
+		default:
+			s.logger.Warn("policy: refusing connection, at concurrency cap", "cap", maxConcurrentConns)
+			s.untrackConn(conn)
+			_ = conn.Close()
+			continue
+		}
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			defer func() { <-sem }()
 			defer s.untrackConn(conn)
 			s.handleConn(conn)
 		}()
@@ -189,12 +202,38 @@ func (s *Server) untrackConn(c net.Conn) {
 	s.mu.Unlock()
 }
 
+// Request/connection bounds. A Postfix policy request is a handful of short
+// key=value lines terminated by a blank line, so these ceilings are far above
+// anything legitimate while stopping a misbehaving or hostile client (internal
+// net, but defence in depth) from consuming memory or handler goroutines.
+const (
+	maxRequestLineBytes = 4096      // one attribute line (G-L1: cap a single unterminated line)
+	maxRequestAttrs     = 64        // Postfix sends ~20; generous ceiling (POL-2)
+	maxRequestBytes     = 64 * 1024 // whole request, blank-line terminated (POL-2)
+	// idleReadTimeout reaps a connection that goes silent mid-request, or sits
+	// idle far longer than Postfix's own connection cache would (default 300s),
+	// so a stuck/slow reader can't park a handler goroutine forever (G-L1). A
+	// healthy cached connection is reused well within this and resets it each
+	// request; a reaped idle connection is transparently re-established.
+	idleReadTimeout = 10 * time.Minute
+	// writeTimeout bounds our response write (POL-1): a peer that stops reading
+	// must not park the handler on a full TCP send buffer indefinitely.
+	writeTimeout = 30 * time.Second
+	// maxConcurrentConns caps live handler goroutines (POL-3).
+	maxConcurrentConns = 256
+)
+
 // handleConn services a single Postfix connection. Postfix keeps the connection
 // open and reuses it for many requests, so we loop until EOF/error.
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	r := bufio.NewReader(conn)
 	for {
+		// Bound each request read (G-L1): the whole request — first line to the
+		// blank terminator — must arrive within idleReadTimeout, else reap the
+		// connection. Reset per request so a cached connection's idle gap
+		// between requests doesn't accumulate against a single deadline.
+		_ = conn.SetReadDeadline(time.Now().Add(idleReadTimeout))
 		attrs, err := readRequest(r)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
@@ -205,6 +244,8 @@ func (s *Server) handleConn(conn net.Conn) {
 		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.Timeout)
 		action := s.evaluate(ctx, attrs)
 		cancel()
+		// Bound the response write (POL-1).
+		_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 		if _, err := conn.Write([]byte("action=" + action + "\n\n")); err != nil {
 			s.logger.Debug("policy write failed", "error", err)
 			return
@@ -300,18 +341,49 @@ func reasonSuffix(reason string) string {
 // between requests.
 func readRequest(r *bufio.Reader) (map[string]string, error) {
 	attrs := make(map[string]string, 16)
+	total := 0
 	for {
-		line, err := r.ReadString('\n')
+		line, err := readLimitedLine(r, maxRequestLineBytes)
 		if err != nil {
 			return nil, err
+		}
+		total += len(line)
+		if total > maxRequestBytes {
+			return nil, fmt.Errorf("policy request exceeds %d bytes without terminator", maxRequestBytes)
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
 			return attrs, nil
 		}
+		if len(attrs) >= maxRequestAttrs {
+			return nil, fmt.Errorf("policy request exceeds %d attributes", maxRequestAttrs)
+		}
 		if k, v, ok := strings.Cut(line, "="); ok {
 			attrs[strings.TrimSpace(k)] = v
 		}
+	}
+}
+
+// readLimitedLine reads a single '\n'-terminated line but fails once it exceeds
+// max bytes without a newline, so one unterminated line can't grow memory
+// unbounded — the bufio.ReadString it replaces read to EOF with no cap (G-L1).
+// On a clean connection close between requests it returns io.EOF, which the
+// caller treats as a normal shutdown.
+func readLimitedLine(r *bufio.Reader, max int) (string, error) {
+	var sb strings.Builder
+	for {
+		b, err := r.ReadByte()
+		if err != nil {
+			return sb.String(), err
+		}
+		if b == '\n' {
+			sb.WriteByte(b)
+			return sb.String(), nil
+		}
+		if sb.Len() >= max {
+			return "", fmt.Errorf("policy request line exceeds %d bytes", max)
+		}
+		sb.WriteByte(b)
 	}
 }
 
