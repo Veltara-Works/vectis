@@ -176,8 +176,8 @@ func TestExtract_MatchOnMain_WritesAllThreeFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode().Perm() != 0o640 {
-		t.Errorf("privkey mode = %o, want 640", st.Mode().Perm())
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("privkey mode = %o, want 600", st.Mode().Perm())
 	}
 	st, err = os.Stat(filepath.Join(tmp, "fullchain.pem"))
 	if err != nil {
