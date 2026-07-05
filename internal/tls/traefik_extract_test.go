@@ -186,6 +186,16 @@ func TestExtract_MatchOnMain_WritesAllThreeFiles(t *testing.T) {
 	if st.Mode().Perm() != 0o644 {
 		t.Errorf("fullchain mode = %o, want 644", st.Mode().Perm())
 	}
+
+	// OutDir is chmod'd to 0750 even when it already exists (t.TempDir creates
+	// it 0700), so the hardening takes effect on upgrade, not just fresh installs.
+	dst, err := os.Stat(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dst.Mode().Perm() != 0o750 {
+		t.Errorf("OutDir mode = %o, want 750", dst.Mode().Perm())
+	}
 }
 
 func TestExtract_MatchOnSAN(t *testing.T) {

@@ -171,6 +171,11 @@ func Extract(opts ExtractOptions) (ExtractResult, error) {
 	if err := os.MkdirAll(opts.OutDir, 0o750); err != nil {
 		return res, fmt.Errorf("mkdir out: %w", err)
 	}
+	// MkdirAll only sets the mode when it creates the dir; on an existing install
+	// OutDir predates this hardening and keeps its old (0755) mode, so enforce
+	// 0750 explicitly (Copilot review, #149). Best-effort — a chmod failure must
+	// not abort a cert write.
+	_ = os.Chmod(opts.OutDir, 0o750)
 	if err := writeAtomic(filepath.Join(opts.OutDir, "fullchain.pem"), fullchain, 0o644); err != nil {
 		return res, err
 	}

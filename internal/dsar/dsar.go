@@ -179,16 +179,19 @@ func (s *Service) maildirPath(r *resolved) string {
 }
 
 // safePathSegment reports whether s is a single, in-place path segment — not
-// empty, not "." / "..", and free of path separators or any ".." substring — so
-// it can't traverse out of the directory it's joined into.
+// empty, not "." / "..", and free of path separators — so it can't traverse out
+// of the directory it's joined into.
+//
+// A ".." *substring* without a separator (e.g. "a..b") is NOT rejected: it's a
+// single component filepath.Join can't use to escape, and a real mailbox local
+// part may contain it — rejecting it would silently skip DSAR erase/export and
+// leave data behind (Copilot review, #149). Traversal needs a separator or the
+// component being exactly "..", both of which are caught.
 func safePathSegment(s string) bool {
 	if s == "" || s == "." || s == ".." {
 		return false
 	}
-	if strings.ContainsAny(s, "/\\") || strings.Contains(s, "..") {
-		return false
-	}
-	return true
+	return !strings.ContainsAny(s, "/\\")
 }
 
 // ---------------------------------------------------------------------------

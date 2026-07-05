@@ -21,6 +21,8 @@ func TestValidateWebhookURL(t *testing.T) {
 		"https://192.168.1.10/hook",      // RFC1918
 		"https://169.254.169.254/latest", // cloud metadata
 		"https://0.0.0.0/hook",           // unspecified
+		"https://100.64.0.1/hook",        // CGNAT — must match the dispatch-time block
+		"https://224.0.0.1/hook",         // multicast — must match the dispatch-time block
 	}
 	for _, u := range rejected {
 		if err := validateWebhookURL(ctx, u); err == nil {

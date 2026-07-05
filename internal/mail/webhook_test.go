@@ -24,8 +24,8 @@ func TestIsBlockedWebhookIP(t *testing.T) {
 		if ip == nil {
 			t.Fatalf("bad test IP %q", s)
 		}
-		if !isBlockedWebhookIP(ip) {
-			t.Errorf("isBlockedWebhookIP(%s) = false, want true", s)
+		if !IsBlockedWebhookIP(ip) {
+			t.Errorf("IsBlockedWebhookIP(%s) = false, want true", s)
 		}
 	}
 
@@ -41,8 +41,8 @@ func TestIsBlockedWebhookIP(t *testing.T) {
 		if ip == nil {
 			t.Fatalf("bad test IP %q", s)
 		}
-		if isBlockedWebhookIP(ip) {
-			t.Errorf("isBlockedWebhookIP(%s) = true, want false", s)
+		if IsBlockedWebhookIP(ip) {
+			t.Errorf("IsBlockedWebhookIP(%s) = true, want false", s)
 		}
 	}
 }

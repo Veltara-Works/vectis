@@ -82,16 +82,19 @@ func blockPrivateDial(_, address string, _ syscall.RawConn) error {
 	if ip == nil {
 		return fmt.Errorf("webhook dial: non-IP address %q", host)
 	}
-	if isBlockedWebhookIP(ip) {
+	if IsBlockedWebhookIP(ip) {
 		return fmt.Errorf("webhook dial to %s blocked (private/loopback/link-local)", ip)
 	}
 	return nil
 }
 
-// isBlockedWebhookIP reports whether an IP must never be a webhook target —
+// IsBlockedWebhookIP reports whether an IP must never be a webhook target —
 // loopback, RFC1918 private, link-local (incl. cloud-metadata 169.254.169.254),
-// CGNAT (RFC 6598, not covered by IsPrivate), unspecified, or multicast.
-func isBlockedWebhookIP(ip net.IP) bool {
+// CGNAT (RFC 6598, not covered by IsPrivate), unspecified, or multicast. It is
+// the single source of truth shared by the create-time URL check (api package)
+// and this dial-time guard, so a URL that passes creation can't then be
+// permanently rejected at dispatch.
+func IsBlockedWebhookIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
 		ip.IsUnspecified() || ip.IsMulticast() {

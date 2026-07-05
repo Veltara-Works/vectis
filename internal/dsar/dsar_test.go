@@ -6,13 +6,15 @@ import (
 )
 
 func TestSafePathSegment(t *testing.T) {
-	safe := []string{"example.com", "john.doe", "sales", "a-b_c", "info+tag"}
+	// "a..b" / "..hidden" are single components with no separator — inert for
+	// filepath.Join, so they stay allowed (rejecting them would skip erase).
+	safe := []string{"example.com", "john.doe", "sales", "a-b_c", "info+tag", "a..b", "..hidden"}
 	for _, s := range safe {
 		if !safePathSegment(s) {
 			t.Errorf("safePathSegment(%q) = false, want true", s)
 		}
 	}
-	unsafe := []string{"", ".", "..", "../etc", "a/b", `a\b`, "..hidden", "foo/../bar", "a..b"}
+	unsafe := []string{"", ".", "..", "../etc", "a/b", `a\b`, "foo/../bar"}
 	for _, s := range unsafe {
 		if safePathSegment(s) {
 			t.Errorf("safePathSegment(%q) = true, want false", s)

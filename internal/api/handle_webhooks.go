@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Veltara-Works/vectis/internal/mail"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
@@ -32,8 +33,12 @@ func validateWebhookURL(ctx context.Context, raw string) error {
 	if strings.EqualFold(host, "localhost") {
 		return fmt.Errorf("Webhook URL must not target localhost")
 	}
+	// Use the same predicate the dispatcher enforces at dial time
+	// (mail.IsBlockedWebhookIP) so a URL accepted here can't then be permanently
+	// rejected at dispatch — it covers loopback, private, link-local/metadata,
+	// CGNAT, multicast, and unspecified.
 	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || blockedBaseURLIP(ip) {
+		if mail.IsBlockedWebhookIP(ip) {
 			return fmt.Errorf("Webhook URL must not point at a private, loopback, or link-local address")
 		}
 		return nil
@@ -45,7 +50,7 @@ func validateWebhookURL(ctx context.Context, raw string) error {
 	defer cancel()
 	if ips, lookupErr := net.DefaultResolver.LookupIP(lookupCtx, "ip", host); lookupErr == nil {
 		for _, ip := range ips {
-			if ip.IsLoopback() || blockedBaseURLIP(ip) {
+			if mail.IsBlockedWebhookIP(ip) {
 				return fmt.Errorf("Webhook URL host %q resolves to a private, loopback, or link-local address", host)
 			}
 		}
