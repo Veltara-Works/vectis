@@ -1,7 +1,7 @@
 # Pinned to an exact upstream version (P2-M5) — `:latest-apache` would let a
 # Roundcube release silently change the webmail on the next image rebuild.
 # Bump deliberately after testing the new version's skin/config compatibility.
-FROM roundcube/roundcubemail:1.7.1-apache
+FROM roundcube/roundcubemail:1.7.2-apache
 
 # Bake the Vectis skin into /usr/src/. Roundcube's image entrypoint copies
 # /usr/src/roundcubemail/. to /var/www/html on first start (and runs
