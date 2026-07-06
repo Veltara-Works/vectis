@@ -86,7 +86,7 @@ func TestDedupNamespacesDisjoint(t *testing.T) {
 			}
 		}
 	}
-	disjoint("disk-postgres", "postgres")   // MON-2: pg-disk WARN vs pool-hot WARN
+	disjoint("disk-postgres", "postgres")      // MON-2: pg-disk WARN vs pool-hot WARN
 	disjoint("container-postgres", "postgres") // MON-5: container-down vs DB-unreachable
 	disjoint("container-valkey", "valkey")
 }
