@@ -44,6 +44,20 @@ type ReleaseManifest struct {
 	// self-hosted mirrors) omit it; consumers fall back to pinning by tag alone
 	// and warn. Authenticated by the same Ed25519 manifest signature as `latest`.
 	Images map[string]string `json:"images,omitempty"`
+
+	// BinarySHA256 pins the linux/amd64 CLI binary published for this release to
+	// its sha256 (bare lowercase hex). The host self-update path (internal/cli)
+	// checks the downloaded binary against THIS signed digest, binding the exact
+	// bytes to the signed manifest that named `latest` and passed anti-rollback —
+	// so a compromised download origin cannot replay the current manifest while
+	// serving an OLDER but still-validly-signed binary behind the tag to force a
+	// downgrade (REL-1). OPTIONAL: manifests published before REL-1 (and
+	// self-hosted mirrors) omit it; the self-update path then falls back to the
+	// per-binary Ed25519 signature alone (its prior behaviour). The orchestrator
+	// does not consume this field — only internal/cli — but it is validated here
+	// so the signed-manifest schema stays strict. Authenticated by the same
+	// Ed25519 manifest signature as `latest`.
+	BinarySHA256 string `json:"binary_sha256,omitempty"`
 }
 
 // imageDigestRe is the strict allowlist for a manifest image digest: a bare
@@ -51,6 +65,16 @@ type ReleaseManifest struct {
 // sha256, or whitespace — defence in depth behind the manifest signature before
 // a digest is spliced into a compose `image:` ref.
 var imageDigestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// binaryDigestRe is the strict allowlist for the CLI binary's checksum in a
+// manifest's `binary_sha256`: a bare lowercase sha256 hex (64 chars), matching
+// sha256sum(1) / hex.EncodeToString output. NOTE the deliberate format split
+// from imageDigestRe: an image digest carries the OCI "sha256:" algorithm prefix
+// (docker needs it in an image ref), whereas the binary digest is compared
+// against the raw hex the self-update path computes for the downloaded file.
+// Defence in depth behind the manifest signature before the digest gates a
+// binary install (REL-1).
+var binaryDigestRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // releaseServicePrefix identifies which compose services track the release
 // channel. Lockstep: all five images share a single tag per release.
@@ -78,6 +102,17 @@ func validReleaseTag(tag string) bool {
 // outside this package (the host self-update path) MUST allowlist a manifest's
 // `latest` through this before using it to choose which artifact to install.
 func ValidReleaseTag(tag string) bool { return validReleaseTag(tag) }
+
+// validBinaryDigest reports whether s is a well-formed bare sha256 hex digest as
+// published in a manifest's `binary_sha256` field.
+func validBinaryDigest(s string) bool { return binaryDigestRe.MatchString(s) }
+
+// ValidBinaryDigest is the exported form of validBinaryDigest: a bare lowercase
+// sha256 hex (64 chars) and nothing else. The host self-update path (internal/
+// cli) MUST allowlist a manifest-supplied binary digest through this before
+// comparing it against the downloaded binary (REL-1), keeping this regex the
+// single source of truth for the manifest→binary-digest trust boundary.
+func ValidBinaryDigest(s string) bool { return validBinaryDigest(s) }
 
 // CompareReleaseTags orders two release tags: -1 if a<b, 0 if equal, +1 if a>b.
 // It errors when either side is not a valid release tag. Precedence: numeric
@@ -257,6 +292,12 @@ func fetchReleaseManifest(ctx context.Context, httpClient *http.Client, manifest
 		if !imageDigestRe.MatchString(dig) {
 			return nil, fmt.Errorf("release manifest image digest for %q = %q is not a valid sha256 digest", svc, dig)
 		}
+	}
+	// Validate the optional CLI binary digest (REL-1): a bare sha256 hex or
+	// nothing. Defence in depth behind the signature; a malformed value fails the
+	// manifest here rather than reaching the self-update comparison.
+	if m.BinarySHA256 != "" && !validBinaryDigest(m.BinarySHA256) {
+		return nil, fmt.Errorf("release manifest binary_sha256 = %q is not a valid sha256 digest", m.BinarySHA256)
 	}
 	return &m, nil
 }

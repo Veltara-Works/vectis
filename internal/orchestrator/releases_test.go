@@ -400,6 +400,71 @@ func TestFetchReleaseManifest_NoImagesIsValid(t *testing.T) {
 	}
 }
 
+// A validly-signed manifest carrying a well-formed binary_sha256 parses it (REL-1).
+func TestFetchReleaseManifest_BinaryDigestParsed(t *testing.T) {
+	dig := strings.Repeat("a", 64)
+	body := `{"latest":"v0.1.43","released_at":"2026-07-06T08:00:00Z","channel":"stable","binary_sha256":"` + dig + `"}`
+	url, cleanup := signedManifestServer(t, body, true)
+	defer cleanup()
+
+	m, err := fetchReleaseManifest(context.Background(), http.DefaultClient, url, "v0.1.42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.BinarySHA256 != dig {
+		t.Errorf("BinarySHA256: want %q, got %q", dig, m.BinarySHA256)
+	}
+}
+
+// A manifest with a malformed binary_sha256 is rejected even when validly signed:
+// the self-update path gates the installed binary on it, so it must be bare hex.
+func TestFetchReleaseManifest_BadBinaryDigestRejected(t *testing.T) {
+	for _, bad := range []string{
+		`"sha256:` + strings.Repeat("a", 64) + `"`, // OCI-prefixed (binary digest is bare hex)
+		`"` + strings.Repeat("a", 63) + `"`,        // too short
+		`"` + strings.Repeat("A", 64) + `"`,        // uppercase
+		`"v0.1.43"`,                                // a tag, not a digest
+	} {
+		body := `{"latest":"v0.1.43","released_at":"2026-07-06T08:00:00Z","channel":"stable","binary_sha256":` + bad + `}`
+		url, cleanup := signedManifestServer(t, body, true)
+		m, err := fetchReleaseManifest(context.Background(), http.DefaultClient, url, "v0.1.42")
+		cleanup()
+		if err == nil {
+			t.Errorf("binary_sha256 %s: expected rejection, got manifest %+v", bad, m)
+		}
+	}
+}
+
+// A manifest with no binary_sha256 is valid — the self-update path degrades to
+// the per-binary Ed25519 signature alone (pre-REL-1 behaviour).
+func TestFetchReleaseManifest_NoBinaryDigestIsValid(t *testing.T) {
+	url, cleanup := signedManifestServer(t, `{"latest":"v0.1.43","released_at":"2026-07-06T08:00:00Z","channel":"stable"}`, true)
+	defer cleanup()
+
+	m, err := fetchReleaseManifest(context.Background(), http.DefaultClient, url, "v0.1.42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.BinarySHA256 != "" {
+		t.Errorf("expected empty BinarySHA256, got %q", m.BinarySHA256)
+	}
+}
+
+func TestValidBinaryDigest(t *testing.T) {
+	good := []string{strings.Repeat("0", 64), strings.Repeat("a", 64), "8bd19c3a278a2cb0602b362d9fd69566c332e053a6c805119ba0cf684601db90"}
+	for _, s := range good {
+		if !ValidBinaryDigest(s) {
+			t.Errorf("ValidBinaryDigest(%q) = false, want true", s)
+		}
+	}
+	bad := []string{"", strings.Repeat("a", 63), strings.Repeat("a", 65), strings.Repeat("A", 64), "sha256:" + strings.Repeat("a", 64), "v0.1.43", " " + strings.Repeat("a", 64)}
+	for _, s := range bad {
+		if ValidBinaryDigest(s) {
+			t.Errorf("ValidBinaryDigest(%q) = true, want false", s)
+		}
+	}
+}
+
 func TestRewriteReleaseImageRef(t *testing.T) {
 	const dig = "sha256:8bd19c3a278a2cb0602b362d9fd69566c332e053a6c805119ba0cf684601db90"
 	cases := []struct {
