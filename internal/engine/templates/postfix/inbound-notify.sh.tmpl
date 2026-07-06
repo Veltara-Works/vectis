@@ -67,11 +67,22 @@ cat > "$PAYLOAD_FILE" <<JSON
 {"message_id":"$(esc "$MESSAGE_ID")","from":"$(esc "$FROM")","to":"$(esc "$REAL_RECIPIENT")","domain":"$(esc "$REAL_DOMAIN")","subject":"$(esc "$SUBJECT")","size":${SIZE:-0},"spam_score":${SPAM_SCORE:-0},"spam_action":"$(esc "${SPAM_ACTION:-no action}")","queue_id":"$(esc "$Q_ID")","envelope_from":"$(esc "$ENV_SENDER")","envelope_to":"$(esc "$REAL_RECIPIENT")","raw_message_b64":"$RAW_B64"}
 JSON
 
-# Fire-and-forget: cap total time at 10s, swallow errors, never fail delivery.
-curl -sf -X POST "$API_URL" \
+# Fire-and-forget: cap total time at 10s, never fail delivery (always exit 0).
+# But do NOT swallow the outcome silently (CR119-3): capture the HTTP status and
+# log a one-line failure to stderr, which Postfix routes to maillog. A silent
+# `|| true` hid whole classes of breakage — e.g. every /internal/inbound POST
+# returning 401 after an api.secret rotation (stale INTERNAL_TOKEN) — with zero
+# operator signal. We drop -f so a 4xx/5xx still yields the real status code
+# rather than curl exit 22 with no body.
+HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API_URL" \
     -H "Content-Type: application/json" \
     -H "X-Internal-Token: $INTERNAL_TOKEN" \
     --max-time 10 \
-    --data-binary @"$PAYLOAD_FILE" >/dev/null 2>&1 || true
+    --data-binary @"$PAYLOAD_FILE" 2>/dev/null)
+CURL_RC=$?
+HTTP_CODE=${HTTP_CODE:-000}
+if [ "$CURL_RC" -ne 0 ] || [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+    echo "vectis_notify: inbound POST failed (curl_rc=${CURL_RC} http=${HTTP_CODE} recipient=${REAL_RECIPIENT} queue=${Q_ID})" >&2
+fi
 
 exit 0

@@ -191,6 +191,15 @@ func TestBuildMessage_HeaderInjection(t *testing.T) {
 		{"attachment filename quote", func(m *Message) {
 			m.Attachments = []Attachment{{Filename: `f"; x="y`, ContentType: "text/plain", Content: "aGk="}}
 		}},
+		{"attachment content_type CRLF", func(m *Message) {
+			m.Attachments = []Attachment{{Filename: "f.txt", ContentType: "text/plain\r\nBcc: evil@x.com", Content: "aGk="}}
+		}},
+		{"attachment content_type quote", func(m *Message) {
+			m.Attachments = []Attachment{{Filename: "f.txt", ContentType: `text/plain"; evil="x`, Content: "aGk="}}
+		}},
+		{"attachment content_type semicolon param smuggling", func(m *Message) {
+			m.Attachments = []Attachment{{Filename: "f.txt", ContentType: "text/plain; charset=x; boundary=y", Content: "aGk="}}
+		}},
 	}
 	for _, tc := range mutate {
 		t.Run(tc.name, func(t *testing.T) {

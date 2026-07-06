@@ -40,3 +40,37 @@ func TestValidateSieveName(t *testing.T) {
 		t.Error("validateSieveName accepted a 129-byte name, want error")
 	}
 }
+
+func TestParseSieveLiteral(t *testing.T) {
+	ok := map[string]int{
+		"{0}":     0,
+		"{1}":     1,
+		"{42}":    42,
+		"{1234+}": 1234, // non-synchronizing literal marker
+		"{0+}":    0,
+	}
+	for in, want := range ok {
+		n, valid := parseSieveLiteral(in)
+		if !valid || n != want {
+			t.Errorf("parseSieveLiteral(%q) = (%d, %v), want (%d, true)", in, n, valid, want)
+		}
+	}
+
+	notLiteral := []string{
+		"OK",
+		"NO script does not exist",
+		"",
+		"{}",        // no number
+		"{-5}",      // negative
+		"{12",       // unterminated
+		"12}",       // no open brace
+		"{1a}",      // non-numeric
+		"{ 3 }",     // spaces not allowed
+		`{5} "foo"`, // literal must be the whole line
+	}
+	for _, in := range notLiteral {
+		if n, valid := parseSieveLiteral(in); valid {
+			t.Errorf("parseSieveLiteral(%q) = (%d, true), want (_, false)", in, n)
+		}
+	}
+}

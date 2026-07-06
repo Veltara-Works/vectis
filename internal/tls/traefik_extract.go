@@ -176,6 +176,19 @@ func Extract(opts ExtractOptions) (ExtractResult, error) {
 	// 0750 explicitly (Copilot review, #149). Best-effort — a chmod failure must
 	// not abort a cert write.
 	_ = os.Chmod(opts.OutDir, 0o750)
+	// The cert triple (fullchain/cert/privkey) is written as three separate
+	// atomic renames — a POSIX filesystem offers no way to swap three files as
+	// one atomic set (TLS-3). Each writeAtomic is itself atomic + fsync-durable,
+	// and consistency across the triple is guaranteed two other ways: (1) the
+	// SIGHUP reload fires only after all three writes succeed (reloadMailServices
+	// runs post-write on Changed=true), so no consumer is signalled to read a
+	// half-written pair; (2) a crash mid-triple self-heals on the next poll —
+	// hashExistingFiles(fullchain, privkey) won't match newHash, so the triple is
+	// rewritten. The only residual is a service that restarts of its own accord
+	// inside the sub-second window between the fullchain and privkey renames; it
+	// would load a mismatched pair and fail its own TLS startup, then recover on
+	// the next poll. Bounded and self-correcting; a true fix needs a single
+	// combined file, which consumers don't support.
 	if err := writeAtomic(filepath.Join(opts.OutDir, "fullchain.pem"), fullchain, 0o644); err != nil {
 		return res, err
 	}
@@ -236,7 +249,13 @@ func reloadMailServices(ctx context.Context, opts ExtractOptions) {
 		if name == "" {
 			continue
 		}
-		startCmd := exec.CommandContext(ctx, "docker", "container", "start", name)
+		// Bound each docker invocation with its own timeout (TLS-2). Without it
+		// the commands inherit only the long-lived Watch ctx, so a wedged docker
+		// daemon would block CombinedOutput() indefinitely and stall the whole
+		// cert-rotation watch loop. A per-command deadline lets a hung reload
+		// fail loudly and the loop keep polling.
+		startCtx, cancelStart := context.WithTimeout(ctx, dockerCmdTimeout)
+		startCmd := exec.CommandContext(startCtx, "docker", "container", "start", name)
 		if out, err := startCmd.CombinedOutput(); err != nil {
 			opts.Logger.Warn("docker container start failed",
 				"container", name,
@@ -247,8 +266,11 @@ func reloadMailServices(ctx context.Context, opts ExtractOptions) {
 			// container is already running, in which case the HUP is the
 			// reload path we actually want.
 		}
-		killCmd := exec.CommandContext(ctx, "docker", "kill", "--signal=HUP", name)
+		cancelStart()
+		killCtx, cancelKill := context.WithTimeout(ctx, dockerCmdTimeout)
+		killCmd := exec.CommandContext(killCtx, "docker", "kill", "--signal=HUP", name)
 		out, err := killCmd.CombinedOutput()
+		cancelKill()
 		if err != nil {
 			opts.Logger.Warn("reload signal failed",
 				"container", name,
@@ -363,6 +385,10 @@ const (
 	// so operators tailing logs can tell the extractor is still alive even
 	// during long-silent waits (e.g. while rate-limited).
 	heartbeatEveryPolls = 60
+	// Per-command deadline for the `docker start`/`docker kill` reload calls
+	// (TLS-2). Generous enough for a healthy daemon (these are near-instant),
+	// tight enough that a wedged daemon can't hang the watch loop for long.
+	dockerCmdTimeout = 30 * time.Second
 )
 
 func runOnce(ctx context.Context, opts ExtractOptions, log *slog.Logger, state *watchState) {
