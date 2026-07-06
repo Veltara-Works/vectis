@@ -11,7 +11,13 @@ services:
   # file here as a bind mount (see docker-compose.mail.yml for reference).
 
   traefik:
-    image: traefik:v3.3
+    # Third-party base images are digest-pinned (tag@sha256) so a moved/replaced
+    # upstream tag cannot swap the bytes we run (REL-3). These digests are
+    # MANUALLY maintained — Dependabot's docker ecosystem cannot parse this Go
+    # template (.tmpl), so bump the tag + digest together by hand. Resolution
+    # command + rationale: docs/notes/third-party-image-pins.md. Vectis-* images
+    # are pinned separately through the signed release manifest.
+    image: traefik:v3.3@sha256:2cd5cc75530c8d07ae0587c743d23eb30cae2436d07017a5ff78498b1a43d09f
     container_name: vectis-traefik
     restart: unless-stopped
     networks:
@@ -405,7 +411,7 @@ services:
 {{ end }}
 {{ if .Observability.LokiEnabled }}
   loki:
-    image: grafana/loki:3.4
+    image: grafana/loki:3.4@sha256:5fe9fa99e9a747297cdf0239a5b25d192d8f668bd6505b09beef4dffcab5aac2
     container_name: vectis-loki
     restart: unless-stopped
     networks:
@@ -432,7 +438,7 @@ services:
         max-file: "{{ .Logging.MaxFiles }}"
 
   promtail:
-    image: grafana/promtail:3.4
+    image: grafana/promtail:3.4@sha256:168eb785ce3603fa1bfdd9d44840d3fe81e644bf9d3c64a0f4a19e993c5ff050
     container_name: vectis-promtail
     restart: unless-stopped
     networks:
@@ -457,7 +463,7 @@ services:
 {{ end }}
 {{ if .Observability.GrafanaEnabled }}
   grafana:
-    image: grafana/grafana:11.5
+    image: grafana/grafana:11.5@sha256:4d1b2146de6488324c4e880be2028620259c414406e36a9ac2160485f8fd3259
     container_name: vectis-grafana
     restart: unless-stopped
     networks:
@@ -581,7 +587,7 @@ services:
 {{ end }}
 
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:c7526c0f6c3f30260a563d7bcf8ad778effac59a44f8ffa86678c35418338609
     container_name: vectis-postgres
     restart: unless-stopped
     networks:
@@ -631,7 +637,7 @@ services:
         max-file: "{{ .Logging.MaxFiles }}"
 {{ if .Cluster.PgBouncer.Enabled }}
   pgbouncer:
-    image: edoburu/pgbouncer:1.23.1-p2
+    image: edoburu/pgbouncer:v1.23.1-p2@sha256:122bac472cfb0b92dca81a72421c93c3c5a840899e2002690a39742427cfcd49
     container_name: vectis-pgbouncer
     restart: unless-stopped
     networks:
@@ -658,7 +664,7 @@ services:
         max-file: "{{ .Logging.MaxFiles }}"
 {{ end }}
   valkey:
-    image: valkey/valkey:8-alpine
+    image: valkey/valkey:8-alpine@sha256:1cb6b20b70d927560cc4cc5397b5f045e74aa603ff7696274778880bb6fadc75
     container_name: vectis-valkey
     restart: unless-stopped
     networks:

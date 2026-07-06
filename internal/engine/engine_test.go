@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -1163,6 +1164,55 @@ func TestComposeMemLimitsRendered(t *testing.T) {
 	// service's template references an unresolved knob).
 	if strings.Contains(compose, "mem_limit: \n") || strings.Contains(compose, "mem_limit:\n") {
 		t.Error("compose has an empty mem_limit — a template references an unresolved ResourceKnobs field")
+	}
+}
+
+// TestThirdPartyImagesDigestPinned enforces the REL-3 supply-chain invariant:
+// every third-party image: line in the rendered compose must be digest-pinned
+// (tag@sha256:<64-hex>), so an upstream tag move — or a registry compromise —
+// cannot swap the bytes we run out from under us. The vectis-* images are
+// exempt here: they carry a {{ .Version }} tag in the template and are
+// digest-pinned at deploy time from the Ed25519-signed release manifest
+// (pinComposeImageDigests). Without this guard a future edit could silently
+// reintroduce a mutable bare tag.
+func TestThirdPartyImagesDigestPinned(t *testing.T) {
+	files, err := Generate(testData())
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if compose == "" {
+		t.Fatal("no docker-compose.yml rendered")
+	}
+
+	digestRe := regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
+	thirdParty := 0
+	for _, line := range strings.Split(compose, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "image:") {
+			continue
+		}
+		ref := strings.TrimSpace(strings.TrimPrefix(trimmed, "image:"))
+		// vectis-* images are pinned separately (release manifest, deploy time).
+		if strings.HasPrefix(ref, "ghcr.io/veltara-works/vectis-") {
+			continue
+		}
+		thirdParty++
+		if !digestRe.MatchString(ref) {
+			t.Errorf("third-party image not digest-pinned: %q (must end in @sha256:<64-hex>)", ref)
+		}
+	}
+	// Guard against the filter silently covering nothing (e.g. a rename that
+	// makes every image match the vectis-* exemption): traefik/postgres/valkey
+	// are always rendered, so we expect at least three.
+	if thirdParty < 3 {
+		t.Errorf("expected ≥3 third-party image lines, found %d — did the vectis-* filter over-match?", thirdParty)
 	}
 }
 
