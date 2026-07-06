@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// maxSieveScriptSize bounds how many octets GetScript will allocate/read for a
+// GETSCRIPT literal response. Matches the API's maxBodySize (1 MiB) that caps
+// the write path, and comfortably exceeds Dovecot's default sieve_max_script_size.
+const maxSieveScriptSize = 1 << 20
+
 // SieveClient manages Sieve filter rules via the ManageSieve protocol (RFC 5804).
 // Connects to Dovecot's ManageSieve service on the internal network.
 type SieveClient struct {
@@ -109,13 +114,25 @@ func (c *SieveClient) GetScript(user, password, name string) (string, error) {
 	// First line is a ManageSieve literal length header: {N} or {N+} (RFC 5804
 	// §4.5). It tells us exactly how many octets of script content follow, before
 	// the terminating "OK" line.
-	firstLine, _ := reader.ReadString('\n')
+	firstLine, ferr := reader.ReadString('\n')
 	firstLine = strings.TrimSpace(firstLine)
+	if firstLine == "" {
+		// Nothing came back (truncated response / closed connection). Don't fall
+		// through to the fallback loop, which would return "" as a false success.
+		return "", fmt.Errorf("GETSCRIPT: empty response: %w", ferr)
+	}
 	if strings.HasPrefix(firstLine, "NO") {
 		return "", fmt.Errorf("GETSCRIPT failed: %s", firstLine)
 	}
 
 	if n, ok := parseSieveLiteral(firstLine); ok {
+		// Reject an implausible literal length before allocating (defence in
+		// depth against a buggy/hostile server — the box has an OOM history).
+		// The write path caps a whole PUTSCRIPT JSON body at maxBodySize (1 MiB),
+		// so a legitimately-stored script is always smaller than this.
+		if n > maxSieveScriptSize {
+			return "", fmt.Errorf("GETSCRIPT literal too large: %d bytes (max %d)", n, maxSieveScriptSize)
+		}
 		// Read exactly N octets. Reading "until a line == OK" (the previous
 		// approach) silently truncated any script whose body contained a line
 		// that was literally `OK` (MAIL-6). The literal count is authoritative.
