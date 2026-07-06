@@ -712,9 +712,14 @@ func (m *Manager) runCreateIncremental(ctx context.Context, jobID string, parent
 	}
 	m.jobProgress(ctx, jobID, 90, "DKIM keys copied")
 
-	// Step 5: Write a type marker so restore knows this is incremental.
+	// Step 5: Write a type marker so restore knows this is incremental. Fail the
+	// backup if it can't be written: the marker is the authoritative signal the
+	// restore guard reads to refuse an incremental that was renamed off the
+	// vectis-incr- convention, so a silently-absent marker would erode that guard.
 	typeMarker := filepath.Join(tmpDir, backupTypeMarkerFile)
-	os.WriteFile(typeMarker, []byte(string(BackupIncremental)+"\n"), 0600)
+	if err := os.WriteFile(typeMarker, []byte(string(BackupIncremental)+"\n"), 0600); err != nil {
+		return "", 0, fmt.Errorf("write backup type marker: %w", err)
+	}
 
 	// Step 6: Create final archive.
 	m.jobProgress(ctx, jobID, 92, "Creating backup archive")
@@ -984,11 +989,21 @@ func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) erro
 	// marker is the authoritative record of the backup type; a full backup writes
 	// no marker. This runs after extraction but before any service is stopped or
 	// data is cleared, so a mislabelled incremental is caught non-destructively.
-	if markerBytes, err := os.ReadFile(filepath.Join(tmpDir, backupTypeMarkerFile)); err == nil {
+	//
+	// Fail CLOSED: a missing marker (os.IsNotExist) is the expected full-backup
+	// case and proceeds, but any other read error (permission, corruption) must
+	// abort — silently skipping the guard on an unreadable marker could still wipe
+	// mail. The archive was just extracted into our own 0700 tmpDir, so a non-
+	// NotExist error here is abnormal and treated as fatal.
+	markerBytes, markerErr := os.ReadFile(filepath.Join(tmpDir, backupTypeMarkerFile))
+	switch {
+	case markerErr == nil:
 		if strings.TrimSpace(string(markerBytes)) == string(BackupIncremental) {
 			m.logger.Warn("restore: refusing incremental archive (type marker)", "job_id", jobID, "path", backupPath)
 			return ErrIncrementalRestore
 		}
+	case !os.IsNotExist(markerErr):
+		return fmt.Errorf("read backup type marker: %w", markerErr)
 	}
 
 	// Step 2: Stop services (15% -> 25%)
