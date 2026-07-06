@@ -1308,6 +1308,71 @@ func TestDeriveGrafanaAdminPassword(t *testing.T) {
 	}
 }
 
+// TestRoundcubeConfig_DoesNotLeakMasterSecret is the regression guard for CFG-1
+// (2026-07-06 prelaunch-delta audit). The webmail config is world-readable
+// (0644 — www-data must read it), and the prior des_key was `.API.Secret` sliced
+// to 24 chars, embedding the first 24 chars of the master API secret verbatim.
+// The rendered des_key must now be the one-way-derived value, and the file must
+// carry neither the full master secret nor its 24-char prefix.
+//
+// NB: the broader TestGenerateDoesNotEmitSecrets missed this because it matched
+// the FULL secret with strings.Contains — a 24-char prefix of a longer secret
+// never matched. This test asserts on the prefix specifically.
+func TestRoundcubeConfig_DoesNotLeakMasterSecret(t *testing.T) {
+	const masterSecret = "super-master-secret-do-not-leak-0123456789abcdef"
+	data := testData()
+	data.API = config.APISecrets{Secret: masterSecret}
+
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	var cfg string
+	for _, f := range files {
+		if f.RelPath == "webmail/roundcube.config.php" {
+			cfg = string(f.Content)
+			break
+		}
+	}
+	if cfg == "" {
+		t.Fatal("webmail/roundcube.config.php was not generated")
+	}
+	if strings.Contains(cfg, masterSecret) {
+		t.Error("roundcube config leaks the full master API secret")
+	}
+	if strings.Contains(cfg, masterSecret[:24]) {
+		t.Error("roundcube config leaks the 24-char master API secret prefix (CFG-1 regression)")
+	}
+	if !strings.Contains(cfg, "$config['des_key']") {
+		t.Fatal("roundcube config does not set des_key")
+	}
+	if !strings.Contains(cfg, DeriveRoundcubeDESKey(masterSecret)) {
+		t.Error("roundcube des_key is not the one-way-derived value")
+	}
+}
+
+func TestDeriveRoundcubeDESKey(t *testing.T) {
+	const secret = "super-master-secret-do-not-leak-0123456789abcdef"
+	key := DeriveRoundcubeDESKey(secret)
+	if len(key) != 24 {
+		t.Fatalf("expected 24-char des_key, got %d (%q)", len(key), key)
+	}
+	if key != DeriveRoundcubeDESKey(secret) {
+		t.Fatal("derivation is not deterministic")
+	}
+	if key == DeriveRoundcubeDESKey(secret+"x") {
+		t.Fatal("different secrets must derive different keys")
+	}
+	// One-way: never a substring of (or containing) the master secret.
+	if strings.Contains(secret, key) || strings.Contains(key, secret) {
+		t.Fatal("derived des_key must not be a substring of the master secret")
+	}
+	// Domain separation from the other secret derivations off the same key.
+	if key == DeriveInboundNotifyToken(secret)[:24] || key == DeriveGrafanaAdminPassword(secret)[:24] {
+		t.Fatal("des_key must not collide with other derivations (missing domain separation)")
+	}
+}
+
 // TestGenerateDoesNotEmitSecrets is the regression guard for the audit finding:
 // Generate (rendered to disk at 0644 by WriteFiles, with no WriteSecrets on the
 // config-apply / orchestrator paths) must NOT emit any secret file. Secrets are
@@ -1402,8 +1467,10 @@ func TestGenerateSecretConfigPerms(t *testing.T) {
 		}
 	}
 
-	// The webmail config carries the roundcube DB password but is read by
-	// www-data inside the container, so it must stay group/other-readable.
+	// The webmail config must be read by www-data inside the container, so it
+	// stays group/other-readable. Its des_key is a one-way HMAC of the master
+	// secret (CFG-1), and its session DB is SQLite — so it embeds no secret and
+	// 0644 is safe.
 	if f, ok := byPath["webmail/roundcube.config.php"]; ok {
 		if f.Mode&os.ModePerm != 0o644 {
 			t.Errorf("webmail/roundcube.config.php mode = %o, want 0644 (www-data reader)", f.Mode&os.ModePerm)

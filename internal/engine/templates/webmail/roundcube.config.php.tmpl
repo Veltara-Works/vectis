@@ -23,7 +23,7 @@ $config['smtp_user'] = '%u';
 $config['smtp_pass'] = '%p';
 
 // Session & security.
-$config['des_key']          = '{{ .API.Secret | printf "%.24s" }}';
+$config['des_key']          = '{{ .RoundcubeDESKey }}';
 $config['product_name']     = 'Vectis Webmail';
 $config['support_url']      = '';
 $config['session_lifetime'] = 30;
