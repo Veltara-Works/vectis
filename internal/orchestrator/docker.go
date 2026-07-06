@@ -241,6 +241,20 @@ const (
 	cosignCertIdentityRegexp = `^https://github\.com/Veltara-Works/vectis/\.github/workflows/release\.yml@refs/tags/`
 	// cosignCertOIDCIssuer is GitHub Actions' OIDC token issuer.
 	cosignCertOIDCIssuer = "https://token.actions.githubusercontent.com"
+
+	// provenanceImageTimeout bounds a single cosign verify (including the
+	// one-time cosign-container pull on the first call) so one hung or slow
+	// verify can't starve the rest of the pass.
+	provenanceImageTimeout = 60 * time.Second
+	// provenanceTotalTimeout hard-caps the WHOLE provenance pass. This phase is
+	// best-effort defence-in-depth and must NEVER consume the Apply budget
+	// (Config.ApplyTimeout) — a cosign/Rekor hang burning a per-image timeout
+	// across all 8 images would otherwise blow ApplyTimeout and trip a spurious
+	// timeout+rollback, the exact opposite of "never block the Apply". On
+	// exhaustion the remaining images are skipped with a warning and Apply
+	// proceeds (the digest pin already guarantees the bytes). Kept well under a
+	// typical ApplyTimeout (default 600s).
+	provenanceTotalTimeout = 150 * time.Second
 )
 
 // provenanceTarget is one image the verify pass will check.
@@ -309,9 +323,19 @@ func (dm *DockerManager) VerifyImageProvenance(ctx context.Context, digests map[
 		return
 	}
 
+	// Hard-cap the WHOLE pass (provenanceTotalTimeout) so this best-effort phase
+	// can never consume the Apply budget and cause a spurious timeout+rollback.
+	passCtx, cancel := context.WithTimeout(ctx, provenanceTotalTimeout)
+	defer cancel()
+
 	dm.logger.Info("verifying image provenance (cosign)", "image_count", len(targets))
 	for _, t := range targets {
-		if err := dm.verifyImageProvenance(ctx, t.ImageRef); err != nil {
+		if passCtx.Err() != nil {
+			dm.logger.Warn("image provenance verification budget exhausted — skipping remaining images (proceeding; the digest pin already guarantees the bytes)",
+				"service", t.Service, "image", t.ImageRef, "error", passCtx.Err())
+			continue
+		}
+		if err := dm.verifyImageProvenance(passCtx, t.ImageRef); err != nil {
 			dm.logger.Warn("image provenance NOT verified — proceeding (the signed-manifest digest pin already guarantees these exact bytes)",
 				"service", t.Service, "image", t.ImageRef, "error", err)
 			continue
@@ -322,15 +346,12 @@ func (dm *DockerManager) VerifyImageProvenance(ctx context.Context, digests map[
 
 // verifyImageProvenance runs the pinned cosign container to verify one image ref.
 // The container reaches ghcr + Rekor/Fulcio over the host daemon's default
-// bridge (outbound); bounded by ImagePullTimeout (covers the first-time cosign
-// image pull + the network verify).
+// bridge (outbound). Bounded by provenanceImageTimeout AND the caller's pass
+// deadline (whichever is sooner) — NOT ImagePullTimeout, whose per-image reuse
+// could let a hang blow the whole Apply budget.
 func (dm *DockerManager) verifyImageProvenance(ctx context.Context, imageRef string) error {
-	verifyCtx := ctx
-	if dm.cfg.ImagePullTimeout > 0 {
-		var cancel context.CancelFunc
-		verifyCtx, cancel = context.WithTimeout(ctx, dm.cfg.ImagePullTimeout)
-		defer cancel()
-	}
+	verifyCtx, cancel := context.WithTimeout(ctx, provenanceImageTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(verifyCtx, "docker", cosignVerifyArgs(imageRef)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

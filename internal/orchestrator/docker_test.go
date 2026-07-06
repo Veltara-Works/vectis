@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsLocalImageRef(t *testing.T) {
@@ -96,5 +97,22 @@ func TestCosignVerifyArgs(t *testing.T) {
 	if !strings.Contains(cosignCertIdentityRegexp, "Veltara-Works/vectis") ||
 		!strings.HasPrefix(cosignCertIdentityRegexp, "^") {
 		t.Errorf("cert-identity regexp not anchored to the vectis release workflow: %q", cosignCertIdentityRegexp)
+	}
+}
+
+// TestProvenanceTimeoutsBounded guards the invariant behind the whole-pass cap:
+// the provenance phase is best-effort and must never be able to consume the
+// Apply budget. The total cap must be positive, at least one per-image slice,
+// and comfortably under a typical ApplyTimeout (default 600s) so a cosign/Rekor
+// hang can't trip a spurious timeout+rollback.
+func TestProvenanceTimeoutsBounded(t *testing.T) {
+	if provenanceImageTimeout <= 0 || provenanceTotalTimeout <= 0 {
+		t.Fatalf("timeouts must be positive: image=%v total=%v", provenanceImageTimeout, provenanceTotalTimeout)
+	}
+	if provenanceTotalTimeout < provenanceImageTimeout {
+		t.Errorf("total budget %v < per-image %v — a single image could exceed the pass cap", provenanceTotalTimeout, provenanceImageTimeout)
+	}
+	if provenanceTotalTimeout >= 600*time.Second {
+		t.Errorf("total budget %v not comfortably under a typical ApplyTimeout (600s) — provenance could blow the Apply budget", provenanceTotalTimeout)
 	}
 }
