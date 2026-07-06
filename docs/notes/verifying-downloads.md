@@ -79,6 +79,30 @@ running-vs-declared diff stay readable rather than showing a bare digest. A
 manifest without an `images` map (a pre-REL-3 release or a self-hosted mirror)
 degrades to a tag-only pin and the orchestrator warns.
 
+## Host-side image provenance (cosign, automatic)
+
+The digest pin above guarantees the orchestrator runs *exactly the bytes the
+signed manifest names*. On top of that, during every update the orchestrator
+verifies those bytes were **built and signed by our release workflow** — the same
+keyless cosign check documented above, run automatically on the host. After
+pulling the new images and before recreating any container (Apply phase 4.1.5),
+it runs a **digest-pinned cosign container** to `cosign verify` each
+`vectis-<svc>@sha256:<digest>` against the release-workflow identity
+(`…/.github/workflows/release.yml@refs/tags/…`) and the GitHub Actions OIDC
+issuer. No cosign install on the host is required — the pinned container carries
+it (`ghcr.io/sigstore/cosign/cosign`, itself digest-pinned so the verifier can't
+be swapped via a floating tag).
+
+This layer is **defence-in-depth and best-effort**: if the Sigstore transparency
+log / CA is unreachable (an air-gapped or DR host, or a Rekor/Fulcio outage), the
+verify is logged as a warning and the update **proceeds** — the Ed25519-signed
+digest pin is the hard integrity guarantee and must not be gated on the
+availability of an external service. A failed or unverifiable signature never
+rolls back an otherwise-healthy update; it surfaces in the orchestrator log.
+Only `vectis-*` images are checked — third-party base images (postgres, traefik,
+valkey, …) aren't signed by our workflow and are integrity-pinned by digest in
+the compose template instead.
+
 The public key is `GYnHjxJS1l3QQmlZ9+36BuNwxtHh758C0X8jfy9IaN8=` (the value
 compiled into `internal/releasesign.PublicKeyB64`). **If the release key is ever
 rotated, update this value too** — the per-release notes auto-extract the key from
