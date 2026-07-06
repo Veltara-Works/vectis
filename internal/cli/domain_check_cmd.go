@@ -56,6 +56,25 @@ type domainCheckResult struct {
 	Detail string      `json:"detail"`
 }
 
+// sanitizeTerminal strips ASCII control bytes from an untrusted string before it
+// is printed to a terminal, so a value like a remote MX server's certificate SAN
+// or SMTP banner cannot inject ANSI escape sequences (ESC 0x1b, CR, backspace)
+// that rewrite the operator's screen (DC-1). Tabs become spaces; all other
+// control bytes (< 0x20 and DEL) are dropped. The JSON output path is unaffected
+// (encoding/json escapes control runes itself).
+func sanitizeTerminal(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t':
+			return ' '
+		case r < 0x20 || r == 0x7f:
+			return -1
+		default:
+			return r
+		}
+	}, s)
+}
+
 func runDomainCheck(cmd *cobra.Command, args []string) error {
 	if domainName == "" && len(args) == 1 {
 		domainName = args[0]
@@ -110,7 +129,11 @@ func runDomainCheck(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Fprintf(cmd.OutOrStdout(), "Deliverability check for %s\n\n", domainName)
 		for _, r := range results {
-			fmt.Fprintf(cmd.OutOrStdout(), "  %-6s %-5s %s\n", r.Check, strings.ToUpper(string(r.Status)), r.Detail)
+			// Sanitize Detail: it can embed untrusted bytes from a checked domain's
+			// MX cert SAN or SMTP banner (DNS-derived, attacker-influenceable), which
+			// could carry ANSI escapes that rewrite the operator's terminal — e.g.
+			// forge a "TLS PASS" line (DC-1). Check/Status are trusted constants.
+			fmt.Fprintf(cmd.OutOrStdout(), "  %-6s %-5s %s\n", r.Check, strings.ToUpper(string(r.Status)), sanitizeTerminal(r.Detail))
 		}
 		fmt.Fprintln(cmd.OutOrStdout())
 	}
