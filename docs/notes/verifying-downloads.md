@@ -70,10 +70,14 @@ bytes but cannot forge a signature without the offline key.
 The release manifest also pins each vectis service image to its immutable
 `sha256:` digest (an `images` map keyed by service name). Because the whole
 manifest is Ed25519-signed, those digests are authenticated too — so the
-orchestrator pulls `vectis-<svc>@sha256:<digest>` (exactly the bytes this release
-published) instead of trusting whatever the mutable `:tag` resolves to at pull
-time. A manifest without an `images` map (a pre-REL-3 release or a self-hosted
-mirror) degrades to a tag-only pin and the orchestrator warns.
+orchestrator pins the compose `image:` line to the canonical
+`ghcr.io/veltara-works/vectis-<svc>:<tag>@sha256:<digest>` form (exactly the bytes
+this release published) instead of trusting whatever the mutable `:tag` resolves
+to at pull time. The tag is kept alongside the digest deliberately: docker records
+`.Config.Image` verbatim, so keeping `:tag@sha256:` means `docker inspect` and the
+running-vs-declared diff stay readable rather than showing a bare digest. A
+manifest without an `images` map (a pre-REL-3 release or a self-hosted mirror)
+degrades to a tag-only pin and the orchestrator warns.
 
 The public key is `GYnHjxJS1l3QQmlZ9+36BuNwxtHh758C0X8jfy9IaN8=` (the value
 compiled into `internal/releasesign.PublicKeyB64`). **If the release key is ever

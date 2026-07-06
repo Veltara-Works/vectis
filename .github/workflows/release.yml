@@ -509,8 +509,15 @@ jobs:
           # matrix-side check), and the count MUST equal the matrix service count
           # so a dropped/failed image upload fails the release rather than
           # publishing a manifest that silently un-pins one service.
+          #
+          # `find` (not a `image-digests/*.digest` glob) so this is robust to the
+          # download-artifact layout: with merge-multiple the files land flat at
+          # image-digests/<svc>.digest, but should that ever nest them under a
+          # per-artifact subdir we still collect every .digest rather than
+          # silently assembling an empty map. The COUNT==8 gate below is the hard
+          # backstop either way.
           IMAGES=$(
-            for f in image-digests/*.digest; do
+            find image-digests -type f -name '*.digest' | sort | while IFS= read -r f; do
               svc=$(basename "$f" .digest)
               dig=$(cat "$f")
               case "$dig" in
