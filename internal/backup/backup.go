@@ -8,6 +8,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,6 +39,33 @@ import (
 // verbatim to `tar --exclude` (no shell), so tar does the glob matching.
 var secretsExcludeFiles = map[string]bool{
 	"secrets.yaml*": true,
+}
+
+// incrementalArchivePrefix is the filename prefix given to every incremental
+// backup archive (see runCreateIncremental). It is the on-disk discriminator
+// used to keep incrementals out of the direct (full-only) restore path.
+const incrementalArchivePrefix = "vectis-incr-"
+
+// backupTypeMarkerFile is the in-archive marker an incremental backup writes to
+// record its type ("incremental"). Full backups write no marker, so its absence
+// means "full". It is the authoritative record of the archive type — used as the
+// belt-and-suspenders restore guard for archives that were renamed off the
+// vectis-incr- convention.
+const backupTypeMarkerFile = "backup-type.txt"
+
+// ErrIncrementalRestore is returned when a direct restore is attempted against
+// an incremental archive. An incremental holds only the mail changed since its
+// parent full backup; the direct restore path treats every archive as a full
+// snapshot and clears the maildir before unpacking, so restoring an incremental
+// on its own permanently destroys all mail older than the parent. Chain restore
+// (full + subsequent incrementals) is not yet wired into the restore path, so
+// the only safe operation today is restoring the base full backup.
+var ErrIncrementalRestore = errors.New("cannot restore an incremental backup directly: it holds only the changes since its parent full backup, and restoring it alone would erase all older mail — restore the base full backup instead (the archive whose name has no \"-incr-\" segment)")
+
+// IsIncrementalArchiveName reports whether the given backup path or filename
+// names an incremental archive, based on the vectis-incr- naming convention.
+func IsIncrementalArchiveName(name string) bool {
+	return strings.HasPrefix(filepath.Base(name), incrementalArchivePrefix)
 }
 
 // Config holds the backup manager configuration.
@@ -630,7 +658,7 @@ func (m *Manager) runCreateIncremental(ctx context.Context, jobID string, parent
 	if encrypted {
 		ext = ".tar.gz.enc"
 	}
-	archiveName := fmt.Sprintf("vectis-incr-%s%s", timestamp, ext)
+	archiveName := fmt.Sprintf("%s%s%s", incrementalArchivePrefix, timestamp, ext)
 	archivePath := filepath.Join(m.cfg.BackupDir, archiveName)
 
 	tmpDir, err := os.MkdirTemp("", "vectis-backup-incr-*")
@@ -685,8 +713,8 @@ func (m *Manager) runCreateIncremental(ctx context.Context, jobID string, parent
 	m.jobProgress(ctx, jobID, 90, "DKIM keys copied")
 
 	// Step 5: Write a type marker so restore knows this is incremental.
-	typeMarker := filepath.Join(tmpDir, "backup-type.txt")
-	os.WriteFile(typeMarker, []byte("incremental\n"), 0600)
+	typeMarker := filepath.Join(tmpDir, backupTypeMarkerFile)
+	os.WriteFile(typeMarker, []byte(string(BackupIncremental)+"\n"), 0600)
 
 	// Step 6: Create final archive.
 	m.jobProgress(ctx, jobID, 92, "Creating backup archive")
@@ -855,6 +883,13 @@ func (m *Manager) applyIncremental(ctx context.Context, archivePath string) erro
 // it stops services, restores database, mail data, config, and DKIM keys,
 // then restarts services and runs a health check.
 func (m *Manager) Restore(ctx context.Context, backupPath string, triggeredBy *string) error {
+	// Reject an incremental archive up front (BAK-1): the restore path below
+	// treats every archive as a full snapshot and clears the maildir before
+	// unpacking, so restoring an incremental alone destroys all older mail.
+	if IsIncrementalArchiveName(backupPath) {
+		return ErrIncrementalRestore
+	}
+
 	// No separate validate pre-flight: runRestore decrypts/extracts the archive
 	// as its first step (before any service is stopped or data is dropped), so a
 	// corrupt or tampered archive already fails there — validating here would
@@ -878,6 +913,13 @@ func (m *Manager) Restore(ctx context.Context, backupPath string, triggeredBy *s
 
 // RestoreAsync triggers a restore asynchronously and returns the job ID.
 func (m *Manager) RestoreAsync(ctx context.Context, backupPath string, triggeredBy *string) (string, error) {
+	// Reject an incremental archive up front (BAK-1) — see Restore. Doing it here,
+	// before the job is created and the goroutine is launched, gives the caller an
+	// immediate, clear error instead of an async job that fails mid-restore.
+	if IsIncrementalArchiveName(backupPath) {
+		return "", ErrIncrementalRestore
+	}
+
 	// No synchronous validate pre-flight: it would fully decrypt a multi-GB .enc
 	// archive before returning the 202 (blocking the request past its timeout,
 	// which validateArchive couldn't honour anyway). runRestore decrypts as its
@@ -936,6 +978,18 @@ func (m *Manager) runRestore(ctx context.Context, jobID, backupPath string) erro
 		return fmt.Errorf("extract archive: %w: %s", err, string(output))
 	}
 	m.jobProgress(ctx, jobID, 15, "Archive extracted")
+
+	// Guard (BAK-1): reject an incremental archive that slipped past the filename
+	// check in Restore/RestoreAsync (e.g. a manually renamed file). The in-archive
+	// marker is the authoritative record of the backup type; a full backup writes
+	// no marker. This runs after extraction but before any service is stopped or
+	// data is cleared, so a mislabelled incremental is caught non-destructively.
+	if markerBytes, err := os.ReadFile(filepath.Join(tmpDir, backupTypeMarkerFile)); err == nil {
+		if strings.TrimSpace(string(markerBytes)) == string(BackupIncremental) {
+			m.logger.Warn("restore: refusing incremental archive (type marker)", "job_id", jobID, "path", backupPath)
+			return ErrIncrementalRestore
+		}
+	}
 
 	// Step 2: Stop services (15% -> 25%)
 	m.jobProgress(ctx, jobID, 18, "Stopping services")

@@ -3,6 +3,7 @@ package backup
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -305,5 +306,111 @@ func TestDirectDBUsesTCPDumpNotDocker(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "docker exec") {
 		t.Errorf("DirectDB must not use the docker-exec path, but error mentions it: %v", err)
+	}
+}
+
+// TestIsIncrementalArchiveName covers the on-disk discriminator used to keep
+// incremental archives out of the direct (full-only) restore path (BAK-1).
+func TestIsIncrementalArchiveName(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"vectis-incr-20260101-000000.tar.gz", true},
+		{"vectis-incr-20260101-000000.tar.gz.enc", true},
+		{"/var/vectis/backups/vectis-incr-20260101-000000.tar.gz.enc", true},
+		{"vectis-20260101-000000.tar.gz", false},
+		{"/var/vectis/backups/vectis-20260101-000000.tar.gz.enc", false},
+		{"vectis-incremental-note.tar.gz", false}, // not the -incr- prefix
+		{"random.tar.gz", false},
+	}
+	for _, tc := range cases {
+		if got := IsIncrementalArchiveName(tc.name); got != tc.want {
+			t.Errorf("IsIncrementalArchiveName(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestRestoreRejectsIncrementalByName is the primary BAK-1 guard: Restore and
+// RestoreAsync must refuse an incrementally-named archive up front, before any
+// job is created or destructive step runs. Restoring an incremental via the
+// full-only path clears the maildir and unpacks only the since-parent delta,
+// silently destroying all older mail.
+func TestRestoreRejectsIncrementalByName(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(nil, logger, DefaultConfig())
+	incr := "/var/vectis/backups/vectis-incr-20260101-000000.tar.gz.enc"
+
+	if err := mgr.Restore(context.Background(), incr, nil); !errors.Is(err, ErrIncrementalRestore) {
+		t.Fatalf("Restore(incremental) = %v, want ErrIncrementalRestore", err)
+	}
+	jobID, err := mgr.RestoreAsync(context.Background(), incr, nil)
+	if !errors.Is(err, ErrIncrementalRestore) {
+		t.Fatalf("RestoreAsync(incremental) err = %v, want ErrIncrementalRestore", err)
+	}
+	if jobID != "" {
+		t.Errorf("RestoreAsync(incremental) job ID = %q, want empty (no job started)", jobID)
+	}
+}
+
+// TestRestoreRejectsIncrementalMarkerNonDestructive is the belt-and-suspenders
+// guard for BAK-1: an incremental archive whose filename was changed off the
+// vectis-incr- convention still carries the authoritative in-archive type
+// marker. Restore must detect it after extraction but BEFORE clearing any data,
+// leaving the live maildir completely intact.
+func TestRestoreRejectsIncrementalMarkerNonDestructive(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.BackupDir = filepath.Join(root, "backups")
+	cfg.MailDataDir = filepath.Join(root, "mail")
+	cfg.EncryptionKey = "" // plaintext archive keeps the round-trip simple
+	for _, d := range []string{cfg.BackupDir, cfg.MailDataDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Pre-existing mail that must survive the refused restore.
+	if err := os.WriteFile(filepath.Join(cfg.MailDataDir, "important.eml"), []byte("KEEPME"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assemble an archive carrying the incremental type marker, then name the
+	// final file WITHOUT the vectis-incr- prefix so it slips past the name guard.
+	asm := filepath.Join(root, "asm")
+	if err := os.MkdirAll(asm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(asm, backupTypeMarkerFile), []byte(string(BackupIncremental)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(nil, logger, cfg)
+	// Fail loudly if any destructive step is reached — the marker guard must fire first.
+	mgr.stopServicesFn = func(context.Context) error {
+		t.Fatal("stopServices reached: marker guard failed to abort before destructive steps")
+		return nil
+	}
+	mgr.restoreDBFn = func(context.Context, string) error {
+		t.Fatal("restoreDB reached: marker guard failed to abort")
+		return nil
+	}
+
+	archivePath := filepath.Join(cfg.BackupDir, "vectis-renamed-20260101-000000.tar.gz")
+	if err := mgr.createFinalArchive(context.Background(), asm, archivePath); err != nil {
+		t.Fatalf("createFinalArchive: %v", err)
+	}
+
+	if err := mgr.Restore(context.Background(), archivePath, nil); !errors.Is(err, ErrIncrementalRestore) {
+		t.Fatalf("Restore(renamed incremental) = %v, want ErrIncrementalRestore", err)
+	}
+
+	// The live maildir and its content must be completely intact.
+	got, err := os.ReadFile(filepath.Join(cfg.MailDataDir, "important.eml"))
+	if err != nil {
+		t.Fatalf("maildir destroyed by refused incremental restore (BAK-1 regression): %v", err)
+	}
+	if string(got) != "KEEPME" {
+		t.Errorf("mail content changed: %q, want KEEPME", got)
 	}
 }

@@ -182,6 +182,15 @@ func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject incremental archives (BAK-1): the restore path treats every archive
+	// as a full snapshot and clears the maildir before unpacking, so restoring an
+	// incremental alone would erase all mail older than its parent full backup.
+	if backup.IsIncrementalArchiveName(backupPath) {
+		respondError(w, r, http.StatusBadRequest, "INCREMENTAL_RESTORE_UNSUPPORTED",
+			backup.ErrIncrementalRestore.Error())
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
