@@ -1,15 +1,62 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Veltara-Works/vectis/internal/mail"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
+
+// validateWebhookURL hardens the admin-settable webhook endpoint against SSRF
+// (MAIL-2). Webhook events are POSTed server-side, so a super_admin (or a CSRF
+// against one) must not be able to aim the dispatcher at cloud-metadata,
+// loopback, or internal-network hosts. Unlike the ValidonX base_url there is no
+// loopback dev-hatch — a webhook to localhost has no legitimate use. This is
+// the set-time check; the dispatcher additionally blocks at connect time
+// (webhook.go), which is what actually defends against DNS rebinding.
+func validateWebhookURL(ctx context.Context, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.Scheme != "https" {
+		return fmt.Errorf("Webhook URL must be a valid absolute https:// URL")
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("Webhook URL must not target localhost")
+	}
+	// Use the same predicate the dispatcher enforces at dial time
+	// (mail.IsBlockedWebhookIP) so a URL accepted here can't then be permanently
+	// rejected at dispatch — it covers loopback, private, link-local/metadata,
+	// CGNAT, multicast, and unspecified.
+	if ip := net.ParseIP(host); ip != nil {
+		if mail.IsBlockedWebhookIP(ip) {
+			return fmt.Errorf("Webhook URL must not point at a private, loopback, or link-local address")
+		}
+		return nil
+	}
+	// Reject hostnames that resolve to a blocked address. Best-effort + bounded
+	// (5s): a name that doesn't resolve can't be an SSRF target — the POST just
+	// fails to connect — so a lookup error is not itself a rejection.
+	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if ips, lookupErr := net.DefaultResolver.LookupIP(lookupCtx, "ip", host); lookupErr == nil {
+		for _, ip := range ips {
+			if mail.IsBlockedWebhookIP(ip) {
+				return fmt.Errorf("Webhook URL host %q resolves to a private, loopback, or link-local address", host)
+			}
+		}
+	}
+	return nil
+}
 
 var validWebhookEvents = map[string]bool{
 	"mail.sent":          true,
@@ -91,8 +138,8 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS", "url is required")
 		return
 	}
-	if !strings.HasPrefix(req.URL, "https://") {
-		respondError(w, r, http.StatusBadRequest, "INVALID_URL", "Webhook URL must use HTTPS")
+	if err := validateWebhookURL(r.Context(), req.URL); err != nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_URL", err.Error())
 		return
 	}
 	if len(req.Events) == 0 {

@@ -3,6 +3,7 @@ package policy
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -175,6 +176,53 @@ func TestReadRequest(t *testing.T) {
 	if _, err := readRequest(r); err != io.EOF {
 		t.Fatalf("third readRequest err = %v, want io.EOF", err)
 	}
+}
+
+func TestReadRequestLimits(t *testing.T) {
+	// A single line longer than maxRequestLineBytes with no newline must error
+	// rather than grow unbounded (G-L1).
+	t.Run("line too long", func(t *testing.T) {
+		raw := "k=" + strings.Repeat("v", maxRequestLineBytes+10) // never terminated
+		if _, err := readRequest(bufio.NewReader(strings.NewReader(raw))); err == nil {
+			t.Fatal("want error on over-long line, got nil")
+		}
+	})
+
+	// More attribute lines than maxRequestAttrs, never reaching the blank
+	// terminator, must error (POL-2).
+	t.Run("too many attrs", func(t *testing.T) {
+		var sb strings.Builder
+		for i := 0; i < maxRequestAttrs+5; i++ {
+			fmt.Fprintf(&sb, "k%d=v\n", i)
+		}
+		if _, err := readRequest(bufio.NewReader(strings.NewReader(sb.String()))); err == nil {
+			t.Fatal("want error on too many attrs, got nil")
+		}
+	})
+
+	// Cumulative bytes past maxRequestBytes without a terminator must error
+	// even when individual lines are within the per-line cap (POL-2).
+	t.Run("total bytes exceeded", func(t *testing.T) {
+		line := "k=" + strings.Repeat("v", 1000) + "\n" // ~1KB per line, under line cap
+		var sb strings.Builder
+		for sb.Len() <= maxRequestBytes+2000 {
+			sb.WriteString(line)
+		}
+		if _, err := readRequest(bufio.NewReader(strings.NewReader(sb.String()))); err == nil {
+			t.Fatal("want error on total bytes exceeded, got nil")
+		}
+	})
+
+	// A normal request just under the caps still parses.
+	t.Run("normal request ok", func(t *testing.T) {
+		attrs, err := readRequest(bufio.NewReader(strings.NewReader("sasl_username=alice@example.com\n\n")))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if attrs["sasl_username"] != "alice@example.com" {
+			t.Fatalf("attrs = %v", attrs)
+		}
+	})
 }
 
 func TestNormalizeLogin(t *testing.T) {

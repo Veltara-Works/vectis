@@ -135,6 +135,44 @@ func (d *AbuseDetector) CheckAndRecord(ctx context.Context, mailboxID, domainID 
 	return result, nil
 }
 
+// CheckAndRecordDomain enforces the per-domain hourly cap on the no-mailbox
+// send path — a From: address on an owned domain that matches no provisioned
+// mailbox (e.g. noreply@) has no per-mailbox counter, so without this it
+// bypasses abuse limiting entirely (audit SEND-1). It increments the same
+// domain counter CheckAndRecord uses for mailbox sends (so the domain aggregate
+// stays consistent) and refuses the individual send once the domain exceeds its
+// hourly cap. Unlike the per-mailbox path it never auto-suspends — a
+// domain-wide suspend would take down every mailbox, which is too broad.
+//
+// The cap is DomainHourlySuspend when the operator set it, else DomainHourlyLimit
+// (default 1000). Either way this turns the previously alert-only domain
+// threshold into a hard ceiling for the otherwise-unmetered no-mailbox path.
+func (d *AbuseDetector) CheckAndRecordDomain(ctx context.Context, domainID string) (*AbuseCheckResult, error) {
+	hourKey := time.Now().UTC().Format("2006010215") // YYYYMMDDHH
+	dmKey := fmt.Sprintf("abuse:domain:%s:%s", domainID, hourKey)
+
+	dmCount, err := d.vk.Do(ctx, d.vk.B().Incr().Key(dmKey).Build()).AsInt64()
+	if err != nil {
+		return nil, fmt.Errorf("incr domain counter: %w", err)
+	}
+	if dmCount == 1 {
+		d.vk.Do(ctx, d.vk.B().Expire().Key(dmKey).Seconds(7200).Build())
+	}
+
+	result := &AbuseCheckResult{Allowed: true, DomainCount: dmCount}
+
+	limit := d.cfg.DomainHourlySuspend
+	if limit <= 0 {
+		limit = d.cfg.DomainHourlyLimit
+	}
+	if limit > 0 && dmCount > int64(limit) {
+		result.Allowed = false
+		result.Reason = fmt.Sprintf("domain sending rate limit exceeded: %d messages this hour (limit: %d)",
+			dmCount, limit)
+	}
+	return result, nil
+}
+
 // GetMailboxHourlyCount returns the current hour send count for a mailbox.
 func (d *AbuseDetector) GetMailboxHourlyCount(ctx context.Context, mailboxID string) (int64, error) {
 	hourKey := time.Now().UTC().Format("2006010215")

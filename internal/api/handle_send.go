@@ -158,38 +158,54 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 
 	// Abuse detection: check sender mailbox suspension and rate limits.
 	senderLocalPart := extractLocalPart(req.From.Email)
+	var mailbox *repository.Mailbox
 	if senderLocalPart != "" {
-		mailbox, _ := s.mailboxes.GetByEmail(ctx, domain.ID, senderLocalPart)
-		if mailbox != nil {
-			// Check if mailbox is suspended from sending.
-			suspended, reason, _ := s.abuseEvents.IsMailboxSuspended(ctx, mailbox.ID)
-			if suspended {
-				return sendErr(http.StatusForbidden, "MAILBOX_SUSPENDED",
-					"Sending suspended for this mailbox: "+reason)
-			}
+		mailbox, _ = s.mailboxes.GetByEmail(ctx, domain.ID, senderLocalPart)
+	}
+	if mailbox != nil {
+		// Check if mailbox is suspended from sending.
+		suspended, reason, _ := s.abuseEvents.IsMailboxSuspended(ctx, mailbox.ID)
+		if suspended {
+			return sendErr(http.StatusForbidden, "MAILBOX_SUSPENDED",
+				"Sending suspended for this mailbox: "+reason)
+		}
 
-			// Rate check + spike detection.
-			if s.abuseDetector != nil {
-				check, err := s.abuseDetector.CheckAndRecord(ctx, mailbox.ID, domain.ID)
-				if err != nil {
-					s.logger.Error("abuse check failed", "error", err)
-					// Fail open — don't block sending on abuse check errors.
-				} else if !check.Allowed {
-					// Auto-suspend the mailbox.
-					s.abuseEvents.SuspendMailbox(ctx, mailbox.ID, check.Reason)
-					action := "suspend"
-					s.abuseEvents.LogEvent(ctx, &domain.ID, &mailbox.ID, "auto_suspend", "critical",
-						map[string]any{"reason": check.Reason, "hourly_count": check.MailboxCount}, &action)
+		// Rate check + spike detection.
+		if s.abuseDetector != nil {
+			check, err := s.abuseDetector.CheckAndRecord(ctx, mailbox.ID, domain.ID)
+			if err != nil {
+				s.logger.Error("abuse check failed", "error", err)
+				// Fail open — don't block sending on abuse check errors.
+			} else if !check.Allowed {
+				// Auto-suspend the mailbox.
+				s.abuseEvents.SuspendMailbox(ctx, mailbox.ID, check.Reason)
+				action := "suspend"
+				s.abuseEvents.LogEvent(ctx, &domain.ID, &mailbox.ID, "auto_suspend", "critical",
+					map[string]any{"reason": check.Reason, "hourly_count": check.MailboxCount}, &action)
 
-					vectismetrics.EmailsSendSuspended.Inc()
-					return sendErr(http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", check.Reason)
-				} else if check.SpikeDetected {
-					// Log spike alert but allow the send.
-					action := "alert"
-					s.abuseEvents.LogEvent(ctx, &domain.ID, &mailbox.ID, "rate_spike", "warn",
-						map[string]any{"mailbox_hourly": check.MailboxCount, "domain_hourly": check.DomainCount}, &action)
-				}
+				vectismetrics.EmailsSendSuspended.Inc()
+				return sendErr(http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", check.Reason)
+			} else if check.SpikeDetected {
+				// Log spike alert but allow the send.
+				action := "alert"
+				s.abuseEvents.LogEvent(ctx, &domain.ID, &mailbox.ID, "rate_spike", "warn",
+					map[string]any{"mailbox_hourly": check.MailboxCount, "domain_hourly": check.DomainCount}, &action)
 			}
+		}
+	} else if s.abuseDetector != nil {
+		// SEND-1: a From: address on an owned domain with no matching mailbox
+		// (e.g. noreply@) has no per-mailbox counter, so it would otherwise skip
+		// abuse limiting entirely. Enforce the per-domain hourly cap so this
+		// path can't be used for unmetered outbound.
+		check, err := s.abuseDetector.CheckAndRecordDomain(ctx, domain.ID)
+		if err != nil {
+			s.logger.Error("domain abuse check failed", "error", err, "domain_id", domain.ID)
+			// Fail open — mirror the mailbox path; never block on counter errors.
+		} else if !check.Allowed {
+			action := "alert"
+			s.abuseEvents.LogEvent(ctx, &domain.ID, nil, "domain_rate_limit", "warn",
+				map[string]any{"domain_hourly": check.DomainCount}, &action)
+			return sendErr(http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", check.Reason)
 		}
 	}
 

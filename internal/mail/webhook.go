@@ -7,9 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"syscall"
 	"time"
 
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -44,9 +47,64 @@ func NewWebhookDispatcher(webhooks *repository.WebhookRepo, logger *slog.Logger)
 		logger:   logger,
 		client: &http.Client{
 			Timeout: webhookTimeout,
+			// SSRF guard (MAIL-2): block connections to non-public addresses at
+			// dial time. Because Control runs after DNS resolution with the
+			// concrete IP, this catches DNS rebinding and redirect-to-internal —
+			// which the create-time URL check cannot. Redirects re-dial through
+			// the same guard, so an internal redirect target is refused too.
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout: webhookTimeout,
+					Control: blockPrivateDial,
+				}).DialContext,
+			},
+			CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+				if len(via) >= 3 {
+					return fmt.Errorf("stopped after 3 redirects")
+				}
+				return nil
+			},
 		},
 		stopCh: make(chan struct{}),
 	}
+}
+
+// blockPrivateDial is a net.Dialer.Control hook that refuses to connect to
+// non-public addresses. It runs after DNS resolution with the concrete IP:port
+// about to be dialed, so it defends the dispatcher against SSRF even via DNS
+// rebinding or an HTTP redirect to an internal host (MAIL-2).
+func blockPrivateDial(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("webhook dial: invalid address %q", address)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("webhook dial: non-IP address %q", host)
+	}
+	if IsBlockedWebhookIP(ip) {
+		return fmt.Errorf("webhook dial to %s blocked (private/loopback/link-local)", ip)
+	}
+	return nil
+}
+
+// IsBlockedWebhookIP reports whether an IP must never be a webhook target —
+// loopback, RFC1918 private, link-local (incl. cloud-metadata 169.254.169.254),
+// CGNAT (RFC 6598, not covered by IsPrivate), unspecified, or multicast. It is
+// the single source of truth shared by the create-time URL check (api package)
+// and this dial-time guard, so a URL that passes creation can't then be
+// permanently rejected at dispatch.
+func IsBlockedWebhookIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
+		ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	// 100.64.0.0/10 — CGNAT, not flagged by IsPrivate.
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return true
+	}
+	return false
 }
 
 // Start begins the retry worker loop.

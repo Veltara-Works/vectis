@@ -946,7 +946,7 @@ func TestClamAVProfileRenders(t *testing.T) {
 	for _, want := range []string{
 		"vectis-clamav",
 		"image: ghcr.io/veltara-works/vectis-clamav:",
-		"mem_limit: 1500m", // small profile
+		"mem_limit: 2g", // small profile clamav ceiling (bumped from 1500m for DB-growth + reload headroom)
 		"clamdscan --ping=1",
 		"/var/vectis/generated/clamav/clamd.conf:/etc/clamav/clamd.conf:ro",
 		"clamav-data:/var/lib/clamav",
@@ -963,6 +963,7 @@ func TestClamAVProfileRenders(t *testing.T) {
 		"StreamMaxLength 25M",
 		"TCPSocket 3310",
 		"User clamav",
+		"ConcurrentDatabaseReload no", // in-place reload to avoid the OOM spike
 	} {
 		if !strings.Contains(clamdConf, want) {
 			t.Errorf("clamav/clamd.conf missing: %q", want)

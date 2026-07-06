@@ -66,8 +66,34 @@ func (c *SieveClient) ListScripts(user, password string) ([]SieveScript, error) 
 	return scripts, nil
 }
 
+// validateSieveName rejects script names that can't be safely interpolated into
+// a ManageSieve quoted-string. The name reaches these commands from a JSON body
+// or a URL path segment and is written as `"<name>"`; without validation a `"`,
+// `\` or CRLF would break out of the quoted string and inject a second command
+// (MAIL-1). ManageSieve script names are short UTF-8 labels, so we allow any
+// printable rune except the quote/backslash and reject control characters
+// (incl. CR/LF) and over-long names. This closes the injection without
+// restricting legitimate names (a real name never contains those bytes).
+func validateSieveName(name string) error {
+	if name == "" {
+		return fmt.Errorf("sieve script name must not be empty")
+	}
+	if len(name) > 128 {
+		return fmt.Errorf("sieve script name too long (max 128 bytes)")
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || r == '"' || r == '\\' {
+			return fmt.Errorf("sieve script name contains an invalid character")
+		}
+	}
+	return nil
+}
+
 // GetScript returns the content of a named Sieve script.
 func (c *SieveClient) GetScript(user, password, name string) (string, error) {
+	if err := validateSieveName(name); err != nil {
+		return "", err
+	}
 	conn, reader, err := c.connect(user, password)
 	if err != nil {
 		return "", err
@@ -103,6 +129,9 @@ func (c *SieveClient) GetScript(user, password, name string) (string, error) {
 
 // PutScript uploads or replaces a Sieve script.
 func (c *SieveClient) PutScript(user, password, name, content string) error {
+	if err := validateSieveName(name); err != nil {
+		return err
+	}
 	conn, reader, err := c.connect(user, password)
 	if err != nil {
 		return err
@@ -124,6 +153,9 @@ func (c *SieveClient) PutScript(user, password, name, content string) error {
 
 // SetActive activates a named script (deactivates any previously active script).
 func (c *SieveClient) SetActive(user, password, name string) error {
+	if err := validateSieveName(name); err != nil {
+		return err
+	}
 	conn, reader, err := c.connect(user, password)
 	if err != nil {
 		return err
@@ -144,6 +176,9 @@ func (c *SieveClient) SetActive(user, password, name string) error {
 
 // DeleteScript removes a named script.
 func (c *SieveClient) DeleteScript(user, password, name string) error {
+	if err := validateSieveName(name); err != nil {
+		return err
+	}
 	conn, reader, err := c.connect(user, password)
 	if err != nil {
 		return err

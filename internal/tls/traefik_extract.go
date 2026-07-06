@@ -168,9 +168,14 @@ func Extract(opts ExtractOptions) (ExtractResult, error) {
 		return res, nil
 	}
 
-	if err := os.MkdirAll(opts.OutDir, 0o755); err != nil {
+	if err := os.MkdirAll(opts.OutDir, 0o750); err != nil {
 		return res, fmt.Errorf("mkdir out: %w", err)
 	}
+	// MkdirAll only sets the mode when it creates the dir; on an existing install
+	// OutDir predates this hardening and keeps its old (0755) mode, so enforce
+	// 0750 explicitly (Copilot review, #149). Best-effort — a chmod failure must
+	// not abort a cert write.
+	_ = os.Chmod(opts.OutDir, 0o750)
 	if err := writeAtomic(filepath.Join(opts.OutDir, "fullchain.pem"), fullchain, 0o644); err != nil {
 		return res, err
 	}
@@ -178,7 +183,10 @@ func Extract(opts ExtractOptions) (ExtractResult, error) {
 	if err := writeAtomic(filepath.Join(opts.OutDir, "cert.pem"), fullchain, 0o644); err != nil {
 		return res, err
 	}
-	if err := writeAtomic(filepath.Join(opts.OutDir, "privkey.pem"), privkey, 0o640); err != nil {
+	// 0600 to match the self-signed placeholder (certs.go) — the private key is
+	// never group/world readable. All consumers run as root, so this loses no
+	// access; it's defence-in-depth + consistency (TLS-1).
+	if err := writeAtomic(filepath.Join(opts.OutDir, "privkey.pem"), privkey, 0o600); err != nil {
 		return res, err
 	}
 

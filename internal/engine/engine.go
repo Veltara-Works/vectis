@@ -282,7 +282,11 @@ func resolveClamAVKnobs(profile string) ClamAVKnobs {
 			StreamMaxLength: "20M",
 			MaxScanSize:     "50M",
 			MaxFileSize:     "20M",
-			MemLimit:        "1g",
+			// clamd's resident set is dominated by the signature DB (~950 MB and
+			// growing, profile-independent), so the old 1g ceiling left no
+			// headroom. 1536m keeps clamd alive with the in-place reload now set
+			// in clamd.conf (see mx1 OOM, 2026-07-05).
+			MemLimit: "1536m",
 		}
 	case "small":
 		return ClamAVKnobs{
@@ -291,7 +295,10 @@ func resolveClamAVKnobs(profile string) ClamAVKnobs {
 			StreamMaxLength: "25M",
 			MaxScanSize:     "100M",
 			MaxFileSize:     "25M",
-			MemLimit:        "1500m",
+			// Was 1500m — clamd steady-state (~950 MB DB) already sat at ~63% of
+			// it and the reload spike OOM-killed clamd on the mx1 canary. 2g adds
+			// growth headroom on top of the in-place-reload fix (2026-07-05).
+			MemLimit: "2g",
 		}
 	case "production":
 		return ClamAVKnobs{
