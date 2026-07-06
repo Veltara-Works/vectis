@@ -78,6 +78,56 @@ func RewriteComposeTags(composePath string, changes []PlanChange, backupPath str
 	return true, nil
 }
 
+// composeVectisImageLineRe matches a compose `image:` line for a vectis-* image,
+// capturing: (1) the `image:` prefix incl. leading whitespace, (2) the bare
+// repository (ghcr.io/.../vectis-<svc>), (3) the service segment, (4) the tag
+// (":v0.1.42", optional), (5) an existing digest ("@sha256:…", optional).
+var composeVectisImageLineRe = regexp.MustCompile(
+	`(?m)^([ \t]*image:[ \t]*)(` + regexp.QuoteMeta(releaseServicePrefix) + `([a-z0-9-]+))(:[^@\s]+)?(@sha256:[0-9a-f]{64})?[ \t]*$`,
+)
+
+// pinComposeImageDigests rewrites each vectis-* `image:` line in a compose file
+// to carry the manifest digest for its service (REL-3): `…/vectis-api:tag` (or a
+// stale `…@sha256:old`) becomes `…/vectis-api:tag@sha256:<digest>`. Idempotent,
+// and a no-op for services absent from the map — so a partial manifest pins what
+// it can and leaves the rest tag-only. Returns compose unchanged when digests is
+// empty (the graceful-degradation path). Operates on the rendered bytes, so it
+// composes with any renderer (embedded templates or render-from-target).
+func pinComposeImageDigests(compose []byte, digests map[string]string) []byte {
+	if len(digests) == 0 {
+		return compose
+	}
+	return []byte(composeVectisImageLineRe.ReplaceAllStringFunc(string(compose), func(line string) string {
+		m := composeVectisImageLineRe.FindStringSubmatch(line)
+		prefix, repo, svc, tag := m[1], m[2], m[3], m[4]
+		dig, ok := digests[svc]
+		if !ok {
+			return line // no digest published for this service — leave it as rendered.
+		}
+		return prefix + repo + tag + "@" + dig
+	}))
+}
+
+// extractComposeImageDigests reads the digest currently pinned to each vectis-*
+// service from a compose file — the inverse of pinComposeImageDigests. Self-heal
+// uses it to preserve the digests already on disk when it regenerates the compose
+// from templates (which render images by tag only), so drift-correction never
+// silently un-pins the images. Returns nil when no vectis image carries a digest
+// (e.g. a pre-REL-3 install), which pins nothing.
+func extractComposeImageDigests(compose []byte) map[string]string {
+	out := map[string]string{}
+	for _, m := range composeVectisImageLineRe.FindAllStringSubmatch(string(compose), -1) {
+		svc, digest := m[3], m[5]
+		if digest != "" {
+			out[svc] = strings.TrimPrefix(digest, "@")
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // RegenerateCompose re-renders the docker-compose.yml from the embedded
 // templates via the supplied ComposeGenerator and atomically writes the
 // result to composePath, after first backing up the current on-disk content
@@ -107,6 +157,7 @@ func RegenerateCompose(
 	ctx context.Context,
 	composePath, backupPath, releaseTag string,
 	gen ComposeGenerator,
+	imageDigests map[string]string,
 ) (bool, error) {
 	if gen == nil {
 		return false, fmt.Errorf("compose generator not configured")
@@ -132,6 +183,15 @@ func RegenerateCompose(
 		_ = os.Remove(backupPath)
 		return false, fmt.Errorf("generated compose is empty")
 	}
+
+	// Pin vectis-* images to the signed manifest's digests (REL-3). The generator
+	// renders images by tag (`:{{ .Version }}`); this splices in `@sha256:…` so
+	// the recreate runs exactly the bytes the manifest names — regardless of
+	// which renderer produced the compose (embedded templates or the target
+	// image's own `vectis config generate`). No-op when imageDigests is empty
+	// (manifest carried no digests → tag-only pin). Done before the bytes.Equal
+	// check below so the no-op / backup lifecycle accounts for the pinned form.
+	generated = pinComposeImageDigests(generated, imageDigests)
 
 	if bytes.Equal(current, generated) {
 		// No-op: content matches. Drop the backup so a later rollback

@@ -295,3 +295,80 @@ func TestConfigBackupDirFor_ColocatedWithComposeBackup(t *testing.T) {
 		t.Errorf("compose backup and config backup must share base name: compose=%q config=%q", composeBase, configBase)
 	}
 }
+
+// pinComposeImageDigests must add the manifest digest to each vectis-* image
+// line, replace a stale one, leave services without a published digest and all
+// non-vectis images untouched, and no-op on an empty map (REL-3 part 2).
+func TestPinComposeImageDigests(t *testing.T) {
+	const digAPI = "sha256:" + "1111111111111111111111111111111111111111111111111111111111111111"
+	const digDove = "sha256:" + "2222222222222222222222222222222222222222222222222222222222222222"
+	in := `services:
+  traefik:
+    image: traefik:v3.3@sha256:aaaa
+  api:
+    image: ghcr.io/veltara-works/vectis-api:v0.1.42
+  dovecot:
+    image: ghcr.io/veltara-works/vectis-dovecot:v0.1.42@sha256:` + strings.Repeat("0", 64) + `
+  rspamd:
+    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.42
+`
+	out := string(pinComposeImageDigests([]byte(in), map[string]string{"api": digAPI, "dovecot": digDove}))
+
+	if !strings.Contains(out, "vectis-api:v0.1.42@"+digAPI) {
+		t.Errorf("api not pinned:\n%s", out)
+	}
+	// Stale dovecot digest replaced, not appended.
+	if !strings.Contains(out, "vectis-dovecot:v0.1.42@"+digDove) || strings.Contains(out, strings.Repeat("0", 64)) {
+		t.Errorf("dovecot digest not replaced:\n%s", out)
+	}
+	// rspamd has no published digest → left tag-only.
+	if !strings.Contains(out, "vectis-rspamd:v0.1.42\n") || strings.Contains(out, "vectis-rspamd:v0.1.42@") {
+		t.Errorf("rspamd should stay tag-only:\n%s", out)
+	}
+	// Non-vectis traefik untouched.
+	if !strings.Contains(out, "traefik:v3.3@sha256:aaaa") {
+		t.Errorf("traefik should be untouched:\n%s", out)
+	}
+	// Empty map is a no-op.
+	if got := string(pinComposeImageDigests([]byte(in), nil)); got != in {
+		t.Errorf("empty digests should be a no-op")
+	}
+}
+
+// extractComposeImageDigests is the inverse: it reads back the digests currently
+// pinned per vectis service, and returns nil when none are pinned. This is what
+// self-heal uses to preserve pins across a template regen.
+func TestExtractComposeImageDigests(t *testing.T) {
+	digAPI := "sha256:" + strings.Repeat("a", 64)
+	in := `services:
+  api:
+    image: ghcr.io/veltara-works/vectis-api:v0.1.42@` + digAPI + `
+  rspamd:
+    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.42
+  traefik:
+    image: traefik:v3.3@sha256:` + strings.Repeat("b", 64) + `
+`
+	got := extractComposeImageDigests([]byte(in))
+	if got["api"] != digAPI {
+		t.Errorf("api digest: want %q, got %q", digAPI, got["api"])
+	}
+	if _, ok := got["rspamd"]; ok {
+		t.Errorf("rspamd is tag-only; should not be extracted")
+	}
+	// Non-vectis traefik is not a vectis service key.
+	if _, ok := got["traefik"]; ok {
+		t.Errorf("traefik should not be extracted as a vectis service")
+	}
+
+	// A tag-only (pre-REL-3) compose yields nil.
+	if got := extractComposeImageDigests([]byte("services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.42\n")); got != nil {
+		t.Errorf("tag-only compose should extract nil, got %v", got)
+	}
+
+	// Round-trip: pin then extract returns what was pinned.
+	pinned := pinComposeImageDigests([]byte(in), map[string]string{"rspamd": digAPI})
+	rt := extractComposeImageDigests(pinned)
+	if rt["rspamd"] != digAPI {
+		t.Errorf("round-trip rspamd: want %q, got %q", digAPI, rt["rspamd"])
+	}
+}

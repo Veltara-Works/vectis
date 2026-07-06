@@ -349,3 +349,98 @@ func TestRewriteReleaseTag(t *testing.T) {
 		})
 	}
 }
+
+// A manifest carrying a valid images map parses and exposes the per-service
+// digests (REL-3 part 2).
+func TestFetchReleaseManifest_ImagesParsed(t *testing.T) {
+	dig := "sha256:8bd19c3a278a2cb0602b362d9fd69566c332e053a6c805119ba0cf684601db90"
+	body := `{"latest":"v0.1.42","released_at":"2026-07-06T08:00:00Z","channel":"stable","images":{"api":"` + dig + `"}}`
+	url, cleanup := signedManifestServer(t, body, true)
+	defer cleanup()
+
+	m, err := fetchReleaseManifest(context.Background(), http.DefaultClient, url, "v0.1.41")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := m.Images["api"]; got != dig {
+		t.Errorf("Images[api]: want %q, got %q", dig, got)
+	}
+}
+
+// A manifest with a malformed image digest is rejected even when validly signed:
+// the digest is spliced into a compose image ref, so it must be a bare sha256.
+func TestFetchReleaseManifest_BadImageDigestRejected(t *testing.T) {
+	for _, bad := range []string{
+		`"sha256:zzzz"`, // not hex / wrong length
+		`"v0.1.42"`,     // a tag, not a digest
+		`"sha512:` + strings.Repeat("a", 64) + `"`,           // wrong algorithm
+		`"ghcr.io/x@sha256:` + strings.Repeat("a", 64) + `"`, // path-carrying
+	} {
+		body := `{"latest":"v0.1.42","released_at":"2026-07-06T08:00:00Z","channel":"stable","images":{"api":` + bad + `}}`
+		url, cleanup := signedManifestServer(t, body, true)
+		m, err := fetchReleaseManifest(context.Background(), http.DefaultClient, url, "v0.1.41")
+		cleanup()
+		if err == nil {
+			t.Errorf("digest %s: expected rejection, got manifest %+v", bad, m)
+		}
+	}
+}
+
+// A manifest with no images map is valid — the caller degrades to a tag-only pin.
+func TestFetchReleaseManifest_NoImagesIsValid(t *testing.T) {
+	url, cleanup := signedManifestServer(t, `{"latest":"v0.1.42","released_at":"2026-07-06T08:00:00Z","channel":"stable"}`, true)
+	defer cleanup()
+
+	m, err := fetchReleaseManifest(context.Background(), http.DefaultClient, url, "v0.1.41")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.Images) != 0 {
+		t.Errorf("expected no images, got %v", m.Images)
+	}
+}
+
+func TestRewriteReleaseImageRef(t *testing.T) {
+	const dig = "sha256:8bd19c3a278a2cb0602b362d9fd69566c332e053a6c805119ba0cf684601db90"
+	cases := []struct {
+		name          string
+		image, tag, d string
+		want          string
+	}{
+		{"tag+digest pins", "ghcr.io/veltara-works/vectis-api:v0.1.41", "v0.1.42", dig,
+			"ghcr.io/veltara-works/vectis-api:v0.1.42@" + dig},
+		{"no digest = tag only (graceful)", "ghcr.io/veltara-works/vectis-api:v0.1.41", "v0.1.42", "",
+			"ghcr.io/veltara-works/vectis-api:v0.1.42"},
+		{"replaces an existing digest", "ghcr.io/veltara-works/vectis-api:v0.1.41@sha256:" + strings.Repeat("0", 64), "v0.1.42", dig,
+			"ghcr.io/veltara-works/vectis-api:v0.1.42@" + dig},
+		{"cert-extractor (hyphenated svc)", "ghcr.io/veltara-works/vectis-cert-extractor:v0.1.41", "v0.1.42", dig,
+			"ghcr.io/veltara-works/vectis-cert-extractor:v0.1.42@" + dig},
+		{"non-vectis untouched", "postgres:17-alpine", "v0.1.42", dig, "postgres:17-alpine"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := rewriteReleaseImageRef(tc.image, tc.tag, tc.d); got != tc.want {
+				t.Errorf("want %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestVectisServiceFromImage(t *testing.T) {
+	cases := []struct {
+		image   string
+		wantSvc string
+		wantOK  bool
+	}{
+		{"ghcr.io/veltara-works/vectis-api:v0.1.42", "api", true},
+		{"ghcr.io/veltara-works/vectis-cert-extractor:v0.1.42@sha256:" + strings.Repeat("a", 64), "cert-extractor", true},
+		{"ghcr.io/veltara-works/vectis-orchestrator", "orchestrator", true},
+		{"postgres:17-alpine", "", false},
+	}
+	for _, tc := range cases {
+		svc, ok := vectisServiceFromImage(tc.image)
+		if svc != tc.wantSvc || ok != tc.wantOK {
+			t.Errorf("%s: want (%q,%v), got (%q,%v)", tc.image, tc.wantSvc, tc.wantOK, svc, ok)
+		}
+	}
+}

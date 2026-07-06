@@ -20,6 +20,12 @@ type Plan struct {
 	// (not the compose file's on-disk tags). The UI renders this so users
 	// can see which release the proposed update would land them on.
 	ReleaseTag string `json:"release_tag,omitempty"`
+	// ImageDigests, when present, maps each vectis-* service to the immutable
+	// sha256 digest the signed release manifest pins it to (REL-3). Apply pins
+	// the rendered compose to these digests so the recreate runs exactly the
+	// bytes the manifest names. Empty when the manifest carried no digests
+	// (pre-REL-3 publisher or self-hosted mirror) — Apply then pins by tag only.
+	ImageDigests map[string]string `json:"image_digests,omitempty"`
 	// Warnings collects non-fatal issues that the caller should surface to
 	// the user (e.g. release-channel fetch failed, falling back to local
 	// compose). Not a substitute for error returns — hard failures still

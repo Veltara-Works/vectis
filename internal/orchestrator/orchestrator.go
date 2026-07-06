@@ -338,6 +338,7 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 	// we can't tell the user about newer versions — the local plan is
 	// still correct for what it can see.
 	var releaseTag string
+	var imageDigests map[string]string
 	var warnings []string
 	if o.cfg.ReleaseChannelURL != "" {
 		releaseCtx, releaseCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -349,8 +350,17 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 			warnings = append(warnings, fmt.Sprintf("release channel unavailable: %v (plan shows local compose-vs-running drift only)", ferr))
 		} else {
 			releaseTag = m.Latest
+			imageDigests = m.Images
+			// Pin each vectis-* image to the lockstep tag AND, when the manifest
+			// carries it, the immutable digest (REL-3). A digest-less manifest
+			// (pre-REL-3 or self-hosted mirror) degrades to a tag-only pin + warn.
 			for svc, img := range desired {
-				desired[svc] = rewriteReleaseTag(img, m.Latest)
+				desired[svc] = rewriteReleaseImageRef(img, m.Latest, m.Images[svc])
+			}
+			if len(m.Images) == 0 {
+				o.logger.Warn("release manifest carries no image digests; pinning vectis images by tag only (not by content digest)",
+					"url", o.cfg.ReleaseChannelURL, "release_tag", m.Latest)
+				warnings = append(warnings, "release manifest has no image digests: vectis images pinned by tag only, not by content digest")
 			}
 		}
 	}
@@ -394,6 +404,7 @@ func (o *Orchestrator) Plan(ctx context.Context) (*Plan, error) {
 		Changes:          changes,
 		MigrationsUp:     o.detectPendingMigrations(),
 		ReleaseTag:       releaseTag,
+		ImageDigests:     imageDigests,
 		Warnings:         warnings,
 	}
 
@@ -641,7 +652,7 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 
 		if composeGen != nil && plan.ReleaseTag != "" {
 			mode = renderMode
-			rewritten, rewriteErr = RegenerateCompose(applyCtx, composePath, backupPath, plan.ReleaseTag, composeGen)
+			rewritten, rewriteErr = RegenerateCompose(applyCtx, composePath, backupPath, plan.ReleaseTag, composeGen, plan.ImageDigests)
 		} else {
 			mode = "tag-rewrite"
 			rewritten, rewriteErr = RewriteComposeTags(composePath, plan.Changes, backupPath)

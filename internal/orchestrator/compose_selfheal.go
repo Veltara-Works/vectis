@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -181,12 +182,23 @@ func (o *Orchestrator) SelfHealComposeOnVersionTransition(
 		fmt.Sprintf("self-heal-%s-configs", ts),
 	)
 
+	// Preserve any digest pins already on disk (REL-3): self-heal regenerates
+	// from the running binary's templates, which render images by tag only, so
+	// without this a drift-correction would silently un-pin the vectis images.
+	// Self-heal corrects drift toward the intended state — and the currently-
+	// pinned digests are part of that state — so re-pin to exactly what's there.
+	var existingDigests map[string]string
+	if cur, rerr := os.ReadFile(o.cfg.ComposePaths[0]); rerr == nil {
+		existingDigests = extractComposeImageDigests(cur)
+	}
+
 	composeRewritten, err := RegenerateCompose(
 		ctx,
 		o.cfg.ComposePaths[0],
 		composeBackupPath,
 		binaryVersion,
 		o.composeGen,
+		existingDigests,
 	)
 	if err != nil {
 		o.logger.Error("self-heal: compose regenerate failed (continuing startup)",
