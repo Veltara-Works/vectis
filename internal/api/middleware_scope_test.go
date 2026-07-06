@@ -147,6 +147,43 @@ func TestResolveRoleScope(t *testing.T) {
 	}
 }
 
+// TestTrustedForwardedIP is the MW-1 regression net: only X-Forwarded-For (which
+// Traefik overwrites with the real connection peer) may set the client IP.
+// X-Real-IP and True-Client-IP are client-spoofable on this deployment (Traefik
+// does not manage them) and must NEVER be honored — chi's RealIP trusting
+// True-Client-IP was the original forgery vector.
+func TestTrustedForwardedIP(t *testing.T) {
+	mk := func(h map[string]string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		for k, v := range h {
+			r.Header.Set(k, v)
+		}
+		return r
+	}
+	cases := []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{"XFF trusted", map[string]string{"X-Forwarded-For": "203.0.113.7"}, "203.0.113.7"},
+		{"XFF leftmost entry", map[string]string{"X-Forwarded-For": "203.0.113.7, 10.0.0.1"}, "203.0.113.7"},
+		{"True-Client-IP ignored", map[string]string{"True-Client-IP": "1.2.3.4"}, ""},
+		{"X-Real-IP ignored", map[string]string{"X-Real-IP": "1.2.3.4"}, ""},
+		{"spoof headers ignored; XFF wins", map[string]string{
+			"True-Client-IP": "1.2.3.4", "X-Real-IP": "5.6.7.8", "X-Forwarded-For": "203.0.113.7",
+		}, "203.0.113.7"},
+		{"garbage XFF rejected", map[string]string{"X-Forwarded-For": "not-an-ip"}, ""},
+		{"no forwarding headers", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := trustedForwardedIP(mk(tc.headers)); got != tc.want {
+				t.Fatalf("trustedForwardedIP(%v) = %q, want %q", tc.headers, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRequireDomainAccess is the R1 regression net: the /domains/{domainID}
 // choke point must 403 a key scoped to a different domain and pass one scoped to
 // the requested domain — even though the owning role grants all domains.

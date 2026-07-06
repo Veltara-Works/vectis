@@ -9,6 +9,7 @@ http:
       rule: "Host(`{{ .Hostname }}`) && PathPrefix(`/api/v1/auth`)"
       service: vectis-api
       middlewares:
+        - strip-forwarded-spoof
         - rate-limit-auth
       entryPoints:
         - websecure
@@ -25,6 +26,7 @@ http:
       rule: "Host(`{{ .Hostname }}`) && PathPrefix(`/api/v1/`) && (Method(`POST`) || Method(`PATCH`) || Method(`DELETE`))"
       service: vectis-api
       middlewares:
+        - strip-forwarded-spoof
         - rate-limit-mutate
       entryPoints:
         - websecure
@@ -42,6 +44,7 @@ http:
       rule: "Host(`{{ .Hostname }}`) && PathPrefix(`/webmail`)"
       service: vectis-webmail
       middlewares:
+        - strip-forwarded-spoof
         - rate-limit-api
         - webmail-strip-prefix
       entryPoints:
@@ -59,6 +62,7 @@ http:
       rule: "Host(`{{ .Hostname }}`)"
       service: vectis-api
       middlewares:
+        - strip-forwarded-spoof
         - rate-limit-api
       entryPoints:
         - websecure
@@ -71,6 +75,16 @@ http:
       priority: 10
 
   middlewares:
+    # Strip client-supplied forwarding headers Traefik does not manage, so they
+    # cannot spoof the app's client-IP resolution (MW-1). Traefik overwrites
+    # X-Forwarded-For with the real peer, but leaves X-Real-IP and True-Client-IP
+    # untouched — setting them to "" here removes them at the edge. The API's
+    # realIP middleware already ignores both; this is defence in depth.
+    strip-forwarded-spoof:
+      headers:
+        customRequestHeaders:
+          X-Real-IP: ""
+          True-Client-IP: ""
     rate-limit-auth:
       rateLimit:
         average: {{ .RateLimits.AuthAverage }}
