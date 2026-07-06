@@ -97,13 +97,23 @@ func (c *RollingCoordinator) StartRollingUpdate(ctx context.Context, adminID str
 	}
 	nodeStatusesJSON, _ := json.Marshal(nodeStatuses)
 
-	_, err = c.db.Exec(ctx,
+	// Insert only if no operation is already in progress — atomically, via
+	// WHERE NOT EXISTS, so it is free of the check-then-insert race. Without this
+	// a double-submit, or a brief dual-leader window during handoff (IsLeader()
+	// is a cached bool), would each spawn an executeRolling goroutine that drives
+	// every node through apply/restart concurrently, defeating the one-at-a-time
+	// guarantee and risking a simultaneous restart of the whole cluster (CLUS-1).
+	tag, err := c.db.Exec(ctx,
 		`INSERT INTO cluster_operations (id, operation_type, status, initiated_by, plan_summary, node_statuses, started_at)
-		 VALUES ($1, $2, 'in_progress', $3, $4, $5, NOW())`,
+		 SELECT $1, $2, 'in_progress', $3, $4, $5, NOW()
+		 WHERE NOT EXISTS (SELECT 1 FROM cluster_operations WHERE status = 'in_progress')`,
 		opID, string(OpRollingUpdate), adminID, planSummary, nodeStatusesJSON,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create operation: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, fmt.Errorf("a rolling operation is already in progress")
 	}
 
 	// Execute rolling update in background.
@@ -143,13 +153,18 @@ func (c *RollingCoordinator) StartRollingRollback(ctx context.Context, adminID s
 	}
 	nodeStatusesJSON, _ := json.Marshal(nodeStatuses)
 
-	_, err = c.db.Exec(ctx,
+	// Atomic in-progress guard — see StartRollingUpdate (CLUS-1).
+	tag, err := c.db.Exec(ctx,
 		`INSERT INTO cluster_operations (id, operation_type, status, initiated_by, node_statuses, started_at)
-		 VALUES ($1, $2, 'in_progress', $3, $4, NOW())`,
+		 SELECT $1, $2, 'in_progress', $3, $4, NOW()
+		 WHERE NOT EXISTS (SELECT 1 FROM cluster_operations WHERE status = 'in_progress')`,
 		opID, string(OpRollingRollback), adminID, nodeStatusesJSON,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create operation: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, fmt.Errorf("a rolling operation is already in progress")
 	}
 
 	go c.executeRolling(opID, activeNodes, OpRollingRollback)

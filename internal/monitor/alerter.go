@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
+	"net/url"
 	"strings"
 	"time"
 
@@ -335,7 +336,7 @@ func (a *Alerter) sendWebhook(ctx context.Context, severity, service, message, s
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		a.logger.Error("failed to send webhook alert", "error", err, "url", a.webhookCfg.URL)
+		a.logger.Error("failed to send webhook alert", "error", err, "url", redactWebhookURL(a.webhookCfg.URL))
 		return
 	}
 	defer resp.Body.Close()
@@ -343,9 +344,22 @@ func (a *Alerter) sendWebhook(ctx context.Context, severity, service, message, s
 	if resp.StatusCode >= 300 {
 		a.logger.Error("webhook returned non-success status",
 			"status", resp.StatusCode,
-			"url", a.webhookCfg.URL,
+			"url", redactWebhookURL(a.webhookCfg.URL),
 		)
 	}
+}
+
+// redactWebhookURL returns just scheme://host for logging, dropping the path,
+// query, and any userinfo. For a Slack incoming webhook
+// (hooks.slack.com/services/T…/B…/<secret>) or any token-in-URL sink, the URL
+// itself IS the bearer credential, so logging it verbatim on every send failure
+// leaked the secret to anyone with log-read access (MON-1, CWE-532).
+func redactWebhookURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "<redacted>"
+	}
+	return u.Scheme + "://" + u.Host + "/<redacted>"
 }
 
 // suggestAction returns a human-readable suggestion for the given service.

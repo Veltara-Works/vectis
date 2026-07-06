@@ -83,3 +83,19 @@ func TestExtractDKIMPub(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeTerminal(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"plain text", "plain text"},
+		{"tab\there", "tab here"},
+		{"esc\x1b[31mred\x1b[0m", "esc[31mred[0m"}, // ANSI escapes stripped
+		{"forge\rTLS PASS", "forgeTLS PASS"},       // CR stripped (no line rewrite)
+		{"nl\nnl\x7f", "nlnl"},                     // newline + DEL stripped
+		{"unicodé ✓", "unicodé ✓"},                 // non-control runes preserved
+	}
+	for _, c := range cases {
+		if got := sanitizeTerminal(c.in); got != c.want {
+			t.Errorf("sanitizeTerminal(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
