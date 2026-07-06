@@ -115,6 +115,19 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 			return sendErr(http.StatusBadRequest, "MISSING_FIELDS", fmt.Sprintf("to[%d].email is required", i))
 		}
 	}
+	// CC/BCC must also carry a non-empty address: they count toward the recipient
+	// cap + abuse metering below, and a blank one would otherwise slip through to
+	// a 5xx from Postfix rcpt("") instead of a clean 4xx validation error.
+	for i, a := range req.CC {
+		if a.Email == "" {
+			return sendErr(http.StatusBadRequest, "MISSING_FIELDS", fmt.Sprintf("cc[%d].email is required", i))
+		}
+	}
+	for i, a := range req.BCC {
+		if a.Email == "" {
+			return sendErr(http.StatusBadRequest, "MISSING_FIELDS", fmt.Sprintf("bcc[%d].email is required", i))
+		}
+	}
 	if req.Subject == "" {
 		return sendErr(http.StatusBadRequest, "MISSING_FIELDS", "subject is required")
 	}

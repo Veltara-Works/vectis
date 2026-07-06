@@ -139,7 +139,7 @@ func (d *AbuseDetector) CheckAndRecordN(ctx context.Context, mailboxID, domainID
 	// Check mailbox auto-suspend threshold.
 	if d.cfg.MailboxHourlySuspend > 0 && mbCount > int64(d.cfg.MailboxHourlySuspend) {
 		result.Allowed = false
-		result.Reason = fmt.Sprintf("mailbox sending suspended: %d messages this hour (limit: %d)",
+		result.Reason = fmt.Sprintf("mailbox sending suspended: %d recipients this hour (limit: %d)",
 			mbCount, d.cfg.MailboxHourlySuspend)
 		return result, nil
 	}
@@ -195,7 +195,7 @@ func (d *AbuseDetector) CheckAndRecordDomainN(ctx context.Context, domainID stri
 	}
 	if limit > 0 && dmCount > int64(limit) {
 		result.Allowed = false
-		result.Reason = fmt.Sprintf("domain sending rate limit exceeded: %d messages this hour (limit: %d)",
+		result.Reason = fmt.Sprintf("domain sending rate limit exceeded: %d recipients this hour (limit: %d)",
 			dmCount, limit)
 	}
 	return result, nil
