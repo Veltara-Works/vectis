@@ -933,7 +933,9 @@ func (s *Server) buildRouter() chi.Router {
 	r := chi.NewRouter()
 
 	// Global middleware.
-	r.Use(chimw.RealIP)
+	// realIP (not chimw.RealIP) resolves the client IP from Traefik's forwarding
+	// headers while ignoring the attacker-settable True-Client-IP header (MW-1).
+	r.Use(realIP)
 	r.Use(securityHeaders)
 	r.Use(requestIDMiddleware)
 	r.Use(s.loggingMiddleware)

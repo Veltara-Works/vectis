@@ -531,6 +531,48 @@ func (s *Server) domainFilter(ctx context.Context) (set map[string]bool, unrestr
 	return set, false
 }
 
+// realIP overwrites r.RemoteAddr with the client IP from X-Forwarded-For, which
+// the edge proxy (Traefik) sets. Unlike chi's middleware.RealIP — which chi has
+// since deprecated (GHSA-3fxj-rjr7-9g5q) — it trusts ONLY X-Forwarded-For and
+// ignores X-Real-IP and True-Client-IP.
+//
+// This is deployment-specific and deliberate. Traefik runs with default
+// forwardedHeaders (no trustedIPs), so it REPLACES inbound X-Forwarded-For with
+// the real connection peer — a client cannot forge it. But Traefik neither sets
+// nor strips X-Real-IP or True-Client-IP, so an external client can send either
+// and it reaches the app verbatim. chi's RealIP consulted True-Client-IP first,
+// letting any client forge r.RemoteAddr and poison the audit trail, session
+// records, and the per-IP login limiter (MW-1). Trusting X-Real-IP instead would
+// merely move the same forgery to that header, so we trust neither. Defense in
+// depth: the Traefik dynamic config also strips both headers at the edge.
+func realIP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ip := trustedForwardedIP(r); ip != "" {
+			r.RemoteAddr = ip
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// trustedForwardedIP returns the leftmost X-Forwarded-For entry (the real client,
+// since Traefik overwrites the header with the single connection peer), or "" if
+// absent/unparseable. X-Real-IP and True-Client-IP are never consulted — see
+// realIP for why they are spoofable on this deployment.
+func trustedForwardedIP(r *http.Request) string {
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff == "" {
+		return ""
+	}
+	first := xff
+	if i := strings.IndexByte(xff, ','); i >= 0 {
+		first = xff[:i]
+	}
+	if first = strings.TrimSpace(first); net.ParseIP(first) != nil {
+		return first
+	}
+	return ""
+}
+
 // clientIP extracts just the IP address from r.RemoteAddr, stripping the port.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -106,14 +105,12 @@ func (s *Server) recordEngagement(r *http.Request, messageID, eventType, targetU
 // clientIP helper, XFF matters here so we record the real recipient's IP
 // rather than the reverse proxy.
 func trackingClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
-	if xr := r.Header.Get("X-Real-IP"); xr != "" {
-		return strings.TrimSpace(xr)
+	// X-Forwarded-For only (Traefik overwrites it with the real peer); fall back
+	// to the connection peer. The former X-Real-IP fallback is dropped — Traefik
+	// does not manage that header, so it is client-spoofable (MW-1), and it now
+	// never reaches the app anyway (stripped at the edge). Shares trustedForwardedIP.
+	if ip := trustedForwardedIP(r); ip != "" {
+		return ip
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

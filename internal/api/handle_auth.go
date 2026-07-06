@@ -201,11 +201,23 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Verify password.
 	ok, err := auth.VerifyPassword(req.Password, admin.PasswordHash)
 	if err != nil || !ok {
-		// Log the attempt for audit.
+		// Log the attempt for audit — DETACHED (background context, fire-and-
+		// forget). A synchronous INSERT here (present only on the known-account
+		// branch) added a measurable latency asymmetry vs the unknown-account
+		// branch, partially undoing the VerifyDummyPassword timing equalization
+		// and reopening user enumeration (AUTH-1). Detaching removes the
+		// differential and matches the reset path.
 		adminID := admin.ID
 		ip := clientIP(r)
-		s.audit.Log(r.Context(), &adminID, "auth.login", "admin", &adminID,
-			map[string]any{"success": false, "ip": ip, "totp_used": false}, &ip)
+		go func() {
+			// Bound the detached write so a slow/unreachable Postgres can't leave
+			// this goroutine (and its DB conn) hanging indefinitely, nor let them
+			// pile up under a distributed login flood. Mirrors the reset path.
+			bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			s.audit.Log(bg, &adminID, "auth.login", "admin", &adminID,
+				map[string]any{"success": false, "ip": ip, "totp_used": false}, &ip)
+		}()
 		respondError(w, r, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password")
 		return
 	}

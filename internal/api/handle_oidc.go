@@ -1,11 +1,54 @@
 package api
 
 import (
+	"crypto/subtle"
 	"net/http"
 
 	"github.com/Veltara-Works/vectis/internal/validonx"
 	"github.com/go-chi/chi/v5"
 )
+
+// oidcStateCookieName holds the OIDC `state` bound to the initiating browser.
+const oidcStateCookieName = "vectis_oidc_state"
+
+// setOIDCStateCookie binds the OIDC `state` to the browser that started the flow
+// (OIDC-1). The server-side state store (atomic GETDEL) gives replay/single-use
+// integrity but NOT session-binding, so without this a login-CSRF is possible:
+// an attacker starts their own auth flow and tricks a victim's browser into
+// completing the callback with the attacker's state, silently swapping the
+// victim into the attacker's linked identity. handleOIDCCallback requires this
+// cookie to equal the state query parameter.
+//
+// SameSite=Lax (not Strict like the session cookie): the callback is a
+// cross-site top-level GET navigation from the IdP, on which a Strict cookie
+// would not be sent. Lax still blocks the CSRF — the attacker cannot plant a
+// cookie for our origin in the victim's browser. Scoped to the OIDC path with a
+// short TTL bounding the auth round-trip.
+func setOIDCStateCookie(w http.ResponseWriter, state string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oidcStateCookieName,
+		Value:    state,
+		Path:     "/api/v1/auth/oidc/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   600,
+	})
+}
+
+// clearOIDCStateCookie expires the state cookie (single-use) with matching
+// attributes so the browser overwrites it.
+func clearOIDCStateCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oidcStateCookieName,
+		Value:    "",
+		Path:     "/api/v1/auth/oidc/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
 
 // handleOIDCProviders returns the list of enabled OIDC providers.
 // Used by the frontend to render SSO login buttons.
@@ -52,6 +95,10 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bind the state to this browser so the callback can prove it originated the
+	// flow (OIDC-1 login-CSRF defense).
+	setOIDCStateCookie(w, state)
+
 	authURL := provider.OAuth2Config.AuthCodeURL(state)
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
@@ -71,6 +118,18 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	if state == "" {
 		respondError(w, r, http.StatusBadRequest, "OIDC_MISSING_STATE", "Missing state parameter")
+		return
+	}
+
+	// Browser binding (OIDC-1): the callback must carry the same state in the
+	// cookie set at login. This is what turns state into a CSRF token rather than
+	// just a replay nonce — the server-side GETDEL below can't tell whose browser
+	// is completing the flow. Cleared unconditionally (single-use).
+	stateCookie, _ := r.Cookie(oidcStateCookieName)
+	clearOIDCStateCookie(w)
+	if stateCookie == nil ||
+		subtle.ConstantTimeCompare([]byte(stateCookie.Value), []byte(state)) != 1 {
+		respondError(w, r, http.StatusBadRequest, "OIDC_INVALID_STATE", "Invalid or expired state")
 		return
 	}
 
