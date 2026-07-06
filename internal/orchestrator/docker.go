@@ -329,11 +329,11 @@ func (dm *DockerManager) VerifyImageProvenance(ctx context.Context, digests map[
 	defer cancel()
 
 	dm.logger.Info("verifying image provenance (cosign)", "image_count", len(targets))
-	for _, t := range targets {
+	for i, t := range targets {
 		if passCtx.Err() != nil {
 			dm.logger.Warn("image provenance verification budget exhausted — skipping remaining images (proceeding; the digest pin already guarantees the bytes)",
-				"service", t.Service, "image", t.ImageRef, "error", passCtx.Err())
-			continue
+				"skipped", len(targets)-i, "error", passCtx.Err())
+			break
 		}
 		if err := dm.verifyImageProvenance(passCtx, t.ImageRef); err != nil {
 			dm.logger.Warn("image provenance NOT verified — proceeding (the signed-manifest digest pin already guarantees these exact bytes)",
