@@ -122,12 +122,19 @@ func (s *Server) secretsValidonX() *config.ValidonXSecrets {
 	return s.secrets.ValidonX
 }
 
+// loadValidonXConfig loads the merged ValidonX runtime config, decrypting the
+// at-rest-encrypted credentials with the server's derived key (VX-CFG-1). All
+// handler-layer reads go through here so none forgets the key.
+func (s *Server) loadValidonXConfig(ctx context.Context) (*validonx.RuntimeConfig, error) {
+	return validonx.LoadRuntimeConfig(ctx, s.db, s.secretsValidonX(), s.validonxEncKey)
+}
+
 // buildLicenseStateResponse composes the License page response shape from the
 // merged DB+secrets runtime config and (optional) cached license entitlements.
 func (s *Server) buildLicenseStateResponse(ctx context.Context) licenseStateResponse {
 	resp := licenseStateResponse{Tier: validonx.TierFree}
 
-	runtimeCfg, _ := validonx.LoadRuntimeConfig(ctx, s.db, s.secretsValidonX())
+	runtimeCfg, _ := s.loadValidonXConfig(ctx)
 	if runtimeCfg != nil {
 		resp.Configured = runtimeCfg.IsConfigured()
 		resp.FromDB = runtimeCfg.FromDB
@@ -169,7 +176,7 @@ func (s *Server) buildLicenseStateResponse(ctx context.Context) licenseStateResp
 // to give the admin UI just enough state to render tier-aware affordances
 // without exposing the sensitive identifiers that /api/v1/license carries.
 func (s *Server) currentTierAndFeatures(ctx context.Context) (string, []string) {
-	runtimeCfg, _ := validonx.LoadRuntimeConfig(ctx, s.db, s.secretsValidonX())
+	runtimeCfg, _ := s.loadValidonXConfig(ctx)
 	if runtimeCfg == nil || runtimeCfg.TenantID == "" {
 		return validonx.TierFree, []string{}
 	}
@@ -231,7 +238,7 @@ func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	current, _ := validonx.LoadRuntimeConfig(r.Context(), s.db, s.secretsValidonX())
+	current, _ := s.loadValidonXConfig(r.Context())
 	merged := *current
 	if req.SubscriptionID != "" {
 		merged.SubscriptionID = req.SubscriptionID
@@ -305,7 +312,7 @@ func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
 	}
 
 	adminID := getAdminID(r.Context())
-	if err := validonx.SaveRuntimeConfig(r.Context(), s.db, s.logger, merged, adminID); err != nil {
+	if err := validonx.SaveRuntimeConfig(r.Context(), s.db, s.logger, merged, adminID, s.validonxEncKey); err != nil {
 		s.logger.Error("save validonx runtime config failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to persist license")
 		return
@@ -333,7 +340,7 @@ func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
 // and removes the cached license row. If secrets.yaml still configures
 // ValidonX the install reverts to that; otherwise it drops to Free tier.
 func (s *Server) handleDeleteLicense(w http.ResponseWriter, r *http.Request) {
-	current, _ := validonx.LoadRuntimeConfig(r.Context(), s.db, s.secretsValidonX())
+	current, _ := s.loadValidonXConfig(r.Context())
 
 	if err := validonx.ClearRuntimeConfig(r.Context(), s.db, s.logger); err != nil && !errors.Is(err, context.Canceled) {
 		s.logger.Error("clear validonx runtime config failed", "error", err)
@@ -345,7 +352,7 @@ func (s *Server) handleDeleteLicense(w http.ResponseWriter, r *http.Request) {
 		_ = cache.DeleteCached(r.Context(), current.TenantID)
 	}
 
-	postClearCfg, _ := validonx.LoadRuntimeConfig(r.Context(), s.db, s.secretsValidonX())
+	postClearCfg, _ := s.loadValidonXConfig(r.Context())
 	var newClient *validonx.Client
 	if postClearCfg != nil && postClearCfg.IsConfigured() {
 		newClient = validonx.NewClient(postClearCfg.ToSecrets(), s.logger.With("component", "validonx"))

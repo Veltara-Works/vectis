@@ -53,7 +53,7 @@ func (s *Server) handleBillingPortalSession(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	runtimeCfg, _ := validonx.LoadRuntimeConfig(r.Context(), s.db, s.secretsValidonX())
+	runtimeCfg, _ := s.loadValidonXConfig(r.Context())
 	if runtimeCfg == nil || !runtimeCfg.IsConfigured() || runtimeCfg.TenantID == "" {
 		respondError(w, r, http.StatusForbidden, "INSTALL_NOT_LICENSED",
 			"This install isn't licensed. Activate a Vectis Mail Pro subscription on the License page first.")
@@ -73,11 +73,14 @@ func (s *Server) handleBillingPortalSession(w http.ResponseWriter, r *http.Reque
 		// surfaces ValidonX's 422 "field is required" message. The React
 		// /account/billing page always passes one, so this is a safety net
 		// for non-UI callers.
-		scheme := "https"
-		if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
-			scheme = "http"
-		}
-		returnURL = scheme + "://" + r.Host + "/admin/license"
+		//
+		// Pin the default to the configured install hostname over https rather
+		// than the request-derived r.Host / X-Forwarded-Proto (VX-BILL-1): the
+		// explicit-URL path is already same-host-validated, so the default must
+		// not be the one place an attacker-influenced Host header shapes a URL
+		// we hand to Stripe via ValidonX. Defense-in-depth (super_admin-gated,
+		// and Vx re-validates against its apex allowlist).
+		returnURL = "https://" + s.hostname + "/admin/license"
 	}
 
 	client := validonx.NewClient(runtimeCfg.ToSecrets(), s.logger.With("component", "validonx.billing"))
@@ -211,7 +214,7 @@ func (s *Server) handleUpgradeCheckoutSession(w http.ResponseWriter, r *http.Req
 	// (not secrets-only) means an install configured purely via the admin License
 	// page is honoured instead of silently falling back to the default host.
 	cfgCtx, cfgCancel := context.WithTimeout(r.Context(), 5*time.Second)
-	runtimeCfg, _ := validonx.LoadRuntimeConfig(cfgCtx, s.db, s.secretsValidonX())
+	runtimeCfg, _ := s.loadValidonXConfig(cfgCtx)
 	cfgCancel()
 	baseURL := strings.TrimRight(runtimeCfg.BaseURL, "/")
 	if baseURL == "" {

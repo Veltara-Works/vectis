@@ -59,6 +59,7 @@ type Server struct {
 	callbackBaseURL    string // public base URL (OIDC/SAML callbacks, SCIM meta.location)
 	cfg                *config.VectisConfig
 	secrets            *config.VectisSecrets
+	validonxEncKey     []byte // AES-256 key for validonx_config service_key + license_key at rest
 	orchClient         *orchestrator.Client
 
 	// Repositories
@@ -195,6 +196,11 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	// key (same provisioning model as webhook secrets — no extra secret needed).
 	importEncKey := secretcrypto.DeriveKey([]byte(cfg.CookieSecret), "vectis-imap-import-v1")
 
+	// validonx_config service_key (a live Vx partner X-API-Key) + license_key are
+	// encrypted at rest with their own derived key (VX-CFG-1), same provisioning
+	// model as the webhook/IMAP secrets above.
+	validonxEncKey := secretcrypto.DeriveKey([]byte(cfg.CookieSecret), validonx.ConfigEncKeyLabel)
+
 	s := &Server{
 		logger:             logger,
 		db:                 db,
@@ -209,6 +215,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		callbackBaseURL:    cfg.CallbackBaseURL,
 		cfg:                cfg.VectisCfg,
 		secrets:            cfg.VectisSecrets,
+		validonxEncKey:     validonxEncKey,
 		inboundAsync:       newInboundAsyncLimiter(maxInboundAsyncBytes),
 		resetLimiter:       newFixedWindowLimiter(5, 15*time.Minute),
 		domains:            repository.NewDomainRepo(db),
@@ -244,6 +251,16 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		logger.Warn("webhook secret encryption pass failed (non-fatal)", "error", err)
 	} else if n > 0 {
 		logger.Info("encrypted legacy webhook secrets at rest", "count", n)
+	}
+
+	// Self-heal: encrypt validonx_config service_key/license_key still stored as
+	// plaintext from before encryption at rest landed (VX-CFG-1). Idempotent and
+	// non-fatal — Decrypt passes legacy plaintext through, so licensing keeps
+	// working either way.
+	if n, err := validonx.EncryptLegacyValidonXConfig(context.Background(), db, s.validonxEncKey); err != nil {
+		logger.Warn("validonx config encryption pass failed (non-fatal)", "error", err)
+	} else if n > 0 {
+		logger.Info("encrypted legacy validonx config credentials at rest", "count", n)
 	}
 
 	// Initialize orchestrator client — prefer mTLS, fall back to bearer token.
@@ -318,7 +335,7 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 		if cfg.VectisSecrets != nil {
 			vxSecrets = cfg.VectisSecrets.ValidonX
 		}
-		runtimeCfg, err := validonx.LoadRuntimeConfig(ctx, db, vxSecrets)
+		runtimeCfg, err := validonx.LoadRuntimeConfig(ctx, db, vxSecrets, validonxEncKey)
 		if err != nil {
 			logger.Warn("failed to load validonx runtime config from DB; using secrets.yaml only",
 				"error", err)
@@ -1165,8 +1182,9 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Post("/account/billing-portal-session", s.handleBillingPortalSession)
 
 			// In-product "Buy Pro" checkout — super_admin only.
-			// Mints a Stripe Checkout session via ValidonX's Customer #1
-			// partner-key endpoint so a Free install can buy Pro without
+			// Mints a Stripe Checkout session via ValidonX's keyless
+			// Customer #2 checkout endpoint (no Vx partner credential on the
+			// box; removed v0.1.36) so a Free install can buy Pro without
 			// leaving the admin UI. Does NOT require an existing license
 			// (the whole point is bootstrapping one). Returns the URL the
 			// admin UI navigates to.
