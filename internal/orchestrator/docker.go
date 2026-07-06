@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -212,6 +213,129 @@ func (dm *DockerManager) PullImageRef(ctx context.Context, imageRef string, time
 		return fmt.Errorf("docker pull %s: %w: %s", imageRef, err, strings.TrimSpace(string(output)))
 	}
 	dm.logger.Info("image ref pulled", "image", imageRef)
+	return nil
+}
+
+// ── Image provenance verification (REL-3 Part B, defence-in-depth) ──────────
+//
+// The vectis-* images are signed in CI by the release.yml workflow (Sigstore
+// keyless / OIDC), pinned to their immutable manifest digest. On the host, the
+// orchestrator additionally runs cosign — before recreating the stack — to
+// verify each pulled image carries a valid signature from OUR release workflow.
+// This layers provenance on top of the digest pin (Part A): the Ed25519-signed
+// release manifest already guarantees we run exactly the bytes it names; cosign
+// proves those bytes were built + signed by the release pipeline.
+
+const (
+	// cosignImage is the Sigstore cosign container used for host-side verify.
+	// Digest-pinned so the verifier itself can't be swapped via a floating tag
+	// (a mutable cosign would defeat the point). MANUALLY maintained — bump the
+	// tag and digest together; resolve the new digest with:
+	//   docker buildx imagetools inspect ghcr.io/sigstore/cosign/cosign:<tag> --format '{{.Manifest.Digest}}'
+	// NB the image path is .../cosign/cosign (the bare .../cosign repo 404s).
+	cosignImage = "ghcr.io/sigstore/cosign/cosign:v3.0.6@sha256:de9c65609e6bde17e6b48de485ee788407c9502fa08b8f4459f595b21f56cd00"
+
+	// cosignCertIdentityRegexp is the Sigstore certificate SAN a genuine vectis
+	// image signature must match: the release.yml workflow at a tag ref. Kept in
+	// lockstep with .github/workflows/release.yml + docs/notes/verifying-downloads.md.
+	cosignCertIdentityRegexp = `^https://github\.com/Veltara-Works/vectis/\.github/workflows/release\.yml@refs/tags/`
+	// cosignCertOIDCIssuer is GitHub Actions' OIDC token issuer.
+	cosignCertOIDCIssuer = "https://token.actions.githubusercontent.com"
+)
+
+// provenanceTarget is one image the verify pass will check.
+type provenanceTarget struct {
+	Service  string
+	ImageRef string // ghcr.io/veltara-works/vectis-<svc>@sha256:<digest>
+}
+
+// vectisProvenanceTargets maps Plan.ImageDigests (service → sha256:<digest>) to
+// the vectis-* image refs to verify, in stable service order. Entries whose
+// digest isn't a sha256:… ref are dropped (can't be content-verified). Split
+// out from VerifyImageProvenance so the selection logic is unit-testable without
+// shelling out to docker.
+func vectisProvenanceTargets(digests map[string]string) []provenanceTarget {
+	svcs := make([]string, 0, len(digests))
+	for svc := range digests {
+		svcs = append(svcs, svc)
+	}
+	sort.Strings(svcs)
+
+	targets := make([]provenanceTarget, 0, len(svcs))
+	for _, svc := range svcs {
+		digest := digests[svc]
+		if !strings.HasPrefix(digest, "sha256:") {
+			continue
+		}
+		targets = append(targets, provenanceTarget{
+			Service:  svc,
+			ImageRef: releaseServicePrefix + svc + "@" + digest,
+		})
+	}
+	return targets
+}
+
+// cosignVerifyArgs builds the `docker run` argv that verifies one image ref with
+// the pinned cosign container against the release-workflow identity. Pure so the
+// exact flags stay under test.
+func cosignVerifyArgs(imageRef string) []string {
+	return []string{
+		"run", "--rm", cosignImage,
+		"verify",
+		"--certificate-identity-regexp", cosignCertIdentityRegexp,
+		"--certificate-oidc-issuer", cosignCertOIDCIssuer,
+		imageRef,
+	}
+}
+
+// VerifyImageProvenance verifies each vectis-* image's Sigstore signature via the
+// pinned cosign container, keyed off Plan.ImageDigests, before the stack is
+// recreated (Apply Phase 4.1.5).
+//
+// Best-effort by design — it never returns an error and never blocks Apply. Any
+// failure (cosign image unpullable, Rekor/Fulcio unreachable on an air-gapped
+// or DR host, or a verify error) is logged; the Apply proceeds because the
+// digest pin (Part A) is the hard integrity guarantee and must not be gated on
+// transparency-log availability. Bricking updates or DR on a provenance-service
+// outage would be a worse failure than proceeding on already-authenticated
+// bytes. A tag-only pin (empty/nil digests) is a no-op with an info log.
+//
+// Only vectis-* images are checked; third-party images aren't signed by our
+// workflow (they're integrity-pinned by digest in the compose template instead).
+func (dm *DockerManager) VerifyImageProvenance(ctx context.Context, digests map[string]string) {
+	targets := vectisProvenanceTargets(digests)
+	if len(targets) == 0 {
+		dm.logger.Info("image provenance verification skipped: no manifest digests to verify (tag-only pin)")
+		return
+	}
+
+	dm.logger.Info("verifying image provenance (cosign)", "image_count", len(targets))
+	for _, t := range targets {
+		if err := dm.verifyImageProvenance(ctx, t.ImageRef); err != nil {
+			dm.logger.Warn("image provenance NOT verified — proceeding (the signed-manifest digest pin already guarantees these exact bytes)",
+				"service", t.Service, "image", t.ImageRef, "error", err)
+			continue
+		}
+		dm.logger.Info("image provenance verified", "service", t.Service, "image", t.ImageRef)
+	}
+}
+
+// verifyImageProvenance runs the pinned cosign container to verify one image ref.
+// The container reaches ghcr + Rekor/Fulcio over the host daemon's default
+// bridge (outbound); bounded by ImagePullTimeout (covers the first-time cosign
+// image pull + the network verify).
+func (dm *DockerManager) verifyImageProvenance(ctx context.Context, imageRef string) error {
+	verifyCtx := ctx
+	if dm.cfg.ImagePullTimeout > 0 {
+		var cancel context.CancelFunc
+		verifyCtx, cancel = context.WithTimeout(ctx, dm.cfg.ImagePullTimeout)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(verifyCtx, "docker", cosignVerifyArgs(imageRef)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("cosign verify %s: %w: %s", imageRef, err, strings.TrimSpace(string(output)))
+	}
 	return nil
 }
 

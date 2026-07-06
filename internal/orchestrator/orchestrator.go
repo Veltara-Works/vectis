@@ -766,6 +766,14 @@ func (o *Orchestrator) ApplyWithJobID(ctx context.Context, jobID string) (string
 		return jobID, fmt.Errorf("image pull failed, rolled back: %w", err)
 	}
 
+	// 4.1.5 Verify image provenance (REL-3 Part B, defence-in-depth). Confirm
+	// each vectis-* image we just pulled was signed by our release.yml workflow,
+	// on top of the digest pin (Part A) that already guarantees the bytes.
+	// Best-effort: a provenance-service outage (air-gapped DR, Rekor down) warns
+	// but never blocks the Apply — see VerifyImageProvenance. Runs after the pull
+	// (image present locally) and before Phase 4.2 recreates anything.
+	o.docker.VerifyImageProvenance(applyCtx, plan.ImageDigests)
+
 	// 4.2 Stop services in reverse dependency order. Postgres and valkey stay
 	// up: phase 4.3 (compose up) can fail, and rollback phase 2 (psql restore)
 	// needs postgres reachable. Originally every service was stopped here —
