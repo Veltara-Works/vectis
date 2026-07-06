@@ -469,6 +469,7 @@ jobs:
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           VECTIS_RELEASE_SIGNING_KEY: ${{ secrets.VECTIS_RELEASE_SIGNING_KEY }}
+          BINARY_SHA256: ${{ needs.build-binary.outputs.sha256 }}
         run: |
           set -euo pipefail
           test -n "${VECTIS_RELEASE_SIGNING_KEY:-}"   # fail the release if the secret is unset
@@ -533,12 +534,26 @@ jobs:
             exit 1
           fi
 
+          # Pin the CLI binary's sha256 into the SIGNED manifest so the host
+          # self-update path can bind the exact bytes it installs to this signed
+          # release, closing the origin-compromise downgrade where an older
+          # still-signed binary is served behind the current tag (REL-1). The
+          # value is the checksum computed by the build-binary job; re-validate it
+          # is a bare 64-char hex (matching internal/orchestrator.ValidBinaryDigest)
+          # so a broken build fails the release rather than publishing a manifest
+          # whose binary_sha256 the client would reject.
+          if [[ ! "$BINARY_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::binary sha256 '$BINARY_SHA256' is not a bare 64-char hex digest"
+            exit 1
+          fi
+
           jq -n \
             --arg latest "$VERSION" \
             --arg released_at "$RELEASED_AT" \
             --arg channel "$CHANNEL" \
+            --arg binary_sha256 "$BINARY_SHA256" \
             --argjson images "$IMAGES" \
-            '{latest: $latest, released_at: $released_at, channel: $channel, images: $images}' \
+            '{latest: $latest, released_at: $released_at, channel: $channel, binary_sha256: $binary_sha256, images: $images}' \
             > "$CHANNEL_FILE"
 
           # Sign the exact manifest bytes with the offline Ed25519 release key so

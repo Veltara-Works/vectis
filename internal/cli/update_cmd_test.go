@@ -1,12 +1,48 @@
 package cli
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// TestVerifyManifestBinaryDigest is the REL-1 regression net: the self-update
+// path must bind the downloaded binary to the sha256 named by the SIGNED release
+// manifest, so an origin compromise cannot serve an older still-signed binary
+// behind the current tag. An absent digest is a benign skip (pre-REL-1 manifest);
+// a mismatch or malformed digest is attack-class (errReleaseVerification).
+func TestVerifyManifestBinaryDigest(t *testing.T) {
+	const good = "8bd19c3a278a2cb0602b362d9fd69566c332e053a6c805119ba0cf684601db90"
+
+	// Absent field → benign skip (fall back to the Ed25519 binary signature).
+	if err := verifyManifestBinaryDigest("", good); err != nil {
+		t.Errorf("empty manifest digest: want nil (skip), got %v", err)
+	}
+	// Present + matching → pass.
+	if err := verifyManifestBinaryDigest(good, good); err != nil {
+		t.Errorf("matching digest: want nil, got %v", err)
+	}
+	// Present + mismatching → attack-class refusal (downgrade defence).
+	mismatch := verifyManifestBinaryDigest(good, strings.Repeat("b", 64))
+	if mismatch == nil {
+		t.Error("mismatching digest: want error, got nil")
+	} else if !errors.Is(mismatch, errReleaseVerification) {
+		t.Errorf("mismatching digest: want errReleaseVerification, got %v", mismatch)
+	}
+	// Present but malformed → attack-class refusal (must not be trusted).
+	for _, bad := range []string{"sha256:" + good, strings.Repeat("a", 63), strings.ToUpper(good), "not-a-digest"} {
+		err := verifyManifestBinaryDigest(bad, good)
+		if err == nil {
+			t.Errorf("malformed manifest digest %q: want error, got nil", bad)
+		} else if !errors.Is(err, errReleaseVerification) {
+			t.Errorf("malformed manifest digest %q: want errReleaseVerification, got %v", bad, err)
+		}
+	}
+}
 
 // TestDownloadFile_Bounded is the REL-4 regression net: downloadFile must cap
 // the response body so a hostile origin cannot exhaust host disk. A body within

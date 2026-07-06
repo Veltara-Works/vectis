@@ -704,8 +704,9 @@ func refreshCLIBinary() (string, error) {
 	}
 
 	var manifest struct {
-		Latest  string `json:"latest"`
-		Channel string `json:"channel"`
+		Latest       string `json:"latest"`
+		Channel      string `json:"channel"`
+		BinarySHA256 string `json:"binary_sha256"`
 	}
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		return "", fmt.Errorf("decode releases-stable.json: %w", err)
@@ -784,6 +785,26 @@ func refreshCLIBinary() (string, error) {
 		return "", fmt.Errorf("checksum mismatch (expected %s, got %s)", expectedSHA, actualSHA)
 	}
 
+	// 3a. Bind the downloaded bytes to the SIGNED manifest (REL-1). The .sha256
+	// above is same-origin (transport integrity only), and the Ed25519 binary
+	// signature at 3b authenticates the bytes but carries NO version metadata — so
+	// under an origin/DNS/TLS compromise an attacker can replay the genuine
+	// current manifest (newest tag → passes the anti-rollback check at step 1)
+	// while serving an OLDER but still-validly-signed binary + its real
+	// .sha256/.ed25519, forcing a downgrade to any prior signed release. The
+	// manifest's binary_sha256 is authenticated by the manifest's Ed25519
+	// signature (verified at step 1) and names THIS release's exact bytes, so
+	// requiring the download to match it closes that downgrade. FAIL CLOSED,
+	// attack-class (errReleaseVerification). Enforce-IF-present: manifests
+	// published before REL-1 (live v0.1.42) omit the field, so an unconditional
+	// check would break the next update — and a stripped field cannot weaken a
+	// v0.1.43+ client, because the signature covers the field (an attacker cannot
+	// strip it from a signed manifest) and every genuine fieldless manifest names
+	// a tag <= v0.1.42, which the anti-rollback check already refuses.
+	if err := verifyManifestBinaryDigest(manifest.BinarySHA256, actualSHA); err != nil {
+		return "", err
+	}
+
 	// 3b. Verify the offline Ed25519 release signature over the binary before
 	// installing it (audit E-H3). This is the real supply-chain gate: unlike the
 	// same-origin SHA256, the signature cannot be forged by a compromise of
@@ -817,6 +838,29 @@ func refreshCLIBinary() (string, error) {
 	}
 
 	return fmt.Sprintf("updated %s -> %s (takes effect on next vectis invocation)", version.Version, manifest.Latest), nil
+}
+
+// verifyManifestBinaryDigest gates a downloaded binary against the sha256 the
+// SIGNED release manifest names for this release (REL-1). manifestDigest is the
+// manifest's `binary_sha256`; actualSHA is the hex sha256 of the downloaded
+// bytes (already checked against the same-origin .sha256 by the caller).
+//
+// Enforce-IF-present: an empty manifestDigest (a pre-REL-1 manifest or a
+// self-hosted mirror) is a benign skip — the caller still gates the install on
+// the per-binary Ed25519 signature. A malformed or mismatching digest is
+// attack-class (errReleaseVerification): a mismatch means the served bytes are
+// not the ones the signed manifest names, i.e. a tampered/downgraded binary.
+func verifyManifestBinaryDigest(manifestDigest, actualSHA string) error {
+	if manifestDigest == "" {
+		return nil
+	}
+	if !orchestrator.ValidBinaryDigest(manifestDigest) {
+		return fmt.Errorf("%w: releases manifest binary_sha256 = %q is not a valid sha256 digest", errReleaseVerification, manifestDigest)
+	}
+	if actualSHA != manifestDigest {
+		return fmt.Errorf("%w: downloaded binary sha256 %s does not match the signed manifest digest %s (refusing possible downgrade)", errReleaseVerification, actualSHA, manifestDigest)
+	}
+	return nil
 }
 
 // installBinary moves the freshly-downloaded, checksum-verified binary into

@@ -79,6 +79,19 @@ running-vs-declared diff stay readable rather than showing a bare digest. A
 manifest without an `images` map (a pre-REL-3 release or a self-hosted mirror)
 degrades to a tag-only pin and the orchestrator warns.
 
+The manifest likewise pins the host CLI binary via a `binary_sha256` field (a bare
+lowercase sha256 hex of the published `vectis-linux-amd64`). During a host
+self-update, `vectis update` checks the binary it just downloaded against this
+**signed** digest — not only the same-origin `.sha256` and the per-binary
+`.ed25519`. The per-binary signature authenticates the bytes but carries no
+version metadata, so on its own it can't tell a *current* release apart from an
+*older* one that was also validly signed; a compromised origin could replay the
+genuine current manifest (newest tag, passing anti-rollback) while serving an
+older still-signed binary to force a downgrade. Binding the bytes to the signed
+manifest that named the tag closes that (REL-1). A manifest without a
+`binary_sha256` (a pre-REL-1 release or a self-hosted mirror) degrades to the
+Ed25519-signature-only gate.
+
 ## Host-side image provenance (cosign, automatic)
 
 The digest pin above guarantees the orchestrator runs *exactly the bytes the
