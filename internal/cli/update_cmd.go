@@ -751,19 +751,27 @@ func refreshCLIBinary() (string, error) {
 		return "", fmt.Errorf("download %s: %w", binURL, err)
 	}
 
-	shaResp, err := httpClient.Get(shaURL)
+	// Bound the checksum fetch (a .sha256 is 64 hex chars + a filename). The old
+	// io.ReadAll(shaResp.Body) was unbounded, so a hostile/broken origin's
+	// oversized 200 body could exhaust memory before the signature gate (same
+	// class as the binary-download bound below). httpGetBody caps the read and
+	// reports a non-200 as ok=false.
+	shaBytes, shaOK, err := httpGetBody(httpClient, shaURL, 4096)
 	if err != nil {
 		return "", fmt.Errorf("download %s: %w", shaURL, err)
 	}
-	shaBytes, err := io.ReadAll(shaResp.Body)
-	shaResp.Body.Close()
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", shaURL, err)
+	if !shaOK {
+		return "", fmt.Errorf("%s returned a non-200 status", shaURL)
 	}
-	if shaResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s returned HTTP %d", shaURL, shaResp.StatusCode)
+	// Guard the field split: an empty/whitespace-only body (a hostile or broken
+	// origin serving a 200 with no checksum) must not panic on [0] (REL-2). This
+	// runs before the signature gate, so it cannot admit a bad binary — but an
+	// unhandled index-out-of-range would crash `vectis update`.
+	shaFields := strings.Fields(string(shaBytes))
+	if len(shaFields) == 0 {
+		return "", fmt.Errorf("%s returned an empty checksum body", shaURL)
 	}
-	expectedSHA := strings.TrimSpace(strings.Fields(string(shaBytes))[0])
+	expectedSHA := strings.TrimSpace(shaFields[0])
 
 	// 3. Verify checksum (transport-integrity only — same origin as the binary,
 	// so it defends against a truncated download, not a hostile origin).
@@ -846,6 +854,13 @@ func installBinary(src, dest string) error {
 		"to refresh the host CLI binary", dest)
 }
 
+// maxBinaryDownload bounds the self-update binary fetch. The vectis binary is
+// tens of MB; 512 MiB is a generous ceiling that still refuses a hostile origin
+// streaming an unbounded body to exhaust host disk before the signature gate
+// runs (REL-4). Every other release fetch is already length-bounded.
+// var (not const) so tests can lower the cap without moving 512 MiB.
+var maxBinaryDownload int64 = 512 << 20 // 512 MiB
+
 func downloadFile(client *http.Client, url, dest string) error {
 	resp, err := client.Get(url)
 	if err != nil {
@@ -860,8 +875,19 @@ func downloadFile(client *http.Client, url, dest string) error {
 		return err
 	}
 	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
-	return err
+	// Copy at most maxBinaryDownload+1 so an oversize body is rejected explicitly
+	// rather than silently truncated (a truncated binary would otherwise only be
+	// caught later by the checksum/signature gate).
+	n, err := io.Copy(f, io.LimitReader(resp.Body, maxBinaryDownload+1))
+	if err != nil {
+		os.Remove(dest) // don't leave a partial download behind
+		return err
+	}
+	if n > maxBinaryDownload {
+		os.Remove(dest)
+		return fmt.Errorf("download exceeds %d bytes (refusing)", maxBinaryDownload)
+	}
+	return nil
 }
 
 func sha256Sum(b []byte) []byte {
