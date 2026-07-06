@@ -10,7 +10,37 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Veltara-Works/vectis/internal/config"
+	"github.com/Veltara-Works/vectis/internal/secretcrypto"
 )
+
+// ConfigEncKeyLabel is the HKDF label for the key that encrypts the two
+// recoverable credentials in validonx_config (service_key + license_key) at
+// rest. Derive with secretcrypto.DeriveKey(master, ConfigEncKeyLabel). The
+// service_key is a live ValidonX partner X-API-Key and the license_key resolves
+// a paying tenant, so both follow the repo's at-rest-encryption convention
+// (mirrors WebhookRepo / IMAPImportRepo). tenant_id/server_id/subscription_id
+// are identifiers, not secrets, and stay plaintext.
+const ConfigEncKeyLabel = "vectis-validonx-config-v1"
+
+// encryptField encrypts a validonx_config credential for storage. An empty
+// value stays empty so the "empty string clears the field" upsert/merge
+// semantics survive (Encrypt("") would otherwise yield a non-empty ciphertext).
+func encryptField(encKey []byte, val string) (string, error) {
+	if val == "" {
+		return "", nil
+	}
+	return secretcrypto.Encrypt(encKey, val)
+}
+
+// decryptField reverses encryptField. secretcrypto.Decrypt passes through any
+// value lacking the enc:v1: prefix, so legacy plaintext rows (and secrets.yaml
+// values, which are never encrypted) round-trip unchanged even with a nil key.
+func decryptField(encKey []byte, val string) (string, error) {
+	if val == "" {
+		return "", nil
+	}
+	return secretcrypto.Decrypt(encKey, val)
+}
 
 // DefaultBaseURL is used when neither secrets.yaml nor the validonx_config DB
 // row provides one. ValidonX's production endpoint.
@@ -67,7 +97,11 @@ func (c *RuntimeConfig) ToSecrets() *config.ValidonXSecrets {
 //
 // When the DB row is absent or both sources are empty, returns a RuntimeConfig
 // with empty fields (IsConfigured() == false → free-tier mode).
-func LoadRuntimeConfig(ctx context.Context, db *pgxpool.Pool, secrets *config.ValidonXSecrets) (*RuntimeConfig, error) {
+//
+// encKey decrypts the two at-rest-encrypted credentials (service_key,
+// license_key) read from the DB row; pass the key derived with ConfigEncKeyLabel.
+// A nil key still works for legacy plaintext rows (Decrypt passes them through).
+func LoadRuntimeConfig(ctx context.Context, db *pgxpool.Pool, secrets *config.ValidonXSecrets, encKey []byte) (*RuntimeConfig, error) {
 	cfg := &RuntimeConfig{}
 
 	if secrets != nil {
@@ -91,6 +125,14 @@ func LoadRuntimeConfig(ctx context.Context, db *pgxpool.Pool, secrets *config.Va
 		}
 		if err == nil {
 			cfg.FromDB = true
+			// service_key + license_key are encrypted at rest; decrypt before
+			// the field-level merge (Decrypt is a no-op on legacy plaintext rows).
+			if dbKey, err = decryptField(encKey, dbKey); err != nil {
+				return cfg, fmt.Errorf("decrypt validonx_config service_key: %w", err)
+			}
+			if dbLicense, err = decryptField(encKey, dbLicense); err != nil {
+				return cfg, fmt.Errorf("decrypt validonx_config license_key: %w", err)
+			}
 			if dbBase != "" {
 				cfg.BaseURL = dbBase
 			}
@@ -127,8 +169,12 @@ func LoadRuntimeConfig(ctx context.Context, db *pgxpool.Pool, secrets *config.Va
 // SaveRuntimeConfig writes the given config to the validonx_config singleton
 // table. configuredByAdminID is captured for the audit trail. Empty strings
 // in the input clear the corresponding DB fields.
+//
+// encKey encrypts the service_key + license_key at rest (derive with
+// ConfigEncKeyLabel). Empty credentials stay empty so a caller can still clear
+// a field by passing "".
 func SaveRuntimeConfig(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger,
-	cfg RuntimeConfig, configuredByAdminID string) error {
+	cfg RuntimeConfig, configuredByAdminID string, encKey []byte) error {
 
 	if db == nil {
 		return errors.New("save runtime config: db pool is nil")
@@ -139,7 +185,16 @@ func SaveRuntimeConfig(ctx context.Context, db *pgxpool.Pool, logger *slog.Logge
 		adminID = configuredByAdminID
 	}
 
-	_, err := db.Exec(ctx,
+	encServiceKey, err := encryptField(encKey, cfg.ServiceKey)
+	if err != nil {
+		return fmt.Errorf("encrypt validonx_config service_key: %w", err)
+	}
+	encLicenseKey, err := encryptField(encKey, cfg.LicenseKey)
+	if err != nil {
+		return fmt.Errorf("encrypt validonx_config license_key: %w", err)
+	}
+
+	_, err = db.Exec(ctx,
 		`INSERT INTO validonx_config
 		    (singleton, base_url, service_key, tenant_id, subscription_id, server_id, license_key, configured_at, configured_by_admin_id)
 		 VALUES (TRUE, $1, $2, $3, $4, $5, $6, NOW(), $7)
@@ -152,14 +207,16 @@ func SaveRuntimeConfig(ctx context.Context, db *pgxpool.Pool, logger *slog.Logge
 		    license_key            = EXCLUDED.license_key,
 		    configured_at          = NOW(),
 		    configured_by_admin_id = EXCLUDED.configured_by_admin_id`,
-		cfg.BaseURL, cfg.ServiceKey, cfg.TenantID, cfg.SubscriptionID, cfg.ServerID, cfg.LicenseKey, adminID,
+		cfg.BaseURL, encServiceKey, cfg.TenantID, cfg.SubscriptionID, cfg.ServerID, encLicenseKey, adminID,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert validonx_config: %w", err)
 	}
+	// subscription_id is deliberately omitted from the log — the API masks it
+	// everywhere (maskSubscriptionID) because the full id identifies a paying
+	// customer. tenant_id is enough to correlate the activation (VX-CFG-2).
 	logger.Info("validonx runtime config saved",
 		"tenant_id", cfg.TenantID,
-		"subscription_id", cfg.SubscriptionID,
 	)
 	return nil
 }
@@ -176,4 +233,55 @@ func ClearRuntimeConfig(ctx context.Context, db *pgxpool.Pool, logger *slog.Logg
 	}
 	logger.Info("validonx runtime config cleared")
 	return nil
+}
+
+// EncryptLegacyValidonXConfig is an idempotent startup pass that encrypts the
+// service_key and license_key of the singleton validonx_config row if they are
+// still stored as plaintext (rows written before encryption at rest landed —
+// VX-CFG-1). It returns the number of fields migrated (0, 1, or 2). Safe to run
+// on every boot: already-encrypted fields and empty fields are skipped, and no
+// row (Free install) is a clean 0. Mirrors WebhookRepo.EncryptLegacySecrets.
+func EncryptLegacyValidonXConfig(ctx context.Context, db *pgxpool.Pool, encKey []byte) (int, error) {
+	if db == nil {
+		return 0, errors.New("encrypt legacy validonx_config: db pool is nil")
+	}
+
+	var svcKey, licKey string
+	err := db.QueryRow(ctx,
+		`SELECT service_key, license_key FROM validonx_config WHERE singleton = TRUE`,
+	).Scan(&svcKey, &licKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read validonx_config: %w", err)
+	}
+
+	newSvc, svcLegacy := svcKey, svcKey != "" && !secretcrypto.IsEncrypted(svcKey)
+	newLic, licLegacy := licKey, licKey != "" && !secretcrypto.IsEncrypted(licKey)
+	if !svcLegacy && !licLegacy {
+		return 0, nil
+	}
+
+	migrated := 0
+	if svcLegacy {
+		if newSvc, err = secretcrypto.Encrypt(encKey, svcKey); err != nil {
+			return 0, fmt.Errorf("encrypt legacy service_key: %w", err)
+		}
+		migrated++
+	}
+	if licLegacy {
+		if newLic, err = secretcrypto.Encrypt(encKey, licKey); err != nil {
+			return migrated, fmt.Errorf("encrypt legacy license_key: %w", err)
+		}
+		migrated++
+	}
+
+	if _, err := db.Exec(ctx,
+		`UPDATE validonx_config SET service_key = $1, license_key = $2 WHERE singleton = TRUE`,
+		newSvc, newLic,
+	); err != nil {
+		return 0, fmt.Errorf("update legacy validonx_config: %w", err)
+	}
+	return migrated, nil
 }
