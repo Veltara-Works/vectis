@@ -119,6 +119,34 @@ func TestGetAllowedDomainIDs_KeyScopeClamp(t *testing.T) {
 	}
 }
 
+// TestResolveRoleScope is the ISO-1 regression net: a domain-scoped role
+// (domain_admin) with nil/empty assigned domains must resolve to a non-nil
+// EMPTY slice ("no access"), never nil ("all domains"). nil must be produced
+// only for all-domains roles. This is the fail-open cross-tenant read where a
+// domain_admin whose last domain was removed (incl. via ON DELETE CASCADE on
+// domain deletion) silently inverted to full cross-tenant access.
+func TestResolveRoleScope(t *testing.T) {
+	// domain_admin with no domains: both nil and empty inputs → non-nil empty.
+	for _, assigned := range [][]string{nil, {}} {
+		got := resolveRoleScope(false, assigned)
+		if got == nil {
+			t.Fatalf("zero-domain domain_admin resolved to nil (== all domains); ISO-1 regression, input=%v", assigned)
+		}
+		if len(got) != 0 {
+			t.Fatalf("zero-domain domain_admin scope = %v, want empty", got)
+		}
+	}
+	// all-domains role → nil (the only legitimate unrestricted sentinel).
+	if got := resolveRoleScope(true, nil); got != nil {
+		t.Fatalf("all-domains role = %v, want nil (unrestricted)", got)
+	}
+	// domain_admin with assignments → passed through unchanged.
+	got := resolveRoleScope(false, []string{"d1", "d2"})
+	if len(got) != 2 {
+		t.Fatalf("domain_admin scope = %v, want [d1 d2]", got)
+	}
+}
+
 // TestRequireDomainAccess is the R1 regression net: the /domains/{domainID}
 // choke point must 403 a key scoped to a different domain and pass one scoped to
 // the requested domain — even though the owning role grants all domains.
