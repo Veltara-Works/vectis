@@ -23,14 +23,12 @@ syntax is not valid YAML), so these digests are **not** auto-bumped. Bump them b
 hand when moving to a new base-image version:
 
 1. Choose the new tag (or keep the tag, refresh the digest for a security patch).
-2. Resolve the current manifest-list digest for the tag:
+2. Resolve the current manifest-list digest for the tag (run in a shell — this
+   is a plain command, this file is not rendered through Go's template engine):
 
    ```
-   docker buildx imagetools inspect <image>:<tag> --format '{{ "{{" }}.Manifest.Digest{{ "}}" }}'
+   docker buildx imagetools inspect <image>:<tag> --format '{{.Manifest.Digest}}'
    ```
-
-   (Plain form, run in a shell — not through the template:
-   `docker buildx imagetools inspect postgres:17-alpine --format '{{.Manifest.Digest}}'`.)
 
 3. Update the `image:` line to `image: <image>:<tag>@<digest>`.
 4. Bump both the tag and the digest together; never leave a tag/digest mismatch.
