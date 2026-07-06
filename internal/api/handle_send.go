@@ -94,6 +94,12 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 // The auth/abuse caller context (adminID, adminRole, apiKeyID, ip) is resolved
 // once by the caller and passed in: the batch handler resolves it a single time
 // for the whole request rather than re-reading it per message.
+// maxRecipientsPerMessage bounds To+CC+BCC on a single send. It sits below
+// Postfix's default smtpd_recipient_limit (1000/msg); the per-recipient abuse
+// metering (CheckAndRecordN) is the primary outbound-volume control (SEND-2),
+// and this is the hard per-message ceiling.
+const maxRecipientsPerMessage = 100
+
 func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRole, apiKeyID, ip string, v sendVariant) sendOutcome {
 	ctx := r.Context()
 
@@ -109,11 +115,36 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 			return sendErr(http.StatusBadRequest, "MISSING_FIELDS", fmt.Sprintf("to[%d].email is required", i))
 		}
 	}
+	// CC/BCC must also carry a non-empty address: they count toward the recipient
+	// cap + abuse metering below, and a blank one would otherwise slip through to
+	// a 5xx from Postfix rcpt("") instead of a clean 4xx validation error.
+	for i, a := range req.CC {
+		if a.Email == "" {
+			return sendErr(http.StatusBadRequest, "MISSING_FIELDS", fmt.Sprintf("cc[%d].email is required", i))
+		}
+	}
+	for i, a := range req.BCC {
+		if a.Email == "" {
+			return sendErr(http.StatusBadRequest, "MISSING_FIELDS", fmt.Sprintf("bcc[%d].email is required", i))
+		}
+	}
 	if req.Subject == "" {
 		return sendErr(http.StatusBadRequest, "MISSING_FIELDS", "subject is required")
 	}
 	if req.TextBody == "" && req.HTMLBody == "" {
 		return sendErr(http.StatusBadRequest, "MISSING_FIELDS", "text_body or html_body is required")
+	}
+
+	// Cap total recipients per message (To+CC+BCC). Without this, To/CC/BCC were
+	// bounded only by the 1 MB JSON body — up to ~1000 recipients delivered from
+	// one API call, all counting as a single hit against the abuse limiter
+	// (SEND-2). The abuse counters are now metered by recipient (below); this is
+	// the hard per-message ceiling, below Postfix's default 1000/msg.
+	recipientCount := len(req.To) + len(req.CC) + len(req.BCC)
+	if recipientCount > maxRecipientsPerMessage {
+		return sendErr(http.StatusBadRequest, "TOO_MANY_RECIPIENTS",
+			fmt.Sprintf("a message may address at most %d recipients (got %d); split large sends into multiple messages",
+				maxRecipientsPerMessage, recipientCount))
 	}
 
 	// Validate sender domain — must be a domain managed by Vectis.
@@ -172,7 +203,7 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 
 		// Rate check + spike detection.
 		if s.abuseDetector != nil {
-			check, err := s.abuseDetector.CheckAndRecord(ctx, mailbox.ID, domain.ID)
+			check, err := s.abuseDetector.CheckAndRecordN(ctx, mailbox.ID, domain.ID, recipientCount)
 			if err != nil {
 				s.logger.Error("abuse check failed", "error", err)
 				// Fail open — don't block sending on abuse check errors.
@@ -197,7 +228,7 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 		// (e.g. noreply@) has no per-mailbox counter, so it would otherwise skip
 		// abuse limiting entirely. Enforce the per-domain hourly cap so this
 		// path can't be used for unmetered outbound.
-		check, err := s.abuseDetector.CheckAndRecordDomain(ctx, domain.ID)
+		check, err := s.abuseDetector.CheckAndRecordDomainN(ctx, domain.ID, recipientCount)
 		if err != nil {
 			s.logger.Error("domain abuse check failed", "error", err, "domain_id", domain.ID)
 			// Fail open — mirror the mailbox path; never block on counter errors.
