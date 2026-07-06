@@ -67,6 +67,14 @@ before acting on it. This is the gate that defends against a compromised downloa
 origin (`dl.vectismail.com` / DNS / a TLS-strip MITM): such an attacker can serve
 bytes but cannot forge a signature without the offline key.
 
+The release manifest also pins each vectis service image to its immutable
+`sha256:` digest (an `images` map keyed by service name). Because the whole
+manifest is Ed25519-signed, those digests are authenticated too — so the
+orchestrator pulls `vectis-<svc>@sha256:<digest>` (exactly the bytes this release
+published) instead of trusting whatever the mutable `:tag` resolves to at pull
+time. A manifest without an `images` map (a pre-REL-3 release or a self-hosted
+mirror) degrades to a tag-only pin and the orchestrator warns.
+
 The public key is `GYnHjxJS1l3QQmlZ9+36BuNwxtHh758C0X8jfy9IaN8=` (the value
 compiled into `internal/releasesign.PublicKeyB64`). **If the release key is ever
 rotated, update this value too** — the per-release notes auto-extract the key from

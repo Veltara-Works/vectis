@@ -37,7 +37,7 @@ func TestRegenerateCompose_RewritesWhenContentChanges(t *testing.T) {
 		return []byte(sampleNewCompose), nil
 	}
 
-	rewritten, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", gen)
+	rewritten, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", gen, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestRegenerateCompose_NoOpWhenIdentical(t *testing.T) {
 		return []byte(sampleOldCompose), nil
 	}
 
-	rewritten, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", gen)
+	rewritten, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", gen, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestRegenerateCompose_BackupContainsPreRewriteBytes(t *testing.T) {
 	gen := func(_ context.Context, _ string) ([]byte, error) {
 		return []byte(sampleNewCompose), nil
 	}
-	if _, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", gen); err != nil {
+	if _, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", gen, nil); err != nil {
 		t.Fatalf("regenerate: %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestRegenerateCompose_NilGeneratorErrors(t *testing.T) {
 	composePath := writeTempCompose(t, sampleOldCompose)
 	backupPath := composePath + ".bak"
 
-	_, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", nil)
+	_, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", nil, nil)
 	if err == nil {
 		t.Fatal("expected error when generator is nil")
 	}
@@ -142,7 +142,7 @@ func TestRegenerateCompose_GeneratorErrorRemovesBackup(t *testing.T) {
 	gen := func(_ context.Context, _ string) ([]byte, error) {
 		return nil, errors.New("simulated DB outage")
 	}
-	rewritten, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", gen)
+	rewritten, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", gen, nil)
 	if err == nil {
 		t.Fatal("expected error from failing generator")
 	}
@@ -166,7 +166,7 @@ func TestRegenerateCompose_EmptyGeneratedContentErrors(t *testing.T) {
 	gen := func(_ context.Context, _ string) ([]byte, error) {
 		return []byte{}, nil
 	}
-	_, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", gen)
+	_, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.0-rc29", gen, nil)
 	if err == nil {
 		t.Fatal("expected error when generator returns empty bytes (would otherwise blank the compose file)")
 	}
@@ -182,7 +182,7 @@ func TestRegenerateCompose_MissingComposeFileErrors(t *testing.T) {
 	gen := func(_ context.Context, _ string) ([]byte, error) {
 		return []byte(sampleNewCompose), nil
 	}
-	_, err := RegenerateCompose(context.Background(), missing, filepath.Join(tmp, "bak.yml"), "v0.1.0-rc29", gen)
+	_, err := RegenerateCompose(context.Background(), missing, filepath.Join(tmp, "bak.yml"), "v0.1.0-rc29", gen, nil)
 	if err == nil {
 		t.Fatal("expected error when compose path doesn't exist")
 	}
@@ -219,7 +219,7 @@ func TestRegenerateCompose_PostApplyMatchesTemplate(t *testing.T) {
 		return nil, nil
 	}
 
-	rewritten, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.3", gen)
+	rewritten, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.3", gen, nil)
 	if err != nil {
 		t.Fatalf("regenerate: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestRegenerateCompose_PostApplyMatchesTemplate(t *testing.T) {
 	}
 
 	// Idempotence: a second regen against the now-on-disk content must be a no-op.
-	rewritten2, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.3", gen)
+	rewritten2, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.3", gen, nil)
 	if err != nil {
 		t.Fatalf("second regenerate: %v", err)
 	}
@@ -281,5 +281,45 @@ func buildTemplateData() *engine.TemplateData {
 			DovecotUser: "vectis_dovecot", DovecotPassword: "secret_dovecot",
 		},
 		Valkey: config.ValkeySecrets{Host: "valkey", Port: 6379, Password: "secret_valkey"},
+	}
+}
+
+// RegenerateCompose must pin the generated (tag-only) compose to the supplied
+// manifest digests — the REL-3-part-2 integration point. This is what makes a
+// render-from-target Apply (generator renders by tag) land digest-pinned images.
+func TestRegenerateCompose_PinsDigests(t *testing.T) {
+	const dig = "sha256:" + "abcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabca1"
+	composePath := writeTempCompose(t, sampleOldCompose)
+	backupPath := composePath + ".bak"
+
+	// Generator renders images by tag only (as the real templates do).
+	gen := func(_ context.Context, releaseTag string) ([]byte, error) {
+		return []byte(`services:
+  api:
+    image: ghcr.io/veltara-works/vectis-api:` + releaseTag + `
+    container_name: vectis-api
+`), nil
+	}
+
+	rewritten, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.42", gen, map[string]string{"api": dig})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !rewritten {
+		t.Fatalf("expected rewritten=true")
+	}
+	got, _ := os.ReadFile(composePath)
+	if !strings.Contains(string(got), "vectis-api:v0.1.42@"+dig) {
+		t.Errorf("regenerated compose not digest-pinned:\n%s", got)
+	}
+
+	// Idempotent: re-running with the same tag+digest is a no-op (the on-disk
+	// pinned compose already equals the pinned regen output).
+	rewritten2, err := RegenerateCompose(context.Background(), composePath, backupPath, "v0.1.42", gen, map[string]string{"api": dig})
+	if err != nil {
+		t.Fatalf("second regen error: %v", err)
+	}
+	if rewritten2 {
+		t.Errorf("expected no-op on identical pinned regen, got rewritten=true")
 	}
 }

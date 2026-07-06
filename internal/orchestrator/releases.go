@@ -36,7 +36,21 @@ type ReleaseManifest struct {
 	Latest     string    `json:"latest"`            // e.g. "v0.1.0-rc24"
 	ReleasedAt time.Time `json:"released_at"`       // when the release workflow published the manifest
 	Channel    string    `json:"channel,omitempty"` // "rc" or "stable"; optional
+
+	// Images pins each vectis-* service image to an immutable manifest digest
+	// (service name → "sha256:…"), so the orchestrator runs exactly the bytes
+	// this signed manifest names — not whatever the mutable :tag happens to point
+	// at when it pulls (REL-3). OPTIONAL: manifests published before REL-3 (and
+	// self-hosted mirrors) omit it; consumers fall back to pinning by tag alone
+	// and warn. Authenticated by the same Ed25519 manifest signature as `latest`.
+	Images map[string]string `json:"images,omitempty"`
 }
+
+// imageDigestRe is the strict allowlist for a manifest image digest: a bare
+// sha256:<64 hex>. Rejects anything carrying a tag, path, algorithm other than
+// sha256, or whitespace — defence in depth behind the manifest signature before
+// a digest is spliced into a compose `image:` ref.
+var imageDigestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // releaseServicePrefix identifies which compose services track the release
 // channel. Lockstep: all five images share a single tag per release.
@@ -235,6 +249,15 @@ func fetchReleaseManifest(ctx context.Context, httpClient *http.Client, manifest
 			return nil, fmt.Errorf("release manifest `latest` = %q is older than the running version %q (refusing signed rollback)", m.Latest, versionFloor)
 		}
 	}
+	// Validate every supplied image digest before any caller splices it into a
+	// compose image ref (REL-3): defence in depth behind the signature, and a
+	// clear invariant that each value is a bare sha256:<64hex>. A manifest with
+	// no `images` map is valid — the caller pins by tag alone and warns.
+	for svc, dig := range m.Images {
+		if !imageDigestRe.MatchString(dig) {
+			return nil, fmt.Errorf("release manifest image digest for %q = %q is not a valid sha256 digest", svc, dig)
+		}
+	}
 	return &m, nil
 }
 
@@ -263,17 +286,56 @@ func httpGetBytes(ctx context.Context, httpClient *http.Client, url, accept stri
 
 // rewriteReleaseTag returns image with its tag replaced by tag, if image is a
 // vectis-* release-channel-managed image. Non-vectis images (postgres,
-// valkey, traefik, acme.sh) are returned unchanged. If the image has no tag
-// or cannot be parsed, it's returned unchanged — the caller will either find
-// a match against running versions or treat it as orchestrator-unmanaged.
+// valkey, traefik, acme.sh) are returned unchanged. Thin wrapper over
+// rewriteReleaseImageRef with no digest (tag-only pin).
 func rewriteReleaseTag(image, tag string) string {
+	return rewriteReleaseImageRef(image, tag, "")
+}
+
+// rewriteReleaseImageRef rewrites a vectis-* release image to the lockstep
+// release tag and, when digest is non-empty, pins it to that immutable manifest
+// digest: "…/vectis-api:v0.1.42@sha256:…" (REL-3). Non-vectis images (postgres,
+// valkey, traefik) are returned unchanged. Any tag/digest already on the ref is
+// stripped first, so re-planning against an already-pinned compose is stable
+// (it re-derives the same canonical ref). digest "" yields a tag-only ref —
+// the graceful-degradation path for manifests without an images map.
+func rewriteReleaseImageRef(image, tag, digest string) string {
 	if !strings.HasPrefix(image, releaseServicePrefix) {
 		return image
 	}
-	idx := strings.LastIndex(image, ":")
+	// Strip an existing digest (repository names never contain '@').
+	name := image
+	if at := strings.Index(name, "@"); at >= 0 {
+		name = name[:at]
+	}
+	// Locate the tag separator: the ':' past the ghcr prefix (guards against the
+	// registry-host ':'). No tag → leave the ref unchanged, matching the prior
+	// rewriteReleaseTag; Plan already refuses tagless (floating) vectis images.
+	idx := strings.LastIndex(name, ":")
 	if idx < len(releaseServicePrefix) {
-		// No tag, or `:` is inside the registry hostname (shouldn't happen for ghcr.io).
 		return image
 	}
-	return image[:idx] + ":" + tag
+	ref := name[:idx] + ":" + tag
+	if digest != "" {
+		ref += "@" + digest
+	}
+	return ref
+}
+
+// vectisServiceFromImage extracts the service name from a vectis-* image ref
+// (e.g. "ghcr.io/veltara-works/vectis-cert-extractor:v0.1.42" → "cert-extractor").
+// Returns ("", false) for non-vectis images. The service segment runs from the
+// end of releaseServicePrefix up to the first ':' (tag) or '@' (digest).
+func vectisServiceFromImage(image string) (string, bool) {
+	if !strings.HasPrefix(image, releaseServicePrefix) {
+		return "", false
+	}
+	rest := image[len(releaseServicePrefix):]
+	if i := strings.IndexAny(rest, ":@"); i >= 0 {
+		rest = rest[:i]
+	}
+	if rest == "" {
+		return "", false
+	}
+	return rest, true
 }

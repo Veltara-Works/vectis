@@ -280,6 +280,28 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
 
+      # Record this image's immutable manifest digest so the github-release job
+      # can pin it in the signed release manifest (REL-3). The orchestrator then
+      # pulls vectis-<svc>@sha256:<digest> — exactly these bytes — rather than
+      # whatever the mutable :tag points at when it pulls.
+      - name: Record image digest for the release manifest
+        env:
+          SVC: ${{ matrix.service }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "${DIGEST}"   # build-push-action must have emitted a digest
+          case "${DIGEST}" in sha256:*) ;; *) echo "::error::unexpected digest form ${DIGEST}"; exit 1;; esac
+          mkdir -p image-digests
+          printf '%s' "${DIGEST}" > "image-digests/${SVC}.digest"
+
+      - name: Upload image digest artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: image-digest-${{ matrix.service }}
+          path: image-digests/${{ matrix.service }}.digest
+          retention-days: 7
+
       # Sign the image by its immutable manifest digest (not a mutable tag), so
       # the signature is pinned to exact bytes and covers every tag that points
       # at this digest (e.g. :<version> and :latest). Keyless / Sigstore OIDC,
@@ -332,6 +354,15 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: vectis-linux-amd64
+
+      # Collect every service's image digest (uploaded by the build-images
+      # matrix) into image-digests/<svc>.digest for the release manifest (REL-3).
+      - name: Download image digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: image-digest-*
+          path: image-digests
+          merge-multiple: true
 
       - name: Generate changelog
         id: changelog
@@ -470,13 +501,38 @@ jobs:
             exit 1
           fi
           RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          cat > "$CHANNEL_FILE" <<JSON
-          {
-            "latest": "${VERSION}",
-            "released_at": "${RELEASED_AT}",
-            "channel": "${CHANNEL}"
-          }
-          JSON
+
+          # Build the images map from the per-service digests recorded by the
+          # build-images matrix (REL-3): service name → sha256:<digest>. jq
+          # avoids any heredoc-indentation pitfalls and emits clean JSON. Every
+          # digest is re-validated as sha256:… (defence in depth behind the
+          # matrix-side check), and the count MUST equal the matrix service count
+          # so a dropped/failed image upload fails the release rather than
+          # publishing a manifest that silently un-pins one service.
+          IMAGES=$(
+            for f in image-digests/*.digest; do
+              svc=$(basename "$f" .digest)
+              dig=$(cat "$f")
+              case "$dig" in
+                sha256:*) ;;
+                *) echo "::error::image digest for $svc is not a sha256 digest: $dig"; exit 1;;
+              esac
+              jq -n --arg k "$svc" --arg v "$dig" '{($k): $v}'
+            done | jq -s 'add // {}'
+          )
+          COUNT=$(printf '%s' "$IMAGES" | jq 'length')
+          if [ "$COUNT" -ne 8 ]; then   # must equal the build-images matrix service count
+            echo "::error::expected 8 image digests in the release manifest, got $COUNT"
+            exit 1
+          fi
+
+          jq -n \
+            --arg latest "$VERSION" \
+            --arg released_at "$RELEASED_AT" \
+            --arg channel "$CHANNEL" \
+            --argjson images "$IMAGES" \
+            '{latest: $latest, released_at: $released_at, channel: $channel, images: $images}' \
+            > "$CHANNEL_FILE"
 
           # Sign the exact manifest bytes with the offline Ed25519 release key so
           # the orchestrator can authenticate the manifest before trusting its
