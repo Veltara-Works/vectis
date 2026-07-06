@@ -855,7 +855,7 @@ func verifyManifestBinaryDigest(manifestDigest, actualSHA string) error {
 		return nil
 	}
 	if !orchestrator.ValidBinaryDigest(manifestDigest) {
-		return fmt.Errorf("%w: releases manifest binary_sha256 = %q is not a valid sha256 digest", errReleaseVerification, manifestDigest)
+		return fmt.Errorf("%w: release manifest binary_sha256 = %q is not a valid sha256 digest", errReleaseVerification, manifestDigest)
 	}
 	if actualSHA != manifestDigest {
 		return fmt.Errorf("%w: downloaded binary sha256 %s does not match the signed manifest digest %s (refusing possible downgrade)", errReleaseVerification, actualSHA, manifestDigest)
