@@ -35,13 +35,40 @@ var domainListCmd = &cobra.Command{
 	RunE:  runDomainList,
 }
 
+var domainRemoveCmd = &cobra.Command{
+	Use:   "remove",
+	Short: "Remove a domain (must have no mailboxes or aliases)",
+	Long: "Remove a domain. Refuses if the domain still has mailboxes or aliases " +
+		"(remove those first), mirroring the API. Destructive — requires --confirm.",
+	RunE: runDomainRemove,
+}
+
 var (
-	domainName      string
-	domainSpamThres float64
-	domainMaxMbox   int
-	domainNoDKIM    bool
-	domainActiveOnly bool
+	domainName          string
+	domainSpamThres     float64
+	domainMaxMbox       int
+	domainNoDKIM        bool
+	domainActiveOnly    bool
+	domainRemoveName    string
+	domainRemoveConfirm bool
 )
+
+// domainDeleteBlockReason returns a human-readable reason a domain cannot be
+// removed while dependent objects still exist, mirroring the API's Spec-A
+// refusal (409 DOMAIN_HAS_MAILBOXES / DOMAIN_HAS_ALIASES). It returns "" when
+// the domain is safe to delete.
+func domainDeleteBlockReason(mailboxCount, aliasCount int) string {
+	switch {
+	case mailboxCount > 0 && aliasCount > 0:
+		return fmt.Sprintf("it still has %d mailbox(es) and %d alias(es)", mailboxCount, aliasCount)
+	case mailboxCount > 0:
+		return fmt.Sprintf("it still has %d mailbox(es)", mailboxCount)
+	case aliasCount > 0:
+		return fmt.Sprintf("it still has %d alias(es)", aliasCount)
+	default:
+		return ""
+	}
+}
 
 func runDomainAdd(cmd *cobra.Command, args []string) error {
 	if domainName == "" {
@@ -169,6 +196,80 @@ func runDomainList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runDomainRemove(cmd *cobra.Command, args []string) error {
+	if domainRemoveName == "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Error: --name is required")
+		os.Exit(2)
+	}
+
+	pool, _, cleanup := connectDB(cmd)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+
+	repo := repository.NewDomainRepo(pool)
+
+	domain, err := repo.GetByName(ctx, domainRemoveName)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+	}
+	if domain == nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: domain %s not found\n", domainRemoveName)
+		os.Exit(1)
+	}
+
+	// Spec A: refuse to remove a domain that still owns mailboxes or aliases,
+	// matching handleDeleteDomain (409). Prevents orphaned rows and surprise
+	// cascades from the CLI.
+	mailboxCount, err := repo.CountMailboxes(ctx, domain.ID)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+	}
+	aliasCount, err := repo.CountAliases(ctx, domain.ID)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+	}
+	if reason := domainDeleteBlockReason(mailboxCount, aliasCount); reason != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: cannot remove domain %s: %s. Remove them first.\n",
+			domainRemoveName, reason)
+		os.Exit(1)
+	}
+
+	if !domainRemoveConfirm {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Error: removing a domain is destructive. Re-run with --confirm to proceed.")
+		os.Exit(1)
+	}
+
+	deleted, err := repo.Delete(ctx, domain.ID)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+	}
+	if !deleted {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: domain %s not found\n", domainRemoveName)
+		os.Exit(1)
+	}
+
+	if jsonOutput {
+		out, _ := json.MarshalIndent(map[string]string{
+			"message": "Domain removed",
+			"domain":  domainRemoveName,
+		}, "", "  ")
+		fmt.Fprintln(cmd.OutOrStdout(), string(out))
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Domain %s removed.\n", domainRemoveName)
+		fmt.Fprintln(cmd.OutOrStdout(),
+			"Note: run 'vectis config apply' so DKIM/spam service config no longer references the removed domain.")
+	}
+	return nil
+}
+
 // connectDB creates a DB pool from secrets.yaml and returns it with a cleanup function.
 // If the calling command defines a --db-host flag and the caller passes a non-empty
 // value, that value overrides secrets.Database.Host for the connection (useful when
@@ -216,8 +317,11 @@ func init() {
 	domainAddCmd.Flags().IntVar(&domainMaxMbox, "max-mailboxes", 0, "Maximum number of mailboxes")
 	domainAddCmd.Flags().BoolVar(&domainNoDKIM, "no-dkim", false, "Skip DKIM key generation")
 	domainListCmd.Flags().BoolVar(&domainActiveOnly, "active-only", false, "Show only active domains")
+	domainRemoveCmd.Flags().StringVar(&domainRemoveName, "name", "", "Domain name to remove (required)")
+	domainRemoveCmd.Flags().BoolVar(&domainRemoveConfirm, "confirm", false, "Confirm destructive removal")
 
 	domainCmd.AddCommand(domainAddCmd)
 	domainCmd.AddCommand(domainListCmd)
+	domainCmd.AddCommand(domainRemoveCmd)
 	RootCmd.AddCommand(domainCmd)
 }
