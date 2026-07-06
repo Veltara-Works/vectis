@@ -225,6 +225,15 @@ func (m *Message) validateHeaders() error {
 		if err := noCRLF(fmt.Sprintf("attachments[%d].content_type", i), att.ContentType); err != nil {
 			return err
 		}
+		// content_type is interpolated into the Content-Type header as
+		// `<type>; name="<filename>"` (writeAttachment). The caller supplies only
+		// the media type, so a `"` or `;` can't appear in a legitimate value — and
+		// either would let an authed sender smuggle extra MIME parameters (or break
+		// the quoted `name=`) into their own outbound message (MAIL-3). Reject both,
+		// matching the quote guard already applied to the filename above.
+		if strings.ContainsAny(att.ContentType, "\";") {
+			return fmt.Errorf("%w: attachments[%d].content_type contains quote or semicolon", ErrHeaderInjection, i)
+		}
 	}
 	return nil
 }

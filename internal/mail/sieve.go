@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -104,15 +106,31 @@ func (c *SieveClient) GetScript(user, password, name string) (string, error) {
 		return "", fmt.Errorf("send GETSCRIPT: %w", err)
 	}
 
-	var content strings.Builder
-	// First line is the literal size: {N+}
+	// First line is a ManageSieve literal length header: {N} or {N+} (RFC 5804
+	// §4.5). It tells us exactly how many octets of script content follow, before
+	// the terminating "OK" line.
 	firstLine, _ := reader.ReadString('\n')
 	firstLine = strings.TrimSpace(firstLine)
 	if strings.HasPrefix(firstLine, "NO") {
 		return "", fmt.Errorf("GETSCRIPT failed: %s", firstLine)
 	}
 
-	// Read script content until OK line.
+	if n, ok := parseSieveLiteral(firstLine); ok {
+		// Read exactly N octets. Reading "until a line == OK" (the previous
+		// approach) silently truncated any script whose body contained a line
+		// that was literally `OK` (MAIL-6). The literal count is authoritative.
+		buf := make([]byte, n)
+		if _, err := io.ReadFull(reader, buf); err != nil {
+			return "", fmt.Errorf("read GETSCRIPT literal (%d bytes): %w", n, err)
+		}
+		// The connection is closed by the deferred conn.Close(); the trailing
+		// CRLF + "OK" framing after the literal doesn't need draining.
+		return string(buf), nil
+	}
+
+	// Fallback: no literal header (defensive — non-conformant server / test
+	// stub). Read until the OK line as before.
+	var content strings.Builder
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -125,6 +143,22 @@ func (c *SieveClient) GetScript(user, password, name string) (string, error) {
 		content.WriteString(line)
 	}
 	return strings.TrimSpace(content.String()), nil
+}
+
+// parseSieveLiteral parses a ManageSieve literal length header of the form
+// `{N}` or `{N+}` (RFC 5804 non-synchronizing literal) and returns N. The
+// second return is false when the line is not a literal header at all.
+func parseSieveLiteral(line string) (int, bool) {
+	if !strings.HasPrefix(line, "{") || !strings.HasSuffix(line, "}") {
+		return 0, false
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(line, "{"), "}")
+	inner = strings.TrimSuffix(inner, "+") // non-synchronizing literal marker
+	n, err := strconv.Atoi(inner)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // PutScript uploads or replaces a Sieve script.
