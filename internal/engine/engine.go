@@ -30,6 +30,15 @@ const inboundNotifyTokenLabel = "vectis-inbound-notify-v1"
 // secret (which also keys sessions, TOTP, webhooks and backup encryption).
 const grafanaAdminPasswordLabel = "vectis-grafana-admin-v1"
 
+// roundcubeDESKeyLabel derives Roundcube's des_key from the master API secret.
+// des_key lives in a world-readable (0644) config the webmail container's
+// www-data must read, so — like the inbound-notify token and the Grafana
+// password — it must be a one-way HMAC of the secret, never a slice of it. The
+// prior `.API.Secret | printf "%.24s"` embedded the first 24 chars of the master
+// secret (which also keys admin sessions, TOTP, webhook signing, backup
+// encryption and the inbound-notify token) verbatim in that world-readable file.
+const roundcubeDESKeyLabel = "vectis-roundcube-des-v1"
+
 // DeriveInboundNotifyToken derives the token the Postfix inbound-notify script
 // presents to POST /internal/inbound, as HMAC-SHA256(apiSecret, label). It is
 // deliberately NOT the master API secret: the script is world-readable inside
@@ -54,6 +63,18 @@ func DeriveGrafanaAdminPassword(apiSecret string) string {
 	mac := hmac.New(sha256.New, []byte(apiSecret))
 	mac.Write([]byte(grafanaAdminPasswordLabel))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// DeriveRoundcubeDESKey derives Roundcube's des_key as the first 24 hex chars of
+// HMAC-SHA256(apiSecret, label). Deterministic so no storage/migration is needed,
+// and one-way so the world-readable webmail config cannot be reversed into the
+// master API secret. The 24-char width matches Roundcube's expected des_key
+// length and the prior `%.24s` slice it replaces (which exposed the first 24
+// chars of the master secret verbatim; api.secret is validated >= 32 chars).
+func DeriveRoundcubeDESKey(apiSecret string) string {
+	mac := hmac.New(sha256.New, []byte(apiSecret))
+	mac.Write([]byte(roundcubeDESKeyLabel))
+	return hex.EncodeToString(mac.Sum(nil))[:24]
 }
 
 //go:embed templates
@@ -107,6 +128,14 @@ type TemplateData struct {
 // to compute it.
 func (d TemplateData) InboundNotifyToken() string {
 	return DeriveInboundNotifyToken(d.API.Secret)
+}
+
+// RoundcubeDESKey is the webmail des_key, derived from the master API secret
+// (never the secret itself — see DeriveRoundcubeDESKey). Exposed as a method so
+// the roundcube template can reference {{ .RoundcubeDESKey }} without every
+// TemplateData construction site having to compute it.
+func (d TemplateData) RoundcubeDESKey() string {
+	return DeriveRoundcubeDESKey(d.API.Secret)
 }
 
 // SpamListInfo is a denormalized view of a domain_spam_lists row used by
