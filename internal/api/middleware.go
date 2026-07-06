@@ -449,20 +449,38 @@ func domainInScope(scoped []string, domainID string) bool {
 // its owner's role scope. This is the R3 fix for the #119 API-key-scope class
 // (Root B). Callers MUST treat a non-nil empty slice as "no access" and filter
 // their query by the returned IDs.
+// resolveRoleScope normalizes a principal's per-role domain scope. nil is the
+// codebase-wide sentinel for "unrestricted / all domains" and MUST only be
+// produced for roles that legitimately access every domain. A domain-scoped
+// role (domain_admin) with zero assigned domains has NO access, so its scope is
+// a non-nil EMPTY slice — never nil. Without this, ListDomainIDs returning nil
+// (a domain_admin whose last domain was removed, incl. via the admin_domains
+// ON DELETE CASCADE when a domain is deleted) would fall through to nil and
+// silently read as "all domains" — a fail-open cross-tenant read (ISO-1).
+func resolveRoleScope(canAccessAllDomains bool, assigned []string) []string {
+	if canAccessAllDomains {
+		return nil // unrestricted — the only legitimate source of the nil sentinel
+	}
+	if assigned == nil {
+		return []string{} // zero assigned domains = no access, never "all domains"
+	}
+	return assigned
+}
+
 func (s *Server) getAllowedDomainIDs(ctx context.Context) []string {
 	// Role scope: nil = unrestricted (super_admin/admin), else the domain_admin
 	// junction list.
 	var roleIDs []string
 	role := getAdminRole(ctx)
 	if auth.CanAccessAllDomains(role) {
-		roleIDs = nil
+		roleIDs = resolveRoleScope(true, nil)
 	} else {
 		ids, err := s.adminDomains.ListDomainIDs(ctx, getAdminID(ctx))
 		if err != nil {
 			s.logger.Error("list allowed domains failed", "error", err)
 			return []string{} // empty = no access
 		}
-		roleIDs = ids
+		roleIDs = resolveRoleScope(false, ids)
 	}
 
 	// API-key scope clamp: a scoped key restricts the principal regardless of the

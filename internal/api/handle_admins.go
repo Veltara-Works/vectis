@@ -306,6 +306,22 @@ func (s *Server) handleUpdateAdmin(w http.ResponseWriter, r *http.Request) {
 		update.Role = req.Role
 	}
 
+	// A domain_admin must always retain at least one domain. The create path
+	// enforces this; the edit path must too (ISO-1) — otherwise PATCH with
+	// {"domain_ids": []} clears an existing domain_admin's assignments to zero.
+	// A zero-domain domain_admin is meaningless (no access) and historically
+	// mis-resolved to "all domains" in getAllowedDomainIDs. willBeDomainAdmin
+	// is the role AFTER this request (req.Role if changing, else current).
+	willBeDomainAdmin := target.Role == auth.RoleDomainAdmin
+	if req.Role != nil {
+		willBeDomainAdmin = *req.Role == auth.RoleDomainAdmin
+	}
+	if willBeDomainAdmin && req.DomainIDs != nil && len(req.DomainIDs) == 0 {
+		respondError(w, r, http.StatusBadRequest, "MISSING_DOMAINS",
+			"domain_ids cannot be empty for a domain_admin")
+		return
+	}
+
 	updated, err := s.admins.Update(r.Context(), targetID, update)
 	if err != nil {
 		s.logger.Error("update admin failed", "error", err)
