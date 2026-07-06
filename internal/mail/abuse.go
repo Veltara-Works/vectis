@@ -10,8 +10,12 @@ import (
 	"github.com/valkey-io/valkey-go"
 )
 
-// AbuseDetector tracks outbound sending rates and detects anomalies.
-// Uses Valkey sliding window counters for real-time detection.
+// AbuseDetector tracks outbound sending rates and detects anomalies using
+// Valkey per-hour fixed-window counters (keyed YYYYMMDDHH). The window is FIXED,
+// not sliding: counts reset at each :00 boundary, so a determined sender can
+// burst up to ~2x a threshold across an hour boundary (ABUSE-1). That is an
+// accepted tradeoff for a coarse backstop — the per-recipient metering and the
+// auto-suspend ceiling are the primary controls.
 type AbuseDetector struct {
 	vk     valkey.Client
 	logger *slog.Logger
@@ -70,9 +74,22 @@ func NewAbuseDetector(vk valkey.Client, cfg AbuseConfig, logger *slog.Logger) *A
 }
 
 // CheckAndRecord validates whether a send should proceed based on current
-// rates, increments the counters, and returns the check result.
-// Called synchronously in the send handler BEFORE submitting to Postfix.
+// rates, increments the counters by ONE, and returns the check result. Called
+// synchronously in the send handler BEFORE submitting to Postfix, and by the
+// Postfix policy backend (which Postfix already invokes once per recipient).
 func (d *AbuseDetector) CheckAndRecord(ctx context.Context, mailboxID, domainID string) (*AbuseCheckResult, error) {
+	return d.CheckAndRecordN(ctx, mailboxID, domainID, 1)
+}
+
+// CheckAndRecordN is CheckAndRecord but records n recipients in one shot. The
+// API send path passes the message's total recipient count (To+CC+BCC) so the
+// abuse counters meter DELIVERED emails, not messages — otherwise a single API
+// call fanning out to ~1000 recipients counts as 1 against the hourly caps and
+// slips under every abuse threshold (SEND-2). n is clamped to >= 1.
+func (d *AbuseDetector) CheckAndRecordN(ctx context.Context, mailboxID, domainID string, n int) (*AbuseCheckResult, error) {
+	if n < 1 {
+		n = 1
+	}
 	now := time.Now().UTC()
 	hourKey := now.Format("2006010215") // YYYYMMDDHH
 	prevHourKey := now.Add(-1 * time.Hour).Format("2006010215")
@@ -81,9 +98,9 @@ func (d *AbuseDetector) CheckAndRecord(ctx context.Context, mailboxID, domainID 
 	dmKey := fmt.Sprintf("abuse:domain:%s:%s", domainID, hourKey)
 	mbPrevKey := fmt.Sprintf("abuse:mailbox:%s:%s", mailboxID, prevHourKey)
 
-	// Increment counters and get current values atomically via pipeline.
-	mbIncrCmd := d.vk.B().Incr().Key(mbKey).Build()
-	dmIncrCmd := d.vk.B().Incr().Key(dmKey).Build()
+	// Increment counters by n and get current values atomically via pipeline.
+	mbIncrCmd := d.vk.B().Incrby().Key(mbKey).Increment(int64(n)).Build()
+	dmIncrCmd := d.vk.B().Incrby().Key(dmKey).Increment(int64(n)).Build()
 	mbPrevCmd := d.vk.B().Get().Key(mbPrevKey).Build()
 
 	results := d.vk.DoMulti(ctx, mbIncrCmd, dmIncrCmd, mbPrevCmd)
@@ -98,11 +115,13 @@ func (d *AbuseDetector) CheckAndRecord(ctx context.Context, mailboxID, domainID 
 		return nil, fmt.Errorf("incr domain counter: %w", err)
 	}
 
-	// Set TTL on counters (2 hours — current + lookback).
-	if mbCount == 1 {
+	// Set TTL on counters (2 hours — current + lookback), but only on the first
+	// write of the hour. With INCRBY n a freshly-created key returns exactly n
+	// (not 1), so compare against n — otherwise the counter never expires.
+	if mbCount == int64(n) {
 		d.vk.Do(ctx, d.vk.B().Expire().Key(mbKey).Seconds(7200).Build())
 	}
-	if dmCount == 1 {
+	if dmCount == int64(n) {
 		d.vk.Do(ctx, d.vk.B().Expire().Key(dmKey).Seconds(7200).Build())
 	}
 
@@ -148,14 +167,23 @@ func (d *AbuseDetector) CheckAndRecord(ctx context.Context, mailboxID, domainID 
 // (default 1000). Either way this turns the previously alert-only domain
 // threshold into a hard ceiling for the otherwise-unmetered no-mailbox path.
 func (d *AbuseDetector) CheckAndRecordDomain(ctx context.Context, domainID string) (*AbuseCheckResult, error) {
+	return d.CheckAndRecordDomainN(ctx, domainID, 1)
+}
+
+// CheckAndRecordDomainN is CheckAndRecordDomain metering n recipients — the
+// no-mailbox send path's SEND-2 counterpart (see CheckAndRecordN).
+func (d *AbuseDetector) CheckAndRecordDomainN(ctx context.Context, domainID string, n int) (*AbuseCheckResult, error) {
+	if n < 1 {
+		n = 1
+	}
 	hourKey := time.Now().UTC().Format("2006010215") // YYYYMMDDHH
 	dmKey := fmt.Sprintf("abuse:domain:%s:%s", domainID, hourKey)
 
-	dmCount, err := d.vk.Do(ctx, d.vk.B().Incr().Key(dmKey).Build()).AsInt64()
+	dmCount, err := d.vk.Do(ctx, d.vk.B().Incrby().Key(dmKey).Increment(int64(n)).Build()).AsInt64()
 	if err != nil {
 		return nil, fmt.Errorf("incr domain counter: %w", err)
 	}
-	if dmCount == 1 {
+	if dmCount == int64(n) {
 		d.vk.Do(ctx, d.vk.B().Expire().Key(dmKey).Seconds(7200).Build())
 	}
 

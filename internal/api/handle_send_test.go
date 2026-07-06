@@ -21,6 +21,12 @@ func TestSendMessageValidation(t *testing.T) {
 	s := &Server{}
 	r := httptest.NewRequest(http.MethodPost, "/send", nil)
 
+	// Over-cap recipient set for the SEND-2 per-message ceiling case.
+	manyTo := make([]mail.Address, maxRecipientsPerMessage+1)
+	for i := range manyTo {
+		manyTo[i] = mail.Address{Email: "x@y.com"}
+	}
+
 	tests := []struct {
 		name        string
 		req         sendRequest
@@ -66,6 +72,15 @@ func TestSendMessageValidation(t *testing.T) {
 			req:        sendRequest{From: mail.Address{Email: "not-an-email"}, To: []mail.Address{{Email: "x@y.com"}}, Subject: "s", TextBody: "b"},
 			wantCode:   "INVALID_SENDER",
 			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// SEND-2: To+CC+BCC beyond the per-message ceiling is rejected before
+			// any send/abuse work — one API call can't fan out to a crowd.
+			name:        "too many recipients",
+			req:         sendRequest{From: mail.Address{Email: "a@b.com"}, To: manyTo, Subject: "s", TextBody: "b"},
+			wantCode:    "TOO_MANY_RECIPIENTS",
+			wantStatus:  http.StatusBadRequest,
+			wantMsgPart: "at most",
 		},
 	}
 
