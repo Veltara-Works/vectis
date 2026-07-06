@@ -34,24 +34,24 @@ const (
 
 // ClusterOperation tracks a multi-node operation.
 type ClusterOperation struct {
-	ID            string          `json:"id"`
-	OperationType string          `json:"operation_type"`
-	Status        string          `json:"status"`
-	InitiatedBy   *string         `json:"initiated_by,omitempty"`
-	PlanSummary   json.RawMessage `json:"plan_summary,omitempty"`
+	ID            string            `json:"id"`
+	OperationType string            `json:"operation_type"`
+	Status        string            `json:"status"`
+	InitiatedBy   *string           `json:"initiated_by,omitempty"`
+	PlanSummary   json.RawMessage   `json:"plan_summary,omitempty"`
 	NodeStatuses  map[string]string `json:"node_statuses"`
-	ErrorMessage  *string         `json:"error_message,omitempty"`
-	StartedAt     time.Time       `json:"started_at"`
-	CompletedAt   *time.Time      `json:"completed_at,omitempty"`
+	ErrorMessage  *string           `json:"error_message,omitempty"`
+	StartedAt     time.Time         `json:"started_at"`
+	CompletedAt   *time.Time        `json:"completed_at,omitempty"`
 }
 
 // RollingCoordinator manages rolling updates and rollbacks across cluster nodes.
 // Only the leader node runs the coordinator.
 type RollingCoordinator struct {
-	db          *pgxpool.Pool
-	nodeMgr     *NodeManager
-	logger      *slog.Logger
-	httpClient  *http.Client
+	db         *pgxpool.Pool
+	nodeMgr    *NodeManager
+	logger     *slog.Logger
+	httpClient *http.Client
 }
 
 // NewRollingCoordinator creates a new rolling update coordinator.

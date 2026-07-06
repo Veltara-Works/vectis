@@ -163,12 +163,12 @@ func (s *Server) handleTrackingStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond(w, r, http.StatusOK, map[string]any{
-		"domain_id": domainID,
-		"period":    period,
-		"from":      from,
-		"to":        now,
-		"opens":     agg.Opens,
-		"clicks":    agg.Clicks,
+		"domain_id":        domainID,
+		"period":           period,
+		"from":             from,
+		"to":               now,
+		"opens":            agg.Opens,
+		"clicks":           agg.Clicks,
 		"messages_opened":  agg.MessagesOpened,
 		"messages_clicked": agg.MessagesClicked,
 	})

@@ -49,8 +49,8 @@ func writeTempConfigs(t *testing.T, files map[string]string) (root string) {
 
 func TestRegenerateConfigs_RewritesDriftedFile(t *testing.T) {
 	genDir := writeTempConfigs(t, map[string]string{
-		"rspamd/local.lua":   staleLegacyLua,
-		"postfix/main.cf":    "# unchanged content\n",
+		"rspamd/local.lua":     staleLegacyLua,
+		"postfix/main.cf":      "# unchanged content\n",
 		"dovecot/dovecot.conf": "# unchanged content\n",
 	})
 	backupDir := filepath.Join(t.TempDir(), "self-heal-2026-05-01T00-00-00-configs")

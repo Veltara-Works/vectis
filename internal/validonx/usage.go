@@ -99,16 +99,16 @@ func (r *UsageReporter) collectStats(ctx context.Context) (map[string]any, error
 	stats := make(map[string]any)
 
 	queries := map[string]string{
-		"domains":            "SELECT COUNT(*) FROM domains",
-		"domains_active":     "SELECT COUNT(*) FROM domains WHERE active = true",
-		"mailboxes":          "SELECT COUNT(*) FROM mailboxes",
-		"mailboxes_active":   "SELECT COUNT(*) FROM mailboxes WHERE active = true",
-		"aliases":            "SELECT COUNT(*) FROM aliases",
-		"admins":             "SELECT COUNT(*) FROM admins",
-		"api_keys_active":    "SELECT COUNT(*) FROM api_keys WHERE active = true AND (expires_at IS NULL OR expires_at > NOW())",
-		"emails_sent_24h":    "SELECT COUNT(*) FROM audit_log WHERE action = 'mail.send' AND created_at > NOW() - INTERVAL '24 hours'",
+		"domains":             "SELECT COUNT(*) FROM domains",
+		"domains_active":      "SELECT COUNT(*) FROM domains WHERE active = true",
+		"mailboxes":           "SELECT COUNT(*) FROM mailboxes",
+		"mailboxes_active":    "SELECT COUNT(*) FROM mailboxes WHERE active = true",
+		"aliases":             "SELECT COUNT(*) FROM aliases",
+		"admins":              "SELECT COUNT(*) FROM admins",
+		"api_keys_active":     "SELECT COUNT(*) FROM api_keys WHERE active = true AND (expires_at IS NULL OR expires_at > NOW())",
+		"emails_sent_24h":     "SELECT COUNT(*) FROM audit_log WHERE action = 'mail.send' AND created_at > NOW() - INTERVAL '24 hours'",
 		"emails_received_24h": "SELECT COUNT(*) FROM audit_log WHERE action = 'mail.receive' AND created_at > NOW() - INTERVAL '24 hours'",
-		"storage_bytes":      "SELECT COALESCE(SUM(pg_database_size(current_database())), 0)",
+		"storage_bytes":       "SELECT COALESCE(SUM(pg_database_size(current_database())), 0)",
 	}
 
 	for key, query := range queries {

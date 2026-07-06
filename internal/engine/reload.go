@@ -19,34 +19,34 @@ var reloadMatrix = map[string]struct {
 	service string
 	action  string
 }{
-	"postfix/main.cf":                  {service: "postfix", action: "reload"},
-	"postfix/master.cf":                {service: "postfix", action: "restart"},
-	"postfix/pgsql_virtual_domains.cf": {service: "postfix", action: "none"},
+	"postfix/main.cf":                    {service: "postfix", action: "reload"},
+	"postfix/master.cf":                  {service: "postfix", action: "restart"},
+	"postfix/pgsql_virtual_domains.cf":   {service: "postfix", action: "none"},
 	"postfix/pgsql_virtual_mailboxes.cf": {service: "postfix", action: "none"},
 	"postfix/pgsql_virtual_aliases.cf":   {service: "postfix", action: "none"},
 	"postfix/pgsql_virtual_catchall.cf":  {service: "postfix", action: "none"},
 	"postfix/pgsql_virtual_bcc.cf":       {service: "postfix", action: "none"},
 	// transport is texthash — read in memory at startup, needs reload.
-	"postfix/transport":                  {service: "postfix", action: "reload"},
+	"postfix/transport": {service: "postfix", action: "reload"},
 	// inbound-notify.sh is copied to /usr/local/bin by the entrypoint on container
 	// start (the bind mount is read-only), so changes need a full restart.
-	"postfix/inbound-notify.sh":          {service: "postfix", action: "restart"},
+	"postfix/inbound-notify.sh": {service: "postfix", action: "restart"},
 
-	"dovecot/dovecot.conf":           {service: "dovecot", action: "restart"},
-	"dovecot/dovecot-sql.conf.ext":   {service: "dovecot", action: "reload"},
+	"dovecot/dovecot.conf":         {service: "dovecot", action: "restart"},
+	"dovecot/dovecot-sql.conf.ext": {service: "dovecot", action: "reload"},
 
-	"rspamd/actions.conf":            {service: "rspamd", action: "reload"},
-	"rspamd/dkim_signing.conf":       {service: "rspamd", action: "reload"},
-	"rspamd/classifier-bayes.conf":   {service: "rspamd", action: "reload"},
-	"rspamd/antivirus.conf":          {service: "rspamd", action: "reload"},
-	"rspamd/worker-proxy.inc":        {service: "rspamd", action: "restart"},
+	"rspamd/actions.conf":          {service: "rspamd", action: "reload"},
+	"rspamd/dkim_signing.conf":     {service: "rspamd", action: "reload"},
+	"rspamd/classifier-bayes.conf": {service: "rspamd", action: "reload"},
+	"rspamd/antivirus.conf":        {service: "rspamd", action: "reload"},
+	"rspamd/worker-proxy.inc":      {service: "rspamd", action: "restart"},
 
 	// clamd reads its config at startup only — a profile change
 	// (MaxThreads, StreamMaxLength, etc.) requires a full restart.
-	"clamav/clamd.conf":              {service: "clamav", action: "restart"},
+	"clamav/clamd.conf": {service: "clamav", action: "restart"},
 
-	"traefik/traefik.yml":            {service: "traefik", action: "restart"},
-	"traefik/dynamic.yml":            {service: "traefik", action: "none"}, // Traefik watches file changes
+	"traefik/traefik.yml": {service: "traefik", action: "restart"},
+	"traefik/dynamic.yml": {service: "traefik", action: "none"}, // Traefik watches file changes
 }
 
 // DetermineActions figures out what services need reload/restart based on changed files.

@@ -160,16 +160,16 @@ func runTLSStatus(cmd *cobra.Command, args []string) error {
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 
 	certPaths := map[string]string{
-		"mail":       tlsCertDir + "/fullchain.pem",
+		"mail":        tlsCertDir + "/fullchain.pem",
 		"internal-ca": vectistls.InternalCertDir + "/ca.pem",
 		"orch-server": vectistls.InternalCertDir + "/server.pem",
 		"api-client":  vectistls.InternalCertDir + "/client.pem",
 	}
 
 	type certStatus struct {
-		Service string            `json:"service"`
+		Service string              `json:"service"`
 		Info    *vectistls.CertInfo `json:"info,omitempty"`
-		Error   string            `json:"error,omitempty"`
+		Error   string              `json:"error,omitempty"`
 	}
 
 	var statuses []certStatus

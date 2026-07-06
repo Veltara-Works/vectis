@@ -7,7 +7,7 @@ import (
 )
 
 type abuseDashboard struct {
-	DomainRates  []domainRate           `json:"domain_rates"`
+	DomainRates  []domainRate            `json:"domain_rates"`
 	RecentEvents []repository.AbuseEvent `json:"recent_events"`
 }
 

@@ -22,16 +22,16 @@ import (
 // See vectis-private #4. import-status / import-cancel inspect and stop a run.
 
 var (
-	importEmail        string
-	importSourceHost   string
-	importSourcePort   int
-	importSourceUser   string
-	importSourcePass   string
-	importPassStdin    bool
-	importNoTLS        bool
-	importStatusEmail  string
-	importStatusJob    string
-	importCancelJob    string
+	importEmail       string
+	importSourceHost  string
+	importSourcePort  int
+	importSourceUser  string
+	importSourcePass  string
+	importPassStdin   bool
+	importNoTLS       bool
+	importStatusEmail string
+	importStatusJob   string
+	importCancelJob   string
 )
 
 var mailboxImportCmd = &cobra.Command{

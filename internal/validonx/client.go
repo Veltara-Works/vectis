@@ -18,15 +18,15 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	ErrAuthFailed          = "BILLING.AUTH_FAILED"
-	ErrAuthTokenExpired    = "BILLING.AUTH_TOKEN_EXPIRED"
+	ErrAuthFailed           = "BILLING.AUTH_FAILED"
+	ErrAuthTokenExpired     = "BILLING.AUTH_TOKEN_EXPIRED"
 	ErrSubscriptionNotFound = "BILLING.SUBSCRIPTION_NOT_FOUND"
 	ErrSubscriptionInactive = "BILLING.SUBSCRIPTION_INACTIVE"
-	ErrLicensingFailed     = "BILLING.LICENSING_FAILED"
-	ErrLicensingExpired    = "BILLING.LICENSING_EXPIRED"
-	ErrLicensingInvalid    = "BILLING.LICENSING_INVALID"
-	ErrFeatureNotAvailable = "FEATURE_NOT_AVAILABLE"
-	ErrLicenseExpired      = "LICENSE_EXPIRED"
+	ErrLicensingFailed      = "BILLING.LICENSING_FAILED"
+	ErrLicensingExpired     = "BILLING.LICENSING_EXPIRED"
+	ErrLicensingInvalid     = "BILLING.LICENSING_INVALID"
+	ErrFeatureNotAvailable  = "FEATURE_NOT_AVAILABLE"
+	ErrLicenseExpired       = "LICENSE_EXPIRED"
 )
 
 // ---------------------------------------------------------------------------
@@ -91,11 +91,11 @@ type LicenseRequest struct {
 //     mirrors `current_period_end`; for perpetual licenses, mirrors
 //     `license.expires_at` (often nil).
 type LicenseResponse struct {
-	Valid              bool       `json:"valid"`
-	Status             string     `json:"status"` // active, trialing, past_due, paused, canceled, expired
-	AllowedFeatures    []string   `json:"allowed_features"`
-	GracePeriodEndsAt  *time.Time `json:"grace_period_ends_at"` // nullable
-	ExpiresAt          *time.Time `json:"expires_at"`           // nullable for perpetual licenses
+	Valid             bool       `json:"valid"`
+	Status            string     `json:"status"` // active, trialing, past_due, paused, canceled, expired
+	AllowedFeatures   []string   `json:"allowed_features"`
+	GracePeriodEndsAt *time.Time `json:"grace_period_ends_at"` // nullable
+	ExpiresAt         *time.Time `json:"expires_at"`           // nullable for perpetual licenses
 }
 
 // licensingResolveEnvelope wraps LicenseResponse for decoding. ValidonX

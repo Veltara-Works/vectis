@@ -16,19 +16,19 @@ type Collector struct {
 	logger *slog.Logger
 
 	// Gauges
-	domainsTotal      *prometheus.Desc
-	domainsActive     *prometheus.Desc
-	mailboxesTotal    *prometheus.Desc
+	domainsTotal       *prometheus.Desc
+	domainsActive      *prometheus.Desc
+	mailboxesTotal     *prometheus.Desc
 	mailboxesSuspended *prometheus.Desc
-	aliasesTotal      *prometheus.Desc
-	adminsTotal       *prometheus.Desc
-	apiKeysActive     *prometheus.Desc
-	webhooksActive    *prometheus.Desc
-	abuseUnresolved   *prometheus.Desc
+	aliasesTotal       *prometheus.Desc
+	adminsTotal        *prometheus.Desc
+	apiKeysActive      *prometheus.Desc
+	webhooksActive     *prometheus.Desc
+	abuseUnresolved    *prometheus.Desc
 
 	// DB pool
-	dbPoolSize     *prometheus.Desc
-	dbPoolInUse    *prometheus.Desc
+	dbPoolSize  *prometheus.Desc
+	dbPoolInUse *prometheus.Desc
 }
 
 // NewCollector creates a Prometheus collector backed by Postgres.

@@ -142,18 +142,18 @@ func (r *IPWarmupRepo) Delete(ctx context.Context, id string) error {
 // Standard 30-day warmup ramp: starts at 50, doubles every 2 days, capped at target.
 func WarmupSchedule(day int) int {
 	schedule := []int{
-		50, 50,        // days 1-2
-		100, 100,      // days 3-4
-		200, 200,      // days 5-6
-		500, 500,      // days 7-8
-		1000, 1000,    // days 9-10
-		2000, 2000,    // days 11-12
-		5000, 5000,    // days 13-14
-		10000, 10000,  // days 15-16
-		20000, 20000,  // days 17-18
-		40000, 40000,  // days 19-20
-		60000, 60000,  // days 21-22
-		80000, 80000,  // days 23-24
+		50, 50, // days 1-2
+		100, 100, // days 3-4
+		200, 200, // days 5-6
+		500, 500, // days 7-8
+		1000, 1000, // days 9-10
+		2000, 2000, // days 11-12
+		5000, 5000, // days 13-14
+		10000, 10000, // days 15-16
+		20000, 20000, // days 17-18
+		40000, 40000, // days 19-20
+		60000, 60000, // days 21-22
+		80000, 80000, // days 23-24
 		100000, 100000, // days 25-26
 		150000, 150000, // days 27-28
 		200000, 200000, // days 29-30

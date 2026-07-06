@@ -20,13 +20,13 @@ var closingBodyRE = regexp.MustCompile(`(?i)</\s*body\s*>`)
 // is disabled or the body is empty.
 //
 //   - openToken:  HMAC-signed message token from Server.GenerateTrackingToken,
-//                 embedded in the open pixel (/api/v1/track/open/{openToken}).
+//     embedded in the open pixel (/api/v1/track/open/{openToken}).
 //   - baseURL:    public base URL of the Vectis API (e.g. https://mail.example.com), no trailing slash
 //   - opens:      when true, appends a 1x1 pixel to /api/v1/track/open/{openToken}
 //   - clicks:     when true, rewrites http(s) anchor hrefs via /api/v1/track/click/{token}?url=...
 //   - clickToken: mints the per-link click token for a given raw href; the HMAC
-//                 covers the destination URL so a token can't be reused to
-//                 redirect elsewhere. Must be non-nil when clicks is true.
+//     covers the destination URL so a token can't be reused to
+//     redirect elsewhere. Must be non-nil when clicks is true.
 //
 // Link rewriting skips: mailto:, tel:, sms:, javascript:, fragment (#...)
 // anchors, empty hrefs, and URLs already pointing at our own click endpoint.

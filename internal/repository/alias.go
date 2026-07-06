@@ -208,8 +208,9 @@ func (r *AliasRepo) Delete(ctx context.Context, id string) (bool, error) {
 // ListBySubject returns aliases that are personal data of a single subject:
 // aliases they own (domain_id + source_local_part) and aliases that forward to
 // them (destination, matched case-insensitively — audit G-M1b). Used by the DSAR
-// exporter. Mirrors DeleteBySubject's `$1 <> ''` guard so a domainID of "" skips
-// the uuid branch instead of erroring on `domain_id = ''` (audit U-4).
+// exporter. Mirrors DeleteBySubject's empty-domainID guard so a blank domainID
+// skips the uuid branch instead of erroring when an empty string is cast to
+// uuid (audit U-4).
 func (r *AliasRepo) ListBySubject(ctx context.Context, domainID, localPart, email string) ([]Alias, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT id, domain_id, source_local_part, destination, active, created_at, updated_at
@@ -234,8 +235,8 @@ func (r *AliasRepo) ListBySubject(ctx context.Context, domainID, localPart, emai
 // DeleteBySubject removes aliases that are personal data of a single subject:
 // aliases they own (domain_id + source_local_part) and aliases that forward TO
 // them (destination). Used by DSAR erasure. domainID may be "" (reconcile with
-// no surviving domain row): the `$1 <> ''` guard skips the uuid branch so only
-// destination matches apply. The destination match is case-insensitive (audit
+// no surviving domain row): the empty-domainID guard skips the uuid branch so
+// only destination matches apply. The destination match is case-insensitive (audit
 // G-M1b): a forwarding alias to John.Doe@corp.example must still be erased when
 // the DSAR names the canonical john.doe@corp.example. LOWER() on both sides
 // matches already-stored mixed-case rows, so no migration is needed. Returns the

@@ -10,9 +10,9 @@ import (
 )
 
 type healthResponse struct {
-	Status   string                    `json:"status"`
-	Version  string                    `json:"version"`
-	Services map[string]serviceHealth  `json:"services"`
+	Status   string                   `json:"status"`
+	Version  string                   `json:"version"`
+	Services map[string]serviceHealth `json:"services"`
 	TLS      *tlsHealth               `json:"tls,omitempty"`
 }
 

@@ -4,9 +4,9 @@ import "time"
 
 // APIResponse is the standard envelope for all API responses.
 type APIResponse struct {
-	Data  any           `json:"data,omitempty"`
-	Error *APIError     `json:"error,omitempty"`
-	Meta  ResponseMeta  `json:"meta"`
+	Data  any          `json:"data,omitempty"`
+	Error *APIError    `json:"error,omitempty"`
+	Meta  ResponseMeta `json:"meta"`
 }
 
 // APIError carries structured error information.

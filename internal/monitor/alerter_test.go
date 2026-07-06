@@ -21,9 +21,9 @@ func mustLogger() *slog.Logger {
 // can't accidentally reintroduce the same failure mode.
 func TestAlerter_EmailReady(t *testing.T) {
 	tests := []struct {
-		name    string
-		cfg     config.AlertEmailConfig
-		wantOK  bool
+		name   string
+		cfg    config.AlertEmailConfig
+		wantOK bool
 	}{
 		{
 			name:   "disabled → not ready",

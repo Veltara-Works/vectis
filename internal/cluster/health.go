@@ -10,18 +10,18 @@ import (
 
 // ClusterHealth represents the aggregated health status across all cluster nodes.
 type ClusterHealth struct {
-	Healthy      bool         `json:"healthy"`
-	TotalNodes   int          `json:"total_nodes"`
-	ActiveNodes  int          `json:"active_nodes"`
-	DeadNodes    int          `json:"dead_nodes"`
-	LeaderNode   string       `json:"leader_node,omitempty"`
-	NodeHealths  []NodeHealth `json:"nodes"`
+	Healthy     bool         `json:"healthy"`
+	TotalNodes  int          `json:"total_nodes"`
+	ActiveNodes int          `json:"active_nodes"`
+	DeadNodes   int          `json:"dead_nodes"`
+	LeaderNode  string       `json:"leader_node,omitempty"`
+	NodeHealths []NodeHealth `json:"nodes"`
 }
 
 // NodeHealth represents the health of a single cluster node.
 type NodeHealth struct {
 	Name          string `json:"name"`
-	Status        string `json:"status"`       // from cluster_nodes table
+	Status        string `json:"status"`        // from cluster_nodes table
 	APIReachable  bool   `json:"api_reachable"` // live health check
 	LastHeartbeat string `json:"last_heartbeat"`
 	Role          string `json:"role"`

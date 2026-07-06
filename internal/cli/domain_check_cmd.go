@@ -103,7 +103,7 @@ func runDomainCheck(cmd *cobra.Command, args []string) error {
 
 	if jsonOutput {
 		out, _ := json.MarshalIndent(struct {
-			Domain string        `json:"domain"`
+			Domain string              `json:"domain"`
 			Checks []domainCheckResult `json:"checks"`
 		}{Domain: domainName, Checks: results}, "", "  ")
 		fmt.Fprintln(cmd.OutOrStdout(), string(out))
