@@ -331,6 +331,14 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
+	// Reject incremental archives (BAK-1): the restore path treats every archive
+	// as a full snapshot and clears the maildir before unpacking, so restoring an
+	// incremental alone would erase all mail older than its parent full backup.
+	if backup.IsIncrementalArchiveName(backupPath) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", backup.ErrIncrementalRestore)
+		os.Exit(1)
+	}
+
 	// Restore runs WITHOUT a DB pool. On a real install the host cannot resolve
 	// the Docker-internal "postgres" hostname (and during restore the DB has
 	// just been stopped), so by default the Manager drives the DB via `docker
