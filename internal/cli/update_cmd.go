@@ -751,17 +751,17 @@ func refreshCLIBinary() (string, error) {
 		return "", fmt.Errorf("download %s: %w", binURL, err)
 	}
 
-	shaResp, err := httpClient.Get(shaURL)
+	// Bound the checksum fetch (a .sha256 is 64 hex chars + a filename). The old
+	// io.ReadAll(shaResp.Body) was unbounded, so a hostile/broken origin's
+	// oversized 200 body could exhaust memory before the signature gate (same
+	// class as the binary-download bound below). httpGetBody caps the read and
+	// reports a non-200 as ok=false.
+	shaBytes, shaOK, err := httpGetBody(httpClient, shaURL, 4096)
 	if err != nil {
 		return "", fmt.Errorf("download %s: %w", shaURL, err)
 	}
-	shaBytes, err := io.ReadAll(shaResp.Body)
-	shaResp.Body.Close()
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", shaURL, err)
-	}
-	if shaResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s returned HTTP %d", shaURL, shaResp.StatusCode)
+	if !shaOK {
+		return "", fmt.Errorf("%s returned a non-200 status", shaURL)
 	}
 	// Guard the field split: an empty/whitespace-only body (a hostile or broken
 	// origin serving a 200 with no checksum) must not panic on [0] (REL-2). This
@@ -880,9 +880,11 @@ func downloadFile(client *http.Client, url, dest string) error {
 	// caught later by the checksum/signature gate).
 	n, err := io.Copy(f, io.LimitReader(resp.Body, maxBinaryDownload+1))
 	if err != nil {
+		os.Remove(dest) // don't leave a partial download behind
 		return err
 	}
 	if n > maxBinaryDownload {
+		os.Remove(dest)
 		return fmt.Errorf("download exceeds %d bytes (refusing)", maxBinaryDownload)
 	}
 	return nil

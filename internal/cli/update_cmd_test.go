@@ -41,8 +41,13 @@ func TestDownloadFile_Bounded(t *testing.T) {
 		_, _ = w.Write(make([]byte, maxBinaryDownload+16))
 	}))
 	defer srvBig.Close()
-	if err := downloadFile(srvBig.Client(), srvBig.URL, filepath.Join(dir, "big.new")); err == nil {
+	bigDest := filepath.Join(dir, "big.new")
+	if err := downloadFile(srvBig.Client(), srvBig.URL, bigDest); err == nil {
 		t.Fatal("downloadFile accepted an oversize body; REL-4 regression")
+	}
+	// The partial download must not be left behind.
+	if _, err := os.Stat(bigDest); !os.IsNotExist(err) {
+		t.Fatalf("oversize download left a partial file at %s (stat err=%v)", bigDest, err)
 	}
 }
 
