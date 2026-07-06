@@ -125,19 +125,12 @@ func LoadRuntimeConfig(ctx context.Context, db *pgxpool.Pool, secrets *config.Va
 		}
 		if err == nil {
 			cfg.FromDB = true
-			// service_key + license_key are encrypted at rest; decrypt before
-			// the field-level merge (Decrypt is a no-op on legacy plaintext rows).
-			if dbKey, err = decryptField(encKey, dbKey); err != nil {
-				return cfg, fmt.Errorf("decrypt validonx_config service_key: %w", err)
-			}
-			if dbLicense, err = decryptField(encKey, dbLicense); err != nil {
-				return cfg, fmt.Errorf("decrypt validonx_config license_key: %w", err)
-			}
+			// Apply the plaintext identifier fields first — they can't fail, so a
+			// later credential-decrypt error (e.g. a rotated CookieSecret orphaning
+			// the ciphertext) still preserves the DB's base_url/tenant_id/etc.
+			// rather than silently dropping the whole row back to secrets/defaults.
 			if dbBase != "" {
 				cfg.BaseURL = dbBase
-			}
-			if dbKey != "" {
-				cfg.ServiceKey = dbKey
 			}
 			if dbTenant != "" {
 				cfg.TenantID = dbTenant
@@ -147,6 +140,17 @@ func LoadRuntimeConfig(ctx context.Context, db *pgxpool.Pool, secrets *config.Va
 			}
 			if dbServer != "" {
 				cfg.ServerID = dbServer
+			}
+			// service_key + license_key are encrypted at rest; decrypt then merge
+			// (Decrypt is a no-op on legacy plaintext rows).
+			if dbKey, err = decryptField(encKey, dbKey); err != nil {
+				return cfg, fmt.Errorf("decrypt validonx_config service_key: %w", err)
+			}
+			if dbKey != "" {
+				cfg.ServiceKey = dbKey
+			}
+			if dbLicense, err = decryptField(encKey, dbLicense); err != nil {
+				return cfg, fmt.Errorf("decrypt validonx_config license_key: %w", err)
 			}
 			if dbLicense != "" {
 				cfg.LicenseKey = dbLicense
@@ -235,6 +239,30 @@ func ClearRuntimeConfig(ctx context.Context, db *pgxpool.Pool, logger *slog.Logg
 	return nil
 }
 
+// planConfigEncryption computes the values to persist for a validonx_config
+// row's two credentials, encrypting only the fields still stored as plaintext.
+// It returns the (possibly unchanged) values and the number of fields newly
+// encrypted — 0 means nothing to migrate, so the caller can skip the UPDATE.
+// Pure and idempotent: re-running on already-encrypted (or empty) input yields
+// migrated=0. Kept DB-free so the migration's idempotence is unit-testable
+// without a Postgres harness (the validonx package has no integration suite).
+func planConfigEncryption(encKey []byte, svcKey, licKey string) (newSvc, newLic string, migrated int, err error) {
+	newSvc, newLic = svcKey, licKey
+	if svcKey != "" && !secretcrypto.IsEncrypted(svcKey) {
+		if newSvc, err = secretcrypto.Encrypt(encKey, svcKey); err != nil {
+			return svcKey, licKey, 0, fmt.Errorf("encrypt legacy service_key: %w", err)
+		}
+		migrated++
+	}
+	if licKey != "" && !secretcrypto.IsEncrypted(licKey) {
+		if newLic, err = secretcrypto.Encrypt(encKey, licKey); err != nil {
+			return newSvc, licKey, migrated, fmt.Errorf("encrypt legacy license_key: %w", err)
+		}
+		migrated++
+	}
+	return newSvc, newLic, migrated, nil
+}
+
 // EncryptLegacyValidonXConfig is an idempotent startup pass that encrypts the
 // service_key and license_key of the singleton validonx_config row if they are
 // still stored as plaintext (rows written before encryption at rest landed —
@@ -257,31 +285,22 @@ func EncryptLegacyValidonXConfig(ctx context.Context, db *pgxpool.Pool, encKey [
 		return 0, fmt.Errorf("read validonx_config: %w", err)
 	}
 
-	newSvc, svcLegacy := svcKey, svcKey != "" && !secretcrypto.IsEncrypted(svcKey)
-	newLic, licLegacy := licKey, licKey != "" && !secretcrypto.IsEncrypted(licKey)
-	if !svcLegacy && !licLegacy {
+	newSvc, newLic, migrated, err := planConfigEncryption(encKey, svcKey, licKey)
+	if err != nil {
+		return 0, err
+	}
+	if migrated == 0 {
 		return 0, nil
-	}
-
-	migrated := 0
-	if svcLegacy {
-		if newSvc, err = secretcrypto.Encrypt(encKey, svcKey); err != nil {
-			return 0, fmt.Errorf("encrypt legacy service_key: %w", err)
-		}
-		migrated++
-	}
-	if licLegacy {
-		if newLic, err = secretcrypto.Encrypt(encKey, licKey); err != nil {
-			return migrated, fmt.Errorf("encrypt legacy license_key: %w", err)
-		}
-		migrated++
 	}
 
 	if _, err := db.Exec(ctx,
 		`UPDATE validonx_config SET service_key = $1, license_key = $2 WHERE singleton = TRUE`,
 		newSvc, newLic,
 	); err != nil {
-		return 0, fmt.Errorf("update legacy validonx_config: %w", err)
+		// Return the computed count, not 0: the fields WERE encrypted in memory;
+		// the persist failed. Mirrors WebhookRepo.EncryptLegacySecrets so startup
+		// logging reflects the intended migration size (Copilot #2).
+		return migrated, fmt.Errorf("update legacy validonx_config: %w", err)
 	}
 	return migrated, nil
 }

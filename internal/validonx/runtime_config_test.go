@@ -123,3 +123,82 @@ func TestConfigFieldDecryptLegacyPlaintextPassthrough(t *testing.T) {
 		t.Fatalf("legacy passthrough = %q, want %q", got, legacy)
 	}
 }
+
+// VX-CFG-1: the startup migration's core is planConfigEncryption — legacy
+// plaintext gets encrypted in place, and a second pass over the now-encrypted
+// values is a no-op (migrated=0). This is the idempotence guarantee that lets
+// EncryptLegacyValidonXConfig run safely on every boot, unit-tested without a
+// Postgres harness (Copilot #3).
+func TestPlanConfigEncryptionMigratesAndIsIdempotent(t *testing.T) {
+	key := secretcrypto.DeriveKey([]byte("install-master"), ConfigEncKeyLabel)
+	const (
+		svc = "svc_live_partner_key"
+		lic = "VLDX-license-string"
+	)
+
+	// First pass: both legacy plaintext fields get encrypted.
+	encSvc, encLic, migrated, err := planConfigEncryption(key, svc, lic)
+	if err != nil {
+		t.Fatalf("plan pass 1: %v", err)
+	}
+	if migrated != 2 {
+		t.Fatalf("pass 1 migrated = %d, want 2", migrated)
+	}
+	if !secretcrypto.IsEncrypted(encSvc) || !secretcrypto.IsEncrypted(encLic) {
+		t.Fatal("pass 1 did not encrypt both fields")
+	}
+	// The stored ciphertext must decrypt back to the originals.
+	if got, _ := decryptField(key, encSvc); got != svc {
+		t.Fatalf("service_key round trip = %q, want %q", got, svc)
+	}
+	if got, _ := decryptField(key, encLic); got != lic {
+		t.Fatalf("license_key round trip = %q, want %q", got, lic)
+	}
+
+	// Second pass over the already-encrypted values: no-op.
+	sameSvc, sameLic, migrated2, err := planConfigEncryption(key, encSvc, encLic)
+	if err != nil {
+		t.Fatalf("plan pass 2: %v", err)
+	}
+	if migrated2 != 0 {
+		t.Fatalf("pass 2 migrated = %d, want 0 (idempotent)", migrated2)
+	}
+	if sameSvc != encSvc || sameLic != encLic {
+		t.Fatal("pass 2 mutated already-encrypted values")
+	}
+}
+
+// A row with one already-encrypted field and one legacy field migrates only
+// the legacy field (migrated=1), and an empty field is left untouched.
+func TestPlanConfigEncryptionMixedAndEmpty(t *testing.T) {
+	key := secretcrypto.DeriveKey([]byte("install-master"), ConfigEncKeyLabel)
+
+	preEnc, err := secretcrypto.Encrypt(key, "already_encrypted_service_key")
+	if err != nil {
+		t.Fatalf("seed encrypt: %v", err)
+	}
+
+	// service_key already encrypted, license_key empty → nothing to do.
+	newSvc, newLic, migrated, err := planConfigEncryption(key, preEnc, "")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if migrated != 0 {
+		t.Fatalf("migrated = %d, want 0 (encrypted + empty)", migrated)
+	}
+	if newSvc != preEnc || newLic != "" {
+		t.Fatalf("values mutated: svc=%q lic=%q", newSvc, newLic)
+	}
+
+	// service_key already encrypted, license_key legacy → migrate just the one.
+	_, newLic2, migrated2, err := planConfigEncryption(key, preEnc, "VLDX-legacy")
+	if err != nil {
+		t.Fatalf("plan mixed: %v", err)
+	}
+	if migrated2 != 1 {
+		t.Fatalf("mixed migrated = %d, want 1", migrated2)
+	}
+	if !secretcrypto.IsEncrypted(newLic2) {
+		t.Fatal("legacy license_key was not encrypted")
+	}
+}
