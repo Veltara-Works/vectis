@@ -3,6 +3,18 @@
 # Bump deliberately after testing the new version's skin/config compatibility.
 FROM roundcube/roundcubemail:1.7.2-apache
 
+# Security patch layer (audit): the pinned upstream base ships an ImageMagick
+# vulnerable to CVE-2026-56367 (CRITICAL), fixed in the Debian 13 archive as
+# imagemagick 8:7.1.1.43+dfsg1-1+deb13u11. Because the base tag is pinned
+# deliberately, a rebuild alone won't pull the fix — so we upgrade the installed
+# magick packages in-place. This FIXES rather than suppresses (see .trivyignore
+# policy); drop this layer once the base republishes with the patched package.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends --only-upgrade \
+      $(dpkg-query -W -f='${Package}\n' 'imagemagick*' 'libmagick*' 2>/dev/null); \
+    rm -rf /var/lib/apt/lists/*
+
 # Bake the Vectis skin into /usr/src/. Roundcube's image entrypoint copies
 # /usr/src/roundcubemail/. to /var/www/html on first start (and runs
 # bin/installto.sh to update on later starts), so anything dropped here
