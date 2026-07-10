@@ -6,18 +6,13 @@ name: Dependency Security
 # a known-vulnerable dependency can't merge or release unnoticed.
 
 on:
-  push:
-    branches: [main]
-    # Include **/*.go: a change that newly calls into an already-present
-    # vulnerable dependency symbol must re-run govulncheck even when the
-    # module graph (go.mod/go.sum) is unchanged.
-    paths:
-      - '**/*.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'web/package.json'
-      - 'web/package-lock.json'
-      - '.github/workflows/dependency-security.yml'
+  # PRs-only + a weekly full sweep (shared-org Actions minute pool). The PR
+  # run gates the merge; the push-to-main re-run was redundant. The weekly
+  # schedule surfaces advisories disclosed since the last commit.
+  #
+  # Include **/*.go: a change that newly calls into an already-present
+  # vulnerable dependency symbol must re-run govulncheck even when the
+  # module graph (go.mod/go.sum) is unchanged.
   pull_request:
     branches: [main]
     paths:
@@ -31,6 +26,11 @@ on:
     # Mondays 15:23 UTC — surface advisories disclosed since the last commit.
     - cron: '23 15 * * 1'
   workflow_dispatch:
+
+concurrency:
+  # Cancel superseded PR runs; let scheduled sweeps complete.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

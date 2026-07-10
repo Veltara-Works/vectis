@@ -3,8 +3,26 @@ name: CI
 on:
   push:
     branches: [main]
+    # The pull_request run is the merge gate; the push-to-main run is
+    # redundant post-merge validation. Skip it for docs/marketing-only
+    # merges so a README/screenshot change doesn't re-run the full
+    # backend/DB/docker suite (shared-org Actions minute pool).
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.claude/**'
+      - '**/*.png'
+      - '**/*.webp'
+      - '**/*.jpg'
+      - '**/*.svg'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+
+concurrency:
+  # Cancel superseded PR runs; let each push-to-main run complete.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

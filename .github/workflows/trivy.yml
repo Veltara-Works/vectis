@@ -17,16 +17,11 @@ name: Trivy Image Scan
 # disclosed against bases that were clean at release time.
 
 on:
+  # PRs-only + a weekly full sweep (shared-org Actions minute pool). The PR
+  # run gates the merge; the push-to-main re-run was redundant, and the
+  # weekly schedule below rebuilds from pinned bases to catch newly-disclosed
+  # CVEs — so no push trigger is needed.
   pull_request:
-    branches: [main]
-    paths:
-      - 'docker/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'web/package-lock.json'
-      - '.trivyignore'
-      - '.github/workflows/trivy.yml'
-  push:
     branches: [main]
     paths:
       - 'docker/**'
@@ -39,6 +34,11 @@ on:
     # Mondays 14:17 UTC — surface newly-disclosed CVEs in pinned base images.
     - cron: '17 14 * * 1'
   workflow_dispatch:
+
+concurrency:
+  # Cancel superseded PR runs (each rebuilds an 8-image matrix).
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
