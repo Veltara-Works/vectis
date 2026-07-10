@@ -109,7 +109,15 @@ gate "TLS policy (go.mod/go.sum)" -- tls_policy
 
 # 3) gofmt — formatting (gofmt only parses/formats, never compiles → safe)
 gofmt_check(){
-  local bad; bad="$(git ls-files '*.go' | grep -vE '(^|/)(vendor|web/node_modules)/' | xargs -r gofmt -l 2>/dev/null)"
+  # gofmt -l lists files needing formatting on stdout; a parse error goes to
+  # stderr AND makes gofmt exit non-zero. Split file-listing from the gofmt run
+  # and check the exit status so a broken file FAILs the gate instead of a
+  # suppressed error silently passing it.
+  local files bad rc
+  files="$(git ls-files '*.go' | grep -vE '(^|/)(vendor|web/node_modules)/' || true)"
+  [ -n "$files" ] || return 0
+  bad="$(printf '%s\n' "$files" | xargs -r gofmt -l 2>&1)"; rc=$?
+  if [ $rc -ne 0 ]; then echo "gofmt failed to run (parse error?):"; echo "$bad"; return 1; fi
   [ -z "$bad" ] || { echo "gofmt needs to run on:"; echo "$bad"; echo "fix: gofmt -w <files>"; return 1; }
 }
 if command -v gofmt >/dev/null 2>&1; then gate "gofmt" -- gofmt_check
@@ -161,10 +169,20 @@ go_gates_enabled(){
   return 0
 }
 
-# lazily install a pinned Go tool into a temp GOBIN (build host only)
-GOBIN_TMP="$(mktemp -d)"; export PATH="$GOBIN_TMP:$PATH"
+# lazily install a pinned Go tool into a temp GOBIN (build host only).
+# Guard mktemp failure: an empty GOBIN_TMP would make PATH ":$PATH" (a leading
+# empty element = CWD on PATH) and make `go install` fall back to the user's
+# default GOBIN, polluting the host. On failure we leave GOBIN_TMP empty and
+# need_tool skips installs (tools must already be present).
+GOBIN_TMP="$(mktemp -d 2>/dev/null || true)"
+if [ -n "$GOBIN_TMP" ] && [ -d "$GOBIN_TMP" ]; then
+  export PATH="$GOBIN_TMP:$PATH"
+else
+  GOBIN_TMP=""
+fi
 need_tool(){ # need_tool <bin> <install-path@version>
   command -v "$1" >/dev/null 2>&1 && return 0
+  [ -n "$GOBIN_TMP" ] || return 1   # no temp GOBIN → don't install into host GOBIN
   echo "  ${D}installing $1...${Z}"
   GOBIN="$GOBIN_TMP" go install "$2" >/dev/null 2>&1
 }
@@ -175,7 +193,11 @@ if go_gates_enabled; then
   else
     gate "go vet ./..."            -- go vet ./...
     gate "go build (CGO-free)"     -- bash -c 'CGO_ENABLED=0 go build -tags netgo,osusergo -ldflags="-s -w" -o /tmp/vectis-prepush ./cmd/vectis/ && /tmp/vectis-prepush version >/dev/null'
-    gate "go unit tests"           -- bash -c "go test ${VECTIS_GO_TEST_TAGS:+-tags ${VECTIS_GO_TEST_TAGS}} ./internal/... -count=1"
+    # Build the go-test argv as an array so VECTIS_GO_TEST_TAGS is passed as a
+    # single, literal argument — no shell re-parsing of spaces/metacharacters.
+    gotest=(go test ./internal/... -count=1)
+    [ -n "${VECTIS_GO_TEST_TAGS:-}" ] && gotest=(go test -tags "$VECTIS_GO_TEST_TAGS" ./internal/... -count=1)
+    gate "go unit tests"           -- "${gotest[@]}"
 
     need_tool govulncheck golang.org/x/vuln/cmd/govulncheck@v1.3.0
     if command -v govulncheck >/dev/null 2>&1; then gate "govulncheck ./..." -- govulncheck ./...
@@ -189,7 +211,7 @@ if go_gates_enabled; then
     # Adversarial static analysis beyond `go vet` (advisory unless --strict)
     need_tool staticcheck honnef.co/go/tools/cmd/staticcheck@2025.1.1
     if command -v staticcheck >/dev/null 2>&1; then gate "staticcheck ./..." --advisory -- staticcheck ./...
-    else skip "staticcheck" "install failed"; fi
+    else warn "staticcheck (install failed)"; fi
 
     if [ $RUN_FULL -eq 1 ]; then
       gate "integration tests" -- bash -c "go test -tags integration \$(go list -tags integration ./internal/... | grep -v '/internal/backup') -p 1 -count=1 -timeout 300s"
@@ -201,7 +223,7 @@ else
   skip "Go toolchain gates (vet/build/test/vuln/licenses/staticcheck)" \
        "$([ "${VECTIS_BUILD_HOST:-0}" = "1" ] && echo 'refused: live mail stack detected' || echo 'set VECTIS_BUILD_HOST=1 on a build host')"
 fi
-rm -rf "$GOBIN_TMP" 2>/dev/null || true
+[ -n "$GOBIN_TMP" ] && rm -rf "$GOBIN_TMP" 2>/dev/null || true
 
 # ════════════════════════════════════════════════════════════════════════════
 # SUMMARY
