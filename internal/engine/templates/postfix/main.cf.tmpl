@@ -9,6 +9,16 @@ myorigin = $mydomain
 mydestination =
 mynetworks = 127.0.0.0/8 [::1]/128 172.16.0.0/12
 
+# Virtual-only server: there is no local delivery (mydestination is empty; all
+# mail is delivered via virtual_transport → LMTP to Dovecot). Explicitly clear
+# alias_maps/alias_database so Postfix does NOT fall back to its compiled default
+# ($default_database_type:/etc/postfix/aliases = lmdb:/etc/postfix/aliases), which
+# is never built with postalias and logs "open database /etc/postfix/aliases.lmdb:
+# No such file or directory" on every smtpd start. Empty is correct here — there
+# are no local aliases to resolve.
+alias_maps =
+alias_database =
+
 # Virtual domain hosting (SQL-driven per ADR-010)
 virtual_mailbox_domains = pgsql:/etc/postfix/pgsql_virtual_domains.cf
 virtual_mailbox_maps = pgsql:/etc/postfix/pgsql_virtual_mailboxes.cf
@@ -65,7 +75,10 @@ smtpd_tls_exclude_ciphers = aNULL, MD5, DES, 3DES, RC4, EXPORT, LOW
 tls_preempt_cipherlist = yes
 smtpd_tls_loglevel = 1
 smtpd_tls_received_header = yes
-smtpd_tls_session_cache_database = btree:${data_directory}/smtpd_scache
+# lmdb, not btree — the Alpine postfix image is built without Berkeley DB, so a
+# btree cache logs "Berkeley DB support ... not available" and never persists.
+# lmdb is the image's default_database_type and is supported for the TLS cache.
+smtpd_tls_session_cache_database = lmdb:${data_directory}/smtpd_scache
 
 # TLS — outbound (opportunistic; upgrade to dane when unbound sidecar is added)
 smtp_tls_security_level = may
@@ -75,7 +88,7 @@ smtp_tls_mandatory_ciphers = high
 smtp_tls_mandatory_exclude_ciphers = aNULL, MD5, DES, 3DES, RC4, EXPORT, LOW, SEED, IDEA
 smtp_tls_exclude_ciphers = aNULL, MD5, DES, 3DES, RC4, EXPORT, LOW
 smtp_tls_loglevel = 1
-smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
+smtp_tls_session_cache_database = lmdb:${data_directory}/smtp_scache
 
 # Message limits
 message_size_limit = {{ .Postfix.MessageSizeLimit }}

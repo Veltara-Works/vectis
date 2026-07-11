@@ -98,11 +98,25 @@ func TestPostfixMainCF(t *testing.T) {
 		"virtual_mailbox_domains = pgsql:/etc/postfix/pgsql_virtual_domains.cf",
 		"smtpd_milters = inet:rspamd:11332",
 		"message_size_limit = 52428800",
+		// Virtual-only: alias_maps/alias_database cleared so Postfix doesn't open
+		// the never-built default lmdb:/etc/postfix/aliases (log-noise on smtpd start).
+		// Anchored with newlines so they match the exact empty-value lines and not
+		// the "virtual_alias_maps = pgsql:..." line above.
+		"\nalias_maps =\n",
+		"\nalias_database =\n",
+		// TLS session cache on lmdb, not btree — the Alpine image has no Berkeley DB.
+		"smtpd_tls_session_cache_database = lmdb:",
+		"smtp_tls_session_cache_database = lmdb:",
 	}
 	for _, check := range checks {
 		if !strings.Contains(mainCF, check) {
 			t.Errorf("main.cf missing: %s", check)
 		}
+	}
+	// Guard against a btree: TLS cache regressing (unavailable on Alpine postfix).
+	// Directive-specific so an explanatory comment mentioning btree can't trip it.
+	if strings.Contains(mainCF, "session_cache_database = btree:") {
+		t.Errorf("main.cf uses btree: TLS cache (no Berkeley DB in the Alpine image) — use lmdb:")
 	}
 }
 
