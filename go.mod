@@ -3,7 +3,7 @@ module github.com/Veltara-Works/vectis
 go 1.26.5
 
 require (
-	github.com/beevik/etree v1.6.0
+	github.com/beevik/etree v1.7.0
 	github.com/coreos/go-oidc/v3 v3.19.0
 	github.com/crewjam/saml v0.5.1
 	github.com/emersion/go-imap v1.2.1
