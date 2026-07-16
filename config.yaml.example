@@ -37,8 +37,9 @@ clamav:
 
 # Rspamd spam-filtering thresholds.
 # spam_threshold  — score at which a message is flagged as spam
-# reject_threshold — score at which a message is rejected outright
-#                    (999 = effectively disabled; recommended until tuned)
+# reject_threshold — score at which a message is rejected outright at SMTP.
+#                    Default 20 is conservative (legit mail rarely exceeds ~12);
+#                    raise to 999 to only tag/quarantine and never reject.
 # greylist_enabled — whether to enable greylisting for unknown senders
 # file_spam_to_junk — auto-file spam-tagged mail (X-Spam: Yes) into Junk via a
 #                     global sieve_before script instead of leaving it in INBOX.
