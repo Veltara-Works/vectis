@@ -52,7 +52,7 @@ type ClamAVConfig struct {
 // RspamdConfig tunes the Rspamd spam-filtering thresholds.
 type RspamdConfig struct {
 	SpamThreshold   float64 `yaml:"spam_threshold"`   // default 15.0
-	RejectThreshold float64 `yaml:"reject_threshold"` // default 999 (effectively disabled)
+	RejectThreshold float64 `yaml:"reject_threshold"` // default 20.0 — reject clear spam/phishing at SMTP; raise to 999 to only tag, never reject
 	GreylistEnabled bool    `yaml:"greylist_enabled"`
 	// FileSpamToJunk auto-files spam-tagged mail (rspamd's X-Spam: Yes, set at
 	// the add_header/spam threshold) into the Junk folder via a global

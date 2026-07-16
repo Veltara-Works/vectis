@@ -44,8 +44,11 @@ clamav:
 #                     global sieve_before script instead of leaving it in INBOX.
 #                     Default on; set false to opt out (keeps spam in INBOX).
 rspamd:
-  spam_threshold: 15.0
-  reject_threshold: 999    # 999 = effectively disabled
+  spam_threshold: 15.0     # score >= this: tag as spam (X-Spam: Yes -> Junk)
+  reject_threshold: 20.0   # score >= this: reject at SMTP. Conservative --
+                           # legitimate mail rarely exceeds ~12; forged/phishing
+                           # mail that fails SPF+DKIM+DMARC scores well above 20.
+                           # Raise to 999 to only tag and never reject.
   greylist_enabled: false
   file_spam_to_junk: true
 
