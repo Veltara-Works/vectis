@@ -2,16 +2,29 @@ require ["fileinto", "mailbox"];
 
 # Vectis global spam-filing rule (sieve_before).
 #
-# rspamd's milter_headers "spam-header" routine stamps X-Spam: Yes on every
-# message scoring at or above the add_header (spam) threshold. This files those
-# into Junk and stops, so spam never reaches INBOX. Runs before any per-user
-# sieve script, so users can still add their own rules (including allowlisting a
-# sender back out of Junk) on top.
+# Files spam into Junk before any per-user sieve, so it never reaches INBOX,
+# then stops. Runs before per-user scripts, so users can still allowlist a
+# sender back out of Junk on top.
+#
+# Matches two independent spam flags:
+#   - X-Spam: Yes       — set by our rspamd (milter_headers "spam-header") on
+#                         messages at/above the add_header (spam) threshold.
+#   - X-Spam-Flag: YES  — the SpamAssassin-standard flag. Our rspamd does NOT
+#                         emit this, so it only appears on mail already tagged
+#                         by an UPSTREAM scanner — e.g. a cPanel host forwarding
+#                         mail in. Forwarded mail is re-scored low by rspamd
+#                         (trusted relay) and so never gets our X-Spam header;
+#                         honouring the upstream flag keeps that pre-tagged spam
+#                         out of INBOX. (Worst case if forged: a sender files
+#                         their own mail to Junk — harmless.)
 #
 # Wired in via `sieve_before` in dovecot.conf only when rspamd.file_spam_to_junk
-# is enabled (the default). Mounted read-only at the path below; Pigeonhole
-# compiles the .svbin alongside it in the container's own writable layer.
-if header :is "X-Spam" "Yes" {
+# is enabled (the default). Mounted read-only; Pigeonhole compiles the .svbin
+# in the container's own writable layer.
+if anyof (
+    header :is "X-Spam"      "Yes",
+    header :is "X-Spam-Flag" "YES"
+) {
     fileinto :create "Junk";
     stop;
 }
