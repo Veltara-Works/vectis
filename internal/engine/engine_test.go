@@ -1275,6 +1275,18 @@ func TestSpamToJunkSieve(t *testing.T) {
 	if sieve := get(on, "dovecot/spam-to-junk.sieve"); !strings.Contains(sieve, `fileinto :create "Junk"`) {
 		t.Errorf("default: spam-to-junk.sieve missing fileinto rule; got:\n%s", sieve)
 	}
+	// Both spam signals must be matched: our own rspamd header AND the
+	// SpamAssassin-standard flag set by upstream scanners (e.g. a cPanel host
+	// forwarding mail in — re-scored low by rspamd, so it never gets our
+	// X-Spam header). Copilot review on PR #187: without asserting the
+	// X-Spam-Flag match here, the upstream-tagged condition could regress
+	// silently since fileinto is still present.
+	if sieve := get(on, "dovecot/spam-to-junk.sieve"); !strings.Contains(sieve, `header :is "X-Spam"      "Yes"`) {
+		t.Errorf("default: spam-to-junk.sieve missing our own X-Spam header match; got:\n%s", sieve)
+	}
+	if sieve := get(on, "dovecot/spam-to-junk.sieve"); !strings.Contains(sieve, `header :is "X-Spam-Flag" "YES"`) {
+		t.Errorf("default: spam-to-junk.sieve missing upstream X-Spam-Flag match; got:\n%s", sieve)
+	}
 
 	// Explicitly disabled — feature OFF.
 	off := false
