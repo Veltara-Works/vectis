@@ -51,11 +51,11 @@ fork) and are listed separately to reflect that.
 
 | Module / package | Version | License |
 |---|---|---|
-| `github.com/beevik/etree` | v1.6.0 | BSD-2-Clause |
+| `github.com/beevik/etree` | v1.7.0 | BSD-2-Clause |
 | `github.com/beorn7/perks/quantile` | v1.0.1 | MIT |
 | `github.com/boombuler/barcode` | 6c824513bacc | MIT |
 | `github.com/cespare/xxhash/v2` | v2.3.0 | MIT |
-| `github.com/coreos/go-oidc/v3/oidc` | v3.19.0 | Apache-2.0 |
+| `github.com/coreos/go-oidc/v3/oidc` | v3.20.0 | Apache-2.0 |
 | `github.com/crewjam/saml` | v0.5.1 | BSD-2-Clause |
 | `github.com/emersion/go-imap` | v1.2.1 | MIT |
 | `github.com/emersion/go-sasl` | b788ff22d5a6 | MIT |
@@ -85,11 +85,11 @@ fork) and are listed separately to reflect that.
 | `github.com/spf13/pflag` | v1.0.9 | BSD-3-Clause |
 | `github.com/valkey-io/valkey-go` | v1.0.76 | Apache-2.0 |
 | `go.yaml.in/yaml/v2` | v2.4.2 | Apache-2.0 |
-| `golang.org/x/crypto` | v0.53.0 | BSD-3-Clause |
+| `golang.org/x/crypto` | v0.54.0 | BSD-3-Clause |
 | `golang.org/x/oauth2` | v0.36.0 | BSD-3-Clause |
-| `golang.org/x/sync/semaphore` | v0.21.0 | BSD-3-Clause |
-| `golang.org/x/sys` | v0.46.0 | BSD-3-Clause |
-| `golang.org/x/text` | v0.38.0 | BSD-3-Clause |
+| `golang.org/x/sync/semaphore` | v0.22.0 | BSD-3-Clause |
+| `golang.org/x/sys` | v0.47.0 | BSD-3-Clause |
+| `golang.org/x/text` | v0.40.0 | BSD-3-Clause |
 | `google.golang.org/protobuf` | v1.36.8 | BSD-3-Clause |
 | `gopkg.in/yaml.v3` | v3.0.1 | MIT |
 
