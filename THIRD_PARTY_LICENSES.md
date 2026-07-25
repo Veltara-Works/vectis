@@ -35,7 +35,16 @@ section for the analysis.
 > `x/sync` → v0.21.0, `x/text` → v0.38.0); licenses unchanged (all BSD-3-Clause).
 > Follow-up reconcile (same date): added the missing direct dependency
 > `robfig/cron/v3` v3.0.1 (MIT) and corrected the summary count (was 38, now 41
-> matching the table).
+> matching the table). Reconciled **2026-07-25** against `go.mod` after the
+> `prometheus/client_golang` v1.24.0 bump (#191) pulled newer transitives: six
+> stale versions corrected (`client_golang` ×2 rows → v1.24.0,
+> `prometheus/common` → v0.70.0, `prometheus/procfs` → v0.21.1,
+> `google.golang.org/protobuf` → v1.36.11, `go-chi/chi/v5` → v5.3.1); licenses
+> unchanged. NOTE: a full `go-licenses` regeneration was not possible on the
+> build box this round — `go.mod` now requires **Go ≥ 1.26.5** and the box still
+> has 1.26.4, which `GOTOOLCHAIN=local` (required by the procedure below) refuses
+> to upgrade. Bump the build box toolchain before the next full regeneration, so
+> newly-added modules are caught and not just version drift.
 
 ---
 
@@ -59,7 +68,7 @@ fork) and are listed separately to reflect that.
 | `github.com/crewjam/saml` | v0.5.1 | BSD-2-Clause |
 | `github.com/emersion/go-imap` | v1.2.1 | MIT |
 | `github.com/emersion/go-sasl` | b788ff22d5a6 | MIT |
-| `github.com/go-chi/chi/v5` | v5.3.0 | MIT |
+| `github.com/go-chi/chi/v5` | v5.3.1 | MIT |
 | `github.com/go-jose/go-jose/v4` | v4.1.4 | Apache-2.0 |
 | `github.com/go-jose/go-jose/v4/json` | v4.1.4 | BSD-3-Clause |
 | `github.com/golang-jwt/jwt/v4` | v4.5.2 | MIT |
@@ -74,11 +83,11 @@ fork) and are listed separately to reflect that.
 | `github.com/mattermost/xml-roundtrip-validator` | v0.1.0 | Apache-2.0 |
 | `github.com/munnerz/goautoneg` | a7dc8b61c822 | BSD-3-Clause |
 | `github.com/pquerna/otp` | v1.5.0 | Apache-2.0 |
-| `github.com/prometheus/client_golang/internal/.../gddo/httputil` | v1.23.2 | BSD-3-Clause |
-| `github.com/prometheus/client_golang/prometheus` | v1.23.2 | Apache-2.0 |
+| `github.com/prometheus/client_golang/internal/.../gddo/httputil` | v1.24.0 | BSD-3-Clause |
+| `github.com/prometheus/client_golang/prometheus` | v1.24.0 | Apache-2.0 |
 | `github.com/prometheus/client_model/go` | v0.6.2 | Apache-2.0 |
-| `github.com/prometheus/common` | v0.66.1 | Apache-2.0 |
-| `github.com/prometheus/procfs` | v0.16.1 | Apache-2.0 |
+| `github.com/prometheus/common` | v0.70.0 | Apache-2.0 |
+| `github.com/prometheus/procfs` | v0.21.1 | Apache-2.0 |
 | `github.com/robfig/cron/v3` | v3.0.1 | MIT |
 | `github.com/russellhaering/goxmldsig` | v1.6.0 | Apache-2.0 |
 | `github.com/spf13/cobra` | v1.10.2 | Apache-2.0 |
@@ -90,7 +99,7 @@ fork) and are listed separately to reflect that.
 | `golang.org/x/sync/semaphore` | v0.22.0 | BSD-3-Clause |
 | `golang.org/x/sys` | v0.47.0 | BSD-3-Clause |
 | `golang.org/x/text` | v0.40.0 | BSD-3-Clause |
-| `google.golang.org/protobuf` | v1.36.8 | BSD-3-Clause |
+| `google.golang.org/protobuf` | v1.36.11 | BSD-3-Clause |
 | `gopkg.in/yaml.v3` | v3.0.1 | MIT |
 
 The Go standard library is part of the Go distribution itself and is licensed
