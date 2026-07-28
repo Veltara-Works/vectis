@@ -8,13 +8,5 @@
     "upgrading. Every entry MUST carry a reason and a near-term `expires` date; the",
     "gate fails once that date passes, so nothing can be quietly forgotten."
   ],
-  "advisories": [
-    {
-      "id": "GHSA-qwww-vcr4-c8h2",
-      "package": "react-router",
-      "severity": "high",
-      "expires": "2026-09-01",
-      "reason": "RSC-mode CSRF bypass. Not reachable here: the admin UI is a client-only Vite SPA that imports solely from 'react-router-dom' (no RSC entry points, no server actions, no route handlers). The advisory is fixed in react-router 8.3.0, but react-router-dom ends at 7.18.1 (v8 folds it back into react-router), so clearing this needs a deliberate v8 migration rather than a version bump. Tracked for that migration; do not renew this entry a second time without one."
-    }
-  ]
+  "advisories": []
 }

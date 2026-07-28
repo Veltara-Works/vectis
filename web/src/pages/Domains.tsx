@@ -1,5 +1,5 @@
 import { useState, useEffect, FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { api } from '../api/client.ts'
 import { extractError } from '../lib/errors.ts'
 
