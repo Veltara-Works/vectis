@@ -44,13 +44,23 @@ section for the analysis.
 > build box this round — `go.mod` now requires **Go ≥ 1.26.5** and the box still
 > has 1.26.4, which `GOTOOLCHAIN=local` (required by the procedure below) refuses
 > to upgrade. Bump the build box toolchain before the next full regeneration, so
-> newly-added modules are caught and not just version drift. Category 2
-> reconciled **2026-07-28** against `web/package-lock.json` alongside the
-> `react-dom` v19.2.8 bump (#203): `react` + `react-dom` → v19.2.8, and two pins
-> that had drifted earlier and were caught by the same cross-check,
-> `react-router` + `react-router-dom` → v7.18.1; all still MIT. Cross-check the
-> lockfile — not just `package.json` — since the runtime deps are caret ranges
-> and drift without either manifest changing.
+> newly-added modules are caught and not just version drift. Category 1
+> reconciled **2026-07-28** in the same PR as the `client_golang` v1.24.1 bump
+> (#197): `client_golang` ×2 rows → v1.24.1, `prometheus/common` → v0.70.1;
+> licenses unchanged. That bump also moved `klauspost/compress` → v1.19.1 and
+> `golang.org/x/net` → v0.57.0, but neither is linked into the binaries, so
+> neither has a row here — a graph-only change. Same Go 1.26.4 limitation as
+> above still applies. Separately corrected a stale pin the 2026-07-25 pass
+> could not have caught: `go.yaml.in/yaml/v2` v2.4.2 → **v2.4.4** — that module
+> is resolved only in `go.sum` and never named in `go.mod`, so a `go.mod`-based
+> reconcile structurally misses it; check `go.sum` too until a full
+> `go-licenses` run is possible again. Category 2 reconciled the same day
+> against `web/package-lock.json` alongside the `react-dom` v19.2.8 bump (#203):
+> `react` + `react-dom` → v19.2.8, plus two pins that had drifted earlier and
+> were caught by the same cross-check, `react-router` + `react-router-dom` →
+> v7.18.1; all still MIT. Cross-check the lockfile — not just `package.json` —
+> since the runtime deps are caret ranges and drift without either manifest
+> changing.
 
 ---
 
@@ -89,17 +99,17 @@ fork) and are listed separately to reflect that.
 | `github.com/mattermost/xml-roundtrip-validator` | v0.1.0 | Apache-2.0 |
 | `github.com/munnerz/goautoneg` | a7dc8b61c822 | BSD-3-Clause |
 | `github.com/pquerna/otp` | v1.5.0 | Apache-2.0 |
-| `github.com/prometheus/client_golang/internal/.../gddo/httputil` | v1.24.0 | BSD-3-Clause |
-| `github.com/prometheus/client_golang/prometheus` | v1.24.0 | Apache-2.0 |
+| `github.com/prometheus/client_golang/internal/.../gddo/httputil` | v1.24.1 | BSD-3-Clause |
+| `github.com/prometheus/client_golang/prometheus` | v1.24.1 | Apache-2.0 |
 | `github.com/prometheus/client_model/go` | v0.6.2 | Apache-2.0 |
-| `github.com/prometheus/common` | v0.70.0 | Apache-2.0 |
+| `github.com/prometheus/common` | v0.70.1 | Apache-2.0 |
 | `github.com/prometheus/procfs` | v0.21.1 | Apache-2.0 |
 | `github.com/robfig/cron/v3` | v3.0.1 | MIT |
 | `github.com/russellhaering/goxmldsig` | v1.6.0 | Apache-2.0 |
 | `github.com/spf13/cobra` | v1.10.2 | Apache-2.0 |
 | `github.com/spf13/pflag` | v1.0.9 | BSD-3-Clause |
 | `github.com/valkey-io/valkey-go` | v1.0.76 | Apache-2.0 |
-| `go.yaml.in/yaml/v2` | v2.4.2 | Apache-2.0 |
+| `go.yaml.in/yaml/v2` | v2.4.4 | Apache-2.0 |
 | `golang.org/x/crypto` | v0.54.0 | BSD-3-Clause |
 | `golang.org/x/oauth2` | v0.36.0 | BSD-3-Clause |
 | `golang.org/x/sync/semaphore` | v0.22.0 | BSD-3-Clause |
