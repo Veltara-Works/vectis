@@ -60,7 +60,12 @@ section for the analysis.
 > were caught by the same cross-check, `react-router` + `react-router-dom` →
 > v7.18.1; all still MIT. Cross-check the lockfile — not just `package.json` —
 > since the runtime deps are caret ranges and drift without either manifest
-> changing.
+> changing. Category 2 rebuilt again **2026-07-28** for the React Router v8
+> migration: the runtime closure was recomputed from `web/package-lock.json`
+> rather than version-bumped, which is what caught that v8 drops `react-router-dom`,
+> `cookie` and `set-cookie-parser` and adds `cookie-es` v3.1.1 — 7 packages down
+> to 5, still all MIT. Recompute the closure (not just the versions) whenever a
+> runtime dependency changes major.
 
 ---
 
@@ -130,17 +135,15 @@ static assets. Only the **runtime** dependencies end up in the shipped bundle;
 the build-time `devDependencies` (Vite, TypeScript, ESLint, etc.) are not
 distributed and are out of scope.
 
-**Summary:** 7 runtime packages — all MIT.
+**Summary:** 5 runtime packages — all MIT.
 
 | Package | Version | License |
 |---|---|---|
 | `react` | 19.2.8 | MIT |
 | `react-dom` | 19.2.8 | MIT |
 | `scheduler` | 0.27.0 | MIT |
-| `react-router-dom` | 7.18.1 | MIT |
-| `react-router` | 7.18.1 | MIT |
-| `cookie` | 1.1.1 | MIT |
-| `set-cookie-parser` | 2.7.2 | MIT |
+| `react-router` | 8.3.0 | MIT |
+| `cookie-es` | 3.1.1 | MIT |
 
 ---
 

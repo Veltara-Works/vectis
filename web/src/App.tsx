@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Routes, Route, Navigate, Link, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, Link, useLocation } from 'react-router'
 import { api, type BrandingResponse } from './api/client.ts'
 import LoginPage from './pages/Login.tsx'
 import DashboardPage from './pages/Dashboard.tsx'
