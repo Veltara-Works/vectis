@@ -44,7 +44,13 @@ section for the analysis.
 > build box this round — `go.mod` now requires **Go ≥ 1.26.5** and the box still
 > has 1.26.4, which `GOTOOLCHAIN=local` (required by the procedure below) refuses
 > to upgrade. Bump the build box toolchain before the next full regeneration, so
-> newly-added modules are caught and not just version drift.
+> newly-added modules are caught and not just version drift. Category 2
+> reconciled **2026-07-28** against `web/package-lock.json` alongside the
+> `react-dom` v19.2.8 bump (#203): `react` + `react-dom` → v19.2.8, and two pins
+> that had drifted earlier and were caught by the same cross-check,
+> `react-router` + `react-router-dom` → v7.18.1; all still MIT. Cross-check the
+> lockfile — not just `package.json` — since the runtime deps are caret ranges
+> and drift without either manifest changing.
 
 ---
 
@@ -118,11 +124,11 @@ distributed and are out of scope.
 
 | Package | Version | License |
 |---|---|---|
-| `react` | 19.2.7 | MIT |
-| `react-dom` | 19.2.7 | MIT |
+| `react` | 19.2.8 | MIT |
+| `react-dom` | 19.2.8 | MIT |
 | `scheduler` | 0.27.0 | MIT |
-| `react-router-dom` | 7.18.0 | MIT |
-| `react-router` | 7.18.0 | MIT |
+| `react-router-dom` | 7.18.1 | MIT |
+| `react-router` | 7.18.1 | MIT |
 | `cookie` | 1.1.1 | MIT |
 | `set-cookie-parser` | 2.7.2 | MIT |
 
