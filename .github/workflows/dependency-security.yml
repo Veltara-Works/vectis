@@ -21,6 +21,8 @@ on:
       - 'go.sum'
       - 'web/package.json'
       - 'web/package-lock.json'
+      - 'web/.npm-audit-allow.json'
+      - 'scripts/npm-audit-gate.sh'
       - '.github/workflows/dependency-security.yml'
   schedule:
     # Mondays 15:23 UTC — surface advisories disclosed since the last commit.
@@ -75,8 +77,14 @@ jobs:
 
       # Fail on high+ severity. Patch via `npm audit fix` (or a Dependabot PR)
       # and re-run; do not lower the threshold to make a real finding go away.
+      #
+      # The gate wraps `npm audit` so an advisory that is provably unreachable
+      # here can be accepted individually, with a reason and an expiry, in
+      # web/.npm-audit-allow.json — instead of dropping the threshold and going
+      # blind to everything else. It also fails on expired or stale acceptances.
       - name: npm audit (high+)
-        run: npm audit --audit-level=high
+        working-directory: .
+        run: ./scripts/npm-audit-gate.sh
 
   license-check:
     name: License compliance (go-licenses)
