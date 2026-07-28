@@ -33,9 +33,15 @@ TODAY="$(date -u +%Y-%m-%d)"
 
 # npm audit exits non-zero whenever it finds anything, so capture rather than
 # let `set -e` abort. A malformed report is itself a failure.
-AUDIT_JSON="$(cd "$WEB_DIR" && npm audit --json 2>/dev/null || true)"
+#
+# Only stdout is captured, so npm's stderr is deliberately left to flow to the
+# console: a registry outage, proxy or auth error is the most likely reason this
+# step ever breaks, and swallowing it would leave nothing to debug from.
+AUDIT_JSON="$(cd "$WEB_DIR" && npm audit --json || true)"
 if ! jq -e 'has("vulnerabilities")' <<<"$AUDIT_JSON" >/dev/null 2>&1; then
-  fail "npm audit did not return a parseable report."
+  fail "npm audit did not return a parseable report — see its stderr above."
+  echo "--- raw stdout (first 40 lines) ---" >&2
+  head -n 40 <<<"$AUDIT_JSON" >&2
   exit 1
 fi
 
