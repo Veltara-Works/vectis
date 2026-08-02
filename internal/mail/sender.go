@@ -69,11 +69,30 @@ type Address struct {
 }
 
 // Attachment is a base64-encoded file attachment.
+//
+// Setting ContentID turns the part into an INLINE attachment: it is emitted
+// with `Content-ID: <id>` and `Content-Disposition: inline`, and the message is
+// restructured as multipart/related so an HTML body can reference it with
+// `<img src="cid:id">`. Without ContentID the part is an ordinary downloadable
+// attachment (multipart/mixed), which is the pre-existing behaviour.
+//
+// This exists because a sender that embeds images (e.g. a white-labelled logo
+// that must render even when the client blocks remote images) previously had
+// its Content-ID silently dropped here, leaving the cid: reference in the HTML
+// pointing at nothing — a broken image, plus the file arriving as a stray
+// attachment.
 type Attachment struct {
 	Filename    string `json:"filename"`
 	ContentType string `json:"content_type"`
 	Content     string `json:"content"` // base64-encoded
+	// ContentID is the bare id WITHOUT angle brackets (e.g. "logo@vectis"), to
+	// be referenced as `cid:logo@vectis`. Angle brackets are added on emit.
+	ContentID string `json:"content_id,omitempty"`
 }
+
+// IsInline reports whether this attachment is a cid-referenced inline part
+// rather than an ordinary downloadable attachment.
+func (a Attachment) IsInline() bool { return a.ContentID != "" }
 
 // SendResult contains the result of a send operation.
 type SendResult struct {
@@ -234,6 +253,18 @@ func (m *Message) validateHeaders() error {
 		if strings.ContainsAny(att.ContentType, "\";") {
 			return fmt.Errorf("%w: attachments[%d].content_type contains quote or semicolon", ErrHeaderInjection, i)
 		}
+		// content_id is interpolated into the Content-ID header as `<id>`. It is
+		// caller-supplied, so apply the same guards as the fields above: no
+		// CR/LF, and none of the characters that would let an authed sender
+		// close the angle brackets early or smuggle extra MIME parameters
+		// (MAIL-3). RFC 2392 cid: URLs are addr-spec shaped, so a legitimate
+		// value never contains these.
+		if err := noCRLF(fmt.Sprintf("attachments[%d].content_id", i), att.ContentID); err != nil {
+			return err
+		}
+		if strings.ContainsAny(att.ContentID, "<>\";") {
+			return fmt.Errorf("%w: attachments[%d].content_id contains angle bracket, quote or semicolon", ErrHeaderInjection, i)
+		}
 	}
 	return nil
 }
@@ -268,43 +299,60 @@ func buildMessage(msg *Message, messageID, hostname string) ([]byte, error) {
 		}
 	}
 
-	hasAttachments := len(msg.Attachments) > 0
+	// Inline (cid-referenced) parts must live in a multipart/related alongside
+	// the body that references them (RFC 2387); ordinary attachments hang off
+	// multipart/mixed. Splitting here keeps the two structures independent so a
+	// message can carry both.
+	var inline, regular []Attachment
+	for _, att := range msg.Attachments {
+		if att.IsInline() {
+			inline = append(inline, att)
+		} else {
+			regular = append(regular, att)
+		}
+	}
+	hasInline := len(inline) > 0
+	hasRegular := len(regular) > 0
 	hasHTML := msg.HTMLBody != ""
 	hasText := msg.TextBody != ""
 
 	switch {
-	case hasAttachments:
-		// multipart/mixed → multipart/alternative (text + html) + attachments
+	case hasRegular:
+		// multipart/mixed → [multipart/related →] body + attachments
 		mixedWriter := multipart.NewWriter(&buf)
 		writeHeader(&buf, "Content-Type", "multipart/mixed; boundary="+mixedWriter.Boundary())
 		buf.WriteString("\r\n")
 
-		// Body part (alternative if both text and html).
-		if hasText && hasHTML {
-			altHeader := make(textproto.MIMEHeader)
-			altWriter := multipart.NewWriter(nil) // just for boundary
-			altHeader.Set("Content-Type", "multipart/alternative; boundary="+altWriter.Boundary())
-			bodyPart, _ := mixedWriter.CreatePart(altHeader)
-
-			// Re-create with the bodyPart writer.
-			altW := multipart.NewWriter(bodyPart)
-			altW.SetBoundary(altWriter.Boundary())
-			writeTextPart(altW, "text/plain", msg.TextBody)
-			writeTextPart(altW, "text/html", msg.HTMLBody)
-			altW.Close()
-		} else if hasHTML {
-			writeTextPartMixed(mixedWriter, "text/html", msg.HTMLBody)
-		} else if hasText {
-			writeTextPartMixed(mixedWriter, "text/plain", msg.TextBody)
+		if hasInline {
+			// Body and its inline parts must stay together inside related, or a
+			// client cannot resolve the cid: references.
+			if err := writeRelatedPart(mixedWriter, msg, inline); err != nil {
+				return nil, err
+			}
+		} else {
+			writeBodyParts(mixedWriter, msg)
 		}
 
-		// Attachments.
-		for _, att := range msg.Attachments {
+		for _, att := range regular {
 			if err := writeAttachment(mixedWriter, att); err != nil {
 				return nil, err
 			}
 		}
 		mixedWriter.Close()
+
+	case hasInline:
+		// multipart/related → body + inline parts. No ordinary attachments, so
+		// related is the top level.
+		relWriter := multipart.NewWriter(&buf)
+		writeHeader(&buf, "Content-Type", `multipart/related; type="text/html"; boundary=`+relWriter.Boundary())
+		buf.WriteString("\r\n")
+		writeBodyParts(relWriter, msg)
+		for _, att := range inline {
+			if err := writeAttachment(relWriter, att); err != nil {
+				return nil, err
+			}
+		}
+		relWriter.Close()
 
 	case hasText && hasHTML:
 		// multipart/alternative.
@@ -386,6 +434,61 @@ func writeTextPartMixed(w *multipart.Writer, contentType, body string) {
 	writeTextPart(w, contentType, body)
 }
 
+// writeBodyParts writes the message body into w as a nested
+// multipart/alternative when both text and HTML are present, or as a single
+// text part otherwise. Extracted from buildMessage so the same body layout can
+// be nested inside either multipart/mixed or multipart/related.
+func writeBodyParts(w *multipart.Writer, msg *Message) {
+	hasHTML := msg.HTMLBody != ""
+	hasText := msg.TextBody != ""
+
+	switch {
+	case hasText && hasHTML:
+		altHeader := make(textproto.MIMEHeader)
+		altWriter := multipart.NewWriter(nil) // just for boundary
+		altHeader.Set("Content-Type", "multipart/alternative; boundary="+altWriter.Boundary())
+		bodyPart, _ := w.CreatePart(altHeader)
+
+		// Re-create with the bodyPart writer.
+		altW := multipart.NewWriter(bodyPart)
+		altW.SetBoundary(altWriter.Boundary())
+		writeTextPart(altW, "text/plain", msg.TextBody)
+		writeTextPart(altW, "text/html", msg.HTMLBody)
+		altW.Close()
+	case hasHTML:
+		writeTextPartMixed(w, "text/html", msg.HTMLBody)
+	case hasText:
+		writeTextPartMixed(w, "text/plain", msg.TextBody)
+	}
+}
+
+// writeRelatedPart nests a complete multipart/related (body + its inline parts)
+// as a single part of w. Used when a message has BOTH inline images and
+// ordinary attachments: related must wrap only the body and the parts it
+// references, while the ordinary attachments stay siblings under mixed.
+func writeRelatedPart(w *multipart.Writer, msg *Message, inline []Attachment) error {
+	relHeader := make(textproto.MIMEHeader)
+	boundaryWriter := multipart.NewWriter(nil) // just for boundary
+	relHeader.Set("Content-Type", `multipart/related; type="text/html"; boundary=`+boundaryWriter.Boundary())
+
+	part, err := w.CreatePart(relHeader)
+	if err != nil {
+		return err
+	}
+
+	relW := multipart.NewWriter(part)
+	if err := relW.SetBoundary(boundaryWriter.Boundary()); err != nil {
+		return err
+	}
+	writeBodyParts(relW, msg)
+	for _, att := range inline {
+		if err := writeAttachment(relW, att); err != nil {
+			return err
+		}
+	}
+	return relW.Close()
+}
+
 func writeAttachment(w *multipart.Writer, att Attachment) error {
 	data, err := base64.StdEncoding.DecodeString(att.Content)
 	if err != nil {
@@ -394,7 +497,15 @@ func writeAttachment(w *multipart.Writer, att Attachment) error {
 
 	h := make(textproto.MIMEHeader)
 	h.Set("Content-Type", att.ContentType+"; name=\""+att.Filename+"\"")
-	h.Set("Content-Disposition", "attachment; filename=\""+att.Filename+"\"")
+	if att.IsInline() {
+		// Angle brackets are added here, not by the caller: `cid:` URLs in the
+		// HTML reference the BARE id, and a caller that supplied its own
+		// brackets would end up with `<<id>>`.
+		h.Set("Content-ID", "<"+att.ContentID+">")
+		h.Set("Content-Disposition", "inline; filename=\""+att.Filename+"\"")
+	} else {
+		h.Set("Content-Disposition", "attachment; filename=\""+att.Filename+"\"")
+	}
 	h.Set("Content-Transfer-Encoding", "base64")
 
 	part, err := w.CreatePart(h)

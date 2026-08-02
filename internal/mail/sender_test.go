@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net/mail"
+	"net/textproto"
 	"strings"
 	"testing"
 )
@@ -214,5 +215,225 @@ func TestBuildMessage_HeaderInjection(t *testing.T) {
 	// A legitimate message with no CR/LF must still build successfully.
 	if _, err := buildMessage(base(), "id@host", "host"); err != nil {
 		t.Fatalf("clean message rejected: %v", err)
+	}
+}
+
+// pngPixel is a 1x1 PNG, base64-encoded — a realistic inline image payload.
+const pngPixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+// walkParts returns every part in a multipart body, descending into nested
+// multiparts, as (mediaType, header) pairs.
+func walkParts(t *testing.T, r io.Reader, boundary string) []struct {
+	MediaType string
+	Header    textproto.MIMEHeader
+} {
+	t.Helper()
+	var out []struct {
+		MediaType string
+		Header    textproto.MIMEHeader
+	}
+	mr := multipart.NewReader(r, boundary)
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("NextPart: %v", err)
+		}
+		mt, params, err := mime.ParseMediaType(p.Header.Get("Content-Type"))
+		if err != nil {
+			t.Fatalf("ParseMediaType(%q): %v", p.Header.Get("Content-Type"), err)
+		}
+		out = append(out, struct {
+			MediaType string
+			Header    textproto.MIMEHeader
+		}{mt, p.Header})
+		if strings.HasPrefix(mt, "multipart/") {
+			out = append(out, walkParts(t, p, params["boundary"])...)
+		}
+	}
+	return out
+}
+
+// TestBuildMessage_InlineAttachment_Related pins the fix for the Pharlux broken
+// logo: an attachment carrying a ContentID must produce a multipart/related
+// message with `Content-ID: <id>` and an inline disposition, so an HTML body
+// can resolve `cid:<id>`. Previously the id was dropped and the image rendered
+// broken, with the file arriving as a stray attachment.
+func TestBuildMessage_InlineAttachment_Related(t *testing.T) {
+	msg := &Message{
+		From:     Address{Email: "noreply@pharlux.com"},
+		To:       []Address{{Email: "buyer@example.com"}},
+		Subject:  "welcome",
+		TextBody: "plain",
+		HTMLBody: `<img src="cid:pharlux-logo" alt="Pharlux">`,
+		Attachments: []Attachment{{
+			Filename:    "logo.png",
+			ContentType: "image/png",
+			Content:     pngPixel,
+			ContentID:   "pharlux-logo",
+		}},
+	}
+
+	raw, err := buildMessage(msg, "id@h", "h")
+	if err != nil {
+		t.Fatalf("buildMessage: %v", err)
+	}
+
+	parsed, err := mail.ReadMessage(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	mediaType, params, err := mime.ParseMediaType(parsed.Header.Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("ParseMediaType: %v", err)
+	}
+	// With inline parts and no ordinary attachments, related is the top level —
+	// NOT mixed, which would leave the cid: reference unresolvable in strict
+	// clients.
+	if mediaType != "multipart/related" {
+		t.Fatalf("top-level media type = %q, want multipart/related", mediaType)
+	}
+
+	parts := walkParts(t, parsed.Body, params["boundary"])
+
+	var foundImage bool
+	for _, p := range parts {
+		if p.MediaType != "image/png" {
+			continue
+		}
+		foundImage = true
+		if got := p.Header.Get("Content-ID"); got != "<pharlux-logo>" {
+			t.Errorf("Content-ID = %q, want %q", got, "<pharlux-logo>")
+		}
+		if got := p.Header.Get("Content-Disposition"); !strings.HasPrefix(got, "inline") {
+			t.Errorf("Content-Disposition = %q, want inline...", got)
+		}
+	}
+	if !foundImage {
+		t.Fatalf("no image/png part found; parts=%v", parts)
+	}
+
+	// The body must still be reachable as an alternative inside related.
+	var foundAlt, foundHTML bool
+	for _, p := range parts {
+		switch p.MediaType {
+		case "multipart/alternative":
+			foundAlt = true
+		case "text/html":
+			foundHTML = true
+		}
+	}
+	if !foundAlt || !foundHTML {
+		t.Errorf("body layout wrong: alternative=%v html=%v", foundAlt, foundHTML)
+	}
+}
+
+// TestBuildMessage_InlineAndRegularAttachment nests related inside mixed: the
+// inline image must stay with the body it is referenced from, while an ordinary
+// attachment remains a sibling under mixed.
+func TestBuildMessage_InlineAndRegularAttachment(t *testing.T) {
+	msg := &Message{
+		From:     Address{Email: "a@x"},
+		To:       []Address{{Email: "b@y"}},
+		Subject:  "t",
+		HTMLBody: `<img src="cid:logo">`,
+		Attachments: []Attachment{
+			{Filename: "logo.png", ContentType: "image/png", Content: pngPixel, ContentID: "logo"},
+			{Filename: "invoice.pdf", ContentType: "application/pdf", Content: pngPixel},
+		},
+	}
+
+	raw, err := buildMessage(msg, "id@h", "h")
+	if err != nil {
+		t.Fatalf("buildMessage: %v", err)
+	}
+	parsed, err := mail.ReadMessage(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	mediaType, params, err := mime.ParseMediaType(parsed.Header.Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("ParseMediaType: %v", err)
+	}
+	if mediaType != "multipart/mixed" {
+		t.Fatalf("top-level media type = %q, want multipart/mixed", mediaType)
+	}
+
+	parts := walkParts(t, parsed.Body, params["boundary"])
+	var hasRelated, hasPDF bool
+	for _, p := range parts {
+		switch p.MediaType {
+		case "multipart/related":
+			hasRelated = true
+		case "application/pdf":
+			hasPDF = true
+			if got := p.Header.Get("Content-Disposition"); !strings.HasPrefix(got, "attachment") {
+				t.Errorf("pdf Content-Disposition = %q, want attachment...", got)
+			}
+			if got := p.Header.Get("Content-ID"); got != "" {
+				t.Errorf("ordinary attachment must have no Content-ID, got %q", got)
+			}
+		}
+	}
+	if !hasRelated || !hasPDF {
+		t.Errorf("structure wrong: related=%v pdf=%v; parts=%v", hasRelated, hasPDF, parts)
+	}
+}
+
+// TestBuildMessage_RegularAttachmentUnchanged is a regression guard: a message
+// with only ordinary attachments must still be multipart/mixed with an
+// attachment disposition and no Content-ID, exactly as before the inline work.
+func TestBuildMessage_RegularAttachmentUnchanged(t *testing.T) {
+	msg := &Message{
+		From:        Address{Email: "a@x"},
+		To:          []Address{{Email: "b@y"}},
+		Subject:     "t",
+		TextBody:    "hello",
+		Attachments: []Attachment{{Filename: "f.pdf", ContentType: "application/pdf", Content: pngPixel}},
+	}
+	raw, err := buildMessage(msg, "id@h", "h")
+	if err != nil {
+		t.Fatalf("buildMessage: %v", err)
+	}
+	rawStr := string(raw)
+	if !strings.Contains(rawStr, "multipart/mixed") {
+		t.Errorf("want multipart/mixed\nraw:\n%s", rawStr)
+	}
+	if strings.Contains(rawStr, "multipart/related") {
+		t.Errorf("no inline parts, so related must not appear\nraw:\n%s", rawStr)
+	}
+	if strings.Contains(rawStr, "Content-ID:") {
+		t.Errorf("ordinary attachment must not emit Content-ID\nraw:\n%s", rawStr)
+	}
+	if !strings.Contains(rawStr, `Content-Disposition: attachment; filename="f.pdf"`) {
+		t.Errorf("attachment disposition missing\nraw:\n%s", rawStr)
+	}
+}
+
+// TestBuildMessage_ContentIDInjection rejects ids that could close the angle
+// brackets early or smuggle MIME parameters, matching the guards already
+// applied to filename and content_type (MAIL-3).
+func TestBuildMessage_ContentIDInjection(t *testing.T) {
+	for _, bad := range []string{
+		"logo>\r\nX-Injected: yes",
+		"logo>",
+		"lo<go",
+		`logo"`,
+		"logo;name=x",
+	} {
+		msg := &Message{
+			From:     Address{Email: "a@x"},
+			To:       []Address{{Email: "b@y"}},
+			Subject:  "t",
+			HTMLBody: "<p>x</p>",
+			Attachments: []Attachment{{
+				Filename: "l.png", ContentType: "image/png", Content: pngPixel, ContentID: bad,
+			}},
+		}
+		if _, err := buildMessage(msg, "id@h", "h"); err == nil {
+			t.Errorf("content_id %q accepted, want rejection", bad)
+		}
 	}
 }
