@@ -73,6 +73,43 @@ func (r RspamdConfig) SpamToJunkEnabled() bool {
 type PostfixConfig struct {
 	MessageSizeLimit int    `yaml:"message_size_limit"` // bytes; default 52428800 (50 MB)
 	SmtpBanner       string `yaml:"smtp_banner"`
+	// StripSubmissionClientHeaders sanitises the trace headers that
+	// authenticated submission (587/465) would otherwise carry to every
+	// recipient. Postfix records the submitting client in a Received header —
+	// its HELO name, rDNS name, public IP and (because
+	// smtpd_tls_received_header is on) its TLS version and cipher. That
+	// discloses the tenant's own infrastructure to every recipient, their mail
+	// provider, and anyone the message is forwarded to.
+	//
+	// When enabled, a dedicated submission-only cleanup service rewrites the
+	// header to drop the client clause while KEEPING the "by <us> (Postfix)
+	// with <proto>" hop, so the trace information RFC 5321 s4.4 requires is
+	// still present. X-Originating-IP is removed outright. Scoped to
+	// submission/smtps — inbound :25 is untouched, so inbound Received chains
+	// and Postfix's hop-count loop detection are unaffected.
+	//
+	// Default ON — a nil pointer (key absent, e.g. on installs predating this
+	// field) means enabled, so existing installs stop leaking on upgrade. The
+	// client IP is still recorded in the Postfix maillog either way; this only
+	// stops it being broadcast to recipients. Set false to opt out.
+	StripSubmissionClientHeaders *bool `yaml:"strip_submission_client_headers"`
+	// StripSubmissionExtraHeaders lists ADDITIONAL headers to remove on the
+	// submission path, e.g. ["X-Mailer", "User-Agent"]. Empty by default and
+	// deliberately opt-in: unlike Received/X-Originating-IP (which the network
+	// stamps on the sender), these are authored by the sender's own software
+	// and some senders brand with them, so removing them silently would edit
+	// the customer's message. Ignored when StripSubmissionClientHeaders is
+	// false. Names are validated (RFC 5322 field-name charset) so a config
+	// value cannot inject a regexp rule into the generated map.
+	StripSubmissionExtraHeaders []string `yaml:"strip_submission_extra_headers"`
+}
+
+// SubmissionHeaderStripEnabled reports whether submission trace headers should
+// be sanitised. Absent (nil) means enabled — the default-on behaviour, so
+// existing installs with no strip_submission_client_headers key get the fix on
+// upgrade. Mirrors RspamdConfig.SpamToJunkEnabled.
+func (p PostfixConfig) SubmissionHeaderStripEnabled() bool {
+	return p.StripSubmissionClientHeaders == nil || *p.StripSubmissionClientHeaders
 }
 
 // DovecotConfig holds Dovecot IMAP/LDA knobs.

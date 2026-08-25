@@ -24,7 +24,8 @@ submission inet  n       -       n       -       -       smtpd
   -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
   -o smtpd_data_restrictions=vectis_submission_policy
   -o smtpd_policy_service_default_action=DUNNO
-  -o milter_macro_daemon_name=ORIGINATING
+  -o milter_macro_daemon_name=ORIGINATING{{ if .Postfix.SubmissionHeaderStripEnabled }}
+  -o cleanup_service_name=submission-cleanup{{ end }}
 smtps     inet  n       -       n       -       -       smtpd
   -o syslog_name=postfix/smtps
   -o smtpd_tls_wrappermode=yes
@@ -32,9 +33,20 @@ smtps     inet  n       -       n       -       -       smtpd
   -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
   -o smtpd_data_restrictions=vectis_submission_policy
   -o smtpd_policy_service_default_action=DUNNO
-  -o milter_macro_daemon_name=ORIGINATING
+  -o milter_macro_daemon_name=ORIGINATING{{ if .Postfix.SubmissionHeaderStripEnabled }}
+  -o cleanup_service_name=submission-cleanup{{ end }}
 pickup    unix  n       -       n       60      1       pickup
 cleanup   unix  n       -       n       -       0       cleanup
+{{- if .Postfix.SubmissionHeaderStripEnabled }}
+# Submission-only cleanup. Identical to the default cleanup service except that
+# it applies submission_header_checks, which sanitises the client trace headers
+# that authenticated submission would otherwise leak to recipients. Wired to
+# submission/smtps via their -o cleanup_service_name above; inbound :25 keeps
+# the default cleanup service so inbound Received chains and hop-count loop
+# detection are untouched. See submission_header_checks for the rules.
+submission-cleanup unix n  -       n       -       0       cleanup
+  -o header_checks=regexp:/etc/postfix/submission_header_checks
+{{- end }}
 qmgr      unix  n       -       n       300     1       qmgr
 tlsmgr    unix  -       -       n       1000?   1       tlsmgr
 rewrite   unix  -       -       n       -       -       trivial-rewrite

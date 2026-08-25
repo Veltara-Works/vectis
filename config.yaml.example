@@ -57,6 +57,28 @@ rspamd:
 postfix:
   message_size_limit: 52428800  # 50 MB in bytes
   smtp_banner: "$myhostname ESMTP"
+  # Sanitise the trace headers that authenticated submission (587/465) would
+  # otherwise carry to every recipient. Postfix stamps the submitting client's
+  # HELO name, rDNS name, public IP and TLS details into Received — on a
+  # submission that client is YOUR application server, so the header discloses
+  # your infrastructure to every recipient and anyone they forward to.
+  #
+  # When on, the client clause is replaced with "[redacted]" while the
+  # "by <your-host> (Postfix) with <proto>" hop is KEPT, so the message still
+  # carries the trace information RFC 5321 s4.4 requires. X-Originating-IP is
+  # removed. Inbound :25 is untouched, so inbound trace chains and loop
+  # detection still work. The client IP is still written to the Postfix
+  # maillog — this only stops it being broadcast to recipients.
+  #
+  # Default: true (also applies when the key is absent).
+  strip_submission_client_headers: true
+  # OPTIONAL extra headers to remove on the submission path. Empty by default
+  # and deliberately opt-in: unlike Received/X-Originating-IP these are written
+  # by the sender's own software, and some senders brand with them. Useful if
+  # your application leaks its stack, e.g. "X-Mailer: Magento/2.4.8".
+  # strip_submission_extra_headers:
+  #   - X-Mailer
+  #   - User-Agent
 
 # Dovecot IMAP / LDA settings.
 dovecot:

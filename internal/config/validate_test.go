@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -224,5 +225,62 @@ func assertNoError(t *testing.T, r *ValidationResult, field string) {
 		if e.Field == field {
 			t.Errorf("unexpected validation error for field %q: %s", field, e.Message)
 		}
+	}
+}
+
+// strip_submission_extra_headers is interpolated into a generated Postfix
+// regexp map, so a hostile value must be rejected rather than emitted — a bare
+// "/" would close the pattern and let the rest of the string become an
+// arbitrary rule, silently rewriting or dropping unrelated headers.
+func TestValidateConfig_StripSubmissionExtraHeaders(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers []string
+		wantErr bool
+	}{
+		{"valid single", []string{"X-Mailer"}, false},
+		{"valid multiple", []string{"X-Mailer", "User-Agent"}, false},
+		{"empty list", nil, false},
+		{"empty string", []string{""}, true},
+		{"contains colon", []string{"X-Mailer:"}, true},
+		{"contains space", []string{"X Mailer"}, true},
+		{"regexp injection via slash", []string{"X-Mailer/ IGNORE\n/^From"}, true},
+		{"newline injection", []string{"X-Mailer\n/^Received:/ DUNNO"}, true},
+		{"control character", []string{"X-\x00Mailer"}, true},
+		{"non-ascii", []string{"X-Mailér"}, true},
+		{"over length", []string{strings.Repeat("X", 79)}, true},
+		{"duplicate of built-in Received", []string{"Received"}, true},
+		{"duplicate of built-in, case-insensitive", []string{"x-originating-ip"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Postfix.StripSubmissionExtraHeaders = tc.headers
+			r := ValidateConfig(cfg)
+			if tc.wantErr && r.IsValid() {
+				t.Errorf("expected a validation error for %q, got none", tc.headers)
+			}
+			if !tc.wantErr && !r.IsValid() {
+				t.Errorf("unexpected validation error for %q: %v", tc.headers, r)
+			}
+		})
+	}
+}
+
+// Absent key must mean ENABLED, so installs predating the field stop leaking
+// on upgrade rather than silently staying vulnerable.
+func TestSubmissionHeaderStripEnabled_DefaultsOn(t *testing.T) {
+	var cfg PostfixConfig
+	if !cfg.SubmissionHeaderStripEnabled() {
+		t.Error("nil StripSubmissionClientHeaders must default to enabled")
+	}
+	on, off := true, false
+	cfg.StripSubmissionClientHeaders = &on
+	if !cfg.SubmissionHeaderStripEnabled() {
+		t.Error("explicit true must be enabled")
+	}
+	cfg.StripSubmissionClientHeaders = &off
+	if cfg.SubmissionHeaderStripEnabled() {
+		t.Error("explicit false must be disabled")
 	}
 }
