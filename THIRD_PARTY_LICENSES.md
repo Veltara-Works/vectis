@@ -32,7 +32,11 @@ section for the analysis.
 > `emersion/go-sasl`, both MIT), verified with `go-licenses` against the Go 1.26.4
 > SDK GOROOT. Reconciled **2026-06-26** against `go list -m` after a prelaunch
 > audit found four stale versions (`spf13/pflag` → v1.0.9, `x/oauth2` → v0.36.0,
-> `x/sync` → v0.21.0, `x/text` → v0.38.0); licenses unchanged (all BSD-3-Clause).
+> `x/sync` → v0.21.0, `x/text` → v0.38.0); licenses unchanged (all BSD-3-Clause). Build toolchain bumped to **Go 1.26.7** on **2026-08-25**
+> (six stdlib advisories: GO-2026-6088/6089/6090/6091/6218/5972). **The closure is
+> unchanged** — a toolchain patch bump moves the standard library, which carries no
+> row here, and no module dependency changed; `go.mod`/`go.sum` are untouched apart
+> from the `go` directive. Reproduction instructions below updated to match.
 > Follow-up reconcile (same date): added the missing direct dependency
 > `robfig/cron/v3` v3.0.1 (MIT) and corrected the summary count (was 38, now 41
 > matching the table). Reconciled **2026-07-25** against `go.mod` after the
@@ -214,9 +218,9 @@ or a compose template.
 # go-licenses v1.6.0 needs a real SDK GOROOT (not the toolchain-cache GOROOT
 # that GOTOOLCHAIN=auto produces), or it fails to resolve the standard library.
 go install github.com/google/go-licenses@latest
-go install golang.org/dl/go1.26.4@latest && go1.26.4 download   # -> ~/sdk/go1.26.4
+go install golang.org/dl/go1.26.7@latest && go1.26.7 download   # -> ~/sdk/go1.26.7
 
-GOROOT="$HOME/sdk/go1.26.4" PATH="$HOME/sdk/go1.26.4/bin:$(go env GOPATH)/bin:$PATH" \
+GOROOT="$HOME/sdk/go1.26.7" PATH="$HOME/sdk/go1.26.7/bin:$(go env GOPATH)/bin:$PATH" \
   GOTOOLCHAIN=local \
   go-licenses csv ./... --ignore github.com/Veltara-Works/vectis
 ```
