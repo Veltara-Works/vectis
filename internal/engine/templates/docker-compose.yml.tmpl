@@ -213,6 +213,11 @@ services:
       - /var/vectis/generated/postfix/pgsql_virtual_catchall.cf:/etc/postfix/pgsql_virtual_catchall.cf:ro
       - /var/vectis/generated/postfix/pgsql_virtual_bcc.cf:/etc/postfix/pgsql_virtual_bcc.cf:ro
       - /var/vectis/generated/postfix/transport:/etc/postfix/transport:ro
+      # Submission trace-header sanitisation. Always mounted, even when
+      # postfix.strip_submission_client_headers is false (the file renders
+      # inert), so toggling the setting never needs a mount change — a new
+      # mount would otherwise require the two-step cross-version Apply.
+      - /var/vectis/generated/postfix/submission_header_checks:/etc/postfix/submission_header_checks:ro
       - /var/vectis/generated/postfix/inbound-notify.sh:/etc/postfix/inbound-notify.sh:ro
       - mail-data:/var/vectis/mail
       - mail-certs:/etc/ssl/mail:ro

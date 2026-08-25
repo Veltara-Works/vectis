@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"regexp"
+	"strings"
 )
 
 // validHostnameRe matches a simple hostname or FQDN (letters, digits, hyphens,
@@ -98,6 +100,34 @@ func ValidateConfig(cfg *VectisConfig) *ValidationResult {
 		r.AddError("postfix.message_size_limit", "must not exceed 104857600 (100 MB)")
 	}
 
+	// postfix.strip_submission_extra_headers — these names are interpolated
+	// into a generated Postfix regexp map, so an unvalidated value could inject
+	// an arbitrary rule (e.g. a bare "/" closing the pattern) and silently
+	// rewrite or drop unrelated headers. Restrict to the RFC 5322 field-name
+	// charset: printable US-ASCII excluding ":" and whitespace. Same posture as
+	// the DKIM selector and the send-API content_id validation.
+	for i, h := range cfg.Postfix.StripSubmissionExtraHeaders {
+		field := fmt.Sprintf("postfix.strip_submission_extra_headers[%d]", i)
+		if h == "" {
+			r.AddError(field, "must not be empty")
+			continue
+		}
+		if len(h) > 78 {
+			r.AddError(field, "must not exceed 78 characters")
+			continue
+		}
+		if !validHeaderName(h) {
+			r.AddError(field, "must be a valid header name (printable ASCII, no ':' or whitespace)")
+			continue
+		}
+		// Received and X-Originating-IP are always handled by the built-in
+		// rules; listing them again would emit a duplicate, unreachable rule.
+		switch strings.ToLower(h) {
+		case "received", "x-originating-ip":
+			r.AddError(field, "is already stripped by strip_submission_client_headers; remove it from this list")
+		}
+	}
+
 	// dovecot.quota_default_mb
 	if cfg.Dovecot.QuotaDefaultMB <= 0 {
 		r.AddError("dovecot.quota_default_mb", "must be greater than 0")
@@ -182,4 +212,17 @@ func ValidateSecrets(secrets *VectisSecrets) *ValidationResult {
 	}
 
 	return r
+}
+
+// validHeaderName reports whether s is a legal RFC 5322 header field name:
+// printable US-ASCII (33-126) excluding ":". Whitespace and control characters
+// are rejected, which also makes s safe to interpolate into a Postfix regexp
+// map rule.
+func validHeaderName(s string) bool {
+	for _, c := range []byte(s) {
+		if c < 33 || c > 126 || c == ':' {
+			return false
+		}
+	}
+	return true
 }

@@ -21,6 +21,9 @@ var reloadMatrix = map[string]struct {
 }{
 	"postfix/main.cf":                    {service: "postfix", action: "reload"},
 	"postfix/master.cf":                  {service: "postfix", action: "restart"},
+	// Adding/removing rules changes what the submission-cleanup service does;
+	// cleanup daemons are long-lived, so a reload is not enough to pick it up.
+	"postfix/submission_header_checks":   {service: "postfix", action: "restart"},
 	"postfix/pgsql_virtual_domains.cf":   {service: "postfix", action: "none"},
 	"postfix/pgsql_virtual_mailboxes.cf": {service: "postfix", action: "none"},
 	"postfix/pgsql_virtual_aliases.cf":   {service: "postfix", action: "none"},
