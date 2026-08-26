@@ -40,6 +40,23 @@
 # 3. X-Originating-IP is a pure network identifier the sender never chose to
 #    publish (Roundcube and various app frameworks add it). Always removed.
 /^X-Originating-IP:/ IGNORE
+
+# 4. Authentication-Results is stamped by rspamd on the submission path as
+#    "Authentication-Results: ORIGINATING; auth=pass smtp.auth=<SASL user> ..."
+#    and travels to every recipient. That publishes the tenant's SUBMISSION
+#    CREDENTIAL identity — the same class of disclosure as the client clause in
+#    rule 1, and worse whenever the SASL username differs from the visible From
+#    (a shared or per-tenant relay user, or a mailbox sending as an alias).
+#
+#    Removed unconditionally rather than matched on "ORIGINATING": a
+#    client-supplied Authentication-Results is also unsafe to forward, since a
+#    receiver may treat it as its own trusted resolver's verdict. Fail closed,
+#    matching rule 2.
+#
+#    Scoped to submission/smtps only. The INBOUND :25 Authentication-Results is
+#    untouched (that cleanup service applies no header_checks) and stays
+#    load-bearing for spam scoring and sieve.
+/^Authentication-Results:/ IGNORE
 {{- range .Postfix.StripSubmissionExtraHeaders }}
 # Operator-configured extra header (postfix.strip_submission_extra_headers).
 /^{{ . }}:/ IGNORE
