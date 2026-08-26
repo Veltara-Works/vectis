@@ -54,6 +54,9 @@ func TestSubmissionHeaderStrip_DefaultOn(t *testing.T) {
 	if !strings.Contains(checks, "/^X-Originating-IP:/ IGNORE") {
 		t.Error("X-Originating-IP rule missing")
 	}
+	if !strings.Contains(checks, "/^Authentication-Results:/ IGNORE") {
+		t.Error("Authentication-Results rule missing")
+	}
 	if compose != "" && !strings.Contains(compose, "/etc/postfix/submission_header_checks:ro") {
 		t.Error("header_checks file is not mounted into the postfix container")
 	}
@@ -145,5 +148,49 @@ func TestSubmissionHeaderStrip_ExtraHeaders(t *testing.T) {
 		if !strings.Contains(checks, h) {
 			t.Errorf("missing configured rule %q", h)
 		}
+	}
+}
+
+// rspamd stamps "Authentication-Results: ORIGINATING; auth=pass
+// smtp.auth=<SASL user> smtp.mailfrom=..." during submission, and it reaches
+// every recipient — publishing the tenant's submission credential identity.
+//
+// This was NOT visible in a delivered test message: a receiving MTA strips
+// Authentication-Results it does not trust before writing to the mailbox, so an
+// end-to-end check reads clean while the transmitted bytes are not. It was found
+// by reading the Postfix queue file directly. Regression-guard it here rather
+// than relying on an end-to-end probe that cannot see it.
+func TestSubmissionHeaderStrip_AuthenticationResults(t *testing.T) {
+	_, checks, _ := renderPostfixFiles(t, nil)
+
+	if !strings.Contains(checks, "/^Authentication-Results:/ IGNORE") {
+		t.Fatal("Authentication-Results is not stripped on the submission path — the SASL username leaks to every recipient")
+	}
+	// Unconditional, not scoped to the ORIGINATING authserv-id: a
+	// client-supplied Authentication-Results must not be forwarded either, since
+	// a receiver may read it as its own resolver's verdict.
+	//
+	// Scan RULE lines only — the surrounding comment names ORIGINATING to explain
+	// where the header comes from, and that is not a scoping bug.
+	for _, line := range strings.Split(checks, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.Contains(line, "Authentication-Results") && strings.Contains(line, "ORIGINATING") {
+			t.Errorf("rule is scoped to the ORIGINATING authserv-id, so a client-supplied header would survive: %q", line)
+		}
+	}
+}
+
+// The inbound :25 path must KEEP Authentication-Results — spam scoring and the
+// Junk sieve depend on it. Only the submission-cleanup service applies the map.
+func TestSubmissionHeaderStrip_InboundAuthResultsUntouched(t *testing.T) {
+	master, _, _ := renderPostfixFiles(t, nil)
+
+	// The default cleanup service (used by :25) must carry no header_checks
+	// override; only submission-cleanup does.
+	if got := strings.Count(master, "-o header_checks=regexp:/etc/postfix/submission_header_checks"); got != 1 {
+		t.Errorf("header_checks map applied by %d services, want exactly 1 (submission-cleanup only)", got)
 	}
 }
