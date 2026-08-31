@@ -1,7 +1,7 @@
 # Pinned to an exact upstream version (P2-M5) — `:latest-apache` would let a
 # Roundcube release silently change the webmail on the next image rebuild.
 # Bump deliberately after testing the new version's skin/config compatibility.
-FROM roundcube/roundcubemail:1.7.2-apache
+FROM roundcube/roundcubemail:1.7.3-apache
 
 # Security patch layer (audit): the pinned upstream base ships an ImageMagick
 # vulnerable to CVE-2026-56367 (CRITICAL), fixed in the Debian 13 archive as
