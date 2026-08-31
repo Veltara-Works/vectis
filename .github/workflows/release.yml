@@ -107,7 +107,7 @@ jobs:
       # toolchain (same source as `go version -m`), so the SBOM lists the exact
       # module graph compiled into vectis-linux-amd64 — not just go.mod.
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
 
       - name: Generate binary SBOM (SPDX JSON)
         run: |
@@ -317,7 +317,7 @@ jobs:
           cosign sign "${IMAGE}@${DIGEST}"
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
 
       # Generate an SPDX SBOM for the pushed image and attach it as a keyless
       # cosign attestation, pinned to the same immutable digest as the signature
