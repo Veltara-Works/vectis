@@ -437,8 +437,64 @@ func TestAdvancedSpamLua_LookupUsesEqTrue(t *testing.T) {
 	if !strings.Contains(lua, "== true") {
 		t.Errorf("rspamd.local.lua must check `== true` (set map returns false on miss, not nil); got:\n%s", lua)
 	}
-	if strings.Contains(lua, "~= nil") {
-		t.Errorf("rspamd.local.lua must NOT use `~= nil` for set membership — false ~= nil is true and matches every key")
+	// CODE lines only — a comment may legitimately name the banned idiom in
+	// order to explain why it is banned.
+	for _, line := range strings.Split(lua, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		if strings.Contains(line, "~= nil") {
+			t.Errorf("rspamd.local.lua must NOT use `~= nil` for set membership — false ~= nil is true and matches every key: %q", line)
+		}
+	}
+}
+
+// The ALLOW list must never be honoured from a prefilter. An `accept`
+// pre-result skips every remaining symbol — including CLAM_VIRUS and
+// SPF/DKIM/DMARC — which turned an allow entry into a forgeable bypass of all
+// filtering: the prefilter keyed on the envelope sender, which anyone can set.
+// Regression guard for the 2026-08-31 hardening.
+func TestSpamLists_AllowRequiresAuthAndNeverBypassesAV(t *testing.T) {
+	data := testData()
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var lua string
+	for _, f := range files {
+		if f.RelPath == "rspamd/rspamd.local.lua" {
+			lua = string(f.Content)
+			break
+		}
+	}
+	if lua == "" {
+		t.Fatal("rspamd.local.lua not generated")
+	}
+	// Scan CODE lines only — the surrounding comment names the old
+	// `set_pre_result('accept')` bug to explain why the postfilter exists, and
+	// that is documentation, not a regression.
+	for _, line := range strings.Split(lua, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		if strings.Contains(line, "set_pre_result('accept'") {
+			t.Fatalf("allow list must not use an `accept` pre-result — it skips antivirus and authentication: %q", line)
+		}
+	}
+	if !strings.Contains(lua, "type = 'postfilter'") {
+		t.Error("allow list must run as a postfilter so authentication and antivirus have been evaluated")
+	}
+	if !strings.Contains(lua, "CLAM_VIRUS") {
+		t.Error("allow list must refuse to act when a virus was found")
+	}
+	for _, sym := range []string{"R_SPF_ALLOW", "DMARC_POLICY_ALLOW"} {
+		if !strings.Contains(lua, sym) {
+			t.Errorf("allow list must require %s before honouring a match", sym)
+		}
+	}
+	// Blocking early is fail-safe and must stay a prefilter.
+	if !strings.Contains(lua, "set_pre_result('reject'") {
+		t.Error("block list should still reject from the prefilter")
 	}
 }
 
