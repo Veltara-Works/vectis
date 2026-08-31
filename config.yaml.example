@@ -45,10 +45,15 @@ clamav:
 #                     global sieve_before script instead of leaving it in INBOX.
 #                     Default on; set false to opt out (keeps spam in INBOX).
 rspamd:
-  spam_threshold: 15.0     # score >= this: tag as spam (X-Spam: Yes -> Junk)
+  spam_threshold: 6.0      # score >= this: tag as spam (X-Spam: Yes -> Junk).
+                           # 6.0 is rspamd's own upstream default. This WAS 15.0,
+                           # which is high enough that real-world spam is never
+                           # tagged: measured on a live install 2026-08-31, every
+                           # phishing message scored 4.9-12.5, so nothing ever
+                           # reached the Junk sieve and all of it sat in INBOX.
   reject_threshold: 20.0   # score >= this: reject at SMTP. Conservative --
-                           # legitimate mail rarely exceeds ~12; forged/phishing
-                           # mail that fails SPF+DKIM+DMARC scores well above 20.
+                           # forged/phishing mail that fails SPF+DKIM+DMARC
+                           # scores well above 20.
                            # Raise to 999 to only tag and never reject.
   greylist_enabled: false
   file_spam_to_junk: true
