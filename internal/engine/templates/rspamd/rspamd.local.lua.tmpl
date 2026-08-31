@@ -88,3 +88,67 @@ rspamd_config:register_symbol{
     end
   end,
 }
+-- VECTIS_RCPT_DOMAIN_SPOOF
+--
+-- Fires when the From DISPLAY NAME references the recipient's own domain while
+-- the actual From domain is not that domain. This is the classic role-address
+-- phish: mail to hello@example.com arriving as
+--     From: "example.com Support Team" <server@throwaway.cc>
+--
+-- WHY A SCORING RULE AND NOT A THRESHOLD CHANGE: this class scores NEGATIVE on
+-- reputation alone. Observed live on prod 2026-08-31 — a phish impersonating
+-- "vectismail.com Support Team" from a Russian ASN scored -0.40, because valid
+-- SPF and DMARC on the attacker's OWN throwaway domain earn rspamd bonuses
+-- (DMARC_POLICY_ALLOW_WITH_FAILURES -0.50, R_SPF_ALLOW -0.20). Authentication
+-- no longer signals legitimacy; lowering add_header cannot catch this.
+--
+-- Deliberately keyed on the RECIPIENT's domain, not a configured brand list, so
+-- it works for every hosted tenant with no per-install configuration.
+--
+-- Does NOT fire when the sender is aligned with the recipient domain (genuine
+-- intra-domain mail) or on a subdomain of it.
+
+local function rcpt_domain(task)
+  local rcpt = task:get_principal_recipient()
+  if not rcpt then return nil end
+  local at = string.find(rcpt, '@', 1, true)
+  if not at then return nil end
+  return string.lower(string.sub(rcpt, at + 1))
+end
+
+rspamd_config:register_symbol{
+  name = 'VECTIS_RCPT_DOMAIN_SPOOF',
+  score = 7.0,
+  description = 'From display name impersonates the recipient domain from an unaligned sender',
+  callback = function(task)
+    local rd = rcpt_domain(task)
+    if not rd then return false end
+
+    local from = task:get_from('mime')
+    if not from or #from < 1 then return false end
+    local dn = from[1].name
+    if not dn then return false end
+    dn = string.lower(dn)
+
+    local fd = from[1].domain
+    if fd then fd = string.lower(fd) end
+
+    -- Aligned sender (or a subdomain of the recipient domain) is legitimate.
+    if fd and (fd == rd or string.sub(fd, -(#rd + 1)) == '.' .. rd) then
+      return false
+    end
+
+    -- Bare label as well as the FQDN: "vectismail" and "vectismail.com".
+    local label = string.match(rd, '^([^.]+)%.')
+
+    -- plain find, no pattern magic — the '.' in a domain must stay literal.
+    if string.find(dn, rd, 1, true) then
+      return true, 1.0, rd
+    end
+    if label and #label >= 4 and string.find(dn, label, 1, true) then
+      return true, 1.0, label
+    end
+
+    return false
+  end,
+}
