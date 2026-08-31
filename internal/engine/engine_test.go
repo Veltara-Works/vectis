@@ -442,6 +442,60 @@ func TestAdvancedSpamLua_LookupUsesEqTrue(t *testing.T) {
 	}
 }
 
+// The inbound-notify pipe must skip spam-flagged mail by default, and must key
+// on rspamd's X-Spam header rather than re-deriving a score threshold locally —
+// otherwise the threshold lives in two places and drifts.
+func TestInboundNotify_SkipsSpamByDefault(t *testing.T) {
+	data := testData()
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var sh string
+	for _, f := range files {
+		if strings.HasSuffix(f.RelPath, "inbound-notify.sh") {
+			sh = string(f.Content)
+			break
+		}
+	}
+	if sh == "" {
+		t.Fatal("inbound-notify.sh not generated")
+	}
+	if !strings.Contains(sh, "X-Spam:") {
+		t.Fatal("notify pipe does not gate on the X-Spam flag — every phish to a role address raises a notification")
+	}
+	// Must not duplicate the threshold: the score lives in rspamd.spam_threshold.
+	if strings.Contains(sh, "SPAM_SCORE -gt") || strings.Contains(sh, "SPAM_SCORE >") {
+		t.Error("notify pipe must not re-implement a score threshold; gate on the X-Spam header rspamd sets")
+	}
+	// The gate must exit BEFORE the payload is built and POSTed.
+	gate := strings.Index(sh, "X-Spam:")
+	post := strings.Index(sh, "PAYLOAD_FILE")
+	if gate < 0 || post < 0 || gate > strings.LastIndex(sh, "API_URL") && gate > post {
+		t.Error("spam gate must run before the payload is assembled and posted")
+	}
+}
+
+// Opting out must remove the gate entirely, not merely invert it.
+func TestInboundNotify_SkipSpamCanBeDisabled(t *testing.T) {
+	data := testData()
+	off := false
+	data.Postfix.InboundNotifySkipSpam = &off
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f.RelPath, "inbound-notify.sh") {
+			if strings.Contains(string(f.Content), "skipping inbound POST for spam-flagged") {
+				t.Error("inbound_notify_skip_spam=false must not emit the spam gate")
+			}
+			return
+		}
+	}
+	t.Fatal("inbound-notify.sh not generated")
+}
+
 // TestAdvancedSpamCompose_APIBindMount locks in the api → host bind mount
 // for /var/vectis/generated/rspamd. Without this, regenerateRspamdSpamConfig
 // writes the spam maps to the api container's overlay filesystem; rspamd

@@ -54,6 +54,28 @@ SUBJECT=$(printf '%s\n' "$HEADERS"    | sed -n 's/^[Ss]ubject:[[:space:]]*//p' |
 SPAM_SCORE=$(printf '%s\n' "$HEADERS" | sed -n 's/^[Xx]-[Ss]pam-[Ss]core:[[:space:]]*\([-0-9.]*\).*/\1/p' | head -1)
 SPAM_ACTION=$(printf '%s\n' "$HEADERS" | sed -n 's/^[Xx]-[Ss]pam-[Aa]ction:[[:space:]]*//p' | head -1)
 
+{{- if .Postfix.InboundNotifySkipSpamEnabled }}
+# Spam gate. Rspamd's milter runs during smtpd, BEFORE cleanup applies
+# recipient_bcc_maps, so this BCC copy already carries rspamd's verdict.
+# `X-Spam: Yes` is set at the add_header threshold — the same unambiguous flag
+# the global Junk sieve files on (rspamd.file_spam_to_junk).
+#
+# WHY: the BCC is unconditional, so a phishing run against role addresses
+# becomes one notification — and one downstream ticket and operator email —
+# per address per message. Measured on a live install 2026-08-31: one campaign
+# hitting four role addresses produced four tickets.
+#
+# The message is still DELIVERED and still filed to Junk. Only the
+# notification is suppressed. Disable with postfix.inbound_notify_skip_spam.
+#
+# Matched on the header rspamd sets, not on X-Spam-Score, so the threshold
+# lives in one place (rspamd.spam_threshold) rather than being duplicated here.
+if printf '%s\n' "$HEADERS" | grep -qiE '^X-Spam:[[:space:]]*Yes'; then
+    echo "vectis_notify: skipping inbound POST for spam-flagged message (recipient=${REAL_RECIPIENT} queue=${Q_ID} action=${SPAM_ACTION:-unknown} score=${SPAM_SCORE:-unknown})" >&2
+    exit 0
+fi
+{{- end }}
+
 SIZE=$(wc -c < "$RAW_FILE" | tr -d ' ')
 # BusyBox base64 wraps at 76 chars; strip newlines for single-line JSON embedding.
 RAW_B64=$(base64 < "$RAW_FILE" | tr -d '\n')
