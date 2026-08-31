@@ -57,6 +57,14 @@ rspamd:
 postfix:
   message_size_limit: 52428800  # 50 MB in bytes
   smtp_banner: "$myhostname ESMTP"
+  # Suppress the inbound notification POST (and any downstream webhook, ticket
+  # or alert) for messages rspamd flagged as spam. Every inbound message to a
+  # hosted domain is BCC'd to the notify pipe unconditionally, so a phishing run
+  # against role addresses otherwise produces one notification per address per
+  # message. Spam is still delivered and still filed to Junk — only the
+  # notification is suppressed. Default true; set false to notify for
+  # everything.
+  inbound_notify_skip_spam: true
   # Sanitise the trace headers that authenticated submission (587/465) would
   # otherwise carry to every recipient. Postfix stamps the submitting client's
   # HELO name, rDNS name, public IP and TLS details into Received — on a
