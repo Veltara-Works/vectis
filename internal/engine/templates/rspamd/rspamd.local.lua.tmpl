@@ -108,20 +108,12 @@ rspamd_config:register_symbol{
 -- Does NOT fire when the sender is aligned with the recipient domain (genuine
 -- intra-domain mail) or on a subdomain of it.
 
-local function rcpt_domain(task)
-  local rcpt = task:get_principal_recipient()
-  if not rcpt then return nil end
-  local at = string.find(rcpt, '@', 1, true)
-  if not at then return nil end
-  return string.lower(string.sub(rcpt, at + 1))
-end
-
 rspamd_config:register_symbol{
   name = 'VECTIS_RCPT_DOMAIN_SPOOF',
   score = 7.0,
   description = 'From display name impersonates the recipient domain from an unaligned sender',
   callback = function(task)
-    local rd = rcpt_domain(task)
+    local rd = principal_rcpt_domain(task)
     if not rd then return false end
 
     local from = task:get_from('mime')

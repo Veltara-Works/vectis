@@ -317,7 +317,7 @@ services:
       # that consults four allow/block map files keyed by recipient domain.
       # Files always exist (even on Free); empty files = no-op prefilter.
       - /var/vectis/generated/rspamd/settings.conf:/etc/rspamd/local.d/settings.conf:ro
-      - /var/vectis/generated/rspamd/rspamd.local.lua:/etc/rspamd/rspamd.local.lua:ro
+      - /var/vectis/generated/rspamd/rspamd.local.lua:/etc/rspamd/lua.local.d/rspamd.local.lua:ro
       - /var/vectis/generated/rspamd/maps:/etc/rspamd/local.d/maps:ro
       # DKIM keys bind-mount from the host (see api service note) so rspamd
       # signs with keys written by either the host CLI or the api.

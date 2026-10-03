@@ -698,6 +698,15 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 		// Rspamd scoring + DKIM signing.
 		`/var/vectis/generated/rspamd/dkim_signing.conf:/etc/rspamd/local.d/dkim_signing.conf:ro`,
 		`/var/vectis/generated/rspamd/milter_headers.conf:/etc/rspamd/local.d/milter_headers.conf:ro`,
+		// Custom Lua rules (e.g. VECTIS_RCPT_DOMAIN_SPOOF) MUST land under
+		// lua.local.d/ — rspamd 4.x glob-loads *.lua from there (see
+		// /usr/share/rspamd/rules/rspamd.lua) and does NOT auto-source a
+		// top-level $CONFDIR/rspamd.local.lua. A mount to the bare path is
+		// silently inert: the file is valid Lua, correctly bind-mounted, and
+		// never executed. Found 2026-10-03 — the rule had been dead on both
+		// prod and mx1 since this mechanism shipped; confirmed live phishing
+		// matching its exact pattern went unflagged as a result.
+		`/var/vectis/generated/rspamd/rspamd.local.lua:/etc/rspamd/lua.local.d/rspamd.local.lua:ro`,
 		// DKIM keys MUST be a host bind mount (not a named volume) so keys
 		// written by the host CLI `vectis domain add` are visible to rspamd.
 		`/var/vectis/dkim:/var/vectis/dkim:ro`,
@@ -713,6 +722,8 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 		`postfix-config:/etc/postfix`,
 		`dovecot-config:/etc/dovecot`,
 		`rspamd-config:/etc/rspamd/local.d`,
+		// Regression guard for the bare top-level mount — see requiredMounts above.
+		`rspamd/rspamd.local.lua:/etc/rspamd/rspamd.local.lua:ro`,
 	}
 	for _, m := range forbiddenMounts {
 		if strings.Contains(compose, m) {
