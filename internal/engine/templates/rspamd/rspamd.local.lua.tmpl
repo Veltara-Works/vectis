@@ -219,7 +219,8 @@ rspamd_config:register_symbol{
     if not matched then
       -- Log the near-miss: an unauthenticated match is the interesting case,
       -- because silence would otherwise look identical to "not on the list".
-      if (env_domain and lookup(maps.allow_domain, rcpt_domain .. ':' .. env_domain) and not spf_ok)
+      if (env_addr and lookup(maps.allow_email, rcpt_domain .. ':' .. env_addr) and not spf_ok)
+        or (env_domain and lookup(maps.allow_domain, rcpt_domain .. ':' .. env_domain) and not spf_ok)
         or (hdr_domain and lookup(maps.allow_domain, rcpt_domain .. ':' .. hdr_domain) and not dmarc_ok) then
         rspamd_logger.infox(task, 'vectis: allow list matched but sender NOT authenticated — ignoring (rcpt=%s spf=%s dmarc=%s)',
           rcpt_domain, tostring(spf_ok), tostring(dmarc_ok))

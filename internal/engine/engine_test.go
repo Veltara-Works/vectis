@@ -484,11 +484,14 @@ func TestSpamLists_AllowRequiresAuthAndNeverBypassesAV(t *testing.T) {
 	if !strings.Contains(lua, "type = 'postfilter'") {
 		t.Error("allow list must run as a postfilter so authentication and antivirus have been evaluated")
 	}
-	if !strings.Contains(lua, "CLAM_VIRUS") {
+	// Anchor on the actual get_symbol() call, not the bare symbol name — the
+	// surrounding comment block names all three symbols too, so a plain
+	// substring check would still pass if the real lookups were removed.
+	if !strings.Contains(lua, "task:get_symbol('CLAM_VIRUS')") {
 		t.Error("allow list must refuse to act when a virus was found")
 	}
 	for _, sym := range []string{"R_SPF_ALLOW", "DMARC_POLICY_ALLOW"} {
-		if !strings.Contains(lua, sym) {
+		if !strings.Contains(lua, "task:get_symbol('"+sym+"')") {
 			t.Errorf("allow list must require %s before honouring a match", sym)
 		}
 	}
@@ -604,6 +607,33 @@ func TestInboundNotify_SkipSpamCanBeDisabled(t *testing.T) {
 		}
 	}
 	t.Fatal("inbound-notify.sh not generated")
+}
+
+// The near-miss log (an allow-list entry matched but the sender wasn't
+// authenticated) must cover all three identities the allow path itself
+// checks — envelope email, envelope domain, header-From domain — not just
+// the two domain-scope ones. Otherwise an unauthenticated allow_email.map
+// match is silently indistinguishable from "not on the list" in the logs.
+// Regression guard: Copilot review on PR #234 caught allow_email missing.
+func TestSpamLists_AllowNearMissLogsEmailScope(t *testing.T) {
+	data := testData()
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var lua string
+	for _, f := range files {
+		if f.RelPath == "rspamd/rspamd.local.lua" {
+			lua = string(f.Content)
+			break
+		}
+	}
+	if lua == "" {
+		t.Fatal("rspamd.local.lua not generated")
+	}
+	if !strings.Contains(lua, "lookup(maps.allow_email, rcpt_domain .. ':' .. env_addr) and not spf_ok") {
+		t.Error("allow-list near-miss logging must also check allow_email.map (envelope address), not just allow_domain.map")
+	}
 }
 
 // TestAdvancedSpamCompose_APIBindMount locks in the api → host bind mount
