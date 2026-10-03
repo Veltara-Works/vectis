@@ -102,6 +102,34 @@ type PostfixConfig struct {
 	// false. Names are validated (RFC 5322 field-name charset) so a config
 	// value cannot inject a regexp rule into the generated map.
 	StripSubmissionExtraHeaders []string `yaml:"strip_submission_extra_headers"`
+	// InboundNotifySkipSpam suppresses the inbound notification POST (and so
+	// any downstream webhook, ticket or alert) for messages rspamd flagged as
+	// spam — i.e. those carrying `X-Spam: Yes`, set at the add_header
+	// threshold, the same flag the Junk sieve files on.
+	//
+	// WHY: every inbound message to a hosted domain is BCC'd to the
+	// vectis_notify pipe via recipient_bcc_maps, unconditionally. A phishing
+	// run against role addresses therefore becomes one notification per
+	// address per message. Observed on a live install 2026-08-31: a single
+	// phishing campaign hitting four role addresses produced four support
+	// tickets and four operator emails. The notification is only useful for
+	// mail a human would act on.
+	//
+	// Spam is still DELIVERED and still filed to Junk — this suppresses the
+	// notification only, never the message.
+	//
+	// Default ON — a nil pointer (key absent, e.g. on installs predating this
+	// field) means enabled, matching RspamdConfig.FileSpamToJunk. Set false to
+	// notify for every inbound message including spam.
+	InboundNotifySkipSpam *bool `yaml:"inbound_notify_skip_spam"`
+}
+
+// InboundNotifySkipSpamEnabled reports whether the inbound notification should
+// be suppressed for spam-flagged mail. Absent (nil) means enabled — the
+// default-on behaviour, so existing installs get it on upgrade. Mirrors
+// RspamdConfig.SpamToJunkEnabled.
+func (p PostfixConfig) InboundNotifySkipSpamEnabled() bool {
+	return p.InboundNotifySkipSpam == nil || *p.InboundNotifySkipSpam
 }
 
 // SubmissionHeaderStripEnabled reports whether submission trace headers should

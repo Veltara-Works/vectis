@@ -486,6 +486,70 @@ func TestBrandSpoofRule_PresentAndRecipientKeyed(t *testing.T) {
 	}
 }
 
+// The inbound-notify pipe must skip spam-flagged mail by default, and must key
+// on rspamd's X-Spam header rather than re-deriving a score threshold locally —
+// otherwise the threshold lives in two places and drifts.
+func TestInboundNotify_SkipsSpamByDefault(t *testing.T) {
+	data := testData()
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var sh string
+	for _, f := range files {
+		if strings.HasSuffix(f.RelPath, "inbound-notify.sh") {
+			sh = string(f.Content)
+			break
+		}
+	}
+	if sh == "" {
+		t.Fatal("inbound-notify.sh not generated")
+	}
+	if !strings.Contains(sh, "X-Spam:") {
+		t.Fatal("notify pipe does not gate on the X-Spam flag — every phish to a role address raises a notification")
+	}
+	// Must not duplicate the threshold: the score lives in rspamd.spam_threshold.
+	if strings.Contains(sh, "SPAM_SCORE -gt") || strings.Contains(sh, "SPAM_SCORE >") {
+		t.Error("notify pipe must not re-implement a score threshold; gate on the X-Spam header rspamd sets")
+	}
+	// The gate must exit BEFORE the payload is built and POSTed. Anchor on the
+	// actual grep check and the actual payload/POST statements — not on
+	// "X-Spam:"/"PAYLOAD_FILE" generally, both of which also appear earlier
+	// (in a comment, and in the PAYLOAD_FILE mktemp declaration respectively)
+	// and would let this pass even if the gate moved after them.
+	gate := strings.Index(sh, `grep -qiE '^X-Spam:`)
+	payloadBuild := strings.Index(sh, `cat > "$PAYLOAD_FILE" <<JSON`)
+	post := strings.Index(sh, `-X POST "$API_URL"`)
+	if gate < 0 || payloadBuild < 0 || post < 0 {
+		t.Fatal("could not locate gate check / payload build / POST in generated script")
+	}
+	if gate > payloadBuild || gate > post {
+		t.Error("spam gate must run before the payload is assembled and posted")
+	}
+}
+
+// Opting out must remove the gate entirely, not merely invert it.
+func TestInboundNotify_SkipSpamCanBeDisabled(t *testing.T) {
+	data := testData()
+	off := false
+	data.Postfix.InboundNotifySkipSpam = &off
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f.RelPath, "inbound-notify.sh") {
+			// Assert the actual gate check is gone, not just its log message —
+			// a renamed log string would let the real gate survive undetected.
+			if strings.Contains(string(f.Content), `grep -qiE '^X-Spam:`) {
+				t.Error("inbound_notify_skip_spam=false must not emit the spam gate")
+			}
+			return
+		}
+	}
+	t.Fatal("inbound-notify.sh not generated")
+}
+
 // TestAdvancedSpamCompose_APIBindMount locks in the api → host bind mount
 // for /var/vectis/generated/rspamd. Without this, regenerateRspamdSpamConfig
 // writes the spam maps to the api container's overlay filesystem; rspamd
