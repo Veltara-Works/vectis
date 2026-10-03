@@ -442,6 +442,50 @@ func TestAdvancedSpamLua_LookupUsesEqTrue(t *testing.T) {
 	}
 }
 
+// The recipient-domain display-name spoof rule must be present and must key on
+// the RECIPIENT's domain rather than a hard-coded brand list, so it protects
+// every hosted tenant with no per-install configuration.
+//
+// WHY A SCORING RULE EXISTS AT ALL: this phish class scores NEGATIVE on
+// reputation. Measured on a live install 2026-08-31, a message impersonating
+// "<our-domain> Support Team" from an unrelated ASN scored -0.40, because valid
+// SPF and DMARC on the ATTACKER'S OWN throwaway domain earn rspamd bonuses
+// (DMARC_POLICY_ALLOW_WITH_FAILURES -0.50, R_SPF_ALLOW -0.20). No
+// spam_threshold change can reach a negative score — only a rule can.
+func TestBrandSpoofRule_PresentAndRecipientKeyed(t *testing.T) {
+	data := testData()
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var lua string
+	for _, f := range files {
+		if f.RelPath == "rspamd/rspamd.local.lua" {
+			lua = string(f.Content)
+			break
+		}
+	}
+	if lua == "" {
+		t.Fatal("rspamd.local.lua not generated")
+	}
+	if !strings.Contains(lua, "VECTIS_RCPT_DOMAIN_SPOOF") {
+		t.Fatal("brand-spoof rule missing — display-name impersonation of the recipient domain would go unscored")
+	}
+	// Must derive the domain from the recipient, not a baked-in brand list.
+	if !strings.Contains(lua, "get_principal_recipient") {
+		t.Error("brand-spoof rule must key on the recipient domain (get_principal_recipient), not a hard-coded brand list")
+	}
+	// Aligned senders must be excluded, or genuine intra-domain mail scores.
+	if !strings.Contains(lua, "fd == rd") {
+		t.Error("brand-spoof rule must exempt senders aligned with the recipient domain")
+	}
+	// Domain matching must be literal: an unescaped "." in a Lua pattern is a
+	// wildcard, so "vectismail.com" would also match "vectismailXcom".
+	if !strings.Contains(lua, "string.find(dn, rd, 1, true)") {
+		t.Error("domain match must use a plain (non-pattern) find — an unescaped dot would match any character")
+	}
+}
+
 // TestAdvancedSpamCompose_APIBindMount locks in the api → host bind mount
 // for /var/vectis/generated/rspamd. Without this, regenerateRspamdSpamConfig
 // writes the spam maps to the api container's overlay filesystem; rspamd
@@ -654,6 +698,15 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 		// Rspamd scoring + DKIM signing.
 		`/var/vectis/generated/rspamd/dkim_signing.conf:/etc/rspamd/local.d/dkim_signing.conf:ro`,
 		`/var/vectis/generated/rspamd/milter_headers.conf:/etc/rspamd/local.d/milter_headers.conf:ro`,
+		// Custom Lua rules (e.g. VECTIS_RCPT_DOMAIN_SPOOF) MUST land under
+		// lua.local.d/ — rspamd 4.x glob-loads *.lua from there (see
+		// /usr/share/rspamd/rules/rspamd.lua) and does NOT auto-source a
+		// top-level $CONFDIR/rspamd.local.lua. A mount to the bare path is
+		// silently inert: the file is valid Lua, correctly bind-mounted, and
+		// never executed. Found 2026-10-03 — the rule had been dead on both
+		// prod and mx1 since this mechanism shipped; confirmed live phishing
+		// matching its exact pattern went unflagged as a result.
+		`/var/vectis/generated/rspamd/rspamd.local.lua:/etc/rspamd/lua.local.d/rspamd.local.lua:ro`,
 		// DKIM keys MUST be a host bind mount (not a named volume) so keys
 		// written by the host CLI `vectis domain add` are visible to rspamd.
 		`/var/vectis/dkim:/var/vectis/dkim:ro`,
@@ -669,6 +722,8 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 		`postfix-config:/etc/postfix`,
 		`dovecot-config:/etc/dovecot`,
 		`rspamd-config:/etc/rspamd/local.d`,
+		// Regression guard for the bare top-level mount — see requiredMounts above.
+		`rspamd/rspamd.local.lua:/etc/rspamd/rspamd.local.lua:ro`,
 	}
 	for _, m := range forbiddenMounts {
 		if strings.Contains(compose, m) {
