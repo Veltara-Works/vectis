@@ -512,10 +512,18 @@ func TestInboundNotify_SkipsSpamByDefault(t *testing.T) {
 	if strings.Contains(sh, "SPAM_SCORE -gt") || strings.Contains(sh, "SPAM_SCORE >") {
 		t.Error("notify pipe must not re-implement a score threshold; gate on the X-Spam header rspamd sets")
 	}
-	// The gate must exit BEFORE the payload is built and POSTed.
-	gate := strings.Index(sh, "X-Spam:")
-	post := strings.Index(sh, "PAYLOAD_FILE")
-	if gate < 0 || post < 0 || gate > strings.LastIndex(sh, "API_URL") && gate > post {
+	// The gate must exit BEFORE the payload is built and POSTed. Anchor on the
+	// actual grep check and the actual payload/POST statements — not on
+	// "X-Spam:"/"PAYLOAD_FILE" generally, both of which also appear earlier
+	// (in a comment, and in the PAYLOAD_FILE mktemp declaration respectively)
+	// and would let this pass even if the gate moved after them.
+	gate := strings.Index(sh, `grep -qiE '^X-Spam:`)
+	payloadBuild := strings.Index(sh, `cat > "$PAYLOAD_FILE" <<JSON`)
+	post := strings.Index(sh, `-X POST "$API_URL"`)
+	if gate < 0 || payloadBuild < 0 || post < 0 {
+		t.Fatal("could not locate gate check / payload build / POST in generated script")
+	}
+	if gate > payloadBuild || gate > post {
 		t.Error("spam gate must run before the payload is assembled and posted")
 	}
 }
@@ -531,7 +539,9 @@ func TestInboundNotify_SkipSpamCanBeDisabled(t *testing.T) {
 	}
 	for _, f := range files {
 		if strings.HasSuffix(f.RelPath, "inbound-notify.sh") {
-			if strings.Contains(string(f.Content), "skipping inbound POST for spam-flagged") {
+			// Assert the actual gate check is gone, not just its log message —
+			// a renamed log string would let the real gate survive undetected.
+			if strings.Contains(string(f.Content), `grep -qiE '^X-Spam:`) {
 				t.Error("inbound_notify_skip_spam=false must not emit the spam gate")
 			}
 			return
