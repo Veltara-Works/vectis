@@ -57,6 +57,10 @@ rspamd:
                            # Raise to 999 to only tag and never reject.
   greylist_enabled: false
   file_spam_to_junk: true
+  enforce_dmarc: true      # act on the sender domain's DMARC policy: p=reject
+                           # failures are rejected at SMTP, p=quarantine ones go
+                           # to Junk. false = only add score. Authenticated
+                           # submission is never checked.
 
 # Postfix MTA settings.
 postfix:

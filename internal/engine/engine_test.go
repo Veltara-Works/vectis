@@ -859,6 +859,8 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 		// greylisting had never run on either production box.
 		`/var/vectis/generated/rspamd/redis.conf:/etc/rspamd/local.d/redis.conf:ro`,
 		`/var/vectis/generated/rspamd/greylist.conf:/etc/rspamd/local.d/greylist.conf:ro`,
+		// DMARC policy enforcement (rspamd.enforce_dmarc).
+		`/var/vectis/generated/rspamd/dmarc.conf:/etc/rspamd/local.d/dmarc.conf:ro`,
 		// Custom Lua rules (e.g. VECTIS_RCPT_DOMAIN_SPOOF) MUST land under
 		// lua.local.d/ — rspamd 4.x glob-loads *.lua from there (see
 		// /usr/share/rspamd/rules/rspamd.lua) and does NOT auto-source a
@@ -2059,4 +2061,34 @@ func TestRspamdPerDomainGreylist(t *testing.T) {
 		}
 		wantDisabled(t, settings, "other.example")
 	})
+}
+
+// TestRspamdDMARCEnforcement: enforce_dmarc defaults ON (nil) and renders the
+// dmarc module's actions; explicit false renders no actions (score only).
+func TestRspamdDMARCEnforcement(t *testing.T) {
+	get := func(d *TemplateData) string {
+		files, err := Generate(d)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		for _, f := range files {
+			if f.RelPath == "rspamd/dmarc.conf" {
+				return string(f.Content)
+			}
+		}
+		t.Fatal("rspamd/dmarc.conf not generated")
+		return ""
+	}
+	def := get(testData()) // EnforceDMARC nil → on
+	for _, want := range []string{`reject = "reject";`, `quarantine = "add header";`} {
+		if !strings.Contains(def, want) {
+			t.Errorf("default (enforce_dmarc absent) must enforce; missing %q in:\n%s", want, def)
+		}
+	}
+	d := testData()
+	off := false
+	d.Rspamd.EnforceDMARC = &off
+	if got := get(d); strings.Contains(got, "actions {") {
+		t.Errorf("enforce_dmarc=false must not render dmarc actions; got:\n%s", got)
+	}
 }

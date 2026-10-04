@@ -45,6 +45,7 @@ var reloadMatrix = map[string]struct {
 	// greylist.conf only toggles an already-registered module.
 	"rspamd/redis.conf":            {service: "rspamd", action: "restart"},
 	"rspamd/greylist.conf":         {service: "rspamd", action: "reload"},
+	"rspamd/dmarc.conf":            {service: "rspamd", action: "reload"},
 	"rspamd/antivirus.conf":        {service: "rspamd", action: "reload"},
 	"rspamd/worker-proxy.inc":      {service: "rspamd", action: "restart"},
 
