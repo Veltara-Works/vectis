@@ -3,4 +3,9 @@
 
 reject = {{ .Rspamd.RejectThreshold }};
 add_header = {{ .Rspamd.SpamThreshold }};
-{{ if .Rspamd.GreylistEnabled }}greylist = 4;{{ else }}# greylist disabled{{ end }}
+# greylist: a numeric threshold whenever the greylist module loads (the plugin
+# reads its minimum score from it; with none it greylists every message). When
+# the module is off the action must be null: rspamd's built-in default is 4,
+# and with no greylist plugin to downgrade it a 4+ score ends as action
+# "greylist".
+{{ if .GreylistModuleEnabled }}greylist = 4;{{ else }}greylist = null;{{ end }}
