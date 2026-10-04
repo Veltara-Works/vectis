@@ -374,8 +374,14 @@ func TestAdvancedSpamConfig(t *testing.T) {
 	if !strings.Contains(settings, "reject = 12.5") {
 		t.Errorf("settings.conf should override reject threshold to 12.5; got:\n%s", settings)
 	}
-	if !strings.Contains(settings, `plugins_disabled = ["greylist"]`) {
-		t.Errorf("settings.conf should disable greylist plugin when GreylistEnabled=false; got:\n%s", settings)
+	// `plugins_disabled` is not an rspamd settings key (silently ignored); it
+	// must never come back. Greylisting is off system-wide here and no domain
+	// opts in, so the module isn't loaded and no per-domain disable is needed.
+	if strings.Contains(settings, "plugins_disabled =") {
+		t.Errorf("settings.conf must not use the invalid plugins_disabled key; got:\n%s", settings)
+	}
+	if strings.Contains(settings, "GREYLIST_CHECK") {
+		t.Errorf("greylist module is off, settings.conf should not disable it per domain; got:\n%s", settings)
 	}
 }
 
@@ -848,6 +854,11 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 		// Rspamd scoring + DKIM signing.
 		`/var/vectis/generated/rspamd/dkim_signing.conf:/etc/rspamd/local.d/dkim_signing.conf:ro`,
 		`/var/vectis/generated/rspamd/milter_headers.conf:/etc/rspamd/local.d/milter_headers.conf:ro`,
+		// Global Redis backend: without it rspamd disables greylist, ratelimit,
+		// replies and history ("Modules disabled (no Redis)"). Found 2026-10-04:
+		// greylisting had never run on either production box.
+		`/var/vectis/generated/rspamd/redis.conf:/etc/rspamd/local.d/redis.conf:ro`,
+		`/var/vectis/generated/rspamd/greylist.conf:/etc/rspamd/local.d/greylist.conf:ro`,
 		// Custom Lua rules (e.g. VECTIS_RCPT_DOMAIN_SPOOF) MUST land under
 		// lua.local.d/ — rspamd 4.x glob-loads *.lua from there (see
 		// /usr/share/rspamd/rules/rspamd.lua) and does NOT auto-source a
@@ -1272,6 +1283,23 @@ func TestDetermineActions(t *testing.T) {
 			name:   "rspamd actions → reload",
 			diffs:  []FileDiff{{RelPath: "rspamd/actions.conf"}},
 			expect: map[string]string{"rspamd": "reload"},
+		},
+		{
+			// Copilot review on PR #243: redis.conf decides which rspamd modules
+			// load at all, so it must restart; greylist.conf only toggles one.
+			name:   "rspamd redis.conf → restart",
+			diffs:  []FileDiff{{RelPath: "rspamd/redis.conf"}},
+			expect: map[string]string{"rspamd": "restart"},
+		},
+		{
+			name:   "rspamd greylist.conf → reload",
+			diffs:  []FileDiff{{RelPath: "rspamd/greylist.conf"}},
+			expect: map[string]string{"rspamd": "reload"},
+		},
+		{
+			name:   "rspamd redis.conf + greylist.conf → restart wins",
+			diffs:  []FileDiff{{RelPath: "rspamd/greylist.conf"}, {RelPath: "rspamd/redis.conf"}},
+			expect: map[string]string{"rspamd": "restart"},
 		},
 		{
 			name:   "SQL files → no reload",
@@ -1733,6 +1761,7 @@ func TestGenerateSecretConfigPerms(t *testing.T) {
 		"postfix/pgsql_virtual_domains.cf",
 		"postfix/pgsql_virtual_aliases.cf",
 		"rspamd/classifier-bayes.conf",
+		"rspamd/redis.conf",
 	}
 	for _, p := range secret0600 {
 		f, ok := byPath[p]
@@ -1882,4 +1911,152 @@ func TestRepairConfigPerms(t *testing.T) {
 	if err := RepairConfigPerms(dir, nil); err != nil {
 		t.Errorf("nil secrets should be a no-op, got: %v", err)
 	}
+}
+
+// TestRspamdGlobalRedisAndGreylist guards the 2026-10-04 fix: rspamd needs a
+// GLOBAL redis.conf (not just the Bayes classifier's own servers line) or it
+// silently disables greylist/ratelimit/replies/history, and the greylist
+// module must follow rspamd.greylist_enabled. It must never be enabled
+// without the setting, because with no greylist action threshold the plugin
+// greylists every message.
+func TestRspamdGlobalRedisAndGreylist(t *testing.T) {
+	get := func(files []GeneratedFile, relPath string) string {
+		for _, f := range files {
+			if f.RelPath == relPath {
+				return string(f.Content)
+			}
+		}
+		t.Fatalf("%s not generated", relPath)
+		return ""
+	}
+
+	off, err := Generate(testData()) // GreylistEnabled: false
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	redis := get(off, "rspamd/redis.conf")
+	for _, want := range []string{`servers = "valkey:6379";`, `password = "secret_valkey";`} {
+		if !strings.Contains(redis, want) {
+			t.Errorf("redis.conf missing %q; got:\n%s", want, redis)
+		}
+	}
+	if gl := get(off, "rspamd/greylist.conf"); !strings.Contains(gl, "enabled = false;") || strings.Contains(gl, "enabled = true;") {
+		t.Errorf("greylist_enabled=false must render enabled = false; got:\n%s", gl)
+	}
+
+	d := testData()
+	d.Rspamd.GreylistEnabled = true
+	on, err := Generate(d)
+	if err != nil {
+		t.Fatalf("Generate (greylist on): %v", err)
+	}
+	if gl := get(on, "rspamd/greylist.conf"); !strings.Contains(gl, "enabled = true;") {
+		t.Errorf("greylist_enabled=true must render enabled = true; got:\n%s", gl)
+	}
+	// When greylisting is on, actions.conf must still carry a numeric greylist
+	// threshold: without one the plugin's min-score check is skipped.
+	if ac := get(on, "rspamd/actions.conf"); !strings.Contains(ac, "greylist = 4;") {
+		t.Errorf("greylist_enabled=true must set a numeric greylist action; got:\n%s", ac)
+	}
+	// Module off: the action must be null, not absent (rspamd's built-in default
+	// greylist = 4 would otherwise end 4+ scores as action "greylist").
+	if ac := get(off, "rspamd/actions.conf"); !strings.Contains(ac, "greylist = null;") {
+		t.Errorf("greylist off must render greylist = null; got:\n%s", ac)
+	}
+}
+
+// TestRspamdPerDomainGreylist covers the Pro per-domain override in both
+// directions. Copilot review on PR #243: a domain opting IN while the
+// system-wide default is off must load the module (and switch it off for every
+// other domain); a domain opting OUT while it's on must get a working disable.
+func TestRspamdPerDomainGreylist(t *testing.T) {
+	get := func(files []GeneratedFile, relPath string) string {
+		for _, f := range files {
+			if f.RelPath == relPath {
+				return string(f.Content)
+			}
+		}
+		t.Fatalf("%s not generated", relPath)
+		return ""
+	}
+	block := func(settings, domain string) string {
+		i := strings.Index(settings, "domain_"+domain+" {")
+		if i < 0 {
+			return ""
+		}
+		rest := settings[i:]
+		if j := strings.Index(rest, "\n}\n"); j >= 0 {
+			return rest[:j]
+		}
+		return rest
+	}
+	on, off := true, false
+	twoDomains := func() *TemplateData {
+		d := testData()
+		d.Domains = append(d.Domains, repository.Domain{ID: "d2", Name: "other.example", Active: true, SpamThreshold: 6.0})
+		return d
+	}
+	wantDisabled := func(t *testing.T, settings, domain string) {
+		t.Helper()
+		b := block(settings, domain)
+		if !strings.Contains(b, `symbols_disabled = ["GREYLIST_CHECK", "GREYLIST_SAVE"];`) || !strings.Contains(b, "greylist = null;") {
+			t.Errorf("%s: want greylisting switched off (symbols_disabled + greylist = null); got block:\n%s\nfull settings:\n%s", domain, b, settings)
+		}
+	}
+
+	t.Run("domain opts in while system default is off", func(t *testing.T) {
+		d := twoDomains()
+		d.Domains[0].GreylistEnabled = &on // example.com opts in
+		files, err := Generate(d)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if gl := get(files, "rspamd/greylist.conf"); !strings.Contains(gl, "enabled = true;") {
+			t.Errorf("a domain opting in must load the module; got:\n%s", gl)
+		}
+		if ac := get(files, "rspamd/actions.conf"); !strings.Contains(ac, "greylist = 4;") {
+			t.Errorf("module on must carry a numeric greylist threshold; got:\n%s", ac)
+		}
+		settings := get(files, "rspamd/settings.conf")
+		if b := block(settings, "example.com"); b != "" {
+			t.Errorf("opted-in domain must not get a disable block; got:\n%s", b)
+		}
+		wantDisabled(t, settings, "other.example") // no override → system default (off)
+	})
+
+	t.Run("domain opts out while system default is on", func(t *testing.T) {
+		d := twoDomains()
+		d.Rspamd.GreylistEnabled = true
+		d.Domains[1].GreylistEnabled = &off // other.example opts out
+		files, err := Generate(d)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		settings := get(files, "rspamd/settings.conf")
+		wantDisabled(t, settings, "other.example")
+		if b := block(settings, "example.com"); b != "" {
+			t.Errorf("domain inheriting the system default (on) must not get a block; got:\n%s", b)
+		}
+	})
+
+	t.Run("reject override and greylist off share one block", func(t *testing.T) {
+		d := twoDomains()
+		d.Rspamd.GreylistEnabled = true
+		reject := 12.5
+		d.Domains[1].GreylistEnabled = &off
+		d.Domains[1].RejectThreshold = &reject
+		files, err := Generate(d)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		settings := get(files, "rspamd/settings.conf")
+		if n := strings.Count(settings, "domain_other.example {"); n != 1 {
+			t.Fatalf("want exactly one block for other.example, got %d:\n%s", n, settings)
+		}
+		b := block(settings, "other.example")
+		if !strings.Contains(b, "reject = 12.5;") {
+			t.Errorf("reject override missing from shared block:\n%s", b)
+		}
+		wantDisabled(t, settings, "other.example")
+	})
 }

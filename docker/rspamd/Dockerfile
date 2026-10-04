@@ -13,6 +13,10 @@ VOLUME ["/etc/rspamd/local.d", "/var/vectis/dkim"]
 # Milter port for Postfix, controller for management
 EXPOSE 11332 11334
 
+# Static module switches for Redis-dependent modules we do not run (neural,
+# url_redirector). override.d, not local.d: local.d is a VOLUME and is
+# populated by bind mounts from the config engine.
+COPY docker/rspamd/override.d/ /etc/rspamd/override.d/
 COPY docker/rspamd/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

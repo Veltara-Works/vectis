@@ -41,6 +41,10 @@ var reloadMatrix = map[string]struct {
 	"rspamd/actions.conf":          {service: "rspamd", action: "reload"},
 	"rspamd/dkim_signing.conf":     {service: "rspamd", action: "reload"},
 	"rspamd/classifier-bayes.conf": {service: "rspamd", action: "reload"},
+	// redis.conf decides which modules load at all, so it needs a restart;
+	// greylist.conf only toggles an already-registered module.
+	"rspamd/redis.conf":            {service: "rspamd", action: "restart"},
+	"rspamd/greylist.conf":         {service: "rspamd", action: "reload"},
 	"rspamd/antivirus.conf":        {service: "rspamd", action: "reload"},
 	"rspamd/worker-proxy.inc":      {service: "rspamd", action: "restart"},
 

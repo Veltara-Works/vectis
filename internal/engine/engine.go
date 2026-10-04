@@ -138,6 +138,37 @@ func (d TemplateData) RoundcubeDESKey() string {
 	return DeriveRoundcubeDESKey(d.API.Secret)
 }
 
+// GreylistModuleEnabled reports whether rspamd's greylist module must load: when
+// the system-wide rspamd.greylist_enabled is on, OR any domain opts in through
+// its Pro per-domain override. Per-domain settings can only narrow a module
+// that is loaded, so one domain opting in has to switch the module on and
+// GreylistOffForDomain then turns it off for everyone else.
+func (d TemplateData) GreylistModuleEnabled() bool {
+	if d.Rspamd.GreylistEnabled {
+		return true
+	}
+	for _, dom := range d.Domains {
+		if dom.GreylistEnabled != nil && *dom.GreylistEnabled {
+			return true
+		}
+	}
+	return false
+}
+
+// GreylistOffForDomain reports whether settings.conf must switch greylisting off
+// for this domain's recipients: the module is loaded (for some domain), but this
+// domain's effective setting is off. The effective setting is the domain's own
+// override when set, otherwise the system-wide default.
+func (d TemplateData) GreylistOffForDomain(dom repository.Domain) bool {
+	if !d.GreylistModuleEnabled() {
+		return false
+	}
+	if dom.GreylistEnabled != nil {
+		return !*dom.GreylistEnabled
+	}
+	return !d.Rspamd.GreylistEnabled
+}
+
 // SpamListInfo is a denormalized view of a domain_spam_lists row used by
 // rspamd templates. DomainName is included so the template can build
 // per-recipient-domain composite keys without a join. Kept in the engine
