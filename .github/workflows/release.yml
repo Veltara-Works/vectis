@@ -563,6 +563,21 @@ jobs:
           go run ./cmd/release-sign "$CHANNEL_FILE" > "$CHANNEL_FILE.ed25519"
           test -s "$CHANNEL_FILE.ed25519"
 
+          # Per-version copy (immutable): ${VERSION}/release.json, byte-identical
+          # to the channel manifest so the same signature applies. `vectis
+          # verify` checks a box against the manifest for the version it RUNS;
+          # the channel files only describe the latest release, so without this
+          # a box one release behind could not be verified at all. Uploaded
+          # before the channel pointers move, signature first (audit V-1).
+          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+            "$CHANNEL_FILE.ed25519" "s3://$R2_BUCKET/${VERSION}/release.json.ed25519" \
+            --content-type text/plain \
+            --cache-control "public, max-age=86400"
+          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+            "$CHANNEL_FILE" "s3://$R2_BUCKET/${VERSION}/release.json" \
+            --content-type application/json \
+            --cache-control "public, max-age=86400"
+
           # Upload the signature BEFORE the manifest it signs (audit V-1): a client
           # that reads the manifest (200) but 404s its signature treats the 404 as
           # tampering post-U-5 (orchestrator soft-fails, but the host self-update
