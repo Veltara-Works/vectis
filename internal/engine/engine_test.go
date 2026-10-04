@@ -848,6 +848,11 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 		// Rspamd scoring + DKIM signing.
 		`/var/vectis/generated/rspamd/dkim_signing.conf:/etc/rspamd/local.d/dkim_signing.conf:ro`,
 		`/var/vectis/generated/rspamd/milter_headers.conf:/etc/rspamd/local.d/milter_headers.conf:ro`,
+		// Global Redis backend: without it rspamd disables greylist, ratelimit,
+		// replies and history ("Modules disabled (no Redis)"). Found 2026-10-04:
+		// greylisting had never run on either production box.
+		`/var/vectis/generated/rspamd/redis.conf:/etc/rspamd/local.d/redis.conf:ro`,
+		`/var/vectis/generated/rspamd/greylist.conf:/etc/rspamd/local.d/greylist.conf:ro`,
 		// Custom Lua rules (e.g. VECTIS_RCPT_DOMAIN_SPOOF) MUST land under
 		// lua.local.d/ — rspamd 4.x glob-loads *.lua from there (see
 		// /usr/share/rspamd/rules/rspamd.lua) and does NOT auto-source a
@@ -1733,6 +1738,7 @@ func TestGenerateSecretConfigPerms(t *testing.T) {
 		"postfix/pgsql_virtual_domains.cf",
 		"postfix/pgsql_virtual_aliases.cf",
 		"rspamd/classifier-bayes.conf",
+		"rspamd/redis.conf",
 	}
 	for _, p := range secret0600 {
 		f, ok := byPath[p]
@@ -1881,5 +1887,52 @@ func TestRepairConfigPerms(t *testing.T) {
 	// nil secrets is a no-op, never a panic.
 	if err := RepairConfigPerms(dir, nil); err != nil {
 		t.Errorf("nil secrets should be a no-op, got: %v", err)
+	}
+}
+
+// TestRspamdGlobalRedisAndGreylist guards the 2026-10-04 fix: rspamd needs a
+// GLOBAL redis.conf (not just the Bayes classifier's own servers line) or it
+// silently disables greylist/ratelimit/replies/history, and the greylist
+// module must follow rspamd.greylist_enabled. It must never be enabled
+// without the setting, because with no greylist action threshold the plugin
+// greylists every message.
+func TestRspamdGlobalRedisAndGreylist(t *testing.T) {
+	get := func(files []GeneratedFile, relPath string) string {
+		for _, f := range files {
+			if f.RelPath == relPath {
+				return string(f.Content)
+			}
+		}
+		t.Fatalf("%s not generated", relPath)
+		return ""
+	}
+
+	off, err := Generate(testData()) // GreylistEnabled: false
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	redis := get(off, "rspamd/redis.conf")
+	for _, want := range []string{`servers = "valkey:6379";`, `password = "secret_valkey";`} {
+		if !strings.Contains(redis, want) {
+			t.Errorf("redis.conf missing %q; got:\n%s", want, redis)
+		}
+	}
+	if gl := get(off, "rspamd/greylist.conf"); !strings.Contains(gl, "enabled = false;") || strings.Contains(gl, "enabled = true;") {
+		t.Errorf("greylist_enabled=false must render enabled = false; got:\n%s", gl)
+	}
+
+	d := testData()
+	d.Rspamd.GreylistEnabled = true
+	on, err := Generate(d)
+	if err != nil {
+		t.Fatalf("Generate (greylist on): %v", err)
+	}
+	if gl := get(on, "rspamd/greylist.conf"); !strings.Contains(gl, "enabled = true;") {
+		t.Errorf("greylist_enabled=true must render enabled = true; got:\n%s", gl)
+	}
+	// When greylisting is on, actions.conf must still carry a numeric greylist
+	// threshold: without one the plugin's min-score check is skipped.
+	if ac := get(on, "rspamd/actions.conf"); !strings.Contains(ac, "greylist = 4;") {
+		t.Errorf("greylist_enabled=true must set a numeric greylist action; got:\n%s", ac)
 	}
 }
