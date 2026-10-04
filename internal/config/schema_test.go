@@ -2,9 +2,9 @@ package config
 
 import "testing"
 
-// TestSpamToJunkEnabled locks in the default-ON semantics of the
-// rspamd.file_spam_to_junk flag: a nil pointer (key absent — e.g. installs
-// predating the field) must read as enabled, so upgrades pick the feature up.
+// TestDMARCEnforced locks in the default-ON semantics of rspamd.enforce_dmarc:
+// a nil pointer (key absent, e.g. installs predating the field) must read as
+// enabled, so upgrades start enforcing senders' DMARC policies.
 func TestDMARCEnforced(t *testing.T) {
 	tru, fls := true, false
 	cases := []struct {
@@ -26,6 +26,9 @@ func TestDMARCEnforced(t *testing.T) {
 	}
 }
 
+// TestSpamToJunkEnabled locks in the default-ON semantics of the
+// rspamd.file_spam_to_junk flag: a nil pointer (key absent — e.g. installs
+// predating the field) must read as enabled, so upgrades pick the feature up.
 func TestSpamToJunkEnabled(t *testing.T) {
 	tru, fls := true, false
 	cases := []struct {

@@ -1299,6 +1299,12 @@ func TestDetermineActions(t *testing.T) {
 			expect: map[string]string{"rspamd": "reload"},
 		},
 		{
+			// Copilot review on PR #244: guard the DMARC activation path.
+			name:   "rspamd dmarc.conf → reload",
+			diffs:  []FileDiff{{RelPath: "rspamd/dmarc.conf"}},
+			expect: map[string]string{"rspamd": "reload"},
+		},
+		{
 			name:   "rspamd redis.conf + greylist.conf → restart wins",
 			diffs:  []FileDiff{{RelPath: "rspamd/greylist.conf"}, {RelPath: "rspamd/redis.conf"}},
 			expect: map[string]string{"rspamd": "restart"},
