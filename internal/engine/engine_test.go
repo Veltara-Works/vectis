@@ -30,8 +30,7 @@ func testData() *TemplateData {
 		Valkey: config.ValkeySecrets{Host: "valkey", Port: 6379, Password: "secret_valkey"},
 		Domains: []repository.Domain{
 			{ID: "d1", Name: "example.com", Active: true, DKIMEnabled: true,
-				DKIMSelector: "202603", DKIMKeyPath: strPtr("/var/vectis/dkim/example.com/202603.key"),
-				SpamThreshold: 15.0},
+				DKIMSelector: "202603", DKIMKeyPath: strPtr("/var/vectis/dkim/example.com/202603.key")},
 		},
 	}
 }
@@ -2001,7 +2000,7 @@ func TestRspamdPerDomainGreylist(t *testing.T) {
 	on, off := true, false
 	twoDomains := func() *TemplateData {
 		d := testData()
-		d.Domains = append(d.Domains, repository.Domain{ID: "d2", Name: "other.example", Active: true, SpamThreshold: 6.0})
+		d.Domains = append(d.Domains, repository.Domain{ID: "d2", Name: "other.example", Active: true})
 		return d
 	}
 	wantDisabled := func(t *testing.T, settings, domain string) {
@@ -2096,5 +2095,47 @@ func TestRspamdDMARCEnforcement(t *testing.T) {
 	d.Rspamd.EnforceDMARC = &off
 	if got := get(d); strings.Contains(got, "actions {") {
 		t.Errorf("enforce_dmarc=false must not render dmarc actions; got:\n%s", got)
+	}
+}
+
+// TestRspamdPerDomainSpamThreshold: a domain's spam_threshold override (Pro,
+// v0.1.50) is rendered as its own add_header action in settings.conf; a domain
+// without one (NULL) gets no block and falls through to config.yaml's global
+// threshold in actions.conf. Before v0.1.50 the column was never rendered.
+func TestRspamdPerDomainSpamThreshold(t *testing.T) {
+	get := func(files []GeneratedFile, relPath string) string {
+		for _, f := range files {
+			if f.RelPath == relPath {
+				return string(f.Content)
+			}
+		}
+		t.Fatalf("%s not generated", relPath)
+		return ""
+	}
+	spam, reject := 4.5, 12.0
+	d := testData()
+	d.Rspamd.SpamThreshold = 6.0
+	d.Domains[0].SpamThreshold = &spam
+	d.Domains = append(d.Domains,
+		repository.Domain{ID: "d2", Name: "both.example", Active: true, SpamThreshold: &spam, RejectThreshold: &reject},
+		repository.Domain{ID: "d3", Name: "default.example", Active: true})
+	files, err := Generate(d)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	settings := get(files, "rspamd/settings.conf")
+
+	want := "domain_example.com {\n  rcpt = \"@example.com\";\n  apply {\n    actions {\n      add_header = 4.5;\n    }\n  }\n}"
+	if !strings.Contains(settings, want) {
+		t.Errorf("spam-only override block wrong; want:\n%s\ngot:\n%s", want, settings)
+	}
+	if !strings.Contains(settings, "      add_header = 4.5;\n      reject = 12.0;\n") {
+		t.Errorf("both.example must carry add_header and reject; got:\n%s", settings)
+	}
+	if strings.Contains(settings, "domain_default.example") {
+		t.Errorf("a domain with no override must not get a block; got:\n%s", settings)
+	}
+	if ac := get(files, "rspamd/actions.conf"); !strings.Contains(ac, "add_header = 6;") {
+		t.Errorf("the global threshold must still come from config.yaml; got:\n%s", ac)
 	}
 }

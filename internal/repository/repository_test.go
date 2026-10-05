@@ -388,8 +388,11 @@ func TestDomain_CRUD(t *testing.T) {
 	if !d.Active {
 		t.Error("new domain should be Active=true")
 	}
-	if d.SpamThreshold != 15.0 {
-		t.Errorf("default spam_threshold = %v, want 15.0", d.SpamThreshold)
+	if d.SpamThreshold != nil {
+		t.Errorf("default spam_threshold = %v, want nil (use config.yaml)", *d.SpamThreshold)
+	}
+	if got, err := repo.GetByID(ctx, d.ID); err != nil || got == nil || got.SpamThreshold != nil {
+		t.Fatalf("stored spam_threshold must be NULL by default: %v %+v", err, got)
 	}
 	if d.VerificationStatus != "pending" {
 		t.Errorf("initial verification_status = %q, want pending", d.VerificationStatus)
@@ -435,11 +438,29 @@ func TestDomain_CRUD(t *testing.T) {
 	if updated.Active {
 		t.Error("Active should be false after update")
 	}
-	if updated.SpamThreshold != 7.5 {
+	if updated.SpamThreshold == nil || *updated.SpamThreshold != 7.5 {
 		t.Errorf("SpamThreshold = %v, want 7.5", updated.SpamThreshold)
 	}
 	if !updated.UpdatedAt.After(d.UpdatedAt) {
 		t.Error("UpdatedAt should advance on update")
+	}
+
+	// Clearing an override sets it back to NULL (= config.yaml), and the
+	// Clear flag wins over a value sent alongside it.
+	reject := 12.0
+	if _, err := repo.Update(ctx, d.ID, repository.DomainUpdate{RejectThreshold: &reject}); err != nil {
+		t.Fatalf("set reject_threshold: %v", err)
+	}
+	cleared, err := repo.Update(ctx, d.ID, repository.DomainUpdate{
+		ClearSpamThreshold:   true,
+		SpamThreshold:        &threshold,
+		ClearRejectThreshold: true,
+	})
+	if err != nil {
+		t.Fatalf("clear overrides: %v", err)
+	}
+	if cleared.SpamThreshold != nil || cleared.RejectThreshold != nil {
+		t.Errorf("overrides not cleared: spam=%v reject=%v", cleared.SpamThreshold, cleared.RejectThreshold)
 	}
 
 	count, err := repo.CountMailboxes(ctx, d.ID)

@@ -5,10 +5,20 @@ import { extractError } from '../lib/errors.ts'
 
 interface Domain {
   id: string; name: string; active: boolean; dkim_enabled: boolean;
-  dkim_selector: string; dkim_key_path?: string; spam_threshold: number;
-  reject_threshold?: number; greylist_enabled?: boolean;
+  dkim_selector: string; dkim_key_path?: string;
+  // Per-domain spam overrides (Pro). Absent/null = the system-wide config.yaml value.
+  spam_threshold?: number | null; reject_threshold?: number | null; greylist_enabled?: boolean | null;
   verification_status?: string; verification_token?: string; created_at: string;
 }
+
+// Greylisting is three-way per domain: '' follows the system default, so
+// saving the form never pins a domain to "off" by accident.
+type Greylist = '' | 'on' | 'off'
+const greylistOf = (v?: boolean | null): Greylist => (v === true ? 'on' : v === false ? 'off' : '')
+const greylistValue = (g: Greylist): boolean | null => (g === 'on' ? true : g === 'off' ? false : null)
+// An empty threshold input means "no override": sent as null, which clears it.
+const thresholdValue = (v: string): number | null => (v === '' ? null : parseFloat(v))
+const thresholdText = (v?: number | null): string => (v !== undefined && v !== null ? String(v) : '')
 
 interface DomainsPageProps {
   features?: string[]
@@ -20,16 +30,18 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
   const [domains, setDomains] = useState<Domain[]>([])
   const [showAdd, setShowAdd] = useState(false)
   const [newName, setNewName] = useState('')
+  const [newSpamThreshold, setNewSpamThreshold] = useState('')
   const [newRejectThreshold, setNewRejectThreshold] = useState('')
-  const [newGreylistEnabled, setNewGreylistEnabled] = useState(false)
+  const [newGreylist, setNewGreylist] = useState<Greylist>('')
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [dkimInfo, setDkimInfo] = useState<{ dns_name: string; dns_value: string } | null>(null)
   const [verifyInfo, setVerifyInfo] = useState<{ domain: string; token: string; name: string } | null>(null)
 
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [editSpamThreshold, setEditSpamThreshold] = useState('')
   const [editRejectThreshold, setEditRejectThreshold] = useState('')
-  const [editGreylistEnabled, setEditGreylistEnabled] = useState(false)
+  const [editGreylist, setEditGreylist] = useState<Greylist>('')
   const [savingEdit, setSavingEdit] = useState(false)
 
   const load = () => api.listDomains().then(d => setDomains(d || [])).catch(() => setError('Failed to load domains'))
@@ -41,14 +53,16 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
     try {
       const advanced = hasAdvancedSpam
         ? {
-            reject_threshold: newRejectThreshold === '' ? null : parseFloat(newRejectThreshold),
-            greylist_enabled: newGreylistEnabled,
+            spam_threshold: thresholdValue(newSpamThreshold),
+            reject_threshold: thresholdValue(newRejectThreshold),
+            greylist_enabled: greylistValue(newGreylist),
           }
         : undefined
       const result = await api.createDomain(newName, advanced)
       setNewName('')
+      setNewSpamThreshold('')
       setNewRejectThreshold('')
-      setNewGreylistEnabled(false)
+      setNewGreylist('')
       setShowAdd(false)
       setSuccess(`Domain ${result.domain.name} created`)
       if (result.dkim) setDkimInfo(result.dkim)
@@ -87,14 +101,16 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
 
   const startEditAdvanced = (d: Domain) => {
     setEditingId(d.id)
-    setEditRejectThreshold(d.reject_threshold !== undefined && d.reject_threshold !== null ? String(d.reject_threshold) : '')
-    setEditGreylistEnabled(d.greylist_enabled === true)
+    setEditSpamThreshold(thresholdText(d.spam_threshold))
+    setEditRejectThreshold(thresholdText(d.reject_threshold))
+    setEditGreylist(greylistOf(d.greylist_enabled))
   }
 
   const cancelEditAdvanced = () => {
     setEditingId(null)
+    setEditSpamThreshold('')
     setEditRejectThreshold('')
-    setEditGreylistEnabled(false)
+    setEditGreylist('')
   }
 
   const saveEditAdvanced = async (id: string) => {
@@ -102,8 +118,9 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
     setError(''); setSuccess('')
     try {
       await api.updateDomain(id, {
-        reject_threshold: editRejectThreshold === '' ? null : parseFloat(editRejectThreshold),
-        greylist_enabled: editGreylistEnabled,
+        spam_threshold: thresholdValue(editSpamThreshold),
+        reject_threshold: thresholdValue(editRejectThreshold),
+        greylist_enabled: greylistValue(editGreylist),
       })
       setSuccess('Spam settings updated')
       cancelEditAdvanced()
@@ -168,11 +185,27 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
             {hasAdvancedSpam && (
               <>
                 <div className="form-group">
+                  <label htmlFor="new-spam-threshold">Spam Threshold <span className="text-muted">(optional — Pro)</span></label>
+                  <input
+                    id="new-spam-threshold"
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    max="999.9"
+                    value={newSpamThreshold}
+                    onChange={e => setNewSpamThreshold(e.target.value)}
+                    placeholder="leave empty to use system default"
+                  />
+                  <p className="text-muted" style={{ fontSize: '0.85rem' }}>
+                    Score at or above which inbound mail to this domain is marked as spam and filed to Junk. Leave empty to inherit the system-wide default.
+                  </p>
+                </div>
+                <div className="form-group">
                   <label>Reject Threshold <span className="text-muted">(optional — Pro)</span></label>
                   <input
                     type="number"
                     step="0.1"
-                    min="0"
+                    min="0.1"
                     max="50"
                     value={newRejectThreshold}
                     onChange={e => setNewRejectThreshold(e.target.value)}
@@ -183,14 +216,12 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
                   </p>
                 </div>
                 <div className="form-group">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={newGreylistEnabled}
-                      onChange={e => setNewGreylistEnabled(e.target.checked)}
-                    />
-                    {' '}Enable greylisting for this domain <span className="text-muted">(Pro)</span>
-                  </label>
+                  <label htmlFor="new-greylist">Greylisting <span className="text-muted">(Pro)</span></label>
+                  <select id="new-greylist" value={newGreylist} onChange={e => setNewGreylist(e.target.value as Greylist)}>
+                    <option value="">System default</option>
+                    <option value="on">On</option>
+                    <option value="off">Off</option>
+                  </select>
                 </div>
               </>
             )}
@@ -204,6 +235,7 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
           <thead>
             <tr>
               <th>Domain</th><th>Verified</th><th>Active</th><th>DKIM</th><th>Selector</th>
+              {hasAdvancedSpam && <th>Spam</th>}
               {hasAdvancedSpam && <th>Reject</th>}
               {hasAdvancedSpam && <th>Greylist</th>}
               <th>Created</th><th></th>
@@ -226,9 +258,31 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
                   <td className="mono">
                     {editingId === d.id ? (
                       <input
+                        aria-label={`Spam threshold for ${d.name}`}
                         type="number"
                         step="0.1"
-                        min="0"
+                        min="0.1"
+                        max="999.9"
+                        value={editSpamThreshold}
+                        onChange={e => setEditSpamThreshold(e.target.value)}
+                        placeholder="default"
+                        style={{ width: '5rem' }}
+                      />
+                    ) : (
+                      d.spam_threshold !== undefined && d.spam_threshold !== null
+                        ? d.spam_threshold.toFixed(1)
+                        : <span className="text-muted">default</span>
+                    )}
+                  </td>
+                )}
+                {hasAdvancedSpam && (
+                  <td className="mono">
+                    {editingId === d.id ? (
+                      <input
+                        aria-label={`Reject threshold for ${d.name}`}
+                        type="number"
+                        step="0.1"
+                        min="0.1"
                         max="50"
                         value={editRejectThreshold}
                         onChange={e => setEditRejectThreshold(e.target.value)}
@@ -245,11 +299,17 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
                 {hasAdvancedSpam && (
                   <td>
                     {editingId === d.id ? (
-                      <input
-                        type="checkbox"
-                        checked={editGreylistEnabled}
-                        onChange={e => setEditGreylistEnabled(e.target.checked)}
-                      />
+                      <select
+                        aria-label={`Greylisting for ${d.name}`}
+                        value={editGreylist}
+                        onChange={e => setEditGreylist(e.target.value as Greylist)}
+                      >
+                        <option value="">default</option>
+                        <option value="on">on</option>
+                        <option value="off">off</option>
+                      </select>
+                    ) : greylistOf(d.greylist_enabled) === '' ? (
+                      <span className="text-muted">default</span>
                     ) : (
                       <span className={`badge ${d.greylist_enabled ? 'badge-success' : ''}`}>
                         {d.greylist_enabled ? 'on' : 'off'}
@@ -285,7 +345,7 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
               </tr>
             ))}
             {domains.length === 0 && (
-              <tr><td colSpan={hasAdvancedSpam ? 9 : 7} className="text-muted">No domains yet</td></tr>
+              <tr><td colSpan={hasAdvancedSpam ? 10 : 7} className="text-muted">No domains yet</td></tr>
             )}
           </tbody>
         </table>

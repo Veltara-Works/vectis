@@ -1051,9 +1051,9 @@ func (s *Server) buildRouter() chi.Router {
 
 				// Per-domain allow/block lists — Pro feature (Advanced Spam).
 				// The field-level extensions to PATCH /domains/{id}
-				// (reject_threshold, greylist_enabled) stay in handle_domains.go
-				// since the domain CRUD route must remain open to Free for
-				// ungated fields like spam_threshold.
+				// (spam_threshold, reject_threshold, greylist_enabled) stay in
+				// handle_domains.go since the domain CRUD route must remain
+				// open to Free for its ungated fields (active, dkim_*, ...).
 				r.With(advancedSpamGate, requireAdminOrAbove()).Get("/spam-lists", s.handleListSpamListEntries)
 				r.With(advancedSpamGate, requireAdminOrAbove()).Post("/spam-lists", s.handleCreateSpamListEntry)
 				r.With(advancedSpamGate, requireAdminOrAbove()).Delete("/spam-lists/{entryID}", s.handleDeleteSpamListEntry)

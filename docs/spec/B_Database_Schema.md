@@ -31,7 +31,7 @@ CREATE TABLE domains (
     dkim_enabled    BOOLEAN NOT NULL DEFAULT true,
     dkim_selector   VARCHAR(63) NOT NULL DEFAULT 'default',
     dkim_key_path   VARCHAR(500),                          -- path to private key file, NULL if not yet generated
-    spam_threshold  DECIMAL(4,1) NOT NULL DEFAULT 15.0,    -- Rspamd score threshold (overrides global default)
+    spam_threshold  DECIMAL(4,1),                          -- NULL = config.yaml rspamd.spam_threshold (nullable since 000024)
     max_mailboxes   INTEGER,                               -- NULL = unlimited
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -44,7 +44,7 @@ CREATE INDEX idx_domains_name ON domains(name);
 
 - `dkim_selector`: Recommended convention is date-based (e.g., `202603`) for clean rotation with overlapping validity periods. Default `default` for initial setup simplicity.
 - `dkim_key_path`: Points to private key file under `/var/vectis/dkim/<domain>/`. NULL means DKIM keys have not been generated yet.
-- `spam_threshold`: Per-domain override. Global default is in config.yaml. Per-domain value takes precedence.
+- `spam_threshold`: Optional per-domain override of the Rspamd add_header (spam, files to Junk) threshold. NULL = the system-wide `rspamd.spam_threshold` in config.yaml; a set value takes precedence for mail to this domain. Pro (`advanced_spam`). Was `NOT NULL DEFAULT 15.0` and never applied before Migration 000024 (see B.22).
 - `max_mailboxes`: NULL = unlimited. Useful for hosting providers or licence-based limits.
 
 ---
@@ -647,7 +647,7 @@ CREATE INDEX idx_password_reset_tokens_expires ON password_reset_tokens(expires_
 
 ---
 
-## B.22 Schema additions (Migrations 000012–000023)
+## B.22 Schema additions (Migrations 000012–000024)
 
 This section brings the outline current with migrations applied after 000011.
 For each, the migration file under `internal/database/migrations/` remains the
@@ -813,6 +813,11 @@ Short-lived Dovecot auth tokens so a server-side feature (IMAP importer, admin i
 | created_at | TIMESTAMPTZ | DEFAULT NOW() |
 
 Grants: `SELECT` to `vectis_dovecot` (read in the passdb hot path; see [`ADR-019`] least-privilege roles).
+
+
+### domains — spam_threshold becomes a nullable override (Migration 000024)
+
+`spam_threshold` drops `NOT NULL` and its `15.0` default. NULL = use the system-wide `rspamd.spam_threshold` (config.yaml), matching `reject_threshold` and `greylist_enabled` (000016). A set value is rendered as a per-domain `add_header` action in Rspamd `settings.conf`. Before this migration the column was stored but never applied, so the migration clears every existing value to NULL: each domain keeps the threshold it actually used. Writes are Pro-gated (`advanced_spam`) in the API; `null` in a PATCH clears an override.
 
 ---
 

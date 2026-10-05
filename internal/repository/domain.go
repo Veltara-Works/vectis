@@ -20,7 +20,7 @@ type Domain struct {
 	DKIMEnabled        bool      `json:"dkim_enabled"`
 	DKIMSelector       string    `json:"dkim_selector"`
 	DKIMKeyPath        *string   `json:"dkim_key_path,omitempty"`
-	SpamThreshold      float64   `json:"spam_threshold"`
+	SpamThreshold      *float64  `json:"spam_threshold,omitempty"`
 	RejectThreshold    *float64  `json:"reject_threshold,omitempty"`
 	GreylistEnabled    *bool     `json:"greylist_enabled,omitempty"`
 	MaxMailboxes       *int      `json:"max_mailboxes,omitempty"`
@@ -39,7 +39,9 @@ type DomainCreate struct {
 	MaxMailboxes    *int
 }
 
-// DomainUpdate holds fields for updating a domain.
+// DomainUpdate holds fields for updating a domain. A nil pointer leaves the
+// column unchanged; the Clear* flags set a per-domain spam override back to
+// NULL (= use the system-wide config.yaml value) and win over a value.
 type DomainUpdate struct {
 	Active             *bool
 	DKIMEnabled        *bool
@@ -50,6 +52,10 @@ type DomainUpdate struct {
 	GreylistEnabled    *bool
 	MaxMailboxes       *int
 	VerificationStatus *string
+
+	ClearSpamThreshold   bool
+	ClearRejectThreshold bool
+	ClearGreylistEnabled bool
 }
 
 // DomainRepo handles domain CRUD operations.
@@ -71,12 +77,9 @@ func (r *DomainRepo) Create(ctx context.Context, input DomainCreate) (*Domain, e
 		Active:             true,
 		DKIMEnabled:        true,
 		DKIMSelector:       "default",
-		SpamThreshold:      15.0,
+		SpamThreshold:      input.SpamThreshold, // nil = use config.yaml's rspamd.spam_threshold
 		VerificationStatus: "pending",
 		VerificationToken:  &token,
-	}
-	if input.SpamThreshold != nil {
-		d.SpamThreshold = *input.SpamThreshold
 	}
 	if input.RejectThreshold != nil {
 		d.RejectThreshold = input.RejectThreshold
@@ -275,17 +278,26 @@ func (r *DomainRepo) Update(ctx context.Context, id string, input DomainUpdate) 
 		args = append(args, *input.DKIMKeyPath)
 		argIdx++
 	}
-	if input.SpamThreshold != nil {
+	switch {
+	case input.ClearSpamThreshold:
+		setClauses = append(setClauses, "spam_threshold = NULL")
+	case input.SpamThreshold != nil:
 		setClauses = append(setClauses, fmt.Sprintf("spam_threshold = $%d", argIdx))
 		args = append(args, *input.SpamThreshold)
 		argIdx++
 	}
-	if input.RejectThreshold != nil {
+	switch {
+	case input.ClearRejectThreshold:
+		setClauses = append(setClauses, "reject_threshold = NULL")
+	case input.RejectThreshold != nil:
 		setClauses = append(setClauses, fmt.Sprintf("reject_threshold = $%d", argIdx))
 		args = append(args, *input.RejectThreshold)
 		argIdx++
 	}
-	if input.GreylistEnabled != nil {
+	switch {
+	case input.ClearGreylistEnabled:
+		setClauses = append(setClauses, "greylist_enabled = NULL")
+	case input.GreylistEnabled != nil:
 		setClauses = append(setClauses, fmt.Sprintf("greylist_enabled = $%d", argIdx))
 		args = append(args, *input.GreylistEnabled)
 		argIdx++

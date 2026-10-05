@@ -70,9 +70,23 @@ func domainDeleteBlockReason(mailboxCount, aliasCount int) string {
 	}
 }
 
+// spamThresholdFlagRemoved explains the retired --spam-threshold flag. Until
+// v0.1.50 it stored a per-domain threshold that was never applied. It is now
+// a working Pro override, set through the licence-checked API, which also
+// rewrites the Rspamd config; the CLI writes to the database directly and
+// would do neither.
+const spamThresholdFlagRemoved = `Error: --spam-threshold is no longer accepted here.
+New domains use the system-wide rspamd.spam_threshold in config.yaml.
+A per-domain override is a Pro setting: set it in the admin UI (Domains, then
+Edit spam) or with PATCH /api/v1/domains/{id} {"spam_threshold": 6.0}.`
+
 func runDomainAdd(cmd *cobra.Command, args []string) error {
 	if domainName == "" {
 		fmt.Fprintln(cmd.ErrOrStderr(), "Error: --name is required")
+		os.Exit(2)
+	}
+	if cmd.Flags().Changed("spam-threshold") {
+		fmt.Fprintln(cmd.ErrOrStderr(), spamThresholdFlagRemoved)
 		os.Exit(2)
 	}
 
@@ -95,9 +109,6 @@ func runDomainAdd(cmd *cobra.Command, args []string) error {
 
 	// Create domain.
 	input := repository.DomainCreate{Name: domainName}
-	if domainSpamThres > 0 {
-		input.SpamThreshold = &domainSpamThres
-	}
 	if domainMaxMbox > 0 {
 		input.MaxMailboxes = &domainMaxMbox
 	}
@@ -313,7 +324,8 @@ func connectDB(cmd *cobra.Command) (*pgxpool.Pool, *config.VectisSecrets, func()
 
 func init() {
 	domainAddCmd.Flags().StringVar(&domainName, "name", "", "Domain name (required)")
-	domainAddCmd.Flags().Float64Var(&domainSpamThres, "spam-threshold", 0, "Per-domain spam threshold")
+	domainAddCmd.Flags().Float64Var(&domainSpamThres, "spam-threshold", 0, "Removed in v0.1.50 (now a Pro API setting)")
+	_ = domainAddCmd.Flags().MarkHidden("spam-threshold")
 	domainAddCmd.Flags().IntVar(&domainMaxMbox, "max-mailboxes", 0, "Maximum number of mailboxes")
 	domainAddCmd.Flags().BoolVar(&domainNoDKIM, "no-dkim", false, "Skip DKIM key generation")
 	domainListCmd.Flags().BoolVar(&domainActiveOnly, "active-only", false, "Show only active domains")
