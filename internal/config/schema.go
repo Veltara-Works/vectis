@@ -60,6 +60,21 @@ type RspamdConfig struct {
 	// pointer (key absent, e.g. on installs predating this field) means enabled.
 	// Set false to opt out and keep spam in INBOX.
 	FileSpamToJunk *bool `yaml:"file_spam_to_junk"`
+	// EnforceDMARC makes rspamd act on the sender domain's published DMARC
+	// policy instead of only scoring it: p=reject failures are rejected at SMTP
+	// and p=quarantine failures are tagged as spam (-> Junk). Without it, mail
+	// forging a p=reject domain (including the operator's own) merely gains
+	// DMARC_POLICY_REJECT points and lands in Junk. Authenticated submission and
+	// local networks are never checked (rspamd's dmarc module skips them).
+	// Default ON: a nil pointer (key absent) means enabled. Set false to only
+	// score DMARC failures.
+	EnforceDMARC *bool `yaml:"enforce_dmarc"`
+}
+
+// DMARCEnforced reports whether rspamd should enforce senders' DMARC
+// policies. Absent (nil) means enabled.
+func (r RspamdConfig) DMARCEnforced() bool {
+	return r.EnforceDMARC == nil || *r.EnforceDMARC
 }
 
 // SpamToJunkEnabled reports whether spam should be auto-filed into Junk.
