@@ -13,6 +13,12 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: veltara-works
 
+# One run per tag at a time, so two runs of the same tag cannot both pass the
+# write-once check below.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-binary:
     name: Build & Publish Binary
@@ -39,6 +45,32 @@ jobs:
           set -euo pipefail
           if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]; then
             echo "::error::unsupported release tag '${GITHUB_REF_NAME}' — only vX.Y.Z or vX.Y.Z-rcN are published"
+            exit 1
+          fi
+
+      # Releases are write-once. ${VERSION}/release.json is the baseline
+      # `vectis verify` checks boxes against, so once it exists the version must
+      # never be rebuilt or re-uploaded: a re-run would move the baseline (and
+      # released_at) under boxes already verified against it. Checked here,
+      # before anything is built or pushed; the manifest step checks again just
+      # before its upload.
+      - name: Refuse to re-publish a released version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          if out=$(aws --endpoint-url "$R2_ENDPOINT_URL" s3api head-object \
+                --bucket "$R2_BUCKET" --key "${VERSION}/release.json" 2>&1); then
+            echo "::error::${VERSION} is already published (${VERSION}/release.json exists). Releases are write-once: cut a new tag."
+            exit 1
+          fi
+          if ! grep -qE '\(404\)|Not Found' <<<"$out"; then
+            echo "::error::could not check whether ${VERSION} is already published: $out"
             exit 1
           fi
 
@@ -562,6 +594,32 @@ jobs:
           # manifest at <manifest>.ed25519.
           go run ./cmd/release-sign "$CHANNEL_FILE" > "$CHANNEL_FILE.ed25519"
           test -s "$CHANNEL_FILE.ed25519"
+
+          # Per-version copy (immutable): ${VERSION}/release.json, byte-identical
+          # to the channel manifest so the same signature applies. `vectis
+          # verify` checks a box against the manifest for the version it RUNS;
+          # the channel files only describe the latest release, so without this
+          # a box one release behind could not be verified at all. Uploaded
+          # before the channel pointers move, signature first (audit V-1).
+          # Write-once: build-binary refused a published version up front; check
+          # again here so nothing published since then is ever overwritten.
+          if out=$(aws --endpoint-url "$R2_ENDPOINT_URL" s3api head-object \
+                --bucket "$R2_BUCKET" --key "${VERSION}/release.json" 2>&1); then
+            echo "::error::${VERSION}/release.json already exists. Releases are write-once: cut a new tag."
+            exit 1
+          fi
+          if ! grep -qE '\(404\)|Not Found' <<<"$out"; then
+            echo "::error::could not check whether ${VERSION} is already published: $out"
+            exit 1
+          fi
+          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+            "$CHANNEL_FILE.ed25519" "s3://$R2_BUCKET/${VERSION}/release.json.ed25519" \
+            --content-type text/plain \
+            --cache-control "public, max-age=86400"
+          aws --endpoint-url "$R2_ENDPOINT_URL" s3 cp \
+            "$CHANNEL_FILE" "s3://$R2_BUCKET/${VERSION}/release.json" \
+            --content-type application/json \
+            --cache-control "public, max-age=86400"
 
           # Upload the signature BEFORE the manifest it signs (audit V-1): a client
           # that reads the manifest (200) but 404s its signature treats the 404 as
