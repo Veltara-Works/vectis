@@ -405,7 +405,7 @@ Backup saved: /var/vectis/backups/vectis-20260328-120000.tar.gz (2.4 GB)
 
 | Property | Value |
 |----------|-------|
-| **Input** | `--name example.com` (required). Optional: `--spam-threshold 12.0`, `--max-mailboxes 50`, `--no-dkim` |
+| **Input** | `--name example.com` (required). Optional: `--max-mailboxes 50`, `--no-dkim`. (`--spam-threshold` was removed in v0.1.50 and exits 2 with guidance: the per-domain override is now a Pro setting made through the API or admin UI.) |
 | **Output** | Domain created; DKIM DNS record to add; deliverability reminder |
 | **Side effects** | Inserts domain in Postgres; generates DKIM keys; triggers Rspamd reload |
 | **Exit code 0** | Domain added |

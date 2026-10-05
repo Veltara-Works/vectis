@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router'
 import DomainsPage from './Domains'
 
 vi.mock('../api/client', () => ({
   api: {
     listDomains: vi.fn(),
     createDomain: vi.fn(),
+    updateDomain: vi.fn(),
     deleteDomain: vi.fn(),
     verifyDomain: vi.fn(),
   },
@@ -142,6 +144,58 @@ describe('DomainsPage', () => {
     await waitFor(() => {
       expect(screen.getByText('Domain Verification Required')).toBeInTheDocument()
       expect(screen.getByText('_vectis.test.com')).toBeInTheDocument()
+    })
+  })
+
+  describe('per-domain spam overrides (Pro)', () => {
+    const pro = ['advanced_spam']
+    // Pro rows link to the spam-lists page, so they need a router.
+    const renderPro = () => render(<MemoryRouter><DomainsPage features={pro} /></MemoryRouter>)
+    const domain = (over: Record<string, unknown>) => ({
+      id: '1', name: 'test.com', active: true, dkim_enabled: true, dkim_selector: 'vectis',
+      verification_status: 'verified', created_at: '2026-01-01', ...over,
+    })
+
+    it('shows unset overrides as the system default', async () => {
+      mockApi.listDomains.mockResolvedValue([domain({ reject_threshold: 12 })] as never)
+      renderPro()
+      await waitFor(() => expect(screen.getByText('12.0')).toBeInTheDocument())
+      expect(screen.getByText('Spam')).toBeInTheDocument()
+      expect(screen.getAllByText('default')).toHaveLength(2) // spam threshold + greylisting
+    })
+
+    it('saves a spam threshold without pinning the other overrides', async () => {
+      mockApi.listDomains.mockResolvedValue([domain({})] as never)
+      mockApi.updateDomain.mockResolvedValue({ id: '1', name: 'test.com' } as never)
+      renderPro()
+      const user = userEvent.setup()
+      await user.click(await screen.findByText('Edit spam'))
+      await user.type(screen.getByLabelText('Spam threshold for test.com'), '5.5')
+      await user.click(screen.getByText('Save'))
+      await waitFor(() => expect(mockApi.updateDomain).toHaveBeenCalledWith('1', {
+        spam_threshold: 5.5, reject_threshold: null, greylist_enabled: null,
+      }))
+    })
+
+    it('clears an override back to the default with an empty field', async () => {
+      mockApi.listDomains.mockResolvedValue([domain({ spam_threshold: 4, greylist_enabled: false })] as never)
+      mockApi.updateDomain.mockResolvedValue({ id: '1', name: 'test.com' } as never)
+      renderPro()
+      const user = userEvent.setup()
+      await user.click(await screen.findByText('Edit spam'))
+      await user.clear(screen.getByLabelText('Spam threshold for test.com'))
+      await user.click(screen.getByText('Save'))
+      await waitFor(() => expect(mockApi.updateDomain).toHaveBeenCalledWith('1', {
+        spam_threshold: null, reject_threshold: null, greylist_enabled: false,
+      }))
+    })
+
+    it('hides the spam columns without the Pro feature', async () => {
+      mockApi.listDomains.mockResolvedValue([domain({ spam_threshold: 4 })] as never)
+      render(<DomainsPage />)
+      await waitFor(() => expect(screen.getByText('test.com')).toBeInTheDocument())
+      expect(screen.queryByText('Spam')).not.toBeInTheDocument()
+      expect(screen.queryByText('Edit spam')).not.toBeInTheDocument()
     })
   })
 })

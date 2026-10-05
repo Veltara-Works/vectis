@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -36,27 +38,89 @@ type createDomainRequest struct {
 }
 
 type updateDomainRequest struct {
-	Active          *bool    `json:"active,omitempty"`
-	DKIMEnabled     *bool    `json:"dkim_enabled,omitempty"`
-	DKIMSelector    *string  `json:"dkim_selector,omitempty"`
-	SpamThreshold   *float64 `json:"spam_threshold,omitempty"`
-	RejectThreshold *float64 `json:"reject_threshold,omitempty"`
-	GreylistEnabled *bool    `json:"greylist_enabled,omitempty"`
-	MaxMailboxes    *int     `json:"max_mailboxes,omitempty"`
+	Active          *bool             `json:"active,omitempty"`
+	DKIMEnabled     *bool             `json:"dkim_enabled,omitempty"`
+	DKIMSelector    *string           `json:"dkim_selector,omitempty"`
+	SpamThreshold   optional[float64] `json:"spam_threshold,omitzero"`
+	RejectThreshold optional[float64] `json:"reject_threshold,omitzero"`
+	GreylistEnabled optional[bool]    `json:"greylist_enabled,omitzero"`
+	MaxMailboxes    *int              `json:"max_mailboxes,omitempty"`
 }
 
-// usesAdvancedSpamFields reports whether the request payload touches any
-// Pro-gated per-domain spam knobs. Used for the field-level FeatureGate
-// check in create/update handlers — if any of these are non-nil we must
-// reject the whole request on Free tier (decision D2 in plan
-// proceed-with-advanced-spam-splendid-creek). spam_threshold is NOT in this
-// set: it has been free + ungated since v0.1.0 and stays that way.
+// optional is a PATCH field that tells an absent key (Set=false: leave the
+// stored value alone) apart from an explicit JSON null (Set=true, Value=nil:
+// clear the per-domain override back to the system-wide config.yaml value).
+type optional[T any] struct {
+	Set   bool
+	Value *T
+}
+
+func (o *optional[T]) UnmarshalJSON(b []byte) error {
+	o.Set = true
+	if string(b) == "null" {
+		o.Value = nil
+		return nil
+	}
+	var v T
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	o.Value = &v
+	return nil
+}
+
+// MarshalJSON keeps the audit-log record of a PATCH readable: the value or null.
+func (o optional[T]) MarshalJSON() ([]byte, error) { return json.Marshal(o.Value) }
+
+func (o optional[T]) clears() bool { return o.Set && o.Value == nil }
+
+// normalizeThreshold rounds a per-domain Rspamd threshold to the one decimal
+// place its DECIMAL(4,1) column stores, then requires 0.1–999.9. Rounding first
+// means what is validated is what gets stored: 0.01 would otherwise pass and be
+// stored as 0.0 (every message would hit the action), and 999.99 would round
+// to 1000.0 and fail the write. nil (no value) is valid and stays nil.
+func normalizeThreshold(v *float64) (*float64, bool) {
+	if v == nil {
+		return nil, true
+	}
+	r := math.Round(*v*10) / 10
+	if !(r >= 0.1 && r <= 999.9) { // also refuses NaN
+		return nil, false
+	}
+	return &r, true
+}
+
+const invalidThresholdMsg = "spam_threshold and reject_threshold must be between 0.1 and 999.9 (one decimal place)"
+
+// advancedSpamDenied reports whether the caller's licence lacks advanced_spam.
+// It checks that specific entitlement, as the spam-lists route gate does, not
+// the derived tier: any Pro feature (e.g. custom_branding) maps to TierPro.
+func (s *Server) advancedSpamDenied(r *http.Request) bool {
+	return !s.featureGate.HasFeature(r.Context(), validonx.FeatureAdvancedSpam)
+}
+
+// usesAdvancedSpamFields reports whether a create sets any Pro-gated
+// per-domain spam knob (spam_threshold, reject_threshold, greylist_enabled).
+// On Free tier the whole request is rejected (decision D2 in plan
+// proceed-with-advanced-spam-splendid-creek). spam_threshold joined the set in
+// v0.1.50, when it started being applied: before that it was stored but never
+// rendered into the Rspamd config.
 func (req *createDomainRequest) usesAdvancedSpamFields() bool {
-	return req.RejectThreshold != nil || req.GreylistEnabled != nil
+	return req.SpamThreshold != nil || req.RejectThreshold != nil || req.GreylistEnabled != nil
 }
 
-func (req *updateDomainRequest) usesAdvancedSpamFields() bool {
-	return req.RejectThreshold != nil || req.GreylistEnabled != nil
+// setsAdvancedSpamFields reports whether a PATCH sets a Pro-gated per-domain
+// spam knob to a value. Clearing one (null) is allowed on any tier, so an
+// install that drops back to Free can always return a domain to the
+// system-wide defaults.
+func (req *updateDomainRequest) setsAdvancedSpamFields() bool {
+	return req.SpamThreshold.Value != nil || req.RejectThreshold.Value != nil || req.GreylistEnabled.Value != nil
+}
+
+// touchesAdvancedSpamFields reports whether a PATCH sets or clears any
+// per-domain spam knob, i.e. whether Rspamd's settings.conf must be rewritten.
+func (req *updateDomainRequest) touchesAdvancedSpamFields() bool {
+	return req.SpamThreshold.Set || req.RejectThreshold.Set || req.GreylistEnabled.Set
 }
 
 func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
@@ -133,10 +197,17 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 	// Per pricing.astro Starter promise. Pro/Enterprise are uncapped here.
 	// Existing domains on a customer who downgrades Pro→Free are NOT
 	// retroactively deleted; this only blocks NEW domain creation past 3.
+	var spamOK, rejectOK bool
+	req.SpamThreshold, spamOK = normalizeThreshold(req.SpamThreshold)
+	req.RejectThreshold, rejectOK = normalizeThreshold(req.RejectThreshold)
+	if !spamOK || !rejectOK {
+		respondError(w, r, http.StatusBadRequest, "INVALID_THRESHOLD", invalidThresholdMsg)
+		return
+	}
 	tier, _ := s.featureGate.ResolveTier(r.Context())
-	if tier == validonx.TierFree && req.usesAdvancedSpamFields() {
+	if req.usesAdvancedSpamFields() && s.advancedSpamDenied(r) {
 		respondError(w, r, http.StatusForbidden, "FEATURE_NOT_AVAILABLE",
-			"reject_threshold and greylist_enabled require a Pro license (advanced_spam)")
+			"spam_threshold, reject_threshold and greylist_enabled require a Pro license (advanced_spam)")
 		return
 	}
 	maxMailboxes := req.MaxMailboxes
@@ -287,27 +358,38 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Field-level Pro gate: reject the whole PATCH if a Free-tier caller
-	// tries to set reject_threshold or greylist_enabled. spam_threshold
-	// remains ungated (existed since v0.1.0). Decision D1+D2 in plan
-	// proceed-with-advanced-spam-splendid-creek.
-	if req.usesAdvancedSpamFields() {
-		tier, _ := s.featureGate.ResolveTier(r.Context())
-		if tier == validonx.TierFree {
+	var spamOK, rejectOK bool
+	req.SpamThreshold.Value, spamOK = normalizeThreshold(req.SpamThreshold.Value)
+	req.RejectThreshold.Value, rejectOK = normalizeThreshold(req.RejectThreshold.Value)
+	if !spamOK || !rejectOK {
+		respondError(w, r, http.StatusBadRequest, "INVALID_THRESHOLD", invalidThresholdMsg)
+		return
+	}
+
+	// Field-level gate: reject the whole PATCH if a caller without the
+	// advanced_spam entitlement tries to set spam_threshold, reject_threshold
+	// or greylist_enabled. Decision D1+D2 in plan
+	// proceed-with-advanced-spam-splendid-creek; spam_threshold gated since
+	// v0.1.50 (Ian, 2026-10-05).
+	if req.setsAdvancedSpamFields() {
+		if s.advancedSpamDenied(r) {
 			respondError(w, r, http.StatusForbidden, "FEATURE_NOT_AVAILABLE",
-				"reject_threshold and greylist_enabled require a Pro license (advanced_spam)")
+				"spam_threshold, reject_threshold and greylist_enabled require a Pro license (advanced_spam)")
 			return
 		}
 	}
 
 	domain, err := s.domains.Update(r.Context(), domainID, repository.DomainUpdate{
-		Active:          req.Active,
-		DKIMEnabled:     req.DKIMEnabled,
-		DKIMSelector:    req.DKIMSelector,
-		SpamThreshold:   req.SpamThreshold,
-		RejectThreshold: req.RejectThreshold,
-		GreylistEnabled: req.GreylistEnabled,
-		MaxMailboxes:    req.MaxMailboxes,
+		Active:               req.Active,
+		DKIMEnabled:          req.DKIMEnabled,
+		DKIMSelector:         req.DKIMSelector,
+		SpamThreshold:        req.SpamThreshold.Value,
+		RejectThreshold:      req.RejectThreshold.Value,
+		GreylistEnabled:      req.GreylistEnabled.Value,
+		MaxMailboxes:         req.MaxMailboxes,
+		ClearSpamThreshold:   req.SpamThreshold.clears(),
+		ClearRejectThreshold: req.RejectThreshold.clears(),
+		ClearGreylistEnabled: req.GreylistEnabled.clears(),
 	})
 	if err != nil {
 		s.logger.Error("update domain failed", "error", err)
@@ -323,7 +405,7 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "domain.update", "domain", &domainID, req, &ip)
 
-	if req.usesAdvancedSpamFields() && s.cfg != nil && s.secrets != nil && s.genDir != "" {
+	if req.touchesAdvancedSpamFields() && s.cfg != nil && s.secrets != nil && s.genDir != "" {
 		s.regenerateRspamdSpamConfig()
 	}
 
@@ -491,7 +573,7 @@ func (s *Server) loadSpamListInfos(ctx context.Context) []engine.SpamListInfo {
 // allow/block map files, the Lua extension, and the per-domain
 // settings.conf, then reloads Rspamd. Called from the spam-list CRUD
 // handlers and from domain create/update/delete whenever the request
-// touched reject_threshold or greylist_enabled.
+// touched spam_threshold, reject_threshold or greylist_enabled.
 //
 // The Lua extension and map files are static-shaped — they exist with
 // empty content even when no Pro entries are present — so the bind

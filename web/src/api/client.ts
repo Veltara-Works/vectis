@@ -107,14 +107,14 @@ export const api = {
   // Domains
   listDomains: () => request<Array<{
     id: string; name: string; active: boolean; dkim_enabled: boolean;
-    dkim_selector: string; dkim_key_path?: string; spam_threshold: number;
-    reject_threshold?: number; greylist_enabled?: boolean;
+    dkim_selector: string; dkim_key_path?: string; spam_threshold?: number | null;
+    reject_threshold?: number | null; greylist_enabled?: boolean | null;
     max_mailboxes?: number; verification_status?: string; verification_token?: string; created_at: string
   }>>('GET', '/domains'),
-  createDomain: (name: string, advanced?: { reject_threshold?: number | null; greylist_enabled?: boolean | null }) =>
+  createDomain: (name: string, advanced?: { spam_threshold?: number | null; reject_threshold?: number | null; greylist_enabled?: boolean | null }) =>
     request<{ domain: { id: string; name: string }; dkim?: { dns_name: string; dns_value: string } }>('POST', '/domains', { name, ...(advanced || {}) }),
   updateDomain: (id: string, patch: { active?: boolean; spam_threshold?: number | null; reject_threshold?: number | null; greylist_enabled?: boolean | null }) =>
-    request<{ id: string; name: string; spam_threshold: number; reject_threshold?: number; greylist_enabled?: boolean }>('PATCH', `/domains/${id}`, patch),
+    request<{ id: string; name: string; spam_threshold?: number | null; reject_threshold?: number | null; greylist_enabled?: boolean | null }>('PATCH', `/domains/${id}`, patch),
   deleteDomain: (id: string) => request<void>('DELETE', `/domains/${id}`),
 
   // Spam lists (Pro — advanced_spam feature)

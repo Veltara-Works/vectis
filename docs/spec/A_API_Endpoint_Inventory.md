@@ -116,7 +116,7 @@ Auth column legend used throughout: `none` = public; `session` = signed admin se
 | POST | /api/v1/domains/{domainID}/spam-lists | Add an allow/block list entry | admin+, gated by `advanced_spam` |
 | DELETE | /api/v1/domains/{domainID}/spam-lists/{entryID} | Remove an allow/block list entry | admin+, gated by `advanced_spam` |
 
-Spam-list field-level extensions to `PATCH /domains/{domainID}` (e.g. `reject_threshold`, `greylist_enabled`) are gated inside the handler — the core domain CRUD route stays open to Free for ungated fields like `spam_threshold`. See [`internal/api/handle_domains.go`].
+Spam-list field-level extensions to `PATCH /domains/{domainID}` (`spam_threshold`, `reject_threshold`, `greylist_enabled`) are gated inside the handler; the core domain CRUD route stays open to Free for its ungated fields (`active`, `dkim_*`, `max_mailboxes`). Setting one of the three needs Pro; sending `null` clears the override back to the config.yaml default and is allowed on any tier. `spam_threshold` was ungated, and never applied, before v0.1.50. See [`internal/api/handle_domains.go`].
 
 ### Domain creation flow
 

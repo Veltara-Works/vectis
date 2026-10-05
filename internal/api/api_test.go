@@ -300,7 +300,7 @@ func TestDomainCRUD(t *testing.T) {
 	}
 
 	// Update
-	resp = env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, `{"spam_threshold":10.0}`)
+	resp = env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, `{"max_mailboxes":50}`)
 	if resp.StatusCode != 200 {
 		t.Fatalf("update domain: expected 200, got %d", resp.StatusCode)
 	}
@@ -1168,12 +1168,11 @@ func TestDomainUpdate_AdvancedSpamFields_FreeReturns403(t *testing.T) {
 	env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
 }
 
-// TestDomainUpdate_SpamThresholdStillUngated_Free200 is the regression
-// guard: spam_threshold (existing per-domain knob since v0.1.0) MUST keep
-// working on Free tier after the field-level Pro gate landed for
-// reject_threshold + greylist_enabled. If this test goes red, the gate is
-// over-broad and breaks an existing capability.
-func TestDomainUpdate_SpamThresholdStillUngated_Free200(t *testing.T) {
+// TestDomainUpdate_SpamThreshold_FreeGated: since v0.1.50 spam_threshold is
+// applied to Rspamd and is a Pro knob like reject_threshold (Ian, 2026-10-05).
+// Setting it on Free is refused; clearing it (null) stays allowed on any tier
+// so an install that drops back to Free can return a domain to the defaults.
+func TestDomainUpdate_SpamThreshold_FreeGated(t *testing.T) {
 	env := setupTestEnv(t)
 	deactivateLicense(t, env)
 	domainID := createDomainForTest(t, env, "spam-thr-free")
@@ -1184,18 +1183,52 @@ func TestDomainUpdate_SpamThresholdStillUngated_Free200(t *testing.T) {
 
 	resp := env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, `{"spam_threshold":10.0}`)
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != 403 {
 		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("Free-tier spam_threshold PATCH must remain 200; got %d (body: %s)", resp.StatusCode, raw)
+		t.Fatalf("Free-tier spam_threshold PATCH must be 403; got %d (body: %s)", resp.StatusCode, raw)
 	}
 
-	// Verify the value persisted.
-	resp = env.doRequest(t, "GET", "/api/v1/domains/"+domainID, "")
+	resp = env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, `{"spam_threshold":null,"reject_threshold":null}`)
 	defer resp.Body.Close()
-	body := parseBody(t, resp)
-	got := body["data"].(map[string]any)["spam_threshold"].(float64)
-	if got != 10.0 {
-		t.Errorf("spam_threshold not persisted: expected 10.0, got %v", got)
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("clearing overrides must be allowed on Free; got %d (body: %s)", resp.StatusCode, raw)
+	}
+
+	name := fmt.Sprintf("spam-thr-free-create-%d.example.com", time.Now().UnixNano())
+	resp = env.doRequest(t, "POST", "/api/v1/domains", fmt.Sprintf(`{"name":%q,"spam_threshold":6.0}`, name))
+	defer resp.Body.Close()
+	if resp.StatusCode != 403 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Free-tier create with spam_threshold must be 403; got %d (body: %s)", resp.StatusCode, raw)
+	}
+
+	// Cleanup.
+	deactivateLicense(t, env)
+	env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
+}
+
+// TestDomainUpdate_AdvancedSpamFields_ProWithoutEntitlement403: the per-domain
+// spam knobs check the advanced_spam entitlement itself, not the derived tier.
+// A licence with another Pro feature resolves to TierPro but must still be
+// refused (Copilot review on #246; reject_threshold and greylist_enabled had
+// the same gap since they shipped).
+func TestDomainUpdate_AdvancedSpamFields_ProWithoutEntitlement403(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+	domainID := createDomainForTest(t, env, "spam-no-entitlement")
+
+	mock := activateLicenseWithFeatures(t, env, "basic_mail", "custom_branding")
+	defer mock.Close()
+	defer deactivateLicense(t, env)
+
+	for _, body := range []string{`{"spam_threshold":6.0}`, `{"reject_threshold":14.5}`, `{"greylist_enabled":true}`} {
+		resp := env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, body)
+		defer resp.Body.Close()
+		if resp.StatusCode != 403 {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Errorf("PATCH %s with a Pro licence lacking advanced_spam: expected 403, got %d (body: %s)", body, resp.StatusCode, raw)
+		}
 	}
 
 	// Cleanup.
@@ -1230,6 +1263,49 @@ func TestDomainUpdate_AdvancedSpamFields_ProReturns200(t *testing.T) {
 	}
 	if got, _ := d["greylist_enabled"].(bool); !got {
 		t.Errorf("greylist_enabled not persisted: expected true, got %v", d["greylist_enabled"])
+	}
+
+	// spam_threshold is a Pro override too (v0.1.50).
+	resp = env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, `{"spam_threshold":5.5}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Pro PATCH spam_threshold: expected 200, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	resp = env.doRequest(t, "GET", "/api/v1/domains/"+domainID, "")
+	defer resp.Body.Close()
+	if got, _ := parseBody(t, resp)["data"].(map[string]any)["spam_threshold"].(float64); got != 5.5 {
+		t.Errorf("spam_threshold not persisted: expected 5.5, got %v", got)
+	}
+
+	// Out of range is a 400, not a failed write.
+	for _, bad := range []string{`{"spam_threshold":0}`, `{"spam_threshold":0.01}`, `{"reject_threshold":999.99}`} {
+		resp = env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, bad)
+		defer resp.Body.Close()
+		if resp.StatusCode != 400 {
+			t.Errorf("PATCH %s: expected 400, got %d", bad, resp.StatusCode)
+		}
+	}
+
+	// null clears an override back to the config.yaml default; an absent key
+	// leaves its override alone.
+	resp = env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, `{"spam_threshold":null,"reject_threshold":null}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Pro PATCH clearing overrides: expected 200, got %d (body: %s)", resp.StatusCode, raw)
+	}
+	resp = env.doRequest(t, "GET", "/api/v1/domains/"+domainID, "")
+	defer resp.Body.Close()
+	d = parseBody(t, resp)["data"].(map[string]any)
+	if _, ok := d["spam_threshold"]; ok {
+		t.Errorf("spam_threshold not cleared: %v", d["spam_threshold"])
+	}
+	if _, ok := d["reject_threshold"]; ok {
+		t.Errorf("reject_threshold not cleared: %v", d["reject_threshold"])
+	}
+	if got, _ := d["greylist_enabled"].(bool); !got {
+		t.Errorf("an absent greylist_enabled must be left alone, got %v", d["greylist_enabled"])
 	}
 
 	// Cleanup.

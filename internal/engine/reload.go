@@ -19,8 +19,8 @@ var reloadMatrix = map[string]struct {
 	service string
 	action  string
 }{
-	"postfix/main.cf":                    {service: "postfix", action: "reload"},
-	"postfix/master.cf":                  {service: "postfix", action: "restart"},
+	"postfix/main.cf":   {service: "postfix", action: "reload"},
+	"postfix/master.cf": {service: "postfix", action: "restart"},
 	// Adding/removing rules changes what the submission-cleanup service does;
 	// cleanup daemons are long-lived, so a reload is not enough to pick it up.
 	"postfix/submission_header_checks":   {service: "postfix", action: "restart"},
@@ -43,11 +43,11 @@ var reloadMatrix = map[string]struct {
 	"rspamd/classifier-bayes.conf": {service: "rspamd", action: "reload"},
 	// redis.conf decides which modules load at all, so it needs a restart;
 	// greylist.conf only toggles an already-registered module.
-	"rspamd/redis.conf":            {service: "rspamd", action: "restart"},
-	"rspamd/greylist.conf":         {service: "rspamd", action: "reload"},
-	"rspamd/dmarc.conf":            {service: "rspamd", action: "reload"},
-	"rspamd/antivirus.conf":        {service: "rspamd", action: "reload"},
-	"rspamd/worker-proxy.inc":      {service: "rspamd", action: "restart"},
+	"rspamd/redis.conf":       {service: "rspamd", action: "restart"},
+	"rspamd/greylist.conf":    {service: "rspamd", action: "reload"},
+	"rspamd/dmarc.conf":       {service: "rspamd", action: "reload"},
+	"rspamd/antivirus.conf":   {service: "rspamd", action: "reload"},
+	"rspamd/worker-proxy.inc": {service: "rspamd", action: "restart"},
 
 	// clamd reads its config at startup only — a profile change
 	// (MaxThreads, StreamMaxLength, etc.) requires a full restart.
