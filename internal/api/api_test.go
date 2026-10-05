@@ -1208,6 +1208,34 @@ func TestDomainUpdate_SpamThreshold_FreeGated(t *testing.T) {
 	env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
 }
 
+// TestDomainUpdate_AdvancedSpamFields_ProWithoutEntitlement403: the per-domain
+// spam knobs check the advanced_spam entitlement itself, not the derived tier.
+// A licence with another Pro feature resolves to TierPro but must still be
+// refused (Copilot review on #246; reject_threshold and greylist_enabled had
+// the same gap since they shipped).
+func TestDomainUpdate_AdvancedSpamFields_ProWithoutEntitlement403(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+	domainID := createDomainForTest(t, env, "spam-no-entitlement")
+
+	mock := activateLicenseWithFeatures(t, env, "basic_mail", "custom_branding")
+	defer mock.Close()
+	defer deactivateLicense(t, env)
+
+	for _, body := range []string{`{"spam_threshold":6.0}`, `{"reject_threshold":14.5}`, `{"greylist_enabled":true}`} {
+		resp := env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, body)
+		defer resp.Body.Close()
+		if resp.StatusCode != 403 {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Errorf("PATCH %s with a Pro licence lacking advanced_spam: expected 403, got %d (body: %s)", body, resp.StatusCode, raw)
+		}
+	}
+
+	// Cleanup.
+	deactivateLicense(t, env)
+	env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
+}
+
 func TestDomainUpdate_AdvancedSpamFields_ProReturns200(t *testing.T) {
 	env := setupTestEnv(t)
 	deactivateLicense(t, env)
@@ -1251,7 +1279,7 @@ func TestDomainUpdate_AdvancedSpamFields_ProReturns200(t *testing.T) {
 	}
 
 	// Out of range is a 400, not a failed write.
-	for _, bad := range []string{`{"spam_threshold":0}`, `{"reject_threshold":1000}`} {
+	for _, bad := range []string{`{"spam_threshold":0}`, `{"spam_threshold":0.01}`, `{"reject_threshold":999.99}`} {
 		resp = env.doRequest(t, "PATCH", "/api/v1/domains/"+domainID, bad)
 		defer resp.Body.Close()
 		if resp.StatusCode != 400 {

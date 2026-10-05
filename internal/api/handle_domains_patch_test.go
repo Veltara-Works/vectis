@@ -68,16 +68,25 @@ func TestUpdateDomainRequest_AbsentVsNull(t *testing.T) {
 	}
 }
 
-func TestValidSpamThreshold(t *testing.T) {
+// TestNormalizeThreshold: values are rounded to the one decimal place the
+// DECIMAL(4,1) column stores BEFORE the 0.1–999.9 range check, so what passes
+// validation is exactly what gets stored (Copilot review on #246).
+func TestNormalizeThreshold(t *testing.T) {
 	f := func(v float64) *float64 { return &v }
-	for _, ok := range []*float64{nil, f(0.1), f(6), f(999.9)} {
-		if !validSpamThreshold(ok) {
-			t.Errorf("%v should be valid", ok)
+	if got, ok := normalizeThreshold(nil); !ok || got != nil {
+		t.Errorf("nil must stay nil and be valid, got %v %v", got, ok)
+	}
+	for in, want := range map[float64]float64{6: 6, 0.1: 0.1, 6.26: 6.3, 0.06: 0.1, 999.9: 999.9, 999.94: 999.9} {
+		got, ok := normalizeThreshold(f(in))
+		if !ok || got == nil || *got != want {
+			t.Errorf("normalizeThreshold(%v) = %v %v, want %v", in, got, ok, want)
 		}
 	}
-	for _, bad := range []*float64{f(0), f(-1), f(1000)} {
-		if validSpamThreshold(bad) {
-			t.Errorf("%v must be refused", *bad)
+	// 0.01 would be stored as 0.0 (every message hits the action); 999.96
+	// rounds to 1000.0, which overflows the column.
+	for _, bad := range []float64{0, 0.01, 0.04, -1, 999.96, 999.99, 1000} {
+		if _, ok := normalizeThreshold(f(bad)); ok {
+			t.Errorf("normalizeThreshold(%v) must be refused", bad)
 		}
 	}
 }

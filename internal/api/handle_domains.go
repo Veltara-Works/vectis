@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -73,9 +74,30 @@ func (o optional[T]) MarshalJSON() ([]byte, error) { return json.Marshal(o.Value
 
 func (o optional[T]) clears() bool { return o.Set && o.Value == nil }
 
-// validSpamThreshold bounds a per-domain Rspamd threshold: positive, and within
-// the DECIMAL(4,1) column so an out-of-range value is a 400, not a failed write.
-func validSpamThreshold(v *float64) bool { return v == nil || (*v > 0 && *v < 1000) }
+// normalizeThreshold rounds a per-domain Rspamd threshold to the one decimal
+// place its DECIMAL(4,1) column stores, then requires 0.1–999.9. Rounding first
+// means what is validated is what gets stored: 0.01 would otherwise pass and be
+// stored as 0.0 (every message would hit the action), and 999.99 would round
+// to 1000.0 and fail the write. nil (no value) is valid and stays nil.
+func normalizeThreshold(v *float64) (*float64, bool) {
+	if v == nil {
+		return nil, true
+	}
+	r := math.Round(*v*10) / 10
+	if !(r >= 0.1 && r <= 999.9) { // also refuses NaN
+		return nil, false
+	}
+	return &r, true
+}
+
+const invalidThresholdMsg = "spam_threshold and reject_threshold must be between 0.1 and 999.9 (one decimal place)"
+
+// advancedSpamDenied reports whether the caller's licence lacks advanced_spam.
+// It checks that specific entitlement, as the spam-lists route gate does, not
+// the derived tier: any Pro feature (e.g. custom_branding) maps to TierPro.
+func (s *Server) advancedSpamDenied(r *http.Request) bool {
+	return !s.featureGate.HasFeature(r.Context(), validonx.FeatureAdvancedSpam)
+}
 
 // usesAdvancedSpamFields reports whether a create sets any Pro-gated
 // per-domain spam knob (spam_threshold, reject_threshold, greylist_enabled).
@@ -175,13 +197,15 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 	// Per pricing.astro Starter promise. Pro/Enterprise are uncapped here.
 	// Existing domains on a customer who downgrades Pro→Free are NOT
 	// retroactively deleted; this only blocks NEW domain creation past 3.
-	if !validSpamThreshold(req.SpamThreshold) || !validSpamThreshold(req.RejectThreshold) {
-		respondError(w, r, http.StatusBadRequest, "INVALID_THRESHOLD",
-			"spam_threshold and reject_threshold must be greater than 0 and less than 1000")
+	var spamOK, rejectOK bool
+	req.SpamThreshold, spamOK = normalizeThreshold(req.SpamThreshold)
+	req.RejectThreshold, rejectOK = normalizeThreshold(req.RejectThreshold)
+	if !spamOK || !rejectOK {
+		respondError(w, r, http.StatusBadRequest, "INVALID_THRESHOLD", invalidThresholdMsg)
 		return
 	}
 	tier, _ := s.featureGate.ResolveTier(r.Context())
-	if tier == validonx.TierFree && req.usesAdvancedSpamFields() {
+	if req.usesAdvancedSpamFields() && s.advancedSpamDenied(r) {
 		respondError(w, r, http.StatusForbidden, "FEATURE_NOT_AVAILABLE",
 			"spam_threshold, reject_threshold and greylist_enabled require a Pro license (advanced_spam)")
 		return
@@ -334,19 +358,21 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !validSpamThreshold(req.SpamThreshold.Value) || !validSpamThreshold(req.RejectThreshold.Value) {
-		respondError(w, r, http.StatusBadRequest, "INVALID_THRESHOLD",
-			"spam_threshold and reject_threshold must be greater than 0 and less than 1000")
+	var spamOK, rejectOK bool
+	req.SpamThreshold.Value, spamOK = normalizeThreshold(req.SpamThreshold.Value)
+	req.RejectThreshold.Value, rejectOK = normalizeThreshold(req.RejectThreshold.Value)
+	if !spamOK || !rejectOK {
+		respondError(w, r, http.StatusBadRequest, "INVALID_THRESHOLD", invalidThresholdMsg)
 		return
 	}
 
-	// Field-level Pro gate: reject the whole PATCH if a Free-tier caller
-	// tries to set spam_threshold, reject_threshold or greylist_enabled.
-	// Decision D1+D2 in plan proceed-with-advanced-spam-splendid-creek;
-	// spam_threshold gated since v0.1.50 (Ian, 2026-10-05).
+	// Field-level gate: reject the whole PATCH if a caller without the
+	// advanced_spam entitlement tries to set spam_threshold, reject_threshold
+	// or greylist_enabled. Decision D1+D2 in plan
+	// proceed-with-advanced-spam-splendid-creek; spam_threshold gated since
+	// v0.1.50 (Ian, 2026-10-05).
 	if req.setsAdvancedSpamFields() {
-		tier, _ := s.featureGate.ResolveTier(r.Context())
-		if tier == validonx.TierFree {
+		if s.advancedSpamDenied(r) {
 			respondError(w, r, http.StatusForbidden, "FEATURE_NOT_AVAILABLE",
 				"spam_threshold, reject_threshold and greylist_enabled require a Pro license (advanced_spam)")
 			return

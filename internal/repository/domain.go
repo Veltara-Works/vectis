@@ -20,7 +20,7 @@ type Domain struct {
 	DKIMEnabled        bool      `json:"dkim_enabled"`
 	DKIMSelector       string    `json:"dkim_selector"`
 	DKIMKeyPath        *string   `json:"dkim_key_path,omitempty"`
-	SpamThreshold      *float64  `json:"spam_threshold,omitempty"`
+	SpamThreshold      *float64  `json:"spam_threshold,omitempty"` // column spam_threshold_override (000024); nil = config.yaml
 	RejectThreshold    *float64  `json:"reject_threshold,omitempty"`
 	GreylistEnabled    *bool     `json:"greylist_enabled,omitempty"`
 	MaxMailboxes       *int      `json:"max_mailboxes,omitempty"`
@@ -96,7 +96,7 @@ func (r *DomainRepo) Create(ctx context.Context, input DomainCreate) (*Domain, e
 	d.UpdatedAt = now
 
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO domains (id, name, active, dkim_enabled, dkim_selector, spam_threshold, reject_threshold, greylist_enabled, max_mailboxes, verification_status, verification_token, created_at, updated_at)
+		`INSERT INTO domains (id, name, active, dkim_enabled, dkim_selector, spam_threshold_override, reject_threshold, greylist_enabled, max_mailboxes, verification_status, verification_token, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		d.ID, d.Name, d.Active, d.DKIMEnabled, d.DKIMSelector, d.SpamThreshold, d.RejectThreshold, d.GreylistEnabled, d.MaxMailboxes, d.VerificationStatus, d.VerificationToken, d.CreatedAt, d.UpdatedAt,
 	)
@@ -107,8 +107,11 @@ func (r *DomainRepo) Create(ctx context.Context, input DomainCreate) (*Domain, e
 }
 
 // domainCols is the standard column list for domain SELECT queries.
+// The legacy spam_threshold column is deliberately absent: it was never
+// applied, and only pre-v0.1.50 binaries still read it (dropped in a later
+// release). New rows get its 15.0 default for those readers.
 const domainCols = `id, name, active, dkim_enabled, dkim_selector, dkim_key_path,
-	spam_threshold, reject_threshold, greylist_enabled, max_mailboxes, verification_status, verification_token, created_at, updated_at`
+	spam_threshold_override, reject_threshold, greylist_enabled, max_mailboxes, verification_status, verification_token, created_at, updated_at`
 
 // scanDomain scans a row into a Domain struct matching domainCols order.
 func scanDomain(scan func(dest ...any) error) (*Domain, error) {
@@ -280,9 +283,9 @@ func (r *DomainRepo) Update(ctx context.Context, id string, input DomainUpdate) 
 	}
 	switch {
 	case input.ClearSpamThreshold:
-		setClauses = append(setClauses, "spam_threshold = NULL")
+		setClauses = append(setClauses, "spam_threshold_override = NULL")
 	case input.SpamThreshold != nil:
-		setClauses = append(setClauses, fmt.Sprintf("spam_threshold = $%d", argIdx))
+		setClauses = append(setClauses, fmt.Sprintf("spam_threshold_override = $%d", argIdx))
 		args = append(args, *input.SpamThreshold)
 		argIdx++
 	}

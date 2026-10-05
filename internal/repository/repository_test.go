@@ -394,6 +394,17 @@ func TestDomain_CRUD(t *testing.T) {
 	if got, err := repo.GetByID(ctx, d.ID); err != nil || got == nil || got.SpamThreshold != nil {
 		t.Fatalf("stored spam_threshold must be NULL by default: %v %+v", err, got)
 	}
+	// Expand/contract (000024): the override lives in spam_threshold_override,
+	// and new rows still give the legacy column its 15.0 default, so a
+	// pre-v0.1.50 API serving during an upgrade never reads a NULL.
+	var legacy float64
+	var override *float64
+	if err := testPool.QueryRow(ctx, `SELECT spam_threshold, spam_threshold_override FROM domains WHERE id = $1`, d.ID).Scan(&legacy, &override); err != nil {
+		t.Fatalf("read threshold columns: %v", err)
+	}
+	if legacy != 15.0 || override != nil {
+		t.Errorf("legacy spam_threshold = %v (want 15.0), override = %v (want NULL)", legacy, override)
+	}
 	if d.VerificationStatus != "pending" {
 		t.Errorf("initial verification_status = %q, want pending", d.VerificationStatus)
 	}
