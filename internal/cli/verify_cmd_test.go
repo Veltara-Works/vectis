@@ -31,6 +31,7 @@ type verifyFixture struct {
 	t       *testing.T
 	priv    ed25519.PrivateKey
 	files   map[string][]byte // path → body served with 200; absent → 404
+	status  map[string]int    // path → error status served instead of files
 	srv     *httptest.Server
 	binPath string
 	binSHA  string
@@ -45,8 +46,12 @@ func newVerifyFixture(t *testing.T) *verifyFixture {
 	}
 	t.Cleanup(releasesign.SetSigningKeyForTest(pub))
 
-	f := &verifyFixture{t: t, priv: priv, files: map[string][]byte{}}
+	f := &verifyFixture{t: t, priv: priv, files: map[string][]byte{}, status: map[string]int{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if code, ok := f.status[r.URL.Path]; ok {
+			w.WriteHeader(code)
+			return
+		}
 		b, ok := f.files[r.URL.Path]
 		if !ok {
 			http.NotFound(w, r)
@@ -202,6 +207,30 @@ func TestVerify_MissingSignatureFails(t *testing.T) {
 	}
 }
 
+func TestVerify_SignatureServerErrorIsUnverifiable(t *testing.T) {
+	for _, code := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		f := newVerifyFixture(t)
+		f.publish("/v0.1.50/release.json", f.manifest("v0.1.50", "stable"))
+		f.status["/v0.1.50/release.json.ed25519"] = code
+		if r := runVerify(f.env("v0.1.50")); r.Result != verifyResultUnverifiable {
+			t.Errorf("HTTP %d on the signature is an availability problem, not tampering; got %s %+v", code, r.Result, r.Checks)
+		}
+	}
+}
+
+func TestVerify_MissingCoreServiceFails(t *testing.T) {
+	f := newVerifyFixture(t)
+	f.publish("/v0.1.50/release.json", f.manifest("v0.1.50", "stable"))
+	delete(f.running, "vectis-postfix")
+	r := runVerify(f.env("v0.1.50"))
+	if r.Result != verifyResultFail || verifyCheckStatus(r, "image postfix") != "fail" {
+		t.Fatalf("a missing core container must fail, not be skipped; got %s %+v", r.Result, r.Checks)
+	}
+	if got := verifyCheckStatus(r, "image clamav"); got != "skip" {
+		t.Errorf("an undeployed optional service must still be skipped, got %s", got)
+	}
+}
+
 func TestVerify_PerVersionManifestNamingAnotherVersionFails(t *testing.T) {
 	f := newVerifyFixture(t)
 	f.publish("/v0.1.50/release.json", f.manifest("v0.1.49", "stable")) // validly signed, wrong version
@@ -283,6 +312,70 @@ func TestVerifyAlert(t *testing.T) {
 	}
 }
 
+// FAIL → unverifiable → PASS must still send the recovery email, and it must
+// go out once: the next pass after it is log-only.
+func TestVerifyAlert_RecoveryAcrossUnverifiable(t *testing.T) {
+	t0 := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	run := func(prev *verifyReport, result string, at time.Duration) *verifyReport {
+		r := &verifyReport{Version: "v0.1.50", Result: result, CheckedAt: t0.Add(at)}
+		carryFailState(r, prev)
+		return r
+	}
+	fail := run(nil, verifyResultFail, 0)
+	fail2 := run(fail, verifyResultFail, 6*time.Hour)
+	if fail2.FailingSince == nil || !fail2.FailingSince.Equal(t0) {
+		t.Fatalf("a repeated FAIL must keep the first failure time, got %v", fail2.FailingSince)
+	}
+	unv := run(fail2, verifyResultUnverifiable, 12*time.Hour)
+	if _, _, send := verifyAlert(unv, fail2, "mail"); send {
+		t.Error("an unverifiable run must not email")
+	}
+	if unv.FailingSince == nil {
+		t.Fatal("an unverifiable run must carry the unresolved FAIL forward")
+	}
+	pass := run(unv, verifyResultPass, 18*time.Hour)
+	subj, body, send := verifyAlert(pass, unv, "mail")
+	if !send || !strings.Contains(subj, "recovered") || !strings.Contains(body, "Failing since: 2026-10-05T00:00:00Z") {
+		t.Errorf("first pass after FAIL → unverifiable must send one recovery email; got send=%v subj=%q", send, subj)
+	}
+	if pass.FailingSince != nil {
+		t.Error("a clean pass must clear the marker")
+	}
+	if _, _, send := verifyAlert(run(pass, verifyResultPass, 24*time.Hour), pass, "mail"); send {
+		t.Error("the pass after a recovery must be log-only")
+	}
+}
+
+// A state file written before failing_since existed still counts as failing.
+func TestVerifyAlert_LegacyFailRecord(t *testing.T) {
+	legacy := &verifyReport{Version: "v0.1.50", Result: verifyResultFail, CheckedAt: time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)}
+	unv := &verifyReport{Version: "v0.1.50", Result: verifyResultUnverifiable}
+	carryFailState(unv, legacy)
+	if unv.FailingSince == nil || !unv.FailingSince.Equal(legacy.CheckedAt) {
+		t.Fatalf("a legacy FAIL record must seed the marker, got %v", unv.FailingSince)
+	}
+}
+
+func TestValidateAlertAddrs(t *testing.T) {
+	if err := validateAlertAddrs("", ""); err != nil {
+		t.Errorf("no alerting is valid: %v", err)
+	}
+	if err := validateAlertAddrs("ianholt@afxgroup.com.au", "noreply@vectismail.com"); err != nil {
+		t.Errorf("plain addresses must pass: %v", err)
+	}
+	if validateAlertAddrs("ianholt@afxgroup.com.au", "") == nil {
+		t.Error("--alert-to without --alert-from must be refused")
+	}
+	for _, bad := range []string{"a@example.com\r\nBcc: x@evil.example", "-oQ/tmp@example.com"} {
+		if validateAlertAddrs(bad, "noreply@vectismail.com") == nil {
+			t.Errorf("--alert-to %q must be refused", bad)
+		}
+		if validateAlertAddrs("ianholt@afxgroup.com.au", bad) == nil {
+			t.Errorf("--alert-from %q must be refused", bad)
+		}
+	}
+}
+
 func TestVerifyUnits(t *testing.T) {
 	svc, tmr := verifyUnits("/usr/local/bin/vectis", "ops@example.com", "vectis-verify@example.com")
 	if !strings.Contains(svc, "ExecStart=/usr/local/bin/vectis verify --scheduled --alert-to ops@example.com --alert-from vectis-verify@example.com") {
@@ -307,9 +400,9 @@ func TestEmailLike(t *testing.T) {
 			t.Errorf("%q should be accepted", ok)
 		}
 	}
-	for _, bad := range []string{"", "no-at-sign", "a b@example.com", "x@y; rm -rf /", `"q"@x.com`} {
+	for _, bad := range []string{"", "no-at-sign", "a b@example.com", "x@y; rm -rf /", `"q"@x.com`, "-f@example.com"} {
 		if emailLike.MatchString(bad) {
-			t.Errorf("%q must be rejected (it is written into a unit file)", bad)
+			t.Errorf("%q must be rejected (it is written into a unit file and passed to sendmail)", bad)
 		}
 	}
 }

@@ -53,6 +53,12 @@ const (
 
 var imageDigestFormat = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
+// optionalServices are the manifest-pinned services the compose template only
+// renders when enabled (webmail, a ClamAV profile, Let's Encrypt TLS). Every
+// other pinned service must be running: a missing core container is a FAIL,
+// and a service added to the manifest later is required unless listed here.
+var optionalServices = map[string]bool{"webmail": true, "clamav": true, "cert-extractor": true}
+
 type verifyCheck struct {
 	Name   string `json:"name"`
 	Status string `json:"status"` // pass | fail | skip | unknown
@@ -65,6 +71,10 @@ type verifyReport struct {
 	Result         string        `json:"result"`
 	CheckedAt      time.Time     `json:"checked_at"`
 	Checks         []verifyCheck `json:"checks"`
+	// FailingSince is when the current unresolved FAIL began. It is carried
+	// through unverifiable runs and cleared only by a clean pass, so
+	// FAIL → unverifiable → PASS still sends the recovery email.
+	FailingSince *time.Time `json:"failing_since,omitempty"`
 }
 
 func (r *verifyReport) add(name, status, detail string) {
@@ -140,8 +150,9 @@ func fetchVerifyManifest(env verifyEnv, ver string) (*orchestrator.ReleaseManife
 var errManifestNotFound = errors.New("manifest not found")
 
 // fetchSignedManifest GETs a manifest and its .ed25519 signature and verifies
-// the signature BEFORE decoding. Transport problems are unverifiable; a missing
-// or bad signature on a manifest that IS present is a verification failure.
+// the signature BEFORE decoding. Transport problems and non-404 errors (429,
+// 5xx, ...) are unverifiable; a missing (404) or bad signature on a manifest
+// that IS present is a verification failure.
 func fetchSignedManifest(client *http.Client, url string) (*orchestrator.ReleaseManifest, error) {
 	body, status, err := httpGetStatus(client, url, 64*1024)
 	if err != nil {
@@ -157,8 +168,11 @@ func fetchSignedManifest(client *http.Client, url string) (*orchestrator.Release
 	if err != nil {
 		return nil, fmt.Errorf("%w: fetch %s.ed25519: %v", errVerifyUnverifiable, url, err)
 	}
+	if sigStatus == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: %s is published but its signature is missing (HTTP 404)", errReleaseVerification, url)
+	}
 	if sigStatus != http.StatusOK {
-		return nil, fmt.Errorf("%w: %s is published but its signature is missing (HTTP %d)", errReleaseVerification, url, sigStatus)
+		return nil, fmt.Errorf("%w: fetch %s.ed25519: HTTP %d", errVerifyUnverifiable, url, sigStatus)
 	}
 	if err := releasesign.Verify(body, string(sig)); err != nil {
 		if errors.Is(err, releasesign.ErrNotConfigured) {
@@ -240,7 +254,12 @@ func runVerify(env verifyEnv) *verifyReport {
 			continue
 		}
 		if !ci.Present {
-			r.add(name, "skip", "not deployed on this box")
+			if optionalServices[svc] {
+				r.add(name, "skip", "not deployed on this box")
+			} else {
+				r.add(name, "fail", fmt.Sprintf("vectis-%s is missing: it is a core service, so every box must run it", svc))
+				fail = true
+			}
 			continue
 		}
 		repo := "ghcr.io/veltara-works/vectis-" + svc + "@"
@@ -405,20 +424,63 @@ func writeVerifyState(path string, r *verifyReport) error {
 
 // --- alerting ---
 
+// failingSince reports when prev's unresolved failure began, or nil. A record
+// written before FailingSince existed counts as failing if its result was FAIL.
+func failingSince(prev *verifyReport) *time.Time {
+	switch {
+	case prev == nil:
+		return nil
+	case prev.FailingSince != nil:
+		return prev.FailingSince
+	case prev.Result == verifyResultFail:
+		t := prev.CheckedAt
+		return &t
+	}
+	return nil
+}
+
+// carryFailState sets r.FailingSince from this run and the previous record. A
+// FAIL keeps the earliest unresolved failure time; an unverifiable run proves
+// nothing either way, so it carries the marker forward; a pass clears it.
+func carryFailState(r, prev *verifyReport) {
+	since := failingSince(prev)
+	switch r.Result {
+	case verifyResultFail:
+		if since == nil {
+			t := r.CheckedAt
+			since = &t
+		}
+		r.FailingSince = since
+	case verifyResultUnverifiable:
+		r.FailingSince = since
+	default:
+		r.FailingSince = nil
+	}
+}
+
 // verifyAlert decides whether this run warrants an email and composes it.
-// Email goes out on a FAIL, and once on recovery (first pass after a fail);
-// a clean pass or an unverifiable run is log-only (Ian, 2026-10-04).
+// Email goes out on a FAIL, and once on recovery (first pass after a fail,
+// even with unverifiable runs in between); a clean pass or an unverifiable
+// run is log-only (Ian, 2026-10-04).
 func verifyAlert(r, prev *verifyReport, host string) (subject, body string, send bool) {
+	since := failingSince(prev)
 	switch {
 	case r.Result == verifyResultFail:
 		subject = fmt.Sprintf("[vectis verify] FAIL on %s: box does not match published %s", host, r.Version)
-	case r.Result == verifyResultPass && prev != nil && prev.Result == verifyResultFail:
+		if r.FailingSince != nil {
+			since = r.FailingSince
+		}
+	case r.Result == verifyResultPass && since != nil:
 		subject = fmt.Sprintf("[vectis verify] recovered on %s: matches published %s again", host, r.Version)
 	default:
 		return "", "", false
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Host: %s\nVersion: %s\nResult: %s\nChecked: %s\nManifest: %s\n\n", host, r.Version, strings.ToUpper(r.Result), r.CheckedAt.Format(time.RFC3339), r.ManifestSource)
+	fmt.Fprintf(&b, "Host: %s\nVersion: %s\nResult: %s\nChecked: %s\nManifest: %s\n", host, r.Version, strings.ToUpper(r.Result), r.CheckedAt.Format(time.RFC3339), r.ManifestSource)
+	if since != nil {
+		fmt.Fprintf(&b, "Failing since: %s\n", since.Format(time.RFC3339))
+	}
+	b.WriteString("\n")
 	printVerifyReport(&b, r)
 	if r.Result == verifyResultFail {
 		b.WriteString("\nA FAIL means a running image or the installed vectis binary is not what was\npublished for this version, or the release manifest/signature did not verify.\nTreat it as a security alert: re-run `vectis verify` and investigate before\nanything else.\n")
@@ -447,7 +509,25 @@ const (
 	verifyTimerPath   = "/etc/systemd/system/vectis-verify.timer"
 )
 
-var emailLike = regexp.MustCompile(`^[^\s@"'\\]+@[^\s@"'\\]+$`)
+// emailLike accepts a plain address only: no whitespace (so no CR/LF header
+// injection), no quoting, and no leading "-" that sendmail would parse as an
+// option.
+var emailLike = regexp.MustCompile(`^[^\s@"'\\-][^\s@"'\\]*@[^\s@"'\\]+$`)
+
+// validateAlertAddrs checks --alert-to/--alert-from before they reach a unit
+// file, a mail header or sendmail's argv. Both `verify` and `install-timer`
+// call it.
+func validateAlertAddrs(alertTo, alertFrom string) error {
+	for _, a := range []string{alertTo, alertFrom} {
+		if a != "" && !emailLike.MatchString(a) {
+			return fmt.Errorf("%q is not a plain email address", a)
+		}
+	}
+	if alertTo != "" && alertFrom == "" {
+		return fmt.Errorf("--alert-from is required with --alert-to (use an address your mail domain is allowed to send as)")
+	}
+	return nil
+}
 
 // verifyUnits renders the systemd service + timer. The timer fires every 6h
 // (and 15 min after boot); `--scheduled` decides whether a run is actually due.
@@ -492,13 +572,8 @@ var verifyInstallTimerCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		alertTo, _ := cmd.Flags().GetString("alert-to")
 		alertFrom, _ := cmd.Flags().GetString("alert-from")
-		for _, a := range []string{alertTo, alertFrom} {
-			if a != "" && !emailLike.MatchString(a) {
-				return fmt.Errorf("%q is not a plain email address", a)
-			}
-		}
-		if alertTo != "" && alertFrom == "" {
-			return fmt.Errorf("--alert-from is required with --alert-to (use an address your mail domain is allowed to send as)")
+		if err := validateAlertAddrs(alertTo, alertFrom); err != nil {
+			return err
 		}
 		svc, tmr := verifyUnits(expectedBinaryPath, alertTo, alertFrom)
 		if err := os.WriteFile(verifyServicePath, []byte(svc), 0o644); err != nil {
@@ -539,6 +614,11 @@ func runVerifyCmd(cmd *cobra.Command, _ []string) error {
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 	scheduled, _ := cmd.Flags().GetBool("scheduled")
 	statePath, _ := cmd.Flags().GetString("state-file")
+	alertTo, _ := cmd.Flags().GetString("alert-to")
+	alertFrom, _ := cmd.Flags().GetString("alert-from")
+	if err := validateAlertAddrs(alertTo, alertFrom); err != nil {
+		return err
+	}
 
 	env := verifyEnv{
 		http:       &http.Client{Timeout: 30 * time.Second},
@@ -554,8 +634,6 @@ func runVerifyCmd(cmd *cobra.Command, _ []string) error {
 	}
 	out := cmd.OutOrStdout()
 
-	alertTo, _ := cmd.Flags().GetString("alert-to")
-	alertFrom, _ := cmd.Flags().GetString("alert-from")
 	prev, _ := env.readState(statePath) // missing/unreadable → nil
 
 	if scheduled {
@@ -569,6 +647,7 @@ func runVerifyCmd(cmd *cobra.Command, _ []string) error {
 	}
 
 	r := runVerify(env)
+	carryFailState(r, prev)
 
 	if err := env.writeState(statePath, r); err != nil && scheduled {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not record result in %s: %v\n", statePath, err)
