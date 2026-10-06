@@ -89,7 +89,9 @@ func (dm *DockerManager) PullImages(ctx context.Context, services []string) erro
 				mu.Lock()
 				errs = append(errs, fmt.Sprintf("%s: %v", service, err))
 				mu.Unlock()
+				return
 			}
+			dm.tagPinnedImage(pullCtx, service, images[service])
 		}(svc)
 	}
 
@@ -189,6 +191,43 @@ func (dm *DockerManager) pullImage(ctx context.Context, service string) error {
 
 	dm.logger.Info("image pulled", "service", service)
 	return nil
+}
+
+// pinnedTagRef splits a digest-pinned compose reference
+// "repo:tag@sha256:<hex>" into the digest reference to tag from
+// ("repo@sha256:<hex>") and the friendly tag to create ("repo:tag"). ok is
+// false when the reference has no digest or no tag. A registry port
+// ("host:5000/repo") is not mistaken for a tag: the tag must come after the
+// last "/".
+func pinnedTagRef(ref string) (src, dst string, ok bool) {
+	named, digest, found := strings.Cut(ref, "@")
+	if !found || !strings.HasPrefix(digest, "sha256:") {
+		return "", "", false
+	}
+	colon := strings.LastIndex(named, ":")
+	if colon <= strings.LastIndex(named, "/") {
+		return "", "", false
+	}
+	return named[:colon] + "@" + digest, named, true
+}
+
+// tagPinnedImage gives a freshly pulled, digest-pinned image its release tag.
+// When a reference carries a digest, `docker compose pull` fetches by digest
+// and ignores the tag, so without this every apply left the new images
+// untagged (`repo:<none>`). An untagged previous release is invisible to the
+// image GC's keep-logic, which puts the rollback target at risk (#247). A
+// failure only logs a warning: a missing tag must never fail an upgrade.
+func (dm *DockerManager) tagPinnedImage(ctx context.Context, service, ref string) {
+	src, dst, ok := pinnedTagRef(ref)
+	if !ok {
+		return
+	}
+	if out, err := exec.CommandContext(ctx, "docker", "tag", src, dst).CombinedOutput(); err != nil {
+		dm.logger.Warn("could not tag pulled image", "service", service, "image", dst,
+			"error", err, "output", strings.TrimSpace(string(out)))
+		return
+	}
+	dm.logger.Info("tagged pulled image", "service", service, "image", dst)
 }
 
 // PullImageRef pulls an explicit image reference (e.g. the target release's api
