@@ -515,6 +515,12 @@ services:
     image: ghcr.io/veltara-works/vectis-clamav:{{ .Version }}
     container_name: vectis-clamav
     restart: unless-stopped
+    # Docker's init (tini) as PID 1 reaps the `su … freshclam --daemon &`
+    # launcher the entrypoint backgrounds before exec'ing clamd. clamd is
+    # not an init and never reaps it, so without this every container start
+    # left one zombie `freshclam` behind (#248). tini also forwards
+    # SIGTERM to clamd.
+    init: true
     networks:
       - vectis-mail
     # Per-profile RAM ceiling (ADR-007). Compose `mem_limit` translates to

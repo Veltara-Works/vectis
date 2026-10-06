@@ -36,6 +36,31 @@ func TestIsLocalImageRef(t *testing.T) {
 	}
 }
 
+// TestPinnedTagRef covers #247: the digest-pinned compose reference is split
+// into the digest to tag from and the release tag to create; anything without
+// both a tag and a sha256 digest is left alone.
+func TestPinnedTagRef(t *testing.T) {
+	const d = "sha256:2e50e2e0e10fd103fdf50ea734ac13c1d2648870d17aa08c2919e942c5558265"
+	tests := []struct {
+		ref, src, dst string
+		ok            bool
+	}{
+		{"ghcr.io/veltara-works/vectis-api:v0.1.50@" + d, "ghcr.io/veltara-works/vectis-api@" + d, "ghcr.io/veltara-works/vectis-api:v0.1.50", true},
+		{"registry.example.com:5000/app:1.2@" + d, "registry.example.com:5000/app@" + d, "registry.example.com:5000/app:1.2", true},
+		{"registry.example.com:5000/app@" + d, "", "", false},       // port, no tag
+		{"ghcr.io/veltara-works/vectis-api@" + d, "", "", false},    // digest only
+		{"ghcr.io/veltara-works/vectis-api:v0.1.50", "", "", false}, // tag only
+		{"postgres:17-alpine@md5:abc", "", "", false},               // not sha256
+		{"", "", "", false},
+	}
+	for _, tc := range tests {
+		src, dst, ok := pinnedTagRef(tc.ref)
+		if src != tc.src || dst != tc.dst || ok != tc.ok {
+			t.Errorf("pinnedTagRef(%q) = (%q, %q, %v), want (%q, %q, %v)", tc.ref, src, dst, ok, tc.src, tc.dst, tc.ok)
+		}
+	}
+}
+
 // TestVectisProvenanceTargets covers the REL-3 Part B image selection: only
 // sha256-digested entries are verified, refs are the canonical vectis-* @digest
 // form, and the order is stable (sorted by service).
