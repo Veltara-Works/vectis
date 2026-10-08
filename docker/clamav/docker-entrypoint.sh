@@ -25,10 +25,16 @@ if [ ! -f /var/lib/clamav/main.cvd ] && [ ! -f /var/lib/clamav/main.cld ]; then
 fi
 
 # Periodic signature refresh (every 2h ≈ 12 checks/day, the freshclam
-# default). Daemon mode forks; we discard its pid because clamd exit
-# is what controls container lifetime.
+# default). Run the launcher in the FOREGROUND: `freshclam --daemon` forks
+# the daemon and its launcher exits on its own, so this shell reaps it
+# before the exec below. Backgrounding it (`&`) made clamd its parent after
+# the exec, and clamd never reaps children, so the launcher stayed a zombie
+# for the container's lifetime (#248). The daemon itself is orphaned onto
+# PID 1 (docker-init, via `init: true`), which reaps it if it ever exits.
 echo "[clamav-entrypoint] Starting freshclam in daemon mode..."
-su -s /bin/sh clamav -c "freshclam --daemon --no-warnings --checks=12" &
+if ! su -s /bin/sh clamav -c "freshclam --daemon --no-warnings --checks=12"; then
+    echo "[clamav-entrypoint] WARN: freshclam daemon failed to start; signatures will not auto-refresh" >&2
+fi
 
 echo "[clamav-entrypoint] Starting clamd..."
 exec "$@"
