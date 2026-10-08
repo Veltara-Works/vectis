@@ -1189,8 +1189,10 @@ func TestClamAVProfileRenders(t *testing.T) {
 		}
 	}
 
-	// #248: an init reaps the backgrounded freshclam launcher. Checked inside
-	// the clamav service block so another service's `init:` can't satisfy it.
+	// #248: an init is PID 1, adopting the orphaned freshclam daemon and
+	// forwarding signals to clamd (the entrypoint reaps the launcher itself).
+	// Checked inside the clamav service block so another service's `init:`
+	// can't satisfy it.
 	if m := regexp.MustCompile(`(?s)\n  clamav:\n(.*?)\n  [a-z][a-z-]*:\n`).FindStringSubmatch(compose); m == nil || !strings.Contains(m[1], "\n    init: true\n") {
 		t.Errorf("clamav service must set `init: true` (#248)")
 	}
