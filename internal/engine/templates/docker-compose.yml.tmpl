@@ -515,11 +515,11 @@ services:
     image: ghcr.io/veltara-works/vectis-clamav:{{ .Version }}
     container_name: vectis-clamav
     restart: unless-stopped
-    # Docker's init (tini) as PID 1 reaps the `su … freshclam --daemon &`
-    # launcher the entrypoint backgrounds before exec'ing clamd. clamd is
-    # not an init and never reaps it, so without this every container start
-    # left one zombie `freshclam` behind (#248). tini also forwards
-    # SIGTERM to clamd.
+    # Docker's init (tini) as PID 1: the `freshclam --daemon` process is
+    # orphaned onto it (the entrypoint reaps the short-lived launcher itself
+    # before exec'ing clamd, #248), so tini reaps the daemon if it ever
+    # exits, and it forwards SIGTERM to clamd. clamd is not an init and
+    # never reaps children.
     init: true
     networks:
       - vectis-mail
