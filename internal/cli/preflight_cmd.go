@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -56,6 +57,10 @@ func runPreflight(cmd *cobra.Command, args []string) error {
 
 	// Docker check
 	checks = append(checks, checkDocker())
+
+	// Existing secrets.yaml must not hold public dev/example credentials.
+	configDir, _ := cmd.Flags().GetString("config-dir")
+	checks = append(checks, checkSecretsDefaults(filepath.Join(configDir, "secrets.yaml")))
 
 	// Print results
 	for _, c := range checks {
