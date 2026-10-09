@@ -406,3 +406,26 @@ func TestEmailLike(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadPrevVerifyState_FallsBackToLegacyPathOnce(t *testing.T) {
+	legacy := &verifyReport{Version: "v0.1.51", Result: verifyResultFail}
+	current := &verifyReport{Version: "v0.1.52", Result: verifyResultPass}
+	files := map[string]*verifyReport{legacyVerifyStatePath: legacy}
+	read := func(p string) (*verifyReport, error) {
+		if r, ok := files[p]; ok {
+			return r, nil
+		}
+		return nil, os.ErrNotExist
+	}
+
+	if got := loadPrevVerifyState(read, verifyStatePath); got != legacy {
+		t.Fatalf("no record at the new path: got %+v, want the legacy record", got)
+	}
+	files[verifyStatePath] = current
+	if got := loadPrevVerifyState(read, verifyStatePath); got != current {
+		t.Fatalf("record at the new path must win: got %+v", got)
+	}
+	if got := loadPrevVerifyState(read, "/custom/state.json"); got != nil {
+		t.Fatalf("an explicit --state-file must not fall back to the legacy path: got %+v", got)
+	}
+}

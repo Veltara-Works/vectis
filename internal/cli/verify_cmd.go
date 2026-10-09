@@ -42,7 +42,15 @@ const (
 	verifyResultFail         = "fail"
 	verifyResultUnverifiable = "unverifiable"
 
-	verifyStatePath = "/var/lib/vectis/verify-last.json"
+	// verifyStatePath lives in its own directory because that directory is
+	// bind-mounted read-only into the api container, which shows the result
+	// on the admin dashboard. A directory mount, not a file mount: the state
+	// is replaced by rename, which a single-file bind mount would not follow.
+	// Keep in sync with api.defaultVerifyStatePath.
+	verifyStatePath = "/var/lib/vectis/verify/last.json"
+	// legacyVerifyStatePath is where v0.1.50 and v0.1.51 recorded the result.
+	// Read once as a fallback so an open failure keeps its failing_since.
+	legacyVerifyStatePath = "/var/lib/vectis/verify-last.json"
 
 	// Scheduling (Ian, 2026-10-04): every 6h for the first 48h after a deploy,
 	// then daily. The systemd timer fires every 6h; --scheduled decides whether
@@ -407,6 +415,17 @@ func readVerifyState(path string) (*verifyReport, error) {
 	return &r, nil
 }
 
+// loadPrevVerifyState reads the previous result, falling back once to the
+// pre-v0.1.52 location when the default path has no record yet, so an
+// unresolved failure keeps its failing_since across the move.
+func loadPrevVerifyState(read func(string) (*verifyReport, error), statePath string) *verifyReport {
+	prev, _ := read(statePath)
+	if prev == nil && statePath == verifyStatePath {
+		prev, _ = read(legacyVerifyStatePath)
+	}
+	return prev
+}
+
 func writeVerifyState(path string, r *verifyReport) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -634,7 +653,7 @@ func runVerifyCmd(cmd *cobra.Command, _ []string) error {
 	}
 	out := cmd.OutOrStdout()
 
-	prev, _ := env.readState(statePath) // missing/unreadable → nil
+	prev := loadPrevVerifyState(env.readState, statePath) // missing/unreadable → nil
 
 	if scheduled {
 		last := prev
@@ -649,8 +668,12 @@ func runVerifyCmd(cmd *cobra.Command, _ []string) error {
 	r := runVerify(env)
 	carryFailState(r, prev)
 
-	if err := env.writeState(statePath, r); err != nil && scheduled {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not record result in %s: %v\n", statePath, err)
+	if err := env.writeState(statePath, r); err != nil {
+		if scheduled {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not record result in %s: %v\n", statePath, err)
+		}
+	} else if statePath == verifyStatePath {
+		_ = os.Remove(legacyVerifyStatePath) // migrated; best-effort
 	}
 
 	if alertTo != "" {

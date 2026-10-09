@@ -48,6 +48,17 @@ async function request<T>(method: string, path: string, body?: unknown, headers?
   return json.data as T
 }
 
+// Last `vectis verify` result. status "never" = the timer hasn't recorded one;
+// "unreadable" = the record exists but couldn't be parsed.
+export interface VerifyStatus {
+  status: 'pass' | 'fail' | 'unverifiable' | 'never' | 'unreadable'
+  version?: string
+  checked_at?: string
+  failing_since?: string
+  failed_checks?: string[]
+  stale: boolean
+}
+
 export const api = {
   // Auth
   login: (email: string, password: string, totp_session?: string, totp_code?: string) =>
@@ -206,6 +217,10 @@ export const api = {
       return { data: json.data || [], meta: json.meta }
     })
   },
+
+  // Last `vectis verify` result recorded by the host timer (super_admin only).
+  verifyStatus: () =>
+    request<VerifyStatus>('GET', '/system/verify'),
 
   // Orchestrator
   orchestratorStatus: () =>

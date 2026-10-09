@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router'
-import { api } from '../api/client.ts'
+import { api, type VerifyStatus } from '../api/client.ts'
+import VerifyStatusCard from '../components/VerifyStatusCard.tsx'
 import { extractError } from '../lib/errors.ts'
 
 interface SetupProgress {
@@ -14,6 +15,7 @@ export default function DashboardPage() {
   const [health, setHealth] = useState<{ status: string; services: Record<string, { status: string; response_ms: number }> } | null>(null)
   const [domains, setDomains] = useState<Array<{ id: string; name: string; active: boolean; verification_status?: string }>>([])
   const [error, setError] = useState('')
+  const [verify, setVerify] = useState<VerifyStatus | null>(null)
   const [configApplying, setConfigApplying] = useState(false)
   const [configMessage, setConfigMessage] = useState('')
   const [setup, setSetup] = useState<SetupProgress>({ hasDomain: false, domainVerified: false, hasMailbox: false, loading: true })
@@ -35,6 +37,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setError('Failed to load health'))
+    // super_admin only: anyone else gets a 403 and the card simply isn't shown.
+    api.verifyStatus().then(setVerify).catch(() => {})
     api.listDomains().then(async (d) => {
       const allDomains = d || []
       setDomains(allDomains)
@@ -137,6 +141,8 @@ export default function DashboardPage() {
           {configApplying ? 'Applying...' : 'Reload Config'}
         </button>
       </div>
+
+      {verify && <VerifyStatusCard status={verify} />}
 
       {health && (
         <div className="card">

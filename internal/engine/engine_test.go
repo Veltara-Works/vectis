@@ -719,6 +719,30 @@ func TestLicenseCacheCompose_APIBindMount(t *testing.T) {
 	}
 }
 
+// The api service reads the host's last `vectis verify` result for the admin
+// dashboard. It must be the directory (the state is replaced by rename, which
+// a single-file bind would not follow), read-only, and on no other service.
+func TestVerifyStateCompose_APIBindMountReadOnly(t *testing.T) {
+	files, _ := Generate(testData())
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if compose == "" {
+		t.Fatal("docker-compose.yml not generated")
+	}
+	const mount = "- /var/lib/vectis/verify:/var/lib/vectis/verify:ro"
+	if !strings.Contains(serviceBlock(compose, "api"), mount) {
+		t.Errorf("api service must bind-mount the verify state directory read-only (%q)", mount)
+	}
+	if n := strings.Count(compose, "/var/lib/vectis/verify"); n != 2 {
+		t.Errorf("verify state directory should appear only in the api mount (host:container), found %d occurrences", n)
+	}
+}
+
 // serviceBlock returns the compose service block for `name`, ending at the
 // next top-level `  <name>:` line (or end of file). A service header is
 // exactly `  ` + word + `:` at the start of a line; continuation lines for

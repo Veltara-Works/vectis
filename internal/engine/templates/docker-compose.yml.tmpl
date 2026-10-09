@@ -96,6 +96,11 @@ services:
       # container's ephemeral layer and is lost on every cutover, leaving the
       # cache layer dead. See DefaultJWKSCachePath in internal/config/schema.go.
       - /var/vectis/license:/var/vectis/license
+      # Last `vectis verify` result (host timer, runs as root) for the admin
+      # dashboard's "last verified" line. Read-only, and the whole directory
+      # rather than the file: the state is replaced by rename, which a
+      # single-file bind mount would not follow (inode gotcha).
+      - /var/lib/vectis/verify:/var/lib/vectis/verify:ro
     depends_on:
       postgres:
         condition: service_healthy
