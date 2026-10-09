@@ -4,7 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import DashboardPage from './Dashboard'
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/client', async () => ({
+  ApiError: (await vi.importActual<typeof import('../api/client')>('../api/client')).ApiError,
   api: {
     health: vi.fn(),
     listDomains: vi.fn(),
@@ -15,7 +16,7 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 const mockApi = vi.mocked(api)
 
 const renderWithRouter = (ui: React.ReactElement) =>
@@ -29,7 +30,7 @@ beforeEach(() => {
   // so a plain idle response is fine — but the mock must exist or mount fails.
   mockApi.orchestratorStatus.mockResolvedValue({ state: 'idle' })
   // Non-super-admins get a 403 from /system/verify; that's the default here.
-  mockApi.verifyStatus.mockRejectedValue(new Error('forbidden'))
+  mockApi.verifyStatus.mockRejectedValue(new ApiError('FORBIDDEN', 'forbidden', 403))
 })
 
 describe('DashboardPage', () => {
@@ -42,6 +43,15 @@ describe('DashboardPage', () => {
     renderWithRouter(<DashboardPage />)
     await waitFor(() => expect(screen.getByText('Release integrity')).toBeInTheDocument())
     expect(screen.getByText('verified')).toBeInTheDocument()
+  })
+
+  it('shows an unavailable card (not nothing) when verify status fails for another reason', async () => {
+    mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
+    mockApi.listDomains.mockResolvedValue([])
+    mockApi.verifyStatus.mockRejectedValue(new ApiError('INTERNAL', 'boom', 500))
+    renderWithRouter(<DashboardPage />)
+    await waitFor(() => expect(screen.getByText('unavailable')).toBeInTheDocument())
+    expect(screen.getByText('Release integrity')).toBeInTheDocument()
   })
 
   it('hides the release-integrity card when verify status is forbidden', async () => {

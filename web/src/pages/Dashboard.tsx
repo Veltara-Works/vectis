@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router'
-import { api, type VerifyStatus } from '../api/client.ts'
+import { api, ApiError, type VerifyStatus } from '../api/client.ts'
 import VerifyStatusCard from '../components/VerifyStatusCard.tsx'
 import { extractError } from '../lib/errors.ts'
 
@@ -16,6 +16,7 @@ export default function DashboardPage() {
   const [domains, setDomains] = useState<Array<{ id: string; name: string; active: boolean; verification_status?: string }>>([])
   const [error, setError] = useState('')
   const [verify, setVerify] = useState<VerifyStatus | null>(null)
+  const [verifyLoadFailed, setVerifyLoadFailed] = useState(false)
   const [configApplying, setConfigApplying] = useState(false)
   const [configMessage, setConfigMessage] = useState('')
   const [setup, setSetup] = useState<SetupProgress>({ hasDomain: false, domainVerified: false, hasMailbox: false, loading: true })
@@ -37,8 +38,13 @@ export default function DashboardPage() {
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setError('Failed to load health'))
-    // super_admin only: anyone else gets a 403 and the card simply isn't shown.
-    api.verifyStatus().then(setVerify).catch(() => {})
+    // super_admin only: anyone else gets a 403 and the card simply isn't
+    // shown. Any other failure is surfaced, so a super_admin never loses
+    // this card silently to a network or server error.
+    api.verifyStatus().then(setVerify).catch((err: unknown) => {
+      if (err instanceof ApiError && err.status === 403) return
+      setVerifyLoadFailed(true)
+    })
     api.listDomains().then(async (d) => {
       const allDomains = d || []
       setDomains(allDomains)
@@ -143,6 +149,7 @@ export default function DashboardPage() {
       </div>
 
       {verify && <VerifyStatusCard status={verify} />}
+      {!verify && verifyLoadFailed && <VerifyStatusCard loadFailed />}
 
       {health && (
         <div className="card">

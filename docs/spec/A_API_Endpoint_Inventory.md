@@ -367,6 +367,7 @@ State transitions are documented in [Spec D — Orchestrator State Machine](D_Or
 | GET | /api/v1/logs/{service} | Service logs (tail / since / until / follow) | super |
 | GET | /api/v1/logs/search | Cross-service log search | super |
 | GET | /api/v1/metrics | System metrics snapshot (CPU / mem / disk / mail queue) | super |
+| GET | /api/v1/system/verify | Last `vectis verify` result recorded by the host timer (pass / fail / unverifiable / never / unreadable, plus `stale`); read from the read-only `/var/lib/vectis/verify` mount | super |
 
 ---
 

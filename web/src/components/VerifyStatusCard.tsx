@@ -38,8 +38,10 @@ export function describeVerify(v: VerifyStatus, now: number = Date.now()): Verif
   }
 }
 
-export default function VerifyStatusCard({ status }: { status: VerifyStatus }) {
-  const d = describeVerify(status)
+export default function VerifyStatusCard({ status, loadFailed }: { status?: VerifyStatus; loadFailed?: boolean }) {
+  const d: VerifyDescription = loadFailed || !status
+    ? { badge: 'badge-warning', label: 'unavailable', detail: 'Could not load the last verify result (network or server error). Check `vectis verify` on the host.' }
+    : describeVerify(status)
   return (
     <div className="card">
       <h3 className="mb-1">Release integrity</h3>
