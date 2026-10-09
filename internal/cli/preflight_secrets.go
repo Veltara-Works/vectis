@@ -19,6 +19,10 @@ import (
 // Postfix/Dovecot/Valkey passwords until 2026-10-04).
 var knownDefaultPrefixes = []string{"vectis_dev_", "CHANGE_ME"}
 
+// adminPasswordSentinel is the secrets.yaml value meaning "generate the
+// initial admin password at install time"; see defaultSecretFields.
+const adminPasswordSentinel = "CHANGE_ME_admin_password"
+
 // defaultSecretFields returns the yaml paths of credentials in s that still
 // hold a known public default. Only field names are returned, never values.
 func defaultSecretFields(s *config.VectisSecrets) []string {
@@ -38,6 +42,13 @@ func defaultSecretFields(s *config.VectisSecrets) []string {
 	}
 	var hits []string
 	for _, f := range fields {
+		// The installer deliberately leaves this exact sentinel in place:
+		// `vectis admin init` sees it, generates the admin password and
+		// prints it once (scripts/install.sh, admin_cmd.go). It is a marker,
+		// not a credential, and stays in every installed box's secrets.yaml.
+		if f.path == "api.admin_password" && f.value == adminPasswordSentinel {
+			continue
+		}
 		for _, p := range knownDefaultPrefixes {
 			if strings.HasPrefix(f.value, p) {
 				hits = append(hits, f.path)

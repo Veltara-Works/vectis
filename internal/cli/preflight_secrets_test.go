@@ -95,6 +95,22 @@ func TestCheckSecretsDefaults_UnparseableWarns(t *testing.T) {
 	}
 }
 
+// An installed box keeps the admin-password sentinel by design (admin init
+// generates the real password), so it must not fail preflight; any other
+// CHANGE_ME value, or a dev default, in that field still does.
+func TestCheckSecretsDefaults_AdminPasswordSentinelPasses(t *testing.T) {
+	body := strings.Replace(randomSecretsYAML,
+		"Gh2Jk5Lz8Xc1Vb4Nm7Qw0Er3Ty6Ui9Op", adminPasswordSentinel, 1)
+	if r := checkSecretsDefaults(writeSecrets(t, body)); r.Status != "pass" {
+		t.Fatalf("installer-shaped secrets with the admin sentinel: got %q (%s), want pass", r.Status, r.Message)
+	}
+	body = strings.Replace(randomSecretsYAML,
+		"Gh2Jk5Lz8Xc1Vb4Nm7Qw0Er3Ty6Ui9Op", "vectis_dev_admin", 1)
+	if r := checkSecretsDefaults(writeSecrets(t, body)); r.Status != "fail" || !strings.Contains(r.Message, "api.admin_password") {
+		t.Fatalf("dev default admin password: got %q (%s), want fail naming api.admin_password", r.Status, r.Message)
+	}
+}
+
 // The shipped example must keep tripping the check: if someone renames the
 // placeholders, preflight would silently stop catching an unedited copy.
 func TestCheckSecretsDefaults_ShippedExampleFails(t *testing.T) {
