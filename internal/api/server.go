@@ -56,6 +56,7 @@ type Server struct {
 	dkimBasePath       string
 	webDir             string
 	genDir             string // directory for generated config files
+	verifyStatePath    string // host `vectis verify` record (read-only mount); empty = default
 	callbackBaseURL    string // public base URL (OIDC/SAML callbacks, SCIM meta.location)
 	cfg                *config.VectisConfig
 	secrets            *config.VectisSecrets
@@ -1224,6 +1225,7 @@ func (s *Server) buildRouter() chi.Router {
 
 			// System — super_admin only.
 			r.With(requireSuperAdmin()).Get("/health/{service}", s.handleServiceHealth)
+			r.With(requireSuperAdmin()).Get("/system/verify", s.handleVerifyStatus)
 			r.With(requireSuperAdmin()).Get("/logs/{service}", s.handleServiceLogs)
 			r.With(requireSuperAdmin()).Get("/metrics", s.handleMetrics)
 			// Prometheus scrape endpoint — super_admin only (G-M2). External

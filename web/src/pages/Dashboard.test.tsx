@@ -4,17 +4,19 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import DashboardPage from './Dashboard'
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/client', async () => ({
+  ApiError: (await vi.importActual<typeof import('../api/client')>('../api/client')).ApiError,
   api: {
     health: vi.fn(),
     listDomains: vi.fn(),
     listMailboxes: vi.fn(),
     applyConfig: vi.fn(),
     orchestratorStatus: vi.fn(),
+    verifyStatus: vi.fn(),
   },
 }))
 
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 const mockApi = vi.mocked(api)
 
 const renderWithRouter = (ui: React.ReactElement) =>
@@ -27,9 +29,39 @@ beforeEach(() => {
   // rc36+ self-replace countdown banner. Tests aren't exercising that path,
   // so a plain idle response is fine — but the mock must exist or mount fails.
   mockApi.orchestratorStatus.mockResolvedValue({ state: 'idle' })
+  // Non-super-admins get a 403 from /system/verify; that's the default here.
+  mockApi.verifyStatus.mockRejectedValue(new ApiError('FORBIDDEN', 'forbidden', 403))
 })
 
 describe('DashboardPage', () => {
+  it('shows the release-integrity card for a super_admin', async () => {
+    mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
+    mockApi.listDomains.mockResolvedValue([])
+    mockApi.verifyStatus.mockResolvedValue({
+      status: 'pass', version: 'v0.1.52', checked_at: new Date().toISOString(), stale: false,
+    })
+    renderWithRouter(<DashboardPage />)
+    await waitFor(() => expect(screen.getByText('Release integrity')).toBeInTheDocument())
+    expect(screen.getByText('verified')).toBeInTheDocument()
+  })
+
+  it('shows an unavailable card (not nothing) when verify status fails for another reason', async () => {
+    mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
+    mockApi.listDomains.mockResolvedValue([])
+    mockApi.verifyStatus.mockRejectedValue(new ApiError('INTERNAL', 'boom', 500))
+    renderWithRouter(<DashboardPage />)
+    await waitFor(() => expect(screen.getByText('unavailable')).toBeInTheDocument())
+    expect(screen.getByText('Release integrity')).toBeInTheDocument()
+  })
+
+  it('hides the release-integrity card when verify status is forbidden', async () => {
+    mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
+    mockApi.listDomains.mockResolvedValue([])
+    renderWithRouter(<DashboardPage />)
+    await waitFor(() => expect(mockApi.verifyStatus).toHaveBeenCalled())
+    expect(screen.queryByText('Release integrity')).not.toBeInTheDocument()
+  })
+
   it('renders page title', () => {
     mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
     mockApi.listDomains.mockResolvedValue([])
