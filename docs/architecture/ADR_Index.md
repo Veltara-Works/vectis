@@ -164,3 +164,20 @@ These 25 decisions were made across six review rounds. They are binding for impl
 - **Context:** Developer is in Australia; low-latency dev sessions matter
 - **Decision:** Build and test on Sydney VPS; clone to Singapore for production
 - **Consequence:** PTR/DNS records will change on clone; deliverability tools will guide this
+
+---
+
+## Proposed (not ratified)
+
+Entries here are drafts under discussion. They are **not binding** until moved into the sections above.
+
+### ADR-026 (PROPOSED): Rspamd resolves through a bundled local recursive resolver
+- **Context:** Rspamd's DNSBL/URIBL/DNSWL lookups inherit the host resolver (Docker `127.0.0.11` → `systemd-resolved` → the VPS provider's shared resolver and/or `8.8.8.8`). Those blocklists refuse queries from shared and public resolvers. On both production boxes (2026-10-10, #258), URIBL refuses every query, and Spamhaus ZEN and DNSWL fail intermittently. Spam scoring silently loses its blocklist component on every default install, while rspamd stays healthy.
+- **Decision:** Ship `unbound` **inside the `vectis-rspamd` image** as a local, recursion-only resolver bound to `127.0.0.1:53`. The entrypoint starts it, waits until it answers, and supervises it, the same pattern as the ClamAV entrypoint. Rspamd uses it via a baked `override.d/options.inc`: `dns { nameserver = ["127.0.0.1:53"]; }`. Unbound sends queries from the box's own IP over `vectis-mail`, which already has internet access, so blocklists see a low-volume single sender within their free-use limits. Config key `rspamd.local_resolver` (default `true`) lets operators with their own recursive resolver turn it off.
+- **Consequence:** No new container, no new network, no new bind mount; the four-network model (ADR network invariant) and ADR-017's socket rules are unchanged. The rspamd image gains ~1 MB and a second supervised process. A resolver failure is a scoring failure, so the healthcheck must cover both processes. The DNS cache resets whenever rspamd restarts (acceptable at our volume). Installs above the blocklists' free limits still need a paid feed (a later option: Spamhaus DQS key).
+- **Alternatives considered:**
+  1. **Separate `unbound` container with `network_mode: service:rspamd`:** cleaner one-process-per-container, but adds a ninth image to sign, verify and pin, and couples its lifecycle to rspamd's network namespace in ways the orchestrator's recreate logic doesn't handle today.
+  2. **Separate `unbound` container on `vectis-mail` with a static IP:** needs fixed IPAM subnets on `vectis-mail`, which existing installs don't have. Changing a live network's subnet means recreating it, a risky migration.
+  3. **Host-level `unbound` installed by the installer:** moves mail-path state onto the host, outside the container and update model; not covered by `vectis verify` or the update pipeline.
+  4. **Spamhaus DQS key only:** fixes Spamhaus, not URIBL or DNSWL. Complementary, not a substitute.
+- **Status:** Proposed 2026-10-10. Tracking issue #258. Target v0.1.53.
