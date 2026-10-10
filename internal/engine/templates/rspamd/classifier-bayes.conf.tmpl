@@ -5,3 +5,9 @@ backend = "redis";
 servers = "valkey:6379";
 password = "{{ .Valkey.Password }}";
 autolearn = true;
+
+# Token expiry (bayes_expiry module, new_schema only — rspamd's default).
+# Without it autolearned tokens never expire and the Bayes DB grows without
+# bound in Valkey (#254). Significant tokens are made persistent, common ones
+# get 10 days, and the rest get this TTL (seconds): 100 days.
+expire = 8640000;
