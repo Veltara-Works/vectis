@@ -106,6 +106,19 @@ func diffAllFiles(genDir, configDir string, files []engine.GeneratedFile) ([]eng
 	return append(diffs, composeDiffs...), nil
 }
 
+// composeChanged reports whether the docker-compose.yml is among the diffs.
+// Compose-level settings (container environment, healthchecks, resource
+// limits, optional services) only take effect when the affected containers
+// are recreated, which apply's reload/restart actions do not do.
+func composeChanged(diffs []engine.FileDiff) bool {
+	for _, d := range diffs {
+		if d.RelPath == composeRelPath {
+			return true
+		}
+	}
+	return false
+}
+
 // writeAllFiles writes per-service configs to genDir and the docker-compose.yml
 // to BOTH genDir (back-compat for tools/readers that still look there) and
 // configDir (the canonical, LIVE compose the running stack actually uses).
@@ -646,6 +659,14 @@ func runApply(cmd *cobra.Command, args []string) error {
 			}
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "No files changed.")
+		}
+
+		if composeChanged(diffs) {
+			fmt.Fprintln(cmd.OutOrStdout())
+			fmt.Fprintln(cmd.OutOrStdout(), "Note: docker-compose.yml changed. Compose-level settings (for example")
+			fmt.Fprintln(cmd.OutOrStdout(), "rspamd.local_resolver, optional services, resource limits) take effect when")
+			fmt.Fprintln(cmd.OutOrStdout(), "the affected containers are recreated, e.g. by the next `vectis update apply`.")
+			fmt.Fprintln(cmd.OutOrStdout(), "Restarting or reloading a service does not apply them.")
 		}
 
 		if len(results) > 0 {

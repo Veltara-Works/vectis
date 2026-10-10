@@ -49,7 +49,9 @@ clamav:
 #                  container. Blocklists refuse shared/public resolvers, so
 #                  with the host's resolver those checks silently never score.
 #                  Default on; set false only if this host already runs its
-#                  own recursive resolver.
+#                  own recursive resolver. This is a container-level setting:
+#                  it takes effect when rspamd is recreated (e.g. the next
+#                  `vectis update apply`), not on `vectis config apply` alone.
 rspamd:
   spam_threshold: 6.0      # score >= this: tag as spam (X-Spam: Yes -> Junk).
                            # 6.0 is rspamd's own upstream default. This WAS 15.0,
