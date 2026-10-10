@@ -69,6 +69,20 @@ type RspamdConfig struct {
 	// Default ON: a nil pointer (key absent) means enabled. Set false to only
 	// score DMARC failures.
 	EnforceDMARC *bool `yaml:"enforce_dmarc"`
+	// LocalResolver runs a recursion-only unbound inside the rspamd container
+	// and points rspamd's DNS at it (ADR-026, #258). Blocklists (URIBL,
+	// Spamhaus, DNSWL) refuse queries that arrive via shared or public
+	// resolvers, which is what the host resolver usually is on a VPS, so
+	// without it those checks silently never score. Default ON: a nil pointer
+	// (key absent) means enabled. Set false if the host already runs its own
+	// recursive resolver and rspamd should use it.
+	LocalResolver *bool `yaml:"local_resolver"`
+}
+
+// LocalResolverEnabled reports whether rspamd should resolve through the
+// bundled local resolver. Absent (nil) means enabled.
+func (r RspamdConfig) LocalResolverEnabled() bool {
+	return r.LocalResolver == nil || *r.LocalResolver
 }
 
 // DMARCEnforced reports whether rspamd should enforce senders' DMARC

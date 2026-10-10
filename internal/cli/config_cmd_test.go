@@ -59,3 +59,20 @@ func TestWriteAllFiles_ComposeGoesToConfigDir(t *testing.T) {
 		t.Errorf("postfix/main.cf should NOT be written to configDir")
 	}
 }
+
+// TestComposeChanged: apply warns that compose-level settings need a container
+// recreate only when the docker-compose.yml itself changed (#261 review).
+func TestComposeChanged(t *testing.T) {
+	if composeChanged([]engine.FileDiff{{RelPath: "rspamd/actions.conf", Status: "modified"}}) {
+		t.Error("a per-service config diff alone must not report a compose change")
+	}
+	if !composeChanged([]engine.FileDiff{
+		{RelPath: "rspamd/actions.conf", Status: "modified"},
+		{RelPath: composeRelPath, Status: "modified"},
+	}) {
+		t.Error("a docker-compose.yml diff must report a compose change")
+	}
+	if composeChanged(nil) {
+		t.Error("no diffs must not report a compose change")
+	}
+}

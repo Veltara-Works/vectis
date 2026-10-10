@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
@@ -2147,6 +2149,61 @@ func TestRspamdDMARCEnforcement(t *testing.T) {
 	d.Rspamd.EnforceDMARC = &off
 	if got := get(d); strings.Contains(got, "actions {") {
 		t.Errorf("enforce_dmarc=false must not render dmarc actions; got:\n%s", got)
+	}
+}
+
+// TestRspamdLocalResolverCompose guards ADR-026 (#258): by default the rspamd
+// service tells its entrypoint to run the bundled resolver and its healthcheck
+// also requires that resolver to answer; rspamd.local_resolver=false renders
+// the plain /ping healthcheck and tells the entrypoint to skip it. Both
+// renderings must stay valid YAML (the healthcheck holds quoted shell).
+func TestRspamdLocalResolverCompose(t *testing.T) {
+	render := func(d *TemplateData) string {
+		files, err := Generate(d)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		for _, f := range files {
+			if f.RelPath == "docker-compose.yml" {
+				var doc map[string]any
+				if err := yaml.Unmarshal(f.Content, &doc); err != nil {
+					t.Fatalf("docker-compose.yml is not valid YAML: %v", err)
+				}
+				return serviceBlock(string(f.Content), "rspamd")
+			}
+		}
+		t.Fatal("docker-compose.yml not generated")
+		return ""
+	}
+
+	// testData() leaves Version empty, which renders `image: …:` with a bare
+	// trailing colon; real renders always carry a version, so give one here
+	// for the YAML parse.
+	withVersion := func() *TemplateData {
+		d := testData()
+		d.Version = "v0.0.0-test"
+		return d
+	}
+
+	on := render(withVersion()) // LocalResolver nil → on
+	for _, want := range []string{
+		"VECTIS_RSPAMD_LOCAL_RESOLVER=true",
+		`nslookup health.vectis.internal 127.0.0.1`,
+	} {
+		if !strings.Contains(on, want) {
+			t.Errorf("default (local_resolver absent) rspamd block missing %q:\n%s", want, on)
+		}
+	}
+
+	d := withVersion()
+	off := false
+	d.Rspamd.LocalResolver = &off
+	got := render(d)
+	if !strings.Contains(got, "VECTIS_RSPAMD_LOCAL_RESOLVER=false") {
+		t.Errorf("local_resolver=false must render the opt-out env; got:\n%s", got)
+	}
+	if strings.Contains(got, "nslookup") {
+		t.Errorf("local_resolver=false must not health-check the resolver; got:\n%s", got)
 	}
 }
 
