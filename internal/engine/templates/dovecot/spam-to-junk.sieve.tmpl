@@ -5,10 +5,12 @@ require ["fileinto", "mailbox"];
 # Files spam into Junk before any per-user sieve, so it never reaches INBOX,
 # then stops. The `stop` ends Sieve processing for the message, so a per-user
 # script never sees flagged mail and CANNOT move it back out of Junk. To keep a
-# wanted sender in INBOX, stop the flag being set in the first place: add the
-# sender or domain to the domain's spam allow list (Domains -> Spam lists in the
-# admin UI), which bypasses spam scoring. (An upstream X-Spam-Flag, below, is
-# still honoured.)
+# wanted sender in INBOX, add the sender or domain to the domain's spam allow
+# list (Domains -> Spam lists in the admin UI). That is a strong hint, not an
+# override: for a sender that passes SPF or DMARC it applies a large negative
+# score, which normally keeps the message under the spam threshold so our
+# X-Spam header is never set. A very high-scoring message can still be flagged,
+# and an upstream X-Spam-Flag (below) is still honoured.
 #
 # Matches two independent spam flags:
 #   - X-Spam: Yes       — set by our rspamd (milter_headers "spam-header") on
