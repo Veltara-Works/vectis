@@ -302,6 +302,13 @@ services:
     image: ghcr.io/veltara-works/vectis-rspamd:{{ .Version }}
     container_name: vectis-rspamd
     restart: unless-stopped
+    # ADR-026 (#258): the image bundles a recursion-only unbound on
+    # 127.0.0.1:53 for rspamd's DNS, so blocklist lookups come from this
+    # host's own IP (URIBL/Spamhaus/DNSWL refuse shared/public resolvers).
+    # The entrypoint starts and supervises it; "false" skips it and leaves
+    # rspamd on the host resolver (rspamd.local_resolver in config.yaml).
+    environment:
+      - VECTIS_RSPAMD_LOCAL_RESOLVER={{ if .Rspamd.LocalResolverEnabled }}true{{ else }}false{{ end }}
     networks:
       - vectis-mail
       - vectis-data
@@ -343,8 +350,16 @@ services:
     # its entire lifetime even though rspamd was fully functional. Fixed
     # rc29 after the rc28 walkthrough proved rspamd was actually running
     # 4 workers + passing configtest; only the healthcheck was broken.
+    # With the local resolver on (ADR-026), also require unbound to answer its
+    # own static health record: no upstream query, so an internet blip can't
+    # mark rspamd unhealthy, but a dead resolver (which would silently stop
+    # blocklist scoring) does.
     healthcheck:
+{{- if .Rspamd.LocalResolverEnabled }}
+      test: ["CMD-SHELL", "curl -sf http://localhost:11334/ping && nslookup health.vectis.internal 127.0.0.1 >/dev/null"]
+{{- else }}
       test: ["CMD", "curl", "-sf", "http://localhost:11334/ping"]
+{{- end }}
       interval: 5s
       timeout: 10s
       retries: 3
