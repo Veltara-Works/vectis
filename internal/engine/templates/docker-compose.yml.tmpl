@@ -698,8 +698,11 @@ services:
     mem_limit: {{ .Resources.ValkeyMemLimit }}
     entrypoint: ["sh", "-c"]
     # P7-H2: --maxmemory + allkeys-lru protect against credential-stuffing
-    # session-key floods and any other unbounded-write bug. All Vectis
-    # keys carry TTLs and tolerate LRU eviction. ValkeyMaxMemory sits at
+    # session-key floods and any other unbounded-write bug. Session,
+    # greylist and ratelimit keys carry TTLs; rspamd Bayes tokens expire
+    # through bayes_expiry (classifier-bayes.conf), except the significant
+    # ones it keeps on purpose. Everything here tolerates LRU eviction,
+    # which a volatile-* policy could not offer (#254). ValkeyMaxMemory sits at
     # ~50% of ValkeyMemLimit so valkey starts evicting before the cgroup
     # OOM-kills the process.
     command:

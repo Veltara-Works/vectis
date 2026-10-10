@@ -2004,6 +2004,26 @@ func TestRspamdGlobalRedisAndGreylist(t *testing.T) {
 	}
 }
 
+// TestRspamdBayesExpiry guards #254: without the classifier's expire setting
+// the bayes_expiry module stays off, autolearned tokens never get a TTL and
+// the Bayes DB grows in Valkey without bound.
+func TestRspamdBayesExpiry(t *testing.T) {
+	files, err := Generate(testData())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, f := range files {
+		if f.RelPath != "rspamd/classifier-bayes.conf" {
+			continue
+		}
+		if !strings.Contains(string(f.Content), "\nexpire = 8640000;") {
+			t.Errorf("classifier-bayes.conf must enable token expiry; got:\n%s", f.Content)
+		}
+		return
+	}
+	t.Fatal("rspamd/classifier-bayes.conf not generated")
+}
+
 // TestRspamdPerDomainGreylist covers the Pro per-domain override in both
 // directions. Copilot review on PR #243: a domain opting IN while the
 // system-wide default is off must load the module (and switch it off for every
