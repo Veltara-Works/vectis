@@ -181,6 +181,23 @@ type SpamListInfo struct {
 	Pattern    string
 }
 
+// SpamListInfosFrom converts the rows from repository.SpamListRepo.ListAll
+// into template data. Every renderer that can write the rspamd maps must set
+// TemplateData.SpamListEntries from the database; leaving it nil renders the
+// maps empty and silently switches the per-domain lists off (#281).
+func SpamListInfosFrom(entries []repository.SpamListJoined) []SpamListInfo {
+	out := make([]SpamListInfo, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, SpamListInfo{
+			DomainName: e.DomainName,
+			Kind:       e.Kind,
+			Scope:      e.Scope,
+			Pattern:    e.Pattern,
+		})
+	}
+	return out
+}
+
 // ResourceKnobs holds the resolved per-service mem_limit ceilings for
 // every container in the stack. The raw config.yaml exposes only
 // `resources.profile`; this struct turns that single string into the
