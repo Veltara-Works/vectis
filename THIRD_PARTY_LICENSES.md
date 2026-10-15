@@ -71,6 +71,18 @@ section for the analysis.
 > `cookie` and `set-cookie-parser` and adds `cookie-es` v3.1.1 — 7 packages down
 > to 5, still all MIT. Recompute the closure (not just the versions) whenever a
 > runtime dependency changes major.
+>
+> **Full regeneration 2026-10-16** for the v0.1.54 dependency batch (Go 1.26.9 SDK
+> GOROOT, `go-licenses` over `./...`, 40 packages): `golang-migrate` → v4.20.1,
+> `client_golang` ×2 rows → v1.25.0 (with `client_model` v0.6.3, `common` v0.72.0,
+> `procfs` v0.22.0), `x/crypto` → v0.58.0, `x/oauth2` → v0.37.0, `x/sys` → v0.49.0,
+> `x/sync` → v0.24.0, `x/text` → v0.43.0, `protobuf` → v1.36.12. The same run caught
+> four rows that had drifted since earlier bumps (`etree` v1.8.1, `go-oidc` v3.21.0,
+> `chi` v5.3.2, `valkey-go` v1.0.78), and `go.yaml.in/yaml/v2` is no longer linked
+> (`prometheus/common` v0.72 dropped it), so its row is gone. Licenses unchanged.
+> Category 2 recomputed from `web/package-lock.json` the same day: `react` +
+> `react-dom` → v19.3.1, `scheduler` → v0.28.0, `react-router` → v8.4.0, which adds
+> the runtime dependency `@remix-run/route-pattern` v0.22.1 (MIT): 6 packages, all MIT.
 
 ---
 
@@ -82,23 +94,23 @@ unused graph dependencies are excluded). A few modules vendor a second component
 under its own license file (e.g. `go-jose/json`, the Prometheus internal `gddo`
 fork) and are listed separately to reflect that.
 
-**Summary:** 41 entries — 15 MIT, 11 BSD-3-Clause, 13 Apache-2.0, 2 BSD-2-Clause.
+**Summary:** 40 entries — 15 MIT, 11 BSD-3-Clause, 12 Apache-2.0, 2 BSD-2-Clause.
 
 | Module / package | Version | License |
 |---|---|---|
-| `github.com/beevik/etree` | v1.7.0 | BSD-2-Clause |
+| `github.com/beevik/etree` | v1.8.1 | BSD-2-Clause |
 | `github.com/beorn7/perks/quantile` | v1.0.1 | MIT |
 | `github.com/boombuler/barcode` | 6c824513bacc | MIT |
 | `github.com/cespare/xxhash/v2` | v2.3.0 | MIT |
-| `github.com/coreos/go-oidc/v3/oidc` | v3.20.0 | Apache-2.0 |
+| `github.com/coreos/go-oidc/v3/oidc` | v3.21.0 | Apache-2.0 |
 | `github.com/crewjam/saml` | v0.5.1 | BSD-2-Clause |
 | `github.com/emersion/go-imap` | v1.2.1 | MIT |
 | `github.com/emersion/go-sasl` | b788ff22d5a6 | MIT |
-| `github.com/go-chi/chi/v5` | v5.3.1 | MIT |
+| `github.com/go-chi/chi/v5` | v5.3.2 | MIT |
 | `github.com/go-jose/go-jose/v4` | v4.1.4 | Apache-2.0 |
 | `github.com/go-jose/go-jose/v4/json` | v4.1.4 | BSD-3-Clause |
 | `github.com/golang-jwt/jwt/v4` | v4.5.2 | MIT |
-| `github.com/golang-migrate/migrate/v4` | v4.19.1 | MIT |
+| `github.com/golang-migrate/migrate/v4` | v4.20.1 | MIT |
 | `github.com/google/uuid` | v1.6.0 | BSD-3-Clause |
 | `github.com/jackc/pgerrcode` | 469b46aa5efa | MIT |
 | `github.com/jackc/pgpassfile` | v1.0.0 | MIT |
@@ -109,23 +121,22 @@ fork) and are listed separately to reflect that.
 | `github.com/mattermost/xml-roundtrip-validator` | v0.1.0 | Apache-2.0 |
 | `github.com/munnerz/goautoneg` | a7dc8b61c822 | BSD-3-Clause |
 | `github.com/pquerna/otp` | v1.5.0 | Apache-2.0 |
-| `github.com/prometheus/client_golang/internal/.../gddo/httputil` | v1.24.1 | BSD-3-Clause |
-| `github.com/prometheus/client_golang/prometheus` | v1.24.1 | Apache-2.0 |
-| `github.com/prometheus/client_model/go` | v0.6.2 | Apache-2.0 |
-| `github.com/prometheus/common` | v0.70.1 | Apache-2.0 |
-| `github.com/prometheus/procfs` | v0.21.1 | Apache-2.0 |
+| `github.com/prometheus/client_golang/internal/.../gddo/httputil` | v1.25.0 | BSD-3-Clause |
+| `github.com/prometheus/client_golang/prometheus` | v1.25.0 | Apache-2.0 |
+| `github.com/prometheus/client_model/go` | v0.6.3 | Apache-2.0 |
+| `github.com/prometheus/common` | v0.72.0 | Apache-2.0 |
+| `github.com/prometheus/procfs` | v0.22.0 | Apache-2.0 |
 | `github.com/robfig/cron/v3` | v3.0.1 | MIT |
 | `github.com/russellhaering/goxmldsig` | v1.6.0 | Apache-2.0 |
 | `github.com/spf13/cobra` | v1.10.2 | Apache-2.0 |
 | `github.com/spf13/pflag` | v1.0.9 | BSD-3-Clause |
-| `github.com/valkey-io/valkey-go` | v1.0.76 | Apache-2.0 |
-| `go.yaml.in/yaml/v2` | v2.4.4 | Apache-2.0 |
-| `golang.org/x/crypto` | v0.54.0 | BSD-3-Clause |
-| `golang.org/x/oauth2` | v0.36.0 | BSD-3-Clause |
-| `golang.org/x/sync/semaphore` | v0.22.0 | BSD-3-Clause |
-| `golang.org/x/sys` | v0.47.0 | BSD-3-Clause |
-| `golang.org/x/text` | v0.40.0 | BSD-3-Clause |
-| `google.golang.org/protobuf` | v1.36.11 | BSD-3-Clause |
+| `github.com/valkey-io/valkey-go` | v1.0.78 | Apache-2.0 |
+| `golang.org/x/crypto` | v0.58.0 | BSD-3-Clause |
+| `golang.org/x/oauth2` | v0.37.0 | BSD-3-Clause |
+| `golang.org/x/sync/semaphore` | v0.24.0 | BSD-3-Clause |
+| `golang.org/x/sys` | v0.49.0 | BSD-3-Clause |
+| `golang.org/x/text` | v0.43.0 | BSD-3-Clause |
+| `google.golang.org/protobuf` | v1.36.12 | BSD-3-Clause |
 | `gopkg.in/yaml.v3` | v3.0.1 | MIT |
 
 The Go standard library is part of the Go distribution itself and is licensed
@@ -140,14 +151,15 @@ static assets. Only the **runtime** dependencies end up in the shipped bundle;
 the build-time `devDependencies` (Vite, TypeScript, ESLint, etc.) are not
 distributed and are out of scope.
 
-**Summary:** 5 runtime packages — all MIT.
+**Summary:** 6 runtime packages — all MIT.
 
 | Package | Version | License |
 |---|---|---|
-| `react` | 19.2.8 | MIT |
-| `react-dom` | 19.2.8 | MIT |
-| `scheduler` | 0.27.0 | MIT |
-| `react-router` | 8.3.0 | MIT |
+| `react` | 19.3.1 | MIT |
+| `react-dom` | 19.3.1 | MIT |
+| `scheduler` | 0.28.0 | MIT |
+| `react-router` | 8.4.0 | MIT |
+| `@remix-run/route-pattern` | 0.22.1 | MIT |
 | `cookie-es` | 3.1.1 | MIT |
 
 ---
