@@ -5,8 +5,9 @@
 // config volumes are partial or stale.
 //
 // It mirrors cmd/orchestrator/main.go's SetConfigGenerator closure: load
-// config + secrets, query domains, call engine.NewTemplateData +
-// engine.Generate, write everything except docker-compose.yml.
+// config + secrets, query domains and the per-domain spam lists, call
+// engine.NewTemplateData + engine.Generate, write everything except
+// docker-compose.yml.
 package main
 
 import (
@@ -62,6 +63,13 @@ func main() {
 	}
 
 	data := engine.NewTemplateData(cfg, secrets, domains)
+	// The rspamd maps, settings.conf and rspamd.local.lua also render the
+	// per-domain spam lists; without them they come out empty (#281).
+	spamEntries, err := repository.NewSpamListRepo(pool).ListAll(ctx)
+	if err != nil {
+		log.Fatalf("list spam list entries: %v", err)
+	}
+	data.SpamListEntries = engine.SpamListInfosFrom(spamEntries)
 	files, err := engine.Generate(data)
 	if err != nil {
 		log.Fatalf("render templates: %v", err)

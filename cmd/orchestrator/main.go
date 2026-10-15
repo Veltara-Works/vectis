@@ -244,18 +244,15 @@ func run(logger *slog.Logger) error {
 	// captured cfg made Phase 3.5 render compose with the previous-startup
 	// profile value, so config-driven structural changes silently no-op'd.
 	domainRepo := repository.NewDomainRepo(dbPool)
+	spamListRepo := repository.NewSpamListRepo(dbPool)
 	orch.SetComposeGenerator(func(ctx context.Context, releaseTag string) ([]byte, error) {
 		freshCfg, freshSecrets, err := config.LoadAll(configDir)
 		if err != nil {
 			return nil, fmt.Errorf("reload config: %w", err)
 		}
-		domains, err := domainRepo.List(ctx, nil)
+		data, err := renderData(ctx, freshCfg, freshSecrets, domainRepo, spamListRepo, releaseTag)
 		if err != nil {
-			return nil, fmt.Errorf("list domains: %w", err)
-		}
-		data := engine.NewTemplateData(freshCfg, freshSecrets, domains)
-		if releaseTag != "" {
-			data.Version = releaseTag
+			return nil, err
 		}
 		files, err := engine.Generate(data)
 		if err != nil {
@@ -279,13 +276,9 @@ func run(logger *slog.Logger) error {
 		if err != nil {
 			return nil, fmt.Errorf("reload config: %w", err)
 		}
-		domains, err := domainRepo.List(ctx, nil)
+		data, err := renderData(ctx, freshCfg, freshSecrets, domainRepo, spamListRepo, releaseTag)
 		if err != nil {
-			return nil, fmt.Errorf("list domains: %w", err)
-		}
-		data := engine.NewTemplateData(freshCfg, freshSecrets, domains)
-		if releaseTag != "" {
-			data.Version = releaseTag
+			return nil, err
 		}
 		files, err := engine.Generate(data)
 		if err != nil {
