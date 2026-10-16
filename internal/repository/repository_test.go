@@ -1401,11 +1401,11 @@ func TestRBLCheck_CRUD(t *testing.T) {
 	ip := fmt.Sprintf("10.253.%d.%d", time.Now().Unix()%250, os.Getpid()%250)
 
 	response := "127.0.0.2"
-	id1, err := repo.Create(ctx, ip, "zen.spamhaus.org", true, &response)
+	id1, err := repo.Create(ctx, ip, "zen.spamhaus.org", repository.RBLStatusListed, &response)
 	if err != nil || id1 == "" {
 		t.Fatalf("create listed: %v", err)
 	}
-	id2, err := repo.Create(ctx, ip, "b.barracudacentral.org", false, nil)
+	id2, err := repo.Create(ctx, ip, "b.barracudacentral.org", repository.RBLStatusClean, nil)
 	if err != nil || id2 == "" {
 		t.Fatalf("create unlisted: %v", err)
 	}
@@ -1419,10 +1419,10 @@ func TestRBLCheck_CRUD(t *testing.T) {
 	}
 	var sawListed, sawUnlisted bool
 	for _, r := range latest {
-		if r.RBLName == "zen.spamhaus.org" && r.Listed {
+		if r.RBLName == "zen.spamhaus.org" && r.Listed && r.Status == repository.RBLStatusListed {
 			sawListed = true
 		}
-		if r.RBLName == "b.barracudacentral.org" && !r.Listed {
+		if r.RBLName == "b.barracudacentral.org" && !r.Listed && r.Status == repository.RBLStatusClean {
 			sawUnlisted = true
 		}
 	}

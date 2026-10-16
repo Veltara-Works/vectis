@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { api } from '../api/client.ts'
 import { extractError } from '../lib/errors.ts'
 import DomainSelect from '../components/DomainSelect.tsx'
+import BlocklistCard from '../components/BlocklistCard.tsx'
 
 interface Domain { id: string; name: string }
 interface Check { name: string; status: string; value?: string; hint?: string }
@@ -70,6 +71,8 @@ export default function DeliverabilityPage() {
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
+
+      <BlocklistCard />
 
       <div className="card">
         <div className="form-group">

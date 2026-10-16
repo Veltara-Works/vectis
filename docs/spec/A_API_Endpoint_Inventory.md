@@ -310,8 +310,8 @@ Behaviour at the gate:
 | GET | /api/v1/deliverability/warmup | List active IP-warmup schedules | super |
 | POST | /api/v1/deliverability/warmup | Create warmup schedule | super |
 | DELETE | /api/v1/deliverability/warmup/{warmupID} | Cancel warmup schedule | super |
-| GET | /api/v1/deliverability/rbl | Current RBL status (cached) | super |
-| POST | /api/v1/deliverability/rbl/check | Trigger fresh RBL check | super |
+| GET | /api/v1/deliverability/rbl | Latest RBL result per list for each server IP: `status` (listed / clean / unknown), `list_name`, `delist_url`, `listed_count`, `unknown_count`; `clean` only when every list answered and none lists the IP. `status: "no_ips_yet"` before the first run | super |
+| POST | /api/v1/deliverability/rbl/check | Run a check now; returns the results plus `listed` / `unknown` counts | super |
 | GET | /api/v1/deliverability/fbl | List feedback-loop reports | super |
 | POST | /api/v1/deliverability/fbl | Configure new FBL provider | super |
 

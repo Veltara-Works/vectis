@@ -3,9 +3,12 @@ import { render, screen, waitFor } from '@testing-library/react'
 import DeliverabilityPage from './Deliverability'
 
 vi.mock('../api/client', () => ({
+  ApiError: class ApiError extends Error {},
   api: {
     listDomains: vi.fn(),
     deliverability: vi.fn(),
+    rblStatus: vi.fn().mockResolvedValue({ ips: [] }),
+    rblCheckNow: vi.fn(),
   },
 }))
 

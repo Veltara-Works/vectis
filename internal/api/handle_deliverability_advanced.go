@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Veltara-Works/vectis/internal/mail"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
@@ -109,46 +110,69 @@ func (s *Server) handleDeleteWarmup(w http.ResponseWriter, r *http.Request) {
 
 // ── RBL Monitoring ─────────────────────────────────────────────────────
 
-// handleRBLStatus returns the latest RBL check results for all server IPs.
+// rblCheckView is an RBL check as the API returns it: the stored result plus
+// the list's display name and delisting page.
+type rblCheckView struct {
+	repository.RBLCheck
+	ListName  string `json:"list_name"`
+	DelistURL string `json:"delist_url,omitempty"`
+}
+
+func viewRBLChecks(checks []repository.RBLCheck) (views []rblCheckView, listed, unknown int) {
+	for _, c := range checks {
+		v := rblCheckView{RBLCheck: c, ListName: c.RBLName}
+		if l, ok := mail.BlocklistByZone(c.RBLName); ok {
+			v.ListName, v.DelistURL = l.Name, l.DelistURL
+		}
+		switch c.Status {
+		case repository.RBLStatusListed:
+			listed++
+		case repository.RBLStatusUnknown:
+			unknown++
+		}
+		views = append(views, v)
+	}
+	return views, listed, unknown
+}
+
+// handleRBLStatus returns the latest RBL check results for the server's IPs.
+// clean is true only when every list answered and none lists the IP; an
+// unknown result is never reported as clean.
 func (s *Server) handleRBLStatus(w http.ResponseWriter, r *http.Request) {
 	type rblIPStatus struct {
-		IPAddress string                `json:"ip_address"`
-		Checks    []repository.RBLCheck `json:"checks"`
-		Listed    int                   `json:"listed_count"`
-		Clean     bool                  `json:"clean"`
+		IPAddress string         `json:"ip_address"`
+		Checks    []rblCheckView `json:"checks"`
+		Listed    int            `json:"listed_count"`
+		Unknown   int            `json:"unknown_count"`
+		Clean     bool           `json:"clean"`
 	}
 
-	// Get unique IPs from warmup or configured IPs.
 	var ips []string
 	if s.rblMonitor != nil {
 		ips = s.rblMonitor.IPs()
 	}
 	if len(ips) == 0 {
 		respond(w, r, http.StatusOK, map[string]any{
-			"status": "no_ips_configured",
+			"status": "no_ips_yet",
 			"ips":    []any{},
 		})
 		return
 	}
 
-	var statuses []rblIPStatus
+	statuses := []rblIPStatus{}
 	for _, ipAddr := range ips {
 		checks, err := s.rblChecks.GetLatestByIP(r.Context(), ipAddr)
 		if err != nil {
 			s.logger.Error("get rbl status failed", "error", err, "ip", ipAddr)
 			continue
 		}
-		listedCount := 0
-		for _, c := range checks {
-			if c.Listed {
-				listedCount++
-			}
-		}
+		views, listed, unknown := viewRBLChecks(checks)
 		statuses = append(statuses, rblIPStatus{
 			IPAddress: ipAddr,
-			Checks:    checks,
-			Listed:    listedCount,
-			Clean:     listedCount == 0,
+			Checks:    views,
+			Listed:    listed,
+			Unknown:   unknown,
+			Clean:     len(views) > 0 && listed == 0 && unknown == 0,
 		})
 	}
 
@@ -166,24 +190,18 @@ func (s *Server) handleRBLCheckNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := s.rblMonitor.CheckNow(r.Context())
-
-	listedCount := 0
-	for _, c := range results {
-		if c.Listed {
-			listedCount++
-		}
-	}
+	views, listed, unknown := viewRBLChecks(s.rblMonitor.CheckNow(r.Context()))
 
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "rbl.check", "system", nil,
-		map[string]any{"checks": len(results), "listed": listedCount}, &ip)
+		map[string]any{"checks": len(views), "listed": listed, "unknown": unknown}, &ip)
 
 	respond(w, r, http.StatusOK, map[string]any{
-		"checks": results,
-		"total":  len(results),
-		"listed": listedCount,
+		"checks":  views,
+		"total":   len(views),
+		"listed":  listed,
+		"unknown": unknown,
 	})
 }
 

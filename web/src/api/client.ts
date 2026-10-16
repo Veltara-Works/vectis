@@ -59,6 +59,32 @@ export interface VerifyStatus {
   stale: boolean
 }
 
+// Outbound RBL monitoring: the server's sending IPs checked against DNS
+// blocklists (super_admin only). "unknown" = the list refused the query, the
+// lookup failed, or the list failed its own test address; never "clean".
+export interface RBLCheck {
+  rbl_name: string
+  list_name: string
+  delist_url?: string
+  status: 'listed' | 'clean' | 'unknown'
+  response?: string
+  checked_at: string
+}
+
+export interface RBLIPStatus {
+  ip_address: string
+  checks: RBLCheck[]
+  listed_count: number
+  unknown_count: number
+  clean: boolean
+}
+
+export interface RBLStatusResponse {
+  status?: 'no_ips_yet'
+  checked_at?: string
+  ips: RBLIPStatus[]
+}
+
 export const api = {
   // Auth
   login: (email: string, password: string, totp_session?: string, totp_code?: string) =>
@@ -217,6 +243,10 @@ export const api = {
       return { data: json.data || [], meta: json.meta }
     })
   },
+
+  // Outbound RBL monitoring (super_admin only).
+  rblStatus: () => request<RBLStatusResponse>('GET', '/deliverability/rbl'),
+  rblCheckNow: () => request<{ total: number; listed: number; unknown: number }>('POST', '/deliverability/rbl/check'),
 
   // Last `vectis verify` result recorded by the host timer (super_admin only).
   verifyStatus: () =>
