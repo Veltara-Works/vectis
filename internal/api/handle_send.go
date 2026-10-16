@@ -50,9 +50,9 @@ type sendVariant struct {
 // handler (code/error fields) can consume. A zero code means success.
 type sendOutcome struct {
 	messageID  string
-	httpStatus int    // 200 on success; the appropriate 4xx/5xx on failure
-	code       string // error code, "" on success
-	message    string // human-readable error, "" on success
+	httpStatus int           // 200 on success; the appropriate 4xx/5xx on failure
+	code       string        // error code, "" on success
+	message    string        // human-readable error, "" on success
 	retryAfter time.Duration // > 0: when the caller may retry (sent as Retry-After)
 }
 
