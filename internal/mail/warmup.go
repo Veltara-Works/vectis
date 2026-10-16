@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -13,6 +12,10 @@ import (
 // WarmupDays is the length of the warmup schedule. The warmup completes (and
 // stops limiting) when the day after the last one begins.
 const WarmupDays = 30
+
+// warmupPassTimeout bounds a background schedule pass, so a stalled database
+// can't hold the rollover lock indefinitely.
+const warmupPassTimeout = 30 * time.Second
 
 // warmupReleaseTimeout bounds giving a reservation back. It is best-effort,
 // and runs while an HTTP error response or an SMTP DATA decision waits.
@@ -43,7 +46,10 @@ type WarmupManager struct {
 	now      func() time.Time
 	stopCh   chan struct{}
 
-	advanceMu sync.Mutex // serialises advanceSchedules (ticker and Reserve)
+	// advanceLock serialises advanceSchedules (the loop and Reserve). It is a
+	// one-slot channel rather than a mutex so a caller can stop waiting when
+	// its context ends.
+	advanceLock chan struct{}
 }
 
 // NewWarmupManager creates a new warmup manager.
@@ -55,6 +61,8 @@ func NewWarmupManager(repo warmupStore, logger *slog.Logger) *WarmupManager {
 		release:  warmupReleaseTimeout,
 		now:      func() time.Time { return time.Now().UTC() },
 		stopCh:   make(chan struct{}),
+
+		advanceLock: make(chan struct{}, 1),
 	}
 }
 
@@ -104,7 +112,7 @@ func decisionFrom(e *repository.IPWarmup, allowed bool) WarmupDecision {
 func (m *WarmupManager) Start() {
 	m.logger.Info("starting IP warmup manager", "interval", m.interval)
 	go func() {
-		_ = m.advanceSchedules(context.Background()) // logged inside
+		m.backgroundPass()
 
 		ticker := time.NewTicker(m.interval)
 		defer ticker.Stop()
@@ -113,10 +121,18 @@ func (m *WarmupManager) Start() {
 			case <-m.stopCh:
 				return
 			case <-ticker.C:
-				_ = m.advanceSchedules(context.Background())
+				m.backgroundPass()
 			}
 		}
 	}()
+}
+
+// backgroundPass runs one schedule pass under its own deadline. Errors are
+// logged inside advanceSchedules.
+func (m *WarmupManager) backgroundPass() {
+	ctx, cancel := context.WithTimeout(context.Background(), warmupPassTimeout)
+	defer cancel()
+	_ = m.advanceSchedules(ctx)
 }
 
 // Stop signals the warmup manager to stop.
@@ -188,8 +204,12 @@ func (m *WarmupManager) Release(ctx context.Context, d WarmupDecision, n int) {
 // ramp only speeds up on days the server actually sent. The reset stays at the
 // same time of day. Failures are logged, and the first is returned.
 func (m *WarmupManager) advanceSchedules(ctx context.Context) error {
-	m.advanceMu.Lock()
-	defer m.advanceMu.Unlock()
+	select {
+	case m.advanceLock <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err() // another pass holds the lock; Reserve fails open
+	}
+	defer func() { <-m.advanceLock }()
 
 	entries, err := m.repo.List(ctx)
 	if err != nil {

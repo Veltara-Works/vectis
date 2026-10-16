@@ -391,3 +391,27 @@ func TestWarmupReleaseIsBounded(t *testing.T) {
 		t.Errorf("Release took %v against a hung store, want about %v", took, m.release)
 	}
 }
+
+// Copilot #288 review 7, previously missed: a send waiting for the rollover
+// lock honours its own deadline, failing open, instead of hanging behind a
+// stalled background pass.
+func TestWarmupReserveDoesNotHangBehindAStalledRollover(t *testing.T) {
+	full := dayOne()
+	full.DailySent = 50
+	m, _, now := newTestWarmup(full)
+	*now = warmupT0.Add(24*time.Hour + time.Second) // the day is due to roll over
+
+	m.advanceLock <- struct{}{} // a background pass holds the lock and is stuck
+	defer func() { <-m.advanceLock }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	d, err := m.Reserve(ctx, 1)
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("Reserve waited %v behind a stalled rollover, want about 50ms", took)
+	}
+	if err == nil || !d.Allowed {
+		t.Errorf("Reserve behind a stalled rollover = %+v, %v; want allowed (fail open) with the context error", d, err)
+	}
+}
