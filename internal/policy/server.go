@@ -325,9 +325,12 @@ func (s *Server) evaluate(ctx context.Context, attrs map[string]string) string {
 	}
 	if !found {
 		// Authenticated as something with no matching mailbox (alias-only login,
-		// Dovecot master user, or a race with deletion). Don't block.
+		// Dovecot master user, or a race with deletion). There's no mailbox to
+		// suspend or rate-limit, but the warmup limit is server-wide and still
+		// applies.
 		s.logger.Debug("policy: login resolved to no mailbox", "login", login)
-		return actionOK
+		action, _ := s.reserveWarmup(ctx, attrs, key)
+		return action
 	}
 
 	suspended, reason, err := s.backend.IsMailboxSuspended(ctx, mailboxID)

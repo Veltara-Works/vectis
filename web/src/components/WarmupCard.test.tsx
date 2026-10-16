@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
-import WarmupCard, { usage } from './WarmupCard'
+import WarmupCard, { usage, WARMUP_POLL_MS } from './WarmupCard'
 import type { WarmupEntry } from '../api/client'
 
 vi.mock('../api/client', async () => ({
@@ -12,6 +12,7 @@ import { api, ApiError } from '../api/client'
 const mockApi = vi.mocked(api)
 
 beforeEach(() => vi.clearAllMocks())
+afterEach(() => vi.useRealTimers())
 
 const entry = (over: Partial<WarmupEntry> = {}): WarmupEntry => ({
   id: 'w1', ip_address: '203.0.113.7', warmup_started: '2026-10-14T06:00:00Z', warmup_day: 3, days_total: 30,
@@ -66,6 +67,26 @@ describe('WarmupCard', () => {
     mockApi.warmupList.mockResolvedValue([entry({ active: false, warmup_day: 30 })])
     render(<WarmupCard />)
     await waitFor(() => expect(screen.getByText(/warmup complete/)).toBeInTheDocument())
+  })
+
+  it('refreshes while shown, and stops when unmounted', async () => {
+    vi.useFakeTimers()
+    mockApi.warmupList.mockResolvedValue([entry()])
+    const { unmount } = render(<WarmupCard />)
+    expect(mockApi.warmupList).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(WARMUP_POLL_MS)
+    expect(mockApi.warmupList).toHaveBeenCalledTimes(2)
+    unmount()
+    await vi.advanceTimersByTimeAsync(WARMUP_POLL_MS * 3)
+    expect(mockApi.warmupList).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops refreshing once access is denied', async () => {
+    vi.useFakeTimers()
+    mockApi.warmupList.mockRejectedValue(new ApiError('FORBIDDEN', 'forbidden', 403))
+    render(<WarmupCard />)
+    await vi.advanceTimersByTimeAsync(WARMUP_POLL_MS * 3)
+    expect(mockApi.warmupList).toHaveBeenCalledTimes(1)
   })
 
   it('is hidden for admins without access', async () => {

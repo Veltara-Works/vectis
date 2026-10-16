@@ -1,9 +1,12 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api, ApiError, type WarmupEntry } from '../api/client.ts'
 import { extractError } from '../lib/errors.ts'
 
 // WARMUP_DAYS matches mail.WarmupDays in the API.
 const WARMUP_DAYS = 30
+
+// WARMUP_POLL_MS is how often the card refreshes while shown.
+export const WARMUP_POLL_MS = 60_000
 
 // formatReset shows when today's count resets, in the viewer's local time.
 export function formatReset(iso: string): string {
@@ -31,13 +34,21 @@ export default function WarmupCard() {
   const [ip, setIP] = useState('')
   const [label, setLabel] = useState('')
 
+  const poll = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+
   const load = () =>
     api.warmupList().then(d => { setEntries(d ?? []); setError('') }).catch((err: unknown) => {
-      if (err instanceof ApiError && err.status === 403) { setHidden(true); return }
+      if (err instanceof ApiError && err.status === 403) { clearInterval(poll.current); setHidden(true); return }
       setError(extractError(err, 'Could not load IP warmup'))
     })
 
-  useEffect(() => { load() }, [])
+  // Poll while the card is shown, so today's count, the daily reset and
+  // completion stay current. Stops on unmount, and once access is denied.
+  useEffect(() => {
+    load()
+    poll.current = setInterval(load, WARMUP_POLL_MS)
+    return () => clearInterval(poll.current)
+  }, [])
 
   const start = (ev: FormEvent) => {
     ev.preventDefault()

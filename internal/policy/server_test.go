@@ -468,6 +468,22 @@ func TestWarmupDeferralsDontChargeTheRateLimit(t *testing.T) {
 	}
 }
 
+// Copilot #288 review 5: a login with no mailbox (deleted mid-session, alias
+// login, master user) skips the mailbox checks but not the server-wide warmup.
+func TestWarmupAppliesWhenTheLoginHasNoMailbox(t *testing.T) {
+	fb := &fakeBackend{resolveFound: false}
+	fw := &fakeWarmup{remaining: 0}
+	s := testServer(fb, Config{RateLimit: true, Warmup: fw})
+	ctx := context.Background()
+	s.evaluate(ctx, rcpt("11.1", "a@gmail.com"))
+	if got := s.evaluate(ctx, data("11.1", 1)); !strings.HasPrefix(got, "452 4.5.3 ") {
+		t.Fatalf("DATA from a login with no mailbox = %q, want a 452 deferral", got)
+	}
+	if fb.rateCalls != 0 {
+		t.Errorf("rate checks = %d for a login with no mailbox, want 0", fb.rateCalls)
+	}
+}
+
 // A message admitted by warmup but refused by the rate limit gives its
 // warmup reservation back.
 func TestWarmupReservationReleasedWhenTheRateLimitRefuses(t *testing.T) {
