@@ -137,10 +137,11 @@ func (w policyWarmup) IsLocalDomain(ctx context.Context, domain string) (bool, e
 	return d != nil && d.Active, nil
 }
 
-func (w policyWarmup) ReserveWarmup(ctx context.Context, n int) (bool, string, error) {
+func (w policyWarmup) ReserveWarmup(ctx context.Context, n int) (bool, string, func(), error) {
 	d, err := w.s.warmupManager.Reserve(ctx, n)
 	if err != nil || d.Allowed {
-		return true, "", err
+		release := func() { w.s.warmupManager.Release(context.WithoutCancel(ctx), d, n) }
+		return true, "", release, err
 	}
-	return false, warmupLimitMessage(d, n), nil
+	return false, warmupLimitMessage(d, n), nil, nil
 }

@@ -26,6 +26,7 @@ type fakeBackend struct {
 	rateReason  string
 	rateHourly  int64
 	rateErr     error
+	rateCalls   int
 
 	autoSuspendCalled  bool
 	autoSuspendReason  string
@@ -41,6 +42,7 @@ func (f *fakeBackend) IsMailboxSuspended(_ context.Context, _ string) (bool, str
 }
 
 func (f *fakeBackend) CheckAndRecord(_ context.Context, _, _ string) (bool, string, int64, error) {
+	f.rateCalls++
 	return f.rateAllowed, f.rateReason, f.rateHourly, f.rateErr
 }
 
@@ -355,6 +357,7 @@ type fakeWarmup struct {
 	remaining int
 	err       error
 	reserved  []int
+	released  []int
 }
 
 func (f *fakeWarmup) IsLocalDomain(_ context.Context, domain string) (bool, error) {
@@ -364,16 +367,16 @@ func (f *fakeWarmup) IsLocalDomain(_ context.Context, domain string) (bool, erro
 	return domain == "example.com", nil
 }
 
-func (f *fakeWarmup) ReserveWarmup(_ context.Context, n int) (bool, string, error) {
+func (f *fakeWarmup) ReserveWarmup(_ context.Context, n int) (bool, string, func(), error) {
 	if f.err != nil {
-		return false, "", f.err
+		return false, "", nil, f.err
 	}
 	f.reserved = append(f.reserved, n)
 	if n > f.remaining {
-		return false, "IP warmup daily limit reached\nfor 203.0.113.7", nil
+		return false, "IP warmup daily limit reached\nfor 203.0.113.7", nil, nil
 	}
 	f.remaining -= n
-	return true, "", nil
+	return true, "", func() { f.released = append(f.released, n); f.remaining += n }, nil
 }
 
 func rcpt(instance, recipient string) map[string]string {
@@ -443,6 +446,44 @@ func TestWarmupRepeatedDataAfterADeferralIsCheckedAgain(t *testing.T) {
 	}
 	if fmt.Sprint(fw.reserved) != "[2 2]" {
 		t.Errorf("reserved %v, want [2 2]", fw.reserved)
+	}
+}
+
+// Copilot #288 review 3: a message deferred for warmup isn't charged to the
+// mailbox's hourly rate, so a client retrying after each 452 can't get the
+// mailbox auto-suspended.
+func TestWarmupDeferralsDontChargeTheRateLimit(t *testing.T) {
+	fb := okBackend()
+	s := testServer(fb, Config{RateLimit: true, Warmup: &fakeWarmup{remaining: 0}})
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		inst := fmt.Sprintf("9.%d", i)
+		s.evaluate(ctx, rcpt(inst, "a@gmail.com"))
+		if got := s.evaluate(ctx, data(inst, 1)); !strings.HasPrefix(got, "452 4.5.3 ") {
+			t.Fatalf("attempt %d = %q, want a 452 deferral", i+1, got)
+		}
+	}
+	if fb.rateCalls != 0 || fb.autoSuspendCalled {
+		t.Errorf("rate checks = %d, auto-suspend = %v after warmup deferrals; want none", fb.rateCalls, fb.autoSuspendCalled)
+	}
+}
+
+// A message admitted by warmup but refused by the rate limit gives its
+// warmup reservation back.
+func TestWarmupReservationReleasedWhenTheRateLimitRefuses(t *testing.T) {
+	fb := okBackend()
+	fb.rateAllowed = false
+	fb.rateReason = "too many"
+	fw := &fakeWarmup{remaining: 5}
+	s := testServer(fb, Config{RateLimit: true, Warmup: fw})
+	ctx := context.Background()
+	s.evaluate(ctx, rcpt("10.1", "a@gmail.com"))
+	s.evaluate(ctx, rcpt("10.1", "b@gmail.com"))
+	if got := s.evaluate(ctx, data("10.1", 2)); !strings.HasPrefix(got, "554 5.7.1") {
+		t.Fatalf("DATA over the rate limit = %q, want 554", got)
+	}
+	if fmt.Sprint(fw.released) != "[2]" || fw.remaining != 5 {
+		t.Errorf("released %v, remaining %d; want [2] given back, 5 remaining", fw.released, fw.remaining)
 	}
 }
 

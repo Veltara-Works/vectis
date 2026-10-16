@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/valkey-io/valkey-go"
 
 	"github.com/Veltara-Works/vectis/internal/api"
 	"github.com/Veltara-Works/vectis/internal/auth"
@@ -28,6 +29,7 @@ type testEnv struct {
 	server  *api.Server
 	handler http.Handler
 	pool    *pgxpool.Pool
+	vk      valkey.Client
 	cookie  string
 	adminID string
 }
@@ -108,6 +110,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 		server:  srv,
 		handler: srv.Handler(),
 		pool:    pool,
+		vk:      vk,
 		adminID: admin.ID,
 	}
 

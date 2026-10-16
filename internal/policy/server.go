@@ -61,8 +61,10 @@ type Warmup interface {
 	// IsLocalDomain reports whether mail to domain is delivered on this server.
 	IsLocalDomain(ctx context.Context, domain string) (bool, error)
 	// ReserveWarmup counts n external recipients against today's limit, all
-	// or none. allowed false means defer the message; message says why.
-	ReserveWarmup(ctx context.Context, n int) (allowed bool, message string, err error)
+	// or none. allowed false means defer the message; message says why. When
+	// allowed, release gives the reservation back (the message was then
+	// refused for another reason); it is never nil.
+	ReserveWarmup(ctx context.Context, n int) (allowed bool, message string, release func(), err error)
 }
 
 // Config tunes the policy server.
@@ -339,6 +341,14 @@ func (s *Server) evaluate(ctx context.Context, attrs map[string]string) string {
 		return rejectAction("Sending from this mailbox is suspended" + reasonSuffix(reason))
 	}
 
+	// The warmup limit comes before the rate check, so a message deferred for
+	// warmup isn't charged to the mailbox's hourly rate: a client retrying
+	// after each 452 could otherwise get the mailbox auto-suspended.
+	action, release := s.reserveWarmup(ctx, attrs, key)
+	if action != actionOK {
+		return action
+	}
+
 	if s.cfg.RateLimit {
 		allowed, rlReason, hourly, err := s.backend.CheckAndRecord(ctx, mailboxID, domainID)
 		if err != nil {
@@ -348,6 +358,7 @@ func (s *Server) evaluate(ctx context.Context, attrs map[string]string) string {
 			return actionOK
 		}
 		if !allowed {
+			release() // not sent: give the warmup reservation back
 			s.logger.Warn("policy: auto-suspending mailbox over rate limit",
 				"mailbox_id", mailboxID, "login", login, "hourly_count", hourly)
 			s.backend.AutoSuspend(ctx, mailboxID, domainID, rlReason, hourly)
@@ -356,7 +367,7 @@ func (s *Server) evaluate(ctx context.Context, attrs map[string]string) string {
 		}
 	}
 
-	return s.reserveWarmup(ctx, attrs, key)
+	return actionOK
 }
 
 // pendingKey identifies a message across policy requests: Postfix's
@@ -429,9 +440,10 @@ func (s *Server) prunePendingLocked() {
 // was full for some RCPTs, or the RCPT hook isn't configured), every
 // recipient Postfix accepted counts as external. Errors fail open, like the
 // rate check.
-func (s *Server) reserveWarmup(ctx context.Context, attrs map[string]string, key string) string {
+func (s *Server) reserveWarmup(ctx context.Context, attrs map[string]string, key string) (string, func()) {
+	noop := func() {}
 	if s.cfg.Warmup == nil {
-		return actionOK
+		return actionOK, noop
 	}
 	accepted, _ := strconv.Atoi(attrs["recipient_count"])
 
@@ -461,21 +473,24 @@ func (s *Server) reserveWarmup(ctx context.Context, attrs map[string]string, key
 	}
 	if n <= 0 {
 		done()
-		return actionOK
+		return actionOK, noop
 	}
-	allowed, why, err := s.cfg.Warmup.ReserveWarmup(ctx, n)
+	allowed, why, release, err := s.cfg.Warmup.ReserveWarmup(ctx, n)
 	if err != nil {
 		done()
 		s.logger.Error("policy: warmup reserve failed, failing open", "error", err)
-		return actionOK
+		return actionOK, noop
 	}
 	if !allowed {
 		s.logger.Warn("policy: deferring message over the IP warmup daily limit", "external_recipients", n)
 		s.onReject("warmup_limit")
-		return "452 4.5.3 " + sanitizeText(why)
+		return "452 4.5.3 " + sanitizeText(why), noop
 	}
 	done()
-	return actionOK
+	if release == nil {
+		release = noop
+	}
+	return actionOK, release
 }
 
 func (s *Server) onReject(reason string) {

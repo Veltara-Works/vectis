@@ -108,6 +108,7 @@ const maxRecipientsPerMessage = 100
 
 func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRole, apiKeyID, ip string, v sendVariant) sendOutcome {
 	ctx := r.Context()
+	sent := false // set once Postfix accepts the message; until then a warmup reservation is given back
 
 	// Validate required fields.
 	if req.From.Email == "" {
@@ -206,7 +207,35 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 			return sendErr(http.StatusForbidden, "MAILBOX_SUSPENDED",
 				"Sending suspended for this mailbox: "+reason)
 		}
+	}
 
+	// IP warmup: count the message's external recipients against today's
+	// limit. Over the limit, nothing is accepted and the caller is told when
+	// the limit resets. This comes before the abuse rate counters are charged,
+	// so a message refused for warmup doesn't use up the sender's hourly
+	// capacity (a client retrying could otherwise get its mailbox
+	// auto-suspended). The reservation is given back on any path that doesn't
+	// end with the message sent. Fails open on a database error, like the
+	// abuse checks.
+	if s.warmupManager != nil {
+		externalCount := s.countExternalRecipients(ctx, req.To, req.CC, req.BCC)
+		warmup, err := s.warmupManager.Reserve(ctx, externalCount)
+		if err != nil {
+			s.logger.Error("warmup reserve failed, allowing send", "error", err)
+		} else if !warmup.Allowed {
+			vectismetrics.WarmupDeferrals.WithLabelValues("api").Inc()
+			out := sendErr(http.StatusTooManyRequests, "WARMUP_LIMIT", warmupLimitMessage(warmup, externalCount))
+			out.retryAfter = warmup.RetryAfter(time.Now())
+			return out
+		}
+		defer func() {
+			if !sent {
+				s.warmupManager.Release(context.WithoutCancel(ctx), warmup, externalCount)
+			}
+		}()
+	}
+
+	if mailbox != nil {
 		// Rate check + spike detection.
 		if s.abuseDetector != nil {
 			check, err := s.abuseDetector.CheckAndRecordN(ctx, mailbox.ID, domain.ID, recipientCount)
@@ -260,25 +289,6 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 			"Sending is not configured on this server")
 	}
 
-	// IP warmup: count the message's external recipients against today's
-	// limit. Over the limit, nothing is accepted and the caller is told when
-	// the limit resets. Fails open on a database error, like the abuse checks.
-	var warmup mail.WarmupDecision
-	externalCount := 0
-	if s.warmupManager != nil {
-		externalCount = s.countExternalRecipients(ctx, req.To, req.CC, req.BCC)
-		var err error
-		warmup, err = s.warmupManager.Reserve(ctx, externalCount)
-		if err != nil {
-			s.logger.Error("warmup reserve failed, allowing send", "error", err)
-		} else if !warmup.Allowed {
-			vectismetrics.WarmupDeferrals.WithLabelValues("api").Inc()
-			out := sendErr(http.StatusTooManyRequests, "WARMUP_LIMIT", warmupLimitMessage(warmup, externalCount))
-			out.retryAfter = warmup.RetryAfter(time.Now())
-			return out
-		}
-	}
-
 	// Build and send.
 	msg := &mail.Message{
 		From:        req.From,
@@ -296,10 +306,6 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 
 	result, err := s.mailSender.Send(msg)
 	if err != nil {
-		// Nothing was sent: give the reserved warmup sends back.
-		if s.warmupManager != nil {
-			s.warmupManager.Release(context.WithoutCancel(ctx), warmup, externalCount)
-		}
 		// Header-injection attempts are client errors, not server faults.
 		if errors.Is(err, mail.ErrHeaderInjection) {
 			s.logger.Warn("send rejected: header injection", "error", err, "from", req.From.Email)
@@ -311,6 +317,7 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 			"Failed to send message: "+err.Error())
 	}
 
+	sent = true
 	vectismetrics.EmailsSent.Inc()
 	if v.batch {
 		vectismetrics.BatchMessagesSent.Inc()
@@ -428,7 +435,11 @@ func warmupLimitMessage(d mail.WarmupDecision, external int) string {
 		"Sending resumes at %s.", warmupIP(d.IP), d.Day, d.Limit, d.Sent, reset)
 }
 
-// warmupIP strips the /32 Postgres adds when it prints an inet.
+// warmupIP strips the prefix length Postgres adds when it prints an inet
+// (/32 for IPv4, /128 for IPv6).
 func warmupIP(ip string) string {
-	return strings.TrimSuffix(ip, "/32")
+	if i := strings.IndexByte(ip, '/'); i >= 0 {
+		return ip[:i]
+	}
+	return ip
 }
