@@ -57,9 +57,10 @@ type WarmupManager struct {
 	// its context ends.
 	advanceLock chan struct{}
 
-	activeMu sync.Mutex
-	active   bool
-	activeAt time.Time // when active was read; zero = unknown
+	activeMu  sync.Mutex // guards the three fields below; never held during I/O
+	active    bool
+	activeAt  time.Time // when active was read; zero = unknown
+	activeGen uint64    // bumped by Invalidate, so a refresh in flight can't store a stale answer
 }
 
 // NewWarmupManager creates a new warmup manager.
@@ -154,19 +155,31 @@ func (m *WarmupManager) Stop() {
 // Active reports whether a warmup is running, from a short cache, so senders
 // can skip classifying recipients when nothing is limited. A lookup error
 // reports true (classify, and let Reserve fail open) with the error.
+//
+// The lookup runs outside the cache's lock, under the caller's context, so a
+// slow database only delays callers whose own deadline allows it.
 func (m *WarmupManager) Active(ctx context.Context) (bool, error) {
 	m.activeMu.Lock()
-	defer m.activeMu.Unlock()
 	now := m.now()
 	if !m.activeAt.IsZero() && now.Sub(m.activeAt) < warmupActiveTTL {
-		return m.active, nil
+		on := m.active
+		m.activeMu.Unlock()
+		return on, nil
 	}
+	gen := m.activeGen
+	m.activeMu.Unlock()
+
 	e, err := m.repo.GetActive(ctx)
 	if err != nil {
 		return true, err
 	}
-	m.active, m.activeAt = e != nil, now
-	return m.active, nil
+	on := e != nil
+	m.activeMu.Lock()
+	if m.activeGen == gen { // not invalidated while we looked
+		m.active, m.activeAt = on, now
+	}
+	m.activeMu.Unlock()
+	return on, nil
 }
 
 // Invalidate drops the cached Active answer; call it after starting or
@@ -174,6 +187,7 @@ func (m *WarmupManager) Active(ctx context.Context) (bool, error) {
 func (m *WarmupManager) Invalidate() {
 	m.activeMu.Lock()
 	m.activeAt = time.Time{}
+	m.activeGen++
 	m.activeMu.Unlock()
 }
 

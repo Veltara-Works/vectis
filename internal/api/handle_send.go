@@ -419,7 +419,7 @@ func (s *Server) countExternalRecipients(ctx context.Context, lists ...[]mail.Ad
 	seen := map[string]bool{}
 	for _, list := range lists {
 		for _, a := range list {
-			if d := strings.ToLower(extractDomain(a.Email)); !seen[d] {
+			if d := recipientDomain(a.Email); !seen[d] {
 				seen[d] = true
 				doms = append(doms, d)
 			}
@@ -433,12 +433,23 @@ func (s *Server) countExternalRecipients(ctx context.Context, lists ...[]mail.Ad
 	n := 0
 	for _, list := range lists {
 		for _, a := range list {
-			if !local[strings.ToLower(extractDomain(a.Email))] {
+			if !local[recipientDomain(a.Email)] {
 				n++
 			}
 		}
 	}
 	return n
+}
+
+// recipientDomain is the lower-cased domain of a recipient address: the part
+// after the last "@", since a quoted local part may itself contain one
+// ("team@east"@example.com).
+func recipientDomain(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if i := strings.LastIndex(addr, "@"); i >= 0 {
+		return strings.ToLower(addr[i+1:])
+	}
+	return ""
 }
 
 // warmupLimitMessage explains a WARMUP_LIMIT refusal.

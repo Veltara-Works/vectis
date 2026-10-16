@@ -248,3 +248,18 @@ func TestWarmupIP(t *testing.T) {
 		}
 	}
 }
+
+// Recipient domains come after the last "@" (a quoted local part may contain
+// one), lower-cased.
+func TestRecipientDomain(t *testing.T) {
+	for in, want := range map[string]string{
+		"bob@Example.COM":            "example.com",
+		`"team@east"@hosted.example`: "hosted.example",
+		" carol@example.org ":        "example.org",
+		"postmaster":                 "",
+	} {
+		if got := recipientDomain(in); got != want {
+			t.Errorf("recipientDomain(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

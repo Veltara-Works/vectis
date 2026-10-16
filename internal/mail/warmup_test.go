@@ -460,3 +460,74 @@ func TestWarmupActiveIsCachedAndInvalidated(t *testing.T) {
 		t.Errorf("Active on a store error = %v, %v; want true with the error", on, err)
 	}
 }
+
+// hangingActiveStore's GetActive waits until its context is done.
+type hangingActiveStore struct{ *fakeWarmupStore }
+
+func (hangingActiveStore) GetActive(ctx context.Context) (*repository.IPWarmup, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// Copilot #288 review 9: a stalled Active lookup doesn't hold the cache lock,
+// so other callers return at their own deadline and Invalidate doesn't wait.
+func TestWarmupActiveDoesNotBlockBehindAStalledLookup(t *testing.T) {
+	m := NewWarmupManager(hangingActiveStore{&fakeWarmupStore{}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	slow, cancelSlow := context.WithCancel(context.Background())
+	defer cancelSlow()
+	go m.Active(slow) // stuck until cancelled
+	time.Sleep(20 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	on, err := m.Active(ctx)
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("Active waited %v behind a stalled lookup, want about 50ms", took)
+	}
+	if !on || err == nil {
+		t.Errorf("Active on a timed-out lookup = %v, %v; want true with the error", on, err)
+	}
+
+	done := make(chan struct{})
+	go func() { m.Invalidate(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Invalidate blocked behind a stalled lookup")
+	}
+}
+
+// An answer looked up before an Invalidate isn't cached over it.
+func TestWarmupActiveRefreshDoesNotOverwriteAnInvalidation(t *testing.T) {
+	m, store, _ := newTestWarmup()
+	gate := make(chan struct{})
+	slowStore := gatedActiveStore{fakeWarmupStore: store, gate: gate}
+	m.repo = slowStore
+	result := make(chan bool)
+	go func() { on, _ := m.Active(context.Background()); result <- on }()
+	time.Sleep(20 * time.Millisecond) // the lookup has read "no warmup"... and waits
+	store.mu.Lock()
+	store.entries = append(store.entries, dayOne())
+	store.mu.Unlock()
+	m.Invalidate() // a warmup was started meanwhile
+	close(gate)
+	<-result
+	m.repo = store
+	if on, _ := m.Active(context.Background()); !on {
+		t.Error("Active after an invalidation = false (stale answer cached), want true")
+	}
+}
+
+// gatedActiveStore answers GetActive with what the store held when called,
+// but only returns once gate is closed.
+type gatedActiveStore struct {
+	*fakeWarmupStore
+	gate chan struct{}
+}
+
+func (g gatedActiveStore) GetActive(ctx context.Context) (*repository.IPWarmup, error) {
+	e, err := g.fakeWarmupStore.GetActive(ctx)
+	<-g.gate
+	return e, err
+}
