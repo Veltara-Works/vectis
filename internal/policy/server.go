@@ -100,7 +100,8 @@ type Config struct {
 // reconnects when a policy connection is closed (idle timeout, max TTL), and
 // that can fall between a message's RCPT and DATA.
 type pendingMessage struct {
-	external int
+	external int // recipients outside this server
+	rcpts    int // RCPT requests seen, to tell a complete history from part of one
 	seen     time.Time
 }
 
@@ -402,6 +403,7 @@ func (s *Server) countRecipient(ctx context.Context, key, recipient string) {
 		s.pending[key] = p
 	}
 	p.seen = s.now()
+	p.rcpts++
 	if external {
 		p.external++
 	}
@@ -422,8 +424,9 @@ func (s *Server) prunePendingLocked() {
 // limit, the message is deferred with 452 4.5.3, so it is retried rather than
 // bounced, and its count is kept: Postfix keeps the envelope after a DATA
 // deferral, so the client can send DATA again for the same message, and that
-// must be checked again. With nothing recorded for the message (the policy
-// server restarted mid-transaction, or the RCPT hook isn't configured), every
+// must be checked again. With nothing recorded for the message, or only part
+// of its recipients (the policy server restarted mid-transaction, the table
+// was full for some RCPTs, or the RCPT hook isn't configured), every
 // recipient Postfix accepted counts as external. Errors fail open, like the
 // rate check.
 func (s *Server) reserveWarmup(ctx context.Context, attrs map[string]string, key string) string {
@@ -435,7 +438,8 @@ func (s *Server) reserveWarmup(ctx context.Context, attrs map[string]string, key
 	s.pendingMu.Lock()
 	p, found := s.pending[key]
 	n := accepted
-	if found {
+	complete := found && p.rcpts >= accepted
+	if complete {
 		n = p.external
 		// Never count more recipients than Postfix accepted for the message.
 		if accepted > 0 && accepted < n {
@@ -443,8 +447,9 @@ func (s *Server) reserveWarmup(ctx context.Context, attrs map[string]string, key
 		}
 	}
 	s.pendingMu.Unlock()
-	if !found && key != "" {
-		s.logger.Debug("policy: no recipients recorded for message, counting all as external", "instance", attrs["instance"], "recipients", n)
+	if !complete && key != "" {
+		s.logger.Debug("policy: recipients not fully recorded for message, counting all as external",
+			"instance", attrs["instance"], "recipients", n)
 	}
 
 	done := func() {

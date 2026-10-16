@@ -457,6 +457,38 @@ func TestWarmupDataWithNothingRecordedCountsEveryRecipient(t *testing.T) {
 	}
 }
 
+// Copilot #288 review 2: a history that starts part-way through the message
+// (a restart, or a full table freeing a slot, between RCPTs) must not hide the
+// external recipients it missed.
+func TestWarmupPartialRecipientHistoryCountsEveryRecipient(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("restart between RCPTs", func(t *testing.T) {
+		fw := &fakeWarmup{remaining: 10}
+		s := testServer(okBackend(), Config{RateLimit: true, Warmup: fw})
+		s.evaluate(ctx, rcpt("8.1", "a@gmail.com"))
+		s.pending = make(map[string]*pendingMessage) // the api restarted
+		s.evaluate(ctx, rcpt("8.1", "carol@example.com"))
+		s.evaluate(ctx, data("8.1", 2))
+		if fmt.Sprint(fw.reserved) != "[2]" {
+			t.Errorf("reserved %v, want [2] (all accepted recipients)", fw.reserved)
+		}
+	})
+	t.Run("full table frees a slot between RCPTs", func(t *testing.T) {
+		fw := &fakeWarmup{remaining: 10}
+		s := testServer(okBackend(), Config{RateLimit: true, Warmup: fw})
+		s.maxPending = 1
+		s.evaluate(ctx, rcpt("8.2", "x@gmail.com"))       // takes the only slot
+		s.evaluate(ctx, rcpt("8.3", "a@gmail.com"))       // not tracked: table full
+		s.evaluate(ctx, data("8.2", 1))                   // frees the slot
+		s.evaluate(ctx, rcpt("8.3", "carol@example.com")) // tracked from here on
+		s.evaluate(ctx, data("8.3", 2))
+		if fmt.Sprint(fw.reserved) != "[1 2]" {
+			t.Errorf("reserved %v, want [1 2]", fw.reserved)
+		}
+	})
+}
+
 func TestWarmupPendingTableIsBounded(t *testing.T) {
 	fw := &fakeWarmup{remaining: 100}
 	s := testServer(okBackend(), Config{RateLimit: true, Warmup: fw})
