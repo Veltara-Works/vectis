@@ -5,6 +5,13 @@
 # service type  private unpriv  chroot  wakeup  maxproc command + args
 # ==========================================================================
 smtp      inet  n       -       n       -       -       smtpd
+  -o smtpd_sasl_auth_enable=no
+# Port 25 is for server-to-server mail: it doesn't offer AUTH. Mail clients and
+# webmail submit on 587/465, where the policy hooks below apply send-suspend,
+# the abuse rate limit and the IP warmup limit; offering AUTH on 25 let an
+# authenticated client bypass all three. Vectis's own senders on 25 (the send
+# API, alerts) are trusted via mynetworks and never authenticate.
+#
 # The submission/smtps services call the Vectis send-suspend policy server (the
 # api container's submission-policy listener) once per message at the DATA
 # command, via the vectis_submission_policy restriction class defined in main.cf.
