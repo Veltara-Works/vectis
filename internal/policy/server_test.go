@@ -358,9 +358,14 @@ type fakeWarmup struct {
 	err       error
 	reserved  []int
 	released  []int
+	inactive  bool // no warmup running
+	lookups   int  // IsLocalDomain calls
 }
 
+func (f *fakeWarmup) Active(context.Context) bool { return !f.inactive }
+
 func (f *fakeWarmup) IsLocalDomain(_ context.Context, domain string) (bool, error) {
+	f.lookups++
 	if domain == "broken.example" {
 		return false, fmt.Errorf("db down")
 	}
@@ -465,6 +470,20 @@ func TestWarmupDeferralsDontChargeTheRateLimit(t *testing.T) {
 	}
 	if fb.rateCalls != 0 || fb.autoSuspendCalled {
 		t.Errorf("rate checks = %d, auto-suspend = %v after warmup deferrals; want none", fb.rateCalls, fb.autoSuspendCalled)
+	}
+}
+
+// Copilot #288 review 8: with no warmup running, RCPT doesn't classify
+// recipients (no domain lookups on the hot path).
+func TestWarmupInactiveSkipsRecipientLookups(t *testing.T) {
+	fw := &fakeWarmup{remaining: 100, inactive: true}
+	s := testServer(okBackend(), Config{RateLimit: true, Warmup: fw})
+	ctx := context.Background()
+	for _, r := range []string{"a@gmail.com", "b@outlook.com", "carol@example.com"} {
+		s.evaluate(ctx, rcpt("12.1", r))
+	}
+	if fw.lookups != 0 || len(s.pending) != 0 {
+		t.Errorf("lookups = %d, pending = %d with no warmup running; want none", fw.lookups, len(s.pending))
 	}
 }
 

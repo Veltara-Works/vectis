@@ -217,7 +217,10 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 	// auto-suspended). The reservation is given back on any path that doesn't
 	// end with the message sent. Fails open on a database error, like the
 	// abuse checks.
-	if s.warmupManager != nil {
+	if on, err := s.warmupActive(ctx); on {
+		if err != nil {
+			s.logger.Warn("warmup: active check failed, classifying recipients anyway", "error", err)
+		}
 		externalCount := s.countExternalRecipients(ctx, req.To, req.CC, req.BCC)
 		warmup, err := s.warmupManager.Reserve(ctx, externalCount)
 		if err != nil {
@@ -397,26 +400,40 @@ func extractLocalPart(email string) string {
 	return strings.ToLower(parts[0])
 }
 
+// warmupActive reports whether sends need warmup accounting at all, so the
+// recipient classification below is skipped when no warmup runs.
+func (s *Server) warmupActive(ctx context.Context) (bool, error) {
+	if s.warmupManager == nil {
+		return false, nil
+	}
+	return s.warmupManager.Active(ctx)
+}
+
 // countExternalRecipients counts the recipients whose domain this server
 // doesn't host (or hosts but has deactivated). Only those leave the server and
-// count toward the sending IP's warmup; local deliveries don't. A lookup error
-// counts the recipient as external, so warmup errs towards limiting.
+// count toward the sending IP's warmup; local deliveries don't. The domains
+// are looked up in one query. A lookup error counts every recipient as
+// external, so warmup errs towards limiting.
 func (s *Server) countExternalRecipients(ctx context.Context, lists ...[]mail.Address) int {
-	local := map[string]bool{}
+	var doms []string
+	seen := map[string]bool{}
+	for _, list := range lists {
+		for _, a := range list {
+			if d := strings.ToLower(extractDomain(a.Email)); !seen[d] {
+				seen[d] = true
+				doms = append(doms, d)
+			}
+		}
+	}
+	local, err := s.domains.ActiveNames(ctx, doms)
+	if err != nil {
+		s.logger.Warn("warmup: recipient domain lookup failed, counting all as external", "error", err)
+		local = nil
+	}
 	n := 0
 	for _, list := range lists {
 		for _, a := range list {
-			dom := strings.ToLower(extractDomain(a.Email))
-			isLocal, seen := local[dom]
-			if !seen {
-				d, err := s.domains.GetByName(ctx, dom)
-				if err != nil {
-					s.logger.Warn("warmup: recipient domain lookup failed, counting as external", "domain", dom, "error", err)
-				}
-				isLocal = err == nil && d != nil && d.Active
-				local[dom] = isLocal
-			}
-			if !isLocal {
+			if !local[strings.ToLower(extractDomain(a.Email))] {
 				n++
 			}
 		}

@@ -58,6 +58,11 @@ type Backend interface {
 // Warmup applies the IP warmup daily limit. Only recipients outside this
 // server count: local deliveries never touch the sending IP's reputation.
 type Warmup interface {
+	// Active reports whether a warmup is running (cheaply, from a cache).
+	// When none is, recipients aren't classified at RCPT; DATA still asks
+	// ReserveWarmup, which counts every accepted recipient for a message with
+	// nothing recorded, so a warmup started mid-transaction is still applied.
+	Active(ctx context.Context) bool
 	// IsLocalDomain reports whether mail to domain is delivered on this server.
 	IsLocalDomain(ctx context.Context, domain string) (bool, error)
 	// ReserveWarmup counts n external recipients against today's limit, all
@@ -389,7 +394,7 @@ func pendingKey(attrs map[string]string, login string) string {
 // Every RCPT records the message, even with a local recipient, so DATA can
 // tell "no external recipients" from "nothing recorded".
 func (s *Server) countRecipient(ctx context.Context, key, recipient string) {
-	if s.cfg.Warmup == nil || key == "" {
+	if s.cfg.Warmup == nil || key == "" || !s.cfg.Warmup.Active(ctx) {
 		return
 	}
 	external := false

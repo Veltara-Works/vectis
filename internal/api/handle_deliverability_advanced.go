@@ -100,6 +100,10 @@ func (s *Server) handleCreateWarmup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.warmupManager != nil {
+		s.warmupManager.Invalidate()
+	}
+
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "warmup.create", "ip_warmup", &entry.ID,
@@ -120,6 +124,9 @@ func (s *Server) handleDeleteWarmup(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("delete ip warmup failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete warmup entry")
 		return
+	}
+	if s.warmupManager != nil {
+		s.warmupManager.Invalidate()
 	}
 
 	adminID := getAdminID(r.Context())

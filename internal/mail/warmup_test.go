@@ -17,15 +17,32 @@ import (
 // only while its day is current; Release and AdvanceDay only touch the day
 // they were given.
 type fakeWarmupStore struct {
-	mu      sync.Mutex
-	entries []repository.IPWarmup
-	err     error
+	mu          sync.Mutex
+	entries     []repository.IPWarmup
+	err         error
+	activeCalls int
 }
 
 func (f *fakeWarmupStore) List(context.Context) ([]repository.IPWarmup, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]repository.IPWarmup(nil), f.entries...), f.err
+}
+
+func (f *fakeWarmupStore) GetActive(context.Context) (*repository.IPWarmup, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.activeCalls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	for _, e := range f.entries {
+		if e.Active {
+			c := e
+			return &c, nil
+		}
+	}
+	return nil, nil
 }
 
 func (f *fakeWarmupStore) Reserve(_ context.Context, n int, dayStartedAfter time.Time) (*repository.IPWarmup, bool, error) {
@@ -413,5 +430,33 @@ func TestWarmupReserveDoesNotHangBehindAStalledRollover(t *testing.T) {
 	}
 	if err == nil || !d.Allowed {
 		t.Errorf("Reserve behind a stalled rollover = %+v, %v; want allowed (fail open) with the context error", d, err)
+	}
+}
+
+// Copilot #288 review 8: senders skip recipient classification when no warmup
+// runs; Active answers from a short cache, refreshed on start/cancel.
+func TestWarmupActiveIsCachedAndInvalidated(t *testing.T) {
+	m, store, now := newTestWarmup()
+	ctx := context.Background()
+	if on, err := m.Active(ctx); on || err != nil {
+		t.Fatalf("Active with no warmup = %v, %v; want false", on, err)
+	}
+	m.Active(ctx)
+	if store.activeCalls != 1 {
+		t.Errorf("store asked %d times within the cache window, want 1", store.activeCalls)
+	}
+
+	store.mu.Lock()
+	store.entries = append(store.entries, dayOne())
+	store.mu.Unlock()
+	m.Invalidate() // a warmup was started
+	if on, _ := m.Active(ctx); !on {
+		t.Error("Active after starting a warmup and invalidating = false, want true")
+	}
+
+	*now = now.Add(warmupActiveTTL + time.Second)
+	store.err = errors.New("db down")
+	if on, err := m.Active(ctx); !on || err == nil {
+		t.Errorf("Active on a store error = %v, %v; want true with the error", on, err)
 	}
 }

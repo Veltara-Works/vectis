@@ -1186,6 +1186,37 @@ func TestFBLReport_CRUD(t *testing.T) {
 	}
 }
 
+// ActiveNames answers for many domains in one query: hosted and active only.
+func TestDomainRepo_ActiveNames(t *testing.T) {
+	ctx := context.Background()
+	repo := repository.NewDomainRepo(testPool)
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	on, err := repo.Create(ctx, repository.DomainCreate{Name: "an-on-" + suffix + ".test"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer repo.Delete(ctx, on.ID)
+	off, err := repo.Create(ctx, repository.DomainCreate{Name: "an-off-" + suffix + ".test"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer repo.Delete(ctx, off.ID)
+	if _, err := testPool.Exec(ctx, `UPDATE domains SET active = false WHERE id = $1`, off.ID); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+
+	got, err := repo.ActiveNames(ctx, []string{on.Name, off.Name, "elsewhere-" + suffix + ".test"})
+	if err != nil {
+		t.Fatalf("ActiveNames: %v", err)
+	}
+	if !got[on.Name] || got[off.Name] || len(got) != 1 {
+		t.Errorf("ActiveNames = %v, want only %s", got, on.Name)
+	}
+	if empty, err := repo.ActiveNames(ctx, nil); err != nil || len(empty) != 0 {
+		t.Errorf("ActiveNames(nil) = %v, %v; want empty", empty, err)
+	}
+}
+
 func TestIPWarmup_Lifecycle(t *testing.T) {
 	ctx := context.Background()
 	repo := repository.NewIPWarmupRepo(testPool)

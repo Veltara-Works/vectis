@@ -127,6 +127,13 @@ type policyWarmup struct {
 	s *Server
 }
 
+// Active reports whether a warmup is running. A lookup error reports true,
+// so recipients are classified and the reservation fails open.
+func (w policyWarmup) Active(ctx context.Context) bool {
+	on, _ := w.s.warmupManager.Active(ctx)
+	return on
+}
+
 // IsLocalDomain reports whether the domain is hosted (and active) here, the
 // same test the send API uses to count external recipients.
 func (w policyWarmup) IsLocalDomain(ctx context.Context, domain string) (bool, error) {

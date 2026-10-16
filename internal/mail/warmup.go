@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -21,6 +22,10 @@ const warmupPassTimeout = 30 * time.Second
 // and runs while an HTTP error response or an SMTP DATA decision waits.
 const warmupReleaseTimeout = 5 * time.Second
 
+// warmupActiveTTL is how long Active caches whether a warmup is running.
+// Starting or cancelling a warmup through the API refreshes it at once.
+const warmupActiveTTL = 30 * time.Second
+
 // warmupDayLength is one warmup day: the daily count resets, and the schedule
 // advances, this long after the previous reset.
 const warmupDayLength = 24 * time.Hour
@@ -28,6 +33,7 @@ const warmupDayLength = 24 * time.Hour
 // warmupStore is the part of repository.IPWarmupRepo the manager uses.
 type warmupStore interface {
 	List(ctx context.Context) ([]repository.IPWarmup, error)
+	GetActive(ctx context.Context) (*repository.IPWarmup, error)
 	Reserve(ctx context.Context, n int, dayStartedAfter time.Time) (*repository.IPWarmup, bool, error)
 	Release(ctx context.Context, id string, n int, dayStart time.Time) error
 	AdvanceDay(ctx context.Context, id string, prevReset time.Time, newDay, newLimit int, resetAt time.Time) (bool, error)
@@ -50,6 +56,10 @@ type WarmupManager struct {
 	// one-slot channel rather than a mutex so a caller can stop waiting when
 	// its context ends.
 	advanceLock chan struct{}
+
+	activeMu sync.Mutex
+	active   bool
+	activeAt time.Time // when active was read; zero = unknown
 }
 
 // NewWarmupManager creates a new warmup manager.
@@ -139,6 +149,32 @@ func (m *WarmupManager) backgroundPass() {
 func (m *WarmupManager) Stop() {
 	m.logger.Info("stopping IP warmup manager")
 	close(m.stopCh)
+}
+
+// Active reports whether a warmup is running, from a short cache, so senders
+// can skip classifying recipients when nothing is limited. A lookup error
+// reports true (classify, and let Reserve fail open) with the error.
+func (m *WarmupManager) Active(ctx context.Context) (bool, error) {
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
+	now := m.now()
+	if !m.activeAt.IsZero() && now.Sub(m.activeAt) < warmupActiveTTL {
+		return m.active, nil
+	}
+	e, err := m.repo.GetActive(ctx)
+	if err != nil {
+		return true, err
+	}
+	m.active, m.activeAt = e != nil, now
+	return m.active, nil
+}
+
+// Invalidate drops the cached Active answer; call it after starting or
+// cancelling a warmup.
+func (m *WarmupManager) Invalidate() {
+	m.activeMu.Lock()
+	m.activeAt = time.Time{}
+	m.activeMu.Unlock()
 }
 
 // Reserve counts n external recipients against today's limit of the active

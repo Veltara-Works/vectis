@@ -136,6 +136,28 @@ func (r *DomainRepo) GetByID(ctx context.Context, id string) (*Domain, error) {
 }
 
 // GetByName fetches a domain by its name.
+// ActiveNames returns which of names are active domains hosted here, in one
+// query (names are matched as given; pass them lower-cased).
+func (r *DomainRepo) ActiveNames(ctx context.Context, names []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(names))
+	if len(names) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.Query(ctx, `SELECT name FROM domains WHERE active AND name = ANY($1)`, names)
+	if err != nil {
+		return nil, fmt.Errorf("active domain names: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, fmt.Errorf("scan domain name: %w", err)
+		}
+		out[n] = true
+	}
+	return out, rows.Err()
+}
+
 func (r *DomainRepo) GetByName(ctx context.Context, name string) (*Domain, error) {
 	d, err := scanDomain(r.db.QueryRow(ctx,
 		`SELECT `+domainCols+` FROM domains WHERE name = $1`, name,
