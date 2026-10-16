@@ -20,9 +20,9 @@ const warmupDayLength = 24 * time.Hour
 // warmupStore is the part of repository.IPWarmupRepo the manager uses.
 type warmupStore interface {
 	List(ctx context.Context) ([]repository.IPWarmup, error)
-	Reserve(ctx context.Context, n int) (*repository.IPWarmup, bool, error)
-	Release(ctx context.Context, id string, n int) error
-	AdvanceDay(ctx context.Context, id string, newDay, newLimit int, resetAt time.Time) error
+	Reserve(ctx context.Context, n int, dayStartedAfter time.Time) (*repository.IPWarmup, bool, error)
+	Release(ctx context.Context, id string, n int, dayStart time.Time) error
+	AdvanceDay(ctx context.Context, id string, prevReset time.Time, newDay, newLimit int, resetAt time.Time) (bool, error)
 	Deactivate(ctx context.Context, id string) error
 }
 
@@ -61,6 +61,8 @@ type WarmupDecision struct {
 	Sent    int       // sent today, including this reservation when allowed
 	Limit   int       // today's limit
 	ResetAt time.Time // when today's count resets and the next day's limit applies
+
+	dayStart time.Time // the day this decision counted against (for Release)
 }
 
 // RetryAfter is how long a refused sender should wait: until the daily reset,
@@ -86,6 +88,8 @@ func decisionFrom(e *repository.IPWarmup, allowed bool) WarmupDecision {
 		Sent:    e.DailySent,
 		Limit:   e.DailyLimit,
 		ResetAt: e.LastResetAt.Add(warmupDayLength),
+
+		dayStart: e.LastResetAt,
 	}
 }
 
@@ -121,15 +125,17 @@ func (m *WarmupManager) Reserve(ctx context.Context, n int) (WarmupDecision, err
 	if n <= 0 {
 		return WarmupDecision{Allowed: true}, nil
 	}
-	e, ok, err := m.repo.Reserve(ctx, n)
+	// A reservation only counts against a day that is still current: once
+	// the reset is due, the store refuses, and the day is advanced here
+	// before trying again, so a send after the boundary is charged to the new
+	// day rather than to yesterday's count (which the reset would then wipe).
+	e, ok, err := m.repo.Reserve(ctx, n, m.now().Add(-warmupDayLength))
 	if err != nil {
 		return WarmupDecision{Allowed: true}, err
 	}
 	if e != nil && !ok && !m.now().Before(e.LastResetAt.Add(warmupDayLength)) {
-		// Refused, but today's count is already due to reset and the loop
-		// hasn't got to it yet: advance now and try once more.
 		m.advanceSchedules(ctx)
-		e, ok, err = m.repo.Reserve(ctx, n)
+		e, ok, err = m.repo.Reserve(ctx, n, m.now().Add(-warmupDayLength))
 		if err != nil {
 			return WarmupDecision{Allowed: true}, err
 		}
@@ -138,12 +144,13 @@ func (m *WarmupManager) Reserve(ctx context.Context, n int) (WarmupDecision, err
 }
 
 // Release returns sends reserved by a decision whose message then failed to
-// send. Best-effort: errors are logged.
+// send. If the day has reset since, nothing is given back. Best-effort:
+// errors are logged.
 func (m *WarmupManager) Release(ctx context.Context, d WarmupDecision, n int) {
 	if !d.Limited || !d.Allowed || n <= 0 {
 		return
 	}
-	if err := m.repo.Release(ctx, d.EntryID, n); err != nil {
+	if err := m.repo.Release(ctx, d.EntryID, n, d.dayStart); err != nil {
 		m.logger.Error("release warmup sends failed", "error", err, "ip", d.IP, "count", n)
 	}
 }
@@ -185,9 +192,13 @@ func (m *WarmupManager) advanceSchedules(ctx context.Context) {
 
 		resetAt := entry.LastResetAt.Add(elapsed.Truncate(warmupDayLength))
 		newLimit := repository.WarmupSchedule(newDay)
-		if err := m.repo.AdvanceDay(ctx, entry.ID, newDay, newLimit, resetAt); err != nil {
+		advanced, err := m.repo.AdvanceDay(ctx, entry.ID, entry.LastResetAt, newDay, newLimit, resetAt)
+		if err != nil {
 			m.logger.Error("advance warmup day failed", "error", err, "ip", entry.IPAddress)
 			continue
+		}
+		if !advanced {
+			continue // changed since it was listed (cancelled or already advanced)
 		}
 		m.logger.Info("warmup day advanced",
 			"ip", entry.IPAddress,

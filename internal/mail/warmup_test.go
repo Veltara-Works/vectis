@@ -12,8 +12,10 @@ import (
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
-// fakeWarmupStore keeps entries in memory and applies Reserve the way the SQL
-// does: the oldest active entry, all of n or nothing.
+// fakeWarmupStore keeps entries in memory and applies the same conditions as
+// the SQL: Reserve charges the oldest active entry, all of n or nothing, and
+// only while its day is current; Release and AdvanceDay only touch the day
+// they were given.
 type fakeWarmupStore struct {
 	mu      sync.Mutex
 	entries []repository.IPWarmup
@@ -26,7 +28,7 @@ func (f *fakeWarmupStore) List(context.Context) ([]repository.IPWarmup, error) {
 	return append([]repository.IPWarmup(nil), f.entries...), f.err
 }
 
-func (f *fakeWarmupStore) Reserve(_ context.Context, n int) (*repository.IPWarmup, bool, error) {
+func (f *fakeWarmupStore) Reserve(_ context.Context, n int, dayStartedAfter time.Time) (*repository.IPWarmup, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -37,7 +39,7 @@ func (f *fakeWarmupStore) Reserve(_ context.Context, n int) (*repository.IPWarmu
 		if !e.Active {
 			continue
 		}
-		if e.DailySent+n > e.DailyLimit {
+		if e.DailySent+n > e.DailyLimit || !e.LastResetAt.After(dayStartedAfter) {
 			c := *e
 			return &c, false, nil
 		}
@@ -48,27 +50,28 @@ func (f *fakeWarmupStore) Reserve(_ context.Context, n int) (*repository.IPWarmu
 	return nil, false, nil
 }
 
-func (f *fakeWarmupStore) Release(_ context.Context, id string, n int) error {
+func (f *fakeWarmupStore) Release(_ context.Context, id string, n int, dayStart time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := range f.entries {
-		if f.entries[i].ID == id {
+		if f.entries[i].ID == id && f.entries[i].LastResetAt.Equal(dayStart) {
 			f.entries[i].DailySent = max(f.entries[i].DailySent-n, 0)
 		}
 	}
 	return nil
 }
 
-func (f *fakeWarmupStore) AdvanceDay(_ context.Context, id string, newDay, newLimit int, resetAt time.Time) error {
+func (f *fakeWarmupStore) AdvanceDay(_ context.Context, id string, prevReset time.Time, newDay, newLimit int, resetAt time.Time) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := range f.entries {
-		if f.entries[i].ID == id {
+		if f.entries[i].ID == id && f.entries[i].LastResetAt.Equal(prevReset) {
 			e := &f.entries[i]
 			e.WarmupDay, e.DailyLimit, e.DailySent, e.LastResetAt = newDay, newLimit, 0, resetAt
+			return true, nil
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func (f *fakeWarmupStore) Deactivate(_ context.Context, id string) error {
@@ -242,5 +245,64 @@ func TestWarmupRetryAfter(t *testing.T) {
 	}
 	if got := d.RetryAfter(warmupT0.Add(2 * time.Hour)); got != time.Minute {
 		t.Errorf("RetryAfter past the reset = %v, want the 1m floor", got)
+	}
+}
+
+// Copilot #288 finding 1: a send after the daily boundary, before the loop has
+// advanced the day, is charged to the new day, not to yesterday's count.
+func TestWarmupSendAfterTheBoundaryCountsAgainstTheNewDay(t *testing.T) {
+	m, store, now := newTestWarmup(dayOne()) // day 1: 0 of 50 used
+	ctx := context.Background()
+
+	*now = warmupT0.Add(24*time.Hour + time.Second)
+	if d, _ := m.Reserve(ctx, 50); !d.Allowed || d.Day != 2 || d.Sent != 50 {
+		t.Fatalf("first send after the boundary = %+v; want allowed on day 2 with 50 sent", d)
+	}
+	if d, _ := m.Reserve(ctx, 50); d.Allowed {
+		t.Fatalf("second 50 on day 2 (limit %d) was allowed", repository.WarmupSchedule(2))
+	}
+	if e := store.get(t); e.WarmupDay != 2 || e.DailySent != 50 {
+		t.Errorf("entry = day %d, %d sent; want day 2, 50 sent", e.WarmupDay, e.DailySent)
+	}
+}
+
+// Copilot #288 finding 6: a reservation made before the reset and released
+// after it doesn't reduce the new day's count.
+func TestWarmupReleaseAfterTheResetLeavesTheNewDayAlone(t *testing.T) {
+	m, store, now := newTestWarmup(dayOne())
+	ctx := context.Background()
+
+	*now = warmupT0.Add(23 * time.Hour)
+	old, _ := m.Reserve(ctx, 10)
+	*now = warmupT0.Add(24*time.Hour + time.Minute)
+	if d, _ := m.Reserve(ctx, 5); !d.Allowed || d.Day != 2 {
+		t.Fatalf("send on day 2 = %+v; want allowed", d)
+	}
+	m.Release(ctx, old, 10) // the day-1 send failed after the reset
+	if got := store.get(t).DailySent; got != 5 {
+		t.Errorf("day 2 count after releasing a day-1 reservation = %d, want 5", got)
+	}
+}
+
+// staleListStore serves List from a snapshot taken before another advance.
+type staleListStore struct {
+	*fakeWarmupStore
+	snapshot []repository.IPWarmup
+}
+
+func (s staleListStore) List(context.Context) ([]repository.IPWarmup, error) { return s.snapshot, nil }
+
+// Two advances working from the same listing (e.g. the loop and a refused
+// send) must move the schedule on by one day, not two.
+func TestWarmupAdvanceFromAStaleListingDoesNotSkipADay(t *testing.T) {
+	store := &fakeWarmupStore{entries: []repository.IPWarmup{dayOne()}}
+	stale := staleListStore{fakeWarmupStore: store, snapshot: append([]repository.IPWarmup(nil), store.entries...)}
+	m := NewWarmupManager(stale, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.now = func() time.Time { return warmupT0.Add(24*time.Hour + time.Minute) }
+
+	m.advanceSchedules(context.Background())
+	m.advanceSchedules(context.Background()) // same stale listing
+	if e := store.get(t); e.WarmupDay != 2 {
+		t.Errorf("WarmupDay = %d after two advances from one listing, want 2", e.WarmupDay)
 	}
 }

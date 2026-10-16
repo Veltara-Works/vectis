@@ -1195,11 +1195,21 @@ func TestIPWarmup_Lifecycle(t *testing.T) {
 	ip := fmt.Sprintf("10.254.%d.%d", time.Now().Unix()%250, os.Getpid()%250)
 	label := "warmup-" + suffix
 
-	w, err := repo.Create(ctx, ip, label)
-	if err != nil {
-		t.Fatalf("create warmup: %v", err)
+	w, existing, err := repo.CreateIfNoneActive(ctx, ip, label)
+	if err != nil || w == nil {
+		t.Fatalf("create warmup = %v, active %v, %v", w, existing, err)
 	}
 	defer repo.Delete(ctx, w.ID)
+
+	// Only one warmup can be active: a second start, for another IP, is refused
+	// and reports the active one.
+	ip2 := fmt.Sprintf("10.254.%d.%d", (time.Now().Unix()+1)%250, os.Getpid()%250)
+	if w2, act, err := repo.CreateIfNoneActive(ctx, ip2, "second"); err != nil || w2 != nil || act == nil || act.ID != w.ID {
+		if w2 != nil {
+			repo.Delete(ctx, w2.ID)
+		}
+		t.Fatalf("second CreateIfNoneActive = %v, active %v, %v; want refused with the first as active", w2, act, err)
+	}
 
 	if w.WarmupDay != 1 {
 		t.Errorf("initial WarmupDay = %d, want 1", w.WarmupDay)
@@ -1236,18 +1246,26 @@ func TestIPWarmup_Lifecycle(t *testing.T) {
 	}
 
 	// Day 1 allows 50: 30 fits, another 30 doesn't, 20 more does.
-	got, ok, err := repo.Reserve(ctx, 30)
+	dayOpen := time.Now().Add(-24 * time.Hour) // the day started after this: current
+	got, ok, err := repo.Reserve(ctx, 30, dayOpen)
 	if err != nil || !ok || got.DailySent != 30 {
 		t.Fatalf("Reserve(30) = %+v, %v, %v; want ok with 30 sent", got, ok, err)
 	}
-	got, ok, err = repo.Reserve(ctx, 30)
+	got, ok, err = repo.Reserve(ctx, 30, dayOpen)
 	if err != nil || ok || got == nil || got.DailySent != 30 {
 		t.Fatalf("Reserve(30) over the limit = %+v, %v, %v; want refused, still 30 sent", got, ok, err)
 	}
-	if _, ok, _ = repo.Reserve(ctx, 20); !ok {
+	if _, ok, _ = repo.Reserve(ctx, 20, dayOpen); !ok {
 		t.Fatal("Reserve(20) to exactly the limit was refused")
 	}
-	if err := repo.Release(ctx, w.ID, 70); err != nil {
+	// A release for a day that has since reset is ignored.
+	if err := repo.Release(ctx, w.ID, 50, active.LastResetAt.Add(-24*time.Hour)); err != nil {
+		t.Fatalf("release for an old day: %v", err)
+	}
+	if e, _ := repo.GetByIP(ctx, ip); e.DailySent != 50 {
+		t.Errorf("DailySent after releasing an old day's sends = %d, want 50 (untouched)", e.DailySent)
+	}
+	if err := repo.Release(ctx, w.ID, 70, active.LastResetAt); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	afterRel, _ := repo.GetByIP(ctx, ip)
@@ -1256,8 +1274,16 @@ func TestIPWarmup_Lifecycle(t *testing.T) {
 	}
 
 	resetAt := w.LastResetAt.Add(24 * time.Hour).Truncate(time.Microsecond) // Postgres keeps microseconds
-	if err := repo.AdvanceDay(ctx, w.ID, 2, 100, resetAt); err != nil {
-		t.Fatalf("advance day: %v", err)
+	// A day that has ended takes no more sends, even within the limit.
+	if _, ok, err := repo.Reserve(ctx, 1, time.Now().Add(time.Minute)); err != nil || ok {
+		t.Fatalf("Reserve on an ended day = %v, %v; want refused", ok, err)
+	}
+	if ok, err := repo.AdvanceDay(ctx, w.ID, active.LastResetAt, 2, 100, resetAt); err != nil || !ok {
+		t.Fatalf("advance day = %v, %v; want advanced", ok, err)
+	}
+	// A second advance from the same (now stale) day is a no-op.
+	if ok, err := repo.AdvanceDay(ctx, w.ID, active.LastResetAt, 3, 200, resetAt.Add(24*time.Hour)); err != nil || ok {
+		t.Fatalf("stale advance = %v, %v; want no change", ok, err)
 	}
 	afterAdv, _ := repo.GetByIP(ctx, ip)
 	if afterAdv.WarmupDay != 2 || afterAdv.DailyLimit != 100 {

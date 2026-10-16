@@ -86,23 +86,17 @@ func (s *Server) handleCreateWarmup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The server sends from one IP, and the daily limit applies to all outbound
-	// mail, so only one warmup can run at a time.
-	active, err := s.ipWarmup.GetActive(r.Context())
+	// mail, so only one warmup can run at a time. The check and the insert are
+	// one locked transaction, so two concurrent requests can't both start one.
+	entry, active, err := s.ipWarmup.CreateIfNoneActive(r.Context(), req.IPAddress, req.Label)
 	if err != nil {
-		s.logger.Error("get active ip warmup failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to check existing warmups")
+		s.logger.Error("create ip warmup failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create warmup entry")
 		return
 	}
 	if active != nil {
 		respondError(w, r, http.StatusConflict, "WARMUP_ACTIVE",
 			"A warmup is already running for "+warmupIP(active.IPAddress)+"; cancel it before starting another")
-		return
-	}
-
-	entry, err := s.ipWarmup.Create(r.Context(), req.IPAddress, req.Label)
-	if err != nil {
-		s.logger.Error("create ip warmup failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create warmup entry")
 		return
 	}
 

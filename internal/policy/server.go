@@ -94,23 +94,24 @@ type Config struct {
 	Warmup Warmup
 }
 
-// messageState is what a policy connection remembers about the message in
-// progress. Postfix sends every request for one message over the same policy
-// connection with the same "instance" attribute, and a new instance means the
-// previous message was completed or aborted (SMTPD_POLICY_README), so
-// per-connection state is enough.
-type messageState struct {
-	instance string
-	external int // external recipients accepted so far
+// pendingMessage is what the server remembers between a message's RCPT
+// requests and its DATA request: how many recipients are outside this server.
+// It is shared across connections, not kept per connection, because Postfix
+// reconnects when a policy connection is closed (idle timeout, max TTL), and
+// that can fall between a message's RCPT and DATA.
+type pendingMessage struct {
+	external int
+	seen     time.Time
 }
 
-// forInstance resets the state when a new message starts.
-func (m *messageState) forInstance(instance string) {
-	if instance != m.instance {
-		m.instance = instance
-		m.external = 0
-	}
-}
+// Bounds on the pending-message table. An entry normally lives for one SMTP
+// transaction; one that is never completed expires after pendingTTL. Over
+// maxPending entries, new messages aren't tracked and are counted
+// conservatively at DATA (all accepted recipients as external).
+const (
+	pendingTTL = time.Hour
+	maxPending = 10000
+)
 
 // Server is the policy delegation server.
 type Server struct {
@@ -123,6 +124,11 @@ type Server struct {
 	conns  map[net.Conn]struct{} // live client connections, closed on Stop
 	closed bool
 	wg     sync.WaitGroup
+
+	pendingMu  sync.Mutex
+	pending    map[string]*pendingMessage // keyed by pendingKey
+	maxPending int
+	now        func() time.Time
 }
 
 // New builds a policy server. It does not bind a listener until Start.
@@ -130,7 +136,8 @@ func New(backend Backend, cfg Config, logger *slog.Logger) *Server {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
-	return &Server{cfg: cfg, backend: backend, logger: logger, conns: make(map[net.Conn]struct{})}
+	return &Server{cfg: cfg, backend: backend, logger: logger, conns: make(map[net.Conn]struct{}),
+		pending: make(map[string]*pendingMessage), maxPending: maxPending, now: time.Now}
 }
 
 // Start binds the listener and serves connections in the background. It returns
@@ -263,7 +270,6 @@ const (
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	r := bufio.NewReader(conn)
-	var msg messageState
 	for {
 		// Bound each request read (G-L1): the whole request — first line to the
 		// blank terminator — must arrive within idleReadTimeout, else reap the
@@ -278,7 +284,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.Timeout)
-		action := s.evaluate(ctx, attrs, &msg)
+		action := s.evaluate(ctx, attrs)
 		cancel()
 		// Bound the response write (POL-1).
 		_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
@@ -293,9 +299,9 @@ const actionOK = "DUNNO"
 
 // evaluate handles one policy request and returns the Postfix action string.
 // At RCPT it only counts external recipients for the warmup limit; at DATA it
-// runs the suspend, rate and warmup checks. msg is the connection's state for
-// the message in progress. It is the unit-tested core of the server.
-func (s *Server) evaluate(ctx context.Context, attrs map[string]string, msg *messageState) string {
+// runs the suspend, rate and warmup checks. It is the unit-tested core of the
+// server.
+func (s *Server) evaluate(ctx context.Context, attrs map[string]string) string {
 	login := normalizeLogin(attrs["sasl_username"], s.cfg.Hostname)
 	if login == "" {
 		// No authenticated user. This server is only attached to the
@@ -303,9 +309,9 @@ func (s *Server) evaluate(ctx context.Context, attrs map[string]string, msg *mes
 		// isn't an authenticated send (defence in depth for inbound on :25).
 		return actionOK
 	}
-	msg.forInstance(attrs["instance"])
+	key := pendingKey(attrs, login)
 	if attrs["protocol_state"] == "RCPT" {
-		s.countRecipient(ctx, attrs["recipient"], msg)
+		s.countRecipient(ctx, key, attrs["recipient"])
 		return actionOK
 	}
 
@@ -349,46 +355,112 @@ func (s *Server) evaluate(ctx context.Context, attrs map[string]string, msg *mes
 		}
 	}
 
-	return s.reserveWarmup(ctx, attrs, msg)
+	return s.reserveWarmup(ctx, attrs, key)
+}
+
+// pendingKey identifies a message across policy requests: Postfix's
+// per-message "instance" attribute, qualified by client and login. Empty when
+// Postfix sent no instance.
+func pendingKey(attrs map[string]string, login string) string {
+	if attrs["instance"] == "" {
+		return ""
+	}
+	return attrs["instance"] + "|" + attrs["client_address"] + "|" + login
 }
 
 // countRecipient adds an RCPT-stage recipient to the message's external count
 // when its domain isn't hosted here. A lookup error counts it as external, so
 // warmup errs towards limiting.
-func (s *Server) countRecipient(ctx context.Context, recipient string, msg *messageState) {
-	if s.cfg.Warmup == nil {
+// Every RCPT records the message, even with a local recipient, so DATA can
+// tell "no external recipients" from "nothing recorded".
+func (s *Server) countRecipient(ctx context.Context, key, recipient string) {
+	if s.cfg.Warmup == nil || key == "" {
 		return
 	}
+	external := false
 	addr := strings.ToLower(strings.TrimSpace(recipient))
-	i := strings.LastIndex(addr, "@")
-	if i < 0 || i == len(addr)-1 {
-		return // a bare local name (e.g. "postmaster") is delivered here
+	if i := strings.LastIndex(addr, "@"); i >= 0 && i < len(addr)-1 {
+		domain := addr[i+1:]
+		local, err := s.cfg.Warmup.IsLocalDomain(ctx, domain)
+		if err != nil {
+			s.logger.Warn("policy: recipient domain lookup failed, counting as external", "domain", domain, "error", err)
+		}
+		external = err != nil || !local
+	} // else a bare local name (e.g. "postmaster"), delivered here
+
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	p := s.pending[key]
+	if p == nil {
+		if len(s.pending) >= s.maxPending {
+			s.prunePendingLocked()
+		}
+		if len(s.pending) >= s.maxPending {
+			return // full: DATA will count this message conservatively
+		}
+		p = &pendingMessage{}
+		s.pending[key] = p
 	}
-	domain := addr[i+1:]
-	local, err := s.cfg.Warmup.IsLocalDomain(ctx, domain)
-	if err != nil {
-		s.logger.Warn("policy: recipient domain lookup failed, counting as external", "domain", domain, "error", err)
+	p.seen = s.now()
+	if external {
+		p.external++
 	}
-	if err != nil || !local {
-		msg.external++
+}
+
+// prunePendingLocked drops entries older than pendingTTL. s.pendingMu must be
+// held.
+func (s *Server) prunePendingLocked() {
+	cutoff := s.now().Add(-pendingTTL)
+	for k, p := range s.pending {
+		if p.seen.Before(cutoff) {
+			delete(s.pending, k)
+		}
 	}
 }
 
 // reserveWarmup reserves the message's external recipients at DATA. Over the
 // limit, the message is deferred with 452 4.5.3, so it is retried rather than
-// bounced. Errors fail open, like the rate check.
-func (s *Server) reserveWarmup(ctx context.Context, attrs map[string]string, msg *messageState) string {
-	n := msg.external
-	msg.external = 0
-	if s.cfg.Warmup == nil || n == 0 {
+// bounced, and its count is kept: Postfix keeps the envelope after a DATA
+// deferral, so the client can send DATA again for the same message, and that
+// must be checked again. With nothing recorded for the message (the policy
+// server restarted mid-transaction, or the RCPT hook isn't configured), every
+// recipient Postfix accepted counts as external. Errors fail open, like the
+// rate check.
+func (s *Server) reserveWarmup(ctx context.Context, attrs map[string]string, key string) string {
+	if s.cfg.Warmup == nil {
 		return actionOK
 	}
-	// Never count more recipients than Postfix accepted for the message.
-	if c, err := strconv.Atoi(attrs["recipient_count"]); err == nil && c > 0 && c < n {
-		n = c
+	accepted, _ := strconv.Atoi(attrs["recipient_count"])
+
+	s.pendingMu.Lock()
+	p, found := s.pending[key]
+	n := accepted
+	if found {
+		n = p.external
+		// Never count more recipients than Postfix accepted for the message.
+		if accepted > 0 && accepted < n {
+			n = accepted
+		}
+	}
+	s.pendingMu.Unlock()
+	if !found && key != "" {
+		s.logger.Debug("policy: no recipients recorded for message, counting all as external", "instance", attrs["instance"], "recipients", n)
+	}
+
+	done := func() {
+		if found {
+			s.pendingMu.Lock()
+			delete(s.pending, key)
+			s.pendingMu.Unlock()
+		}
+	}
+	if n <= 0 {
+		done()
+		return actionOK
 	}
 	allowed, why, err := s.cfg.Warmup.ReserveWarmup(ctx, n)
 	if err != nil {
+		done()
 		s.logger.Error("policy: warmup reserve failed, failing open", "error", err)
 		return actionOK
 	}
@@ -397,6 +469,7 @@ func (s *Server) reserveWarmup(ctx context.Context, attrs map[string]string, msg
 		s.onReject("warmup_limit")
 		return "452 4.5.3 " + sanitizeText(why)
 	}
+	done()
 	return actionOK
 }
 
