@@ -1,6 +1,6 @@
 // Package policy implements a Postfix SMTP access policy delegation server that
-// enforces per-mailbox send suspension and the outbound abuse rate-limit on the
-// authenticated submission path (ports 587/465).
+// enforces per-mailbox send suspension, the outbound abuse rate-limit and the
+// IP warmup daily limit on the authenticated submission path (ports 587/465).
 //
 // Background: Vectis already has a complete send-suspend subsystem
 // (mailboxes.send_suspended, AbuseDetector, the /abuse admin API), but it was
@@ -25,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,23 @@ type Backend interface {
 	AutoSuspend(ctx context.Context, mailboxID, domainID, reason string, hourlyCount int64)
 }
 
+// Warmup applies the IP warmup daily limit. Only recipients outside this
+// server count: local deliveries never touch the sending IP's reputation.
+type Warmup interface {
+	// Active reports whether a warmup is running (cheaply, from a cache).
+	// When none is, recipients aren't classified at RCPT; DATA still asks
+	// ReserveWarmup, which counts every accepted recipient for a message with
+	// nothing recorded, so a warmup started mid-transaction is still applied.
+	Active(ctx context.Context) bool
+	// IsLocalDomain reports whether mail to domain is delivered on this server.
+	IsLocalDomain(ctx context.Context, domain string) (bool, error)
+	// ReserveWarmup counts n external recipients against today's limit, all
+	// or none. allowed false means defer the message; message says why. When
+	// allowed, release gives the reservation back (the message was then
+	// refused for another reason); it is never nil.
+	ReserveWarmup(ctx context.Context, n int) (allowed bool, message string, release func(), err error)
+}
+
 // Config tunes the policy server.
 type Config struct {
 	// ListenAddr is the TCP address Postfix connects to (e.g. ":10099"). Empty
@@ -72,10 +90,36 @@ type Config struct {
 	FailOpen bool
 	// Timeout bounds each backend evaluation. Defaults to 5s.
 	Timeout time.Duration
-	// OnReject, when set, is called once per rejected message with the reason
-	// label ("suspended" or "rate_limit"). Used for metrics; optional.
+	// OnReject, when set, is called once per rejected or deferred message with
+	// the reason label ("suspended", "rate_limit" or "warmup_limit"). Used for
+	// metrics; optional.
 	OnReject func(reason string)
+	// Warmup, when set, enforces the IP warmup daily limit: external
+	// recipients are counted at RCPT and reserved at DATA, and a message over
+	// the limit gets a 452 deferral. This needs the policy attached at the RCPT
+	// stage as well as DATA (see master.cf). Nil disables it.
+	Warmup Warmup
 }
+
+// pendingMessage is what the server remembers between a message's RCPT
+// requests and its DATA request: how many recipients are outside this server.
+// It is shared across connections, not kept per connection, because Postfix
+// reconnects when a policy connection is closed (idle timeout, max TTL), and
+// that can fall between a message's RCPT and DATA.
+type pendingMessage struct {
+	external int // recipients outside this server
+	rcpts    int // RCPT requests seen, to tell a complete history from part of one
+	seen     time.Time
+}
+
+// Bounds on the pending-message table. An entry normally lives for one SMTP
+// transaction; one that is never completed expires after pendingTTL. Over
+// maxPending entries, new messages aren't tracked and are counted
+// conservatively at DATA (all accepted recipients as external).
+const (
+	pendingTTL = time.Hour
+	maxPending = 10000
+)
 
 // Server is the policy delegation server.
 type Server struct {
@@ -88,6 +132,11 @@ type Server struct {
 	conns  map[net.Conn]struct{} // live client connections, closed on Stop
 	closed bool
 	wg     sync.WaitGroup
+
+	pendingMu  sync.Mutex
+	pending    map[string]*pendingMessage // keyed by pendingKey
+	maxPending int
+	now        func() time.Time
 }
 
 // New builds a policy server. It does not bind a listener until Start.
@@ -95,7 +144,8 @@ func New(backend Backend, cfg Config, logger *slog.Logger) *Server {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
-	return &Server{cfg: cfg, backend: backend, logger: logger, conns: make(map[net.Conn]struct{})}
+	return &Server{cfg: cfg, backend: backend, logger: logger, conns: make(map[net.Conn]struct{}),
+		pending: make(map[string]*pendingMessage), maxPending: maxPending, now: time.Now}
 }
 
 // Start binds the listener and serves connections in the background. It returns
@@ -255,14 +305,21 @@ func (s *Server) handleConn(conn net.Conn) {
 
 const actionOK = "DUNNO"
 
-// evaluate runs the suspend + rate checks for one policy request and returns the
-// Postfix action string. It is the unit-tested core of the server.
+// evaluate handles one policy request and returns the Postfix action string.
+// At RCPT it only counts external recipients for the warmup limit; at DATA it
+// runs the suspend, rate and warmup checks. It is the unit-tested core of the
+// server.
 func (s *Server) evaluate(ctx context.Context, attrs map[string]string) string {
 	login := normalizeLogin(attrs["sasl_username"], s.cfg.Hostname)
 	if login == "" {
 		// No authenticated user. This server is only attached to the
 		// submission/smtps services, but never interfere with anything that
 		// isn't an authenticated send (defence in depth for inbound on :25).
+		return actionOK
+	}
+	key := pendingKey(attrs, login)
+	if attrs["protocol_state"] == "RCPT" {
+		s.countRecipient(ctx, key, attrs["recipient"])
 		return actionOK
 	}
 
@@ -273,9 +330,12 @@ func (s *Server) evaluate(ctx context.Context, attrs map[string]string) string {
 	}
 	if !found {
 		// Authenticated as something with no matching mailbox (alias-only login,
-		// Dovecot master user, or a race with deletion). Don't block.
+		// Dovecot master user, or a race with deletion). There's no mailbox to
+		// suspend or rate-limit, but the warmup limit is server-wide and still
+		// applies.
 		s.logger.Debug("policy: login resolved to no mailbox", "login", login)
-		return actionOK
+		action, _ := s.reserveWarmup(ctx, attrs, key)
+		return action
 	}
 
 	suspended, reason, err := s.backend.IsMailboxSuspended(ctx, mailboxID)
@@ -289,6 +349,14 @@ func (s *Server) evaluate(ctx context.Context, attrs map[string]string) string {
 		return rejectAction("Sending from this mailbox is suspended" + reasonSuffix(reason))
 	}
 
+	// The warmup limit comes before the rate check, so a message deferred for
+	// warmup isn't charged to the mailbox's hourly rate: a client retrying
+	// after each 452 could otherwise get the mailbox auto-suspended.
+	action, release := s.reserveWarmup(ctx, attrs, key)
+	if action != actionOK {
+		return action
+	}
+
 	if s.cfg.RateLimit {
 		allowed, rlReason, hourly, err := s.backend.CheckAndRecord(ctx, mailboxID, domainID)
 		if err != nil {
@@ -298,6 +366,7 @@ func (s *Server) evaluate(ctx context.Context, attrs map[string]string) string {
 			return actionOK
 		}
 		if !allowed {
+			release() // not sent: give the warmup reservation back
 			s.logger.Warn("policy: auto-suspending mailbox over rate limit",
 				"mailbox_id", mailboxID, "login", login, "hourly_count", hourly)
 			s.backend.AutoSuspend(ctx, mailboxID, domainID, rlReason, hourly)
@@ -307,6 +376,129 @@ func (s *Server) evaluate(ctx context.Context, attrs map[string]string) string {
 	}
 
 	return actionOK
+}
+
+// pendingKey identifies a message across policy requests: Postfix's
+// per-message "instance" attribute, qualified by client and login. Empty when
+// Postfix sent no instance.
+func pendingKey(attrs map[string]string, login string) string {
+	if attrs["instance"] == "" {
+		return ""
+	}
+	return attrs["instance"] + "|" + attrs["client_address"] + "|" + login
+}
+
+// countRecipient adds an RCPT-stage recipient to the message's external count
+// when its domain isn't hosted here. A lookup error counts it as external, so
+// warmup errs towards limiting.
+// Every RCPT records the message, even with a local recipient, so DATA can
+// tell "no external recipients" from "nothing recorded".
+func (s *Server) countRecipient(ctx context.Context, key, recipient string) {
+	if s.cfg.Warmup == nil || key == "" || !s.cfg.Warmup.Active(ctx) {
+		return
+	}
+	external := false
+	addr := strings.ToLower(strings.TrimSpace(recipient))
+	if i := strings.LastIndex(addr, "@"); i >= 0 && i < len(addr)-1 {
+		domain := addr[i+1:]
+		local, err := s.cfg.Warmup.IsLocalDomain(ctx, domain)
+		if err != nil {
+			s.logger.Warn("policy: recipient domain lookup failed, counting as external", "domain", domain, "error", err)
+		}
+		external = err != nil || !local
+	} // else a bare local name (e.g. "postmaster"), delivered here
+
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	p := s.pending[key]
+	if p == nil {
+		if len(s.pending) >= s.maxPending {
+			s.prunePendingLocked()
+		}
+		if len(s.pending) >= s.maxPending {
+			return // full: DATA will count this message conservatively
+		}
+		p = &pendingMessage{}
+		s.pending[key] = p
+	}
+	p.seen = s.now()
+	p.rcpts++
+	if external {
+		p.external++
+	}
+}
+
+// prunePendingLocked drops entries older than pendingTTL. s.pendingMu must be
+// held.
+func (s *Server) prunePendingLocked() {
+	cutoff := s.now().Add(-pendingTTL)
+	for k, p := range s.pending {
+		if p.seen.Before(cutoff) {
+			delete(s.pending, k)
+		}
+	}
+}
+
+// reserveWarmup reserves the message's external recipients at DATA. Over the
+// limit, the message is deferred with 452 4.5.3, so it is retried rather than
+// bounced, and its count is kept: Postfix keeps the envelope after a DATA
+// deferral, so the client can send DATA again for the same message, and that
+// must be checked again. With nothing recorded for the message, or only part
+// of its recipients (the policy server restarted mid-transaction, the table
+// was full for some RCPTs, or the RCPT hook isn't configured), every
+// recipient Postfix accepted counts as external. Errors fail open, like the
+// rate check.
+func (s *Server) reserveWarmup(ctx context.Context, attrs map[string]string, key string) (string, func()) {
+	noop := func() {}
+	if s.cfg.Warmup == nil {
+		return actionOK, noop
+	}
+	accepted, _ := strconv.Atoi(attrs["recipient_count"])
+
+	s.pendingMu.Lock()
+	p, found := s.pending[key]
+	n := accepted
+	complete := found && p.rcpts >= accepted
+	if complete {
+		n = p.external
+		// Never count more recipients than Postfix accepted for the message.
+		if accepted > 0 && accepted < n {
+			n = accepted
+		}
+	}
+	s.pendingMu.Unlock()
+	if !complete && key != "" {
+		s.logger.Debug("policy: recipients not fully recorded for message, counting all as external",
+			"instance", attrs["instance"], "recipients", n)
+	}
+
+	done := func() {
+		if found {
+			s.pendingMu.Lock()
+			delete(s.pending, key)
+			s.pendingMu.Unlock()
+		}
+	}
+	if n <= 0 {
+		done()
+		return actionOK, noop
+	}
+	allowed, why, release, err := s.cfg.Warmup.ReserveWarmup(ctx, n)
+	if err != nil {
+		done()
+		s.logger.Error("policy: warmup reserve failed, failing open", "error", err)
+		return actionOK, noop
+	}
+	if !allowed {
+		s.logger.Warn("policy: deferring message over the IP warmup daily limit", "external_recipients", n)
+		s.onReject("warmup_limit")
+		return "452 4.5.3 " + sanitizeText(why), noop
+	}
+	done()
+	if release == nil {
+		release = noop
+	}
+	return actionOK, release
 }
 
 func (s *Server) onReject(reason string) {

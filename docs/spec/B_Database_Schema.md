@@ -566,7 +566,7 @@ Hourly aggregated counters per domain for the analytics dashboard.
 
 ### ip_warmup, rbl_checks, fbl_reports
 
-- **ip_warmup**: Tracks IP reputation warmup schedule with daily volume targets.
+- **ip_warmup**: Tracks IP reputation warmup schedule with daily volume targets. `daily_sent` counts external recipients reserved today (one atomic `UPDATE … WHERE daily_sent + n <= daily_limit`); `last_reset_at` is the scheduled daily boundary. At most one row is active (enforced by the API, A.13).
 - **rbl_checks**: DNS blacklist monitoring results for server IPs (three-way `status` from 000025, B.22).
 - **fbl_reports**: ISP feedback loop (ARF) complaint reports.
 

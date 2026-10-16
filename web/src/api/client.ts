@@ -85,6 +85,21 @@ export interface RBLStatusResponse {
   ips: RBLIPStatus[]
 }
 
+// IP warmup (super_admin only). While active, each day's external recipients
+// are limited to daily_limit across the send API and SMTP submission.
+export interface WarmupEntry {
+  id: string
+  ip_address: string
+  label?: string
+  warmup_started: string
+  warmup_day: number
+  days_total: number
+  daily_limit: number
+  daily_sent: number
+  next_reset_at: string
+  active: boolean
+}
+
 export const api = {
   // Auth
   login: (email: string, password: string, totp_session?: string, totp_code?: string) =>
@@ -247,6 +262,13 @@ export const api = {
   // Outbound RBL monitoring (super_admin only).
   rblStatus: () => request<RBLStatusResponse>('GET', '/deliverability/rbl'),
   rblCheckNow: () => request<{ total: number; listed: number; unknown: number }>('POST', '/deliverability/rbl/check'),
+
+  // IP warmup (super_admin only).
+  warmupList: () => request<WarmupEntry[]>('GET', '/deliverability/warmup'),
+  warmupStart: (ip_address: string, label?: string) =>
+    request<WarmupEntry>('POST', '/deliverability/warmup', { ip_address, ...(label ? { label } : {}) }),
+  warmupCancel: (id: string) =>
+    request<{ status: string }>('DELETE', `/deliverability/warmup/${encodeURIComponent(id)}`),
 
   // Last `vectis verify` result recorded by the host timer (super_admin only).
   verifyStatus: () =>

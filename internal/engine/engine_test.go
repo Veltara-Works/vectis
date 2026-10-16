@@ -146,6 +146,22 @@ func TestPostfixMasterCFSubmissionPolicy(t *testing.T) {
 	if n := strings.Count(masterCF, policyHook); n != 2 {
 		t.Errorf("policy hook count = %d, want 2 (submission + smtps)\n%s", n, masterCF)
 	}
+	// Port 25 must not offer AUTH, or an authenticated client could send there
+	// and skip the submission policy (suspend, rate limit, warmup).
+	smtpLine := "smtp      inet  n       -       n       -       -       smtpd\n  -o smtpd_sasl_auth_enable=no\n"
+	if !strings.Contains(masterCF, smtpLine) {
+		t.Errorf("smtp (port 25) service must set -o smtpd_sasl_auth_enable=no\n%s", masterCF)
+	}
+	if n := strings.Count(masterCF, "-o smtpd_sasl_auth_enable=no"); n != 1 {
+		t.Errorf("smtpd_sasl_auth_enable=no count = %d, want 1 (port 25 only)", n)
+	}
+	// The RCPT-stage hook counts external recipients for the IP warmup limit.
+	// It must run before permit_sasl_authenticated (which ends the list) and
+	// keep authenticated clients permitted.
+	const rcptHook = "-o smtpd_recipient_restrictions=vectis_submission_policy,permit_sasl_authenticated,reject"
+	if n := strings.Count(masterCF, rcptHook); n != 2 {
+		t.Errorf("RCPT policy hook count = %d, want 2 (submission + smtps)\n%s", n, masterCF)
+	}
 	if n := strings.Count(masterCF, "-o smtpd_policy_service_default_action=DUNNO"); n != 2 {
 		t.Errorf("policy default_action override count = %d, want 2", n)
 	}

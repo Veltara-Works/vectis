@@ -233,3 +233,33 @@ func assertErrorEnvelope(t *testing.T, rec *httptest.ResponseRecorder, wantStatu
 		t.Fatalf("error envelope = %+v, want code %q", resp.Error, wantCode)
 	}
 }
+
+// Postgres prints an inet with its prefix length; the API shows bare addresses
+// for both families (an IPv6 address copied back into the form must validate).
+func TestWarmupIP(t *testing.T) {
+	for in, want := range map[string]string{
+		"203.0.113.7/32":   "203.0.113.7",
+		"2001:db8::1/128":  "2001:db8::1",
+		"203.0.113.7":      "203.0.113.7",
+		"2001:db8::25/128": "2001:db8::25",
+	} {
+		if got := warmupIP(in); got != want {
+			t.Errorf("warmupIP(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Recipient domains come after the last "@" (a quoted local part may contain
+// one), lower-cased.
+func TestRecipientDomain(t *testing.T) {
+	for in, want := range map[string]string{
+		"bob@Example.COM":            "example.com",
+		`"team@east"@hosted.example`: "hosted.example",
+		" carol@example.org ":        "example.org",
+		"postmaster":                 "",
+	} {
+		if got := recipientDomain(in); got != want {
+			t.Errorf("recipientDomain(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

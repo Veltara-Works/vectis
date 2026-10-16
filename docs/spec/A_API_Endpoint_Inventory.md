@@ -218,6 +218,8 @@ The Edit modal handles email + role + password + (when actor has TOTP enabled) a
 | POST | /api/v1/api-keys | Create API key | session |
 | DELETE | /api/v1/api-keys/{keyID} | Revoke API key | session |
 
+- **IP warmup limit (#287).** While a warmup is active (A.13), each message's recipients outside this server are counted against today's limit, all or none. Over the limit, `POST /send` returns 429 `WARMUP_LIMIT` with `Retry-After` (seconds until the daily reset) and the message is not accepted; in `/send/batch` the message's result carries `code: "WARMUP_LIMIT"`. Recipients on domains hosted here don't count. A message that fails to send after being counted is given back. Authenticated SMTP submission (587/465) is held to the same limit by the Postfix policy server: recipients are counted at RCPT and reserved at DATA, and a message over the limit gets `452 4.5.3` (deferred, not bounced).
+
 Domain scoping: handlers enforce that a session/api-key may only act on domains within the actor's authorised set.
 
 ---
@@ -307,12 +309,14 @@ Behaviour at the gate:
 
 | Method | Endpoint | Purpose | Auth |
 |--------|----------|---------|------|
-| GET | /api/v1/deliverability/warmup | List active IP-warmup schedules | super |
-| POST | /api/v1/deliverability/warmup | Create warmup schedule | super |
-| DELETE | /api/v1/deliverability/warmup/{warmupID} | Cancel warmup schedule | super |
+| GET | /api/v1/deliverability/warmup | List IP-warmup schedules (active and finished): `warmup_day`, `days_total`, `daily_sent`, `daily_limit`, `schedule_limit`, `utilization_pct`, `next_reset_at` | super |
+| POST | /api/v1/deliverability/warmup | Start a warmup for `ip_address` (+ optional `label`). 400 `INVALID_IP`; 409 `ALREADY_EXISTS` (that IP has an entry) or `WARMUP_ACTIVE` (another warmup is running: one at a time, as the limit applies to all outbound mail) | super |
+| DELETE | /api/v1/deliverability/warmup/{warmupID} | Cancel a warmup; sending is no longer limited | super |
 | GET | /api/v1/deliverability/rbl | Latest RBL result per list for each server IP: `status` (listed / clean / unknown), `list_name`, `delist_url`, `listed_count`, `unknown_count`; `clean` only when every list answered and none lists the IP. `status: "no_ips_yet"` before the first run | super |
 | POST | /api/v1/deliverability/rbl/check | Run a check now; returns the results plus `listed` / `unknown` counts. 503 `RBL_DISCOVERY_FAILED` when the server's IP can't be determined and none is known from an earlier run (the background loop then retries in 5 minutes, not 6 hours); 500 `RBL_STORE_FAILED` when results ran but could not be saved | super |
 | GET | /api/v1/deliverability/fbl | List feedback-loop reports | super |
+
+- **Warmup schedule.** 30 days, starting at 50 external recipients a day (`repository.WarmupSchedule`). The daily count resets, and the next day's limit applies, 24 h after the previous reset, at the same time of day; the api checks every 5 minutes and also on a refused send that is due a reset. Days the api was down advance the schedule by one day, not several. After day 30 the warmup completes and stops limiting. Enforcement: A.8.
 | POST | /api/v1/deliverability/fbl | Configure new FBL provider | super |
 
 ---

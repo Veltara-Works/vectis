@@ -162,6 +162,8 @@ Only specific containers have ports mapped to the host:
 | Dovecot | 993 | 993 | TCP (IMAPS) | IMAP over TLS (direct mapping, not via Traefik) |
 | Dovecot | 995 | 995 | TCP (POP3S) | POP3 over TLS (direct mapping, not via Traefik) |
 
+Port 25 is server-to-server only: it does not offer SMTP AUTH (`-o smtpd_sasl_auth_enable=no`, #287). Clients and webmail authenticate on 587/465, where the submission policy (send-suspend, abuse rate limit, IP warmup) applies. Vectis's own senders on 25 (send API, alerts) are trusted via `mynetworks`.
+
 No other containers have host port mappings. All inter-container communication uses Docker DNS (service names as hostnames on shared networks).
 
 ### Why mail ports are direct-mapped (not via Traefik)

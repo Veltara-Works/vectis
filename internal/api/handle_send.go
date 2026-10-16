@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,9 +50,10 @@ type sendVariant struct {
 // handler (code/error fields) can consume. A zero code means success.
 type sendOutcome struct {
 	messageID  string
-	httpStatus int    // 200 on success; the appropriate 4xx/5xx on failure
-	code       string // error code, "" on success
-	message    string // human-readable error, "" on success
+	httpStatus int           // 200 on success; the appropriate 4xx/5xx on failure
+	code       string        // error code, "" on success
+	message    string        // human-readable error, "" on success
+	retryAfter time.Duration // > 0: when the caller may retry (sent as Retry-After)
 }
 
 func sendOK(messageID string) sendOutcome {
@@ -78,6 +81,9 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	out := s.sendMessage(r, req, adminID, adminRole, apiKeyID, ip, sendVariant{auditAction: "mail.send"})
 	if out.code != "" {
+		if out.retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(out.retryAfter.Round(time.Second).Seconds())))
+		}
 		respondError(w, r, out.httpStatus, out.code, out.message)
 		return
 	}
@@ -102,6 +108,7 @@ const maxRecipientsPerMessage = 100
 
 func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRole, apiKeyID, ip string, v sendVariant) sendOutcome {
 	ctx := r.Context()
+	sent := false // set once Postfix accepts the message; until then a warmup reservation is given back
 
 	// Validate required fields.
 	if req.From.Email == "" {
@@ -200,7 +207,38 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 			return sendErr(http.StatusForbidden, "MAILBOX_SUSPENDED",
 				"Sending suspended for this mailbox: "+reason)
 		}
+	}
 
+	// IP warmup: count the message's external recipients against today's
+	// limit. Over the limit, nothing is accepted and the caller is told when
+	// the limit resets. This comes before the abuse rate counters are charged,
+	// so a message refused for warmup doesn't use up the sender's hourly
+	// capacity (a client retrying could otherwise get its mailbox
+	// auto-suspended). The reservation is given back on any path that doesn't
+	// end with the message sent. Fails open on a database error, like the
+	// abuse checks.
+	if on, err := s.warmupActive(ctx); on {
+		if err != nil {
+			s.logger.Warn("warmup: active check failed, classifying recipients anyway", "error", err)
+		}
+		externalCount := s.countExternalRecipients(ctx, req.To, req.CC, req.BCC)
+		warmup, err := s.warmupManager.Reserve(ctx, externalCount)
+		if err != nil {
+			s.logger.Error("warmup reserve failed, allowing send", "error", err)
+		} else if !warmup.Allowed {
+			vectismetrics.WarmupDeferrals.WithLabelValues("api").Inc()
+			out := sendErr(http.StatusTooManyRequests, "WARMUP_LIMIT", warmupLimitMessage(warmup, externalCount))
+			out.retryAfter = warmup.RetryAfter(time.Now())
+			return out
+		}
+		defer func() {
+			if !sent {
+				s.warmupManager.Release(ctx, warmup, externalCount)
+			}
+		}()
+	}
+
+	if mailbox != nil {
 		// Rate check + spike detection.
 		if s.abuseDetector != nil {
 			check, err := s.abuseDetector.CheckAndRecordN(ctx, mailbox.ID, domain.ID, recipientCount)
@@ -282,6 +320,7 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 			"Failed to send message: "+err.Error())
 	}
 
+	sent = true
 	vectismetrics.EmailsSent.Inc()
 	if v.batch {
 		vectismetrics.BatchMessagesSent.Inc()
@@ -359,4 +398,76 @@ func extractLocalPart(email string) string {
 		return ""
 	}
 	return strings.ToLower(parts[0])
+}
+
+// warmupActive reports whether sends need warmup accounting at all, so the
+// recipient classification below is skipped when no warmup runs.
+func (s *Server) warmupActive(ctx context.Context) (bool, error) {
+	if s.warmupManager == nil {
+		return false, nil
+	}
+	return s.warmupManager.Active(ctx)
+}
+
+// countExternalRecipients counts the recipients whose domain this server
+// doesn't host (or hosts but has deactivated). Only those leave the server and
+// count toward the sending IP's warmup; local deliveries don't. The domains
+// are looked up in one query. A lookup error counts every recipient as
+// external, so warmup errs towards limiting.
+func (s *Server) countExternalRecipients(ctx context.Context, lists ...[]mail.Address) int {
+	var doms []string
+	seen := map[string]bool{}
+	for _, list := range lists {
+		for _, a := range list {
+			if d := recipientDomain(a.Email); !seen[d] {
+				seen[d] = true
+				doms = append(doms, d)
+			}
+		}
+	}
+	local, err := s.domains.ActiveNames(ctx, doms)
+	if err != nil {
+		s.logger.Warn("warmup: recipient domain lookup failed, counting all as external", "error", err)
+		local = nil
+	}
+	n := 0
+	for _, list := range lists {
+		for _, a := range list {
+			if !local[recipientDomain(a.Email)] {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// recipientDomain is the lower-cased domain of a recipient address: the part
+// after the last "@", since a quoted local part may itself contain one
+// ("team@east"@example.com).
+func recipientDomain(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if i := strings.LastIndex(addr, "@"); i >= 0 {
+		return strings.ToLower(addr[i+1:])
+	}
+	return ""
+}
+
+// warmupLimitMessage explains a WARMUP_LIMIT refusal.
+func warmupLimitMessage(d mail.WarmupDecision, external int) string {
+	reset := d.ResetAt.UTC().Format("2006-01-02 15:04 UTC")
+	if external > d.Limit {
+		return fmt.Sprintf("This message has %d external recipients, more than the %d a day allowed on day %d of IP warmup for %s. "+
+			"Split it into smaller sends; the limit rises at %s.", external, d.Limit, d.Day, warmupIP(d.IP), reset)
+	}
+	return fmt.Sprintf("IP warmup daily limit reached for %s: day %d allows %d external recipients and %d have been used. "+
+		"Sending resumes at %s.", warmupIP(d.IP), d.Day, d.Limit, d.Sent, reset)
+}
+
+// warmupIP strips the prefix length Postgres adds when it prints an inet
+// (/32 for IPv4, /128 for IPv6).
+func warmupIP(ip string) string {
+	if i := strings.IndexByte(ip, '/'); i >= 0 {
+		return ip[:i]
+	}
+	return ip
 }
