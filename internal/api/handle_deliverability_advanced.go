@@ -201,11 +201,19 @@ func (s *Server) handleRBLCheckNow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// One row per (IP, list) actually checked in this run.
-	// Bounded below the server's 30 s WriteTimeout so the response always gets
-	// out; lookups still running at the deadline are recorded as unknown.
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	// The DNS work is capped at 20 s, leaving room within the server's 30 s
+	// WriteTimeout to store the results (CheckNow stores them under its own
+	// deadline) and respond. Lookups still running at 20 s are recorded as
+	// unknown.
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	results := s.rblMonitor.CheckNow(ctx)
+	results, err := s.rblMonitor.CheckNow(ctx)
+	if err != nil {
+		s.logger.Error("rbl check: results not stored", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "RBL_STORE_FAILED",
+			"The blocklist check ran but some results could not be saved")
+		return
+	}
 	views := make([]rblCheckView, 0, len(results))
 	listed, unknown := 0, 0
 	for _, c := range results {

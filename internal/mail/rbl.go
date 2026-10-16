@@ -61,6 +61,7 @@ func BlocklistByZone(zone string) (Blocklist, bool) {
 const (
 	rblLookupTimeout = 4 * time.Second
 	rblConcurrency   = 8
+	rblStoreTimeout  = 10 * time.Second // storing a run's results; independent of the lookups' deadline
 )
 
 // testAddress is the RFC 5782 test entry every list should answer as listed.
@@ -184,8 +185,12 @@ func (m *RBLMonitor) IPs() []string {
 	return append([]string(nil), m.ips...)
 }
 
-// CheckNow checks every IP against every list and stores the results.
-func (m *RBLMonitor) CheckNow(ctx context.Context) []repository.RBLCheck {
+// CheckNow checks every IP against every list and stores the results. ctx
+// bounds the DNS work only: results are stored under their own short deadline
+// that isn't cancelled with ctx, so a run that hits its deadline still records
+// what it found (pending lookups as unknown). The error reports results that
+// could not be stored.
+func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error) {
 	ips, err := m.ipSource(ctx)
 	m.mu.Lock()
 	if err != nil {
@@ -201,7 +206,7 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) []repository.RBLCheck {
 			m.ips = nil
 		}
 		m.mu.Unlock()
-		return nil
+		return nil, nil
 	}
 	m.mu.Unlock()
 
@@ -258,7 +263,10 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) []repository.RBLCheck {
 	}
 	wg.Wait()
 
+	storeCtx, cancelStore := context.WithTimeout(context.WithoutCancel(ctx), rblStoreTimeout)
+	defer cancelStore()
 	var results []repository.RBLCheck
+	var storeErrs []error
 	for ipIdx, ip := range ips {
 		for listIdx, l := range m.lists {
 			o := outcomes[ipIdx*len(m.lists)+listIdx]
@@ -267,9 +275,10 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) []repository.RBLCheck {
 			if reason != "" {
 				respPtr = &reason
 			}
-			id, err := m.repo.Create(ctx, ip, l.Zone, status, respPtr)
+			id, err := m.repo.Create(storeCtx, ip, l.Zone, status, respPtr)
 			if err != nil {
 				m.logger.Error("store rbl check failed", "error", err, "ip", ip, "rbl", l.Zone)
+				storeErrs = append(storeErrs, fmt.Errorf("%s on %s: %w", ip, l.Zone, err))
 				continue
 			}
 			results = append(results, repository.RBLCheck{
@@ -291,7 +300,7 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) []repository.RBLCheck {
 	m.mu.Lock()
 	m.ips = ips
 	m.mu.Unlock()
-	return results
+	return results, errors.Join(storeErrs...)
 }
 
 // unionIPs returns a's IPs followed by any in b that a lacks.
@@ -349,7 +358,9 @@ func classifyAnswer(addrs []string, l Blocklist) (string, string) {
 
 func (m *RBLMonitor) checkAll() {
 	ctx := context.Background()
-	m.CheckNow(ctx)
+	if _, err := m.CheckNow(ctx); err != nil {
+		m.logger.Error("rbl run: some results were not stored", "error", err)
+	}
 
 	// Prune old results (keep 30 days).
 	pruned, err := m.repo.PruneOlderThan(ctx, 30*24*time.Hour)

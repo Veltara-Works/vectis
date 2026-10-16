@@ -395,7 +395,10 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	// the mail hostname's A records plus any active warmup IPs, re-read each
 	// run, unless cfg.ServerIPs pins them.
 	rspamdResolver := mail.NewServerResolver(rblResolverAddr)
-	hostResolver := mail.FallbackLookuper{Primary: rspamdResolver, Secondary: net.DefaultResolver, PrimaryTimeout: 3 * time.Second}
+	// The hostname's own A record: the fallback must be a public resolver,
+	// because Docker's embedded DNS answers the mail hostname with Postfix's
+	// private container address (see publicDNSResolver).
+	hostResolver := mail.FallbackLookuper{Primary: rspamdResolver, Secondary: publicDNSResolver, PrimaryTimeout: 3 * time.Second}
 	s.rblMonitor = mail.NewRBLMonitor(s.rblChecks, []mail.Lookuper{rspamdResolver, net.DefaultResolver},
 		s.rblIPSource(cfg.ServerIPs, cfg.Hostname, hostResolver), logger.With("component", "rbl-monitor"))
 

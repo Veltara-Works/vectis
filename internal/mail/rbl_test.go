@@ -57,6 +57,13 @@ var (
 	spamcop = Blocklist{Zone: "bl.spamcop.net", Name: "SpamCop", ListedCodes: []string{"127.0.0.2"}}
 )
 
+func mustCheck(t *testing.T, m *RBLMonitor) {
+	t.Helper()
+	if _, err := m.CheckNow(context.Background()); err != nil {
+		t.Fatalf("CheckNow: %v", err)
+	}
+}
+
 func testMonitor(r Lookuper, ips []string, lists ...Blocklist) (*RBLMonitor, *fakeStore) {
 	store := &fakeStore{}
 	m := NewRBLMonitor(store, []Lookuper{r}, func(context.Context) ([]string, error) { return ips, nil },
@@ -101,7 +108,10 @@ func TestCheckNowStatuses(t *testing.T) {
 		},
 	}
 	m, store := testMonitor(r, []string{"203.0.113.7", "198.51.100.9"}, spamhaus, spamcop)
-	results := m.CheckNow(context.Background())
+	results, err := m.CheckNow(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	want := map[string]string{
 		"203.0.113.7 zen.spamhaus.org":  repository.RBLStatusListed,
@@ -133,7 +143,7 @@ func TestCheckNowListFailingSelfTestIsUnknown(t *testing.T) {
 		"7.113.0.203.zen.spamhaus.org": {"127.255.255.254"},
 	}}
 	m, store := testMonitor(r, []string{"203.0.113.7"}, spamhaus, spamcop)
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 
 	for _, row := range store.rows {
 		switch row.zone {
@@ -157,7 +167,7 @@ func TestCheckNowListFailingSelfTestIsUnknown(t *testing.T) {
 func TestCheckNowNXDOMAINFromUnhealthyListIsUnknown(t *testing.T) {
 	r := &fakeResolver{} // every name NXDOMAIN, test addresses included
 	m, store := testMonitor(r, []string{"203.0.113.7"}, spamcop)
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 	if len(store.rows) != 1 || store.rows[0].status != repository.RBLStatusUnknown {
 		t.Fatalf("rows = %+v, want one unknown", store.rows)
 	}
@@ -166,10 +176,10 @@ func TestCheckNowNXDOMAINFromUnhealthyListIsUnknown(t *testing.T) {
 func TestCheckNowKeepsLastIPsWhenSourceFails(t *testing.T) {
 	r := &fakeResolver{answers: map[string][]string{"2.0.0.127.bl.spamcop.net": {"127.0.0.2"}}}
 	m, store := testMonitor(r, []string{"203.0.113.7"}, spamcop)
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 
 	m.ipSource = func(context.Context) ([]string, error) { return nil, errors.New("dns blip") }
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 	if len(store.rows) != 2 || store.rows[1].ip != "203.0.113.7" {
 		t.Fatalf("second run rows = %+v, want 203.0.113.7 checked again", store.rows)
 	}
@@ -234,7 +244,7 @@ func TestCheckNowUsesTheResolverThatPassedSelfTest(t *testing.T) {
 		func(context.Context) ([]string, error) { return []string{"203.0.113.7"}, nil },
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	m.lists = []Blocklist{spamcop}
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 
 	if len(store.rows) != 1 || store.rows[0].status != repository.RBLStatusClean {
 		t.Fatalf("rows = %+v, want clean via the secondary", store.rows)
@@ -257,7 +267,7 @@ func TestCheckNowNoMidRunFallback(t *testing.T) {
 		func(context.Context) ([]string, error) { return []string{"203.0.113.7"}, nil },
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	m.lists = []Blocklist{spamcop}
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 
 	if len(store.rows) != 1 || store.rows[0].status != repository.RBLStatusUnknown {
 		t.Fatalf("rows = %+v, want unknown", store.rows)
@@ -284,14 +294,14 @@ func TestFallbackLookuperPrimaryDeadline(t *testing.T) {
 func TestCheckNowMergesIPsOnPartialDiscovery(t *testing.T) {
 	r := &fakeResolver{answers: map[string][]string{"2.0.0.127.bl.spamcop.net": {"127.0.0.2"}}}
 	m, store := testMonitor(r, []string{"203.0.113.7", "198.51.100.9"}, spamcop)
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 
 	// The hostname lookup fails; only the warmup IP comes back.
 	m.ipSource = func(context.Context) ([]string, error) {
 		return []string{"198.51.100.9"}, errors.New("resolve mail.example.com: timeout")
 	}
 	store.rows = nil
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 	got := map[string]bool{}
 	for _, row := range store.rows {
 		got[row.ip] = true
@@ -309,15 +319,15 @@ func TestCheckNowMergesIPsOnPartialDiscovery(t *testing.T) {
 func TestCheckNowClearsIPsOnSuccessfulEmptyDiscovery(t *testing.T) {
 	r := &fakeResolver{answers: map[string][]string{"2.0.0.127.bl.spamcop.net": {"127.0.0.2"}}}
 	m, _ := testMonitor(r, []string{"203.0.113.7"}, spamcop)
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 
 	m.ipSource = func(context.Context) ([]string, error) { return nil, errors.New("dns blip") }
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 	if len(m.IPs()) != 1 {
 		t.Fatalf("after a failed discovery IPs() = %v, want the old IP kept", m.IPs())
 	}
 	m.ipSource = func(context.Context) ([]string, error) { return nil, nil }
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 	if len(m.IPs()) != 0 {
 		t.Errorf("after an empty successful discovery IPs() = %v, want none", m.IPs())
 	}
@@ -340,7 +350,7 @@ func TestCheckNowFitsTheRequestDeadlineWithAHungPrimary(t *testing.T) {
 	m.timeout = 100 * time.Millisecond
 
 	start := time.Now()
-	m.CheckNow(context.Background())
+	mustCheck(t, m)
 	// Sequential would be 6 lists x 100 ms on the hung primary alone.
 	if took := time.Since(start); took > 400*time.Millisecond {
 		t.Errorf("run took %v; lists should be self-tested concurrently", took)
@@ -352,5 +362,55 @@ func TestCheckNowFitsTheRequestDeadlineWithAHungPrimary(t *testing.T) {
 		if row.status != repository.RBLStatusClean {
 			t.Errorf("%s: %q, want clean via the secondary", row.zone, row.status)
 		}
+	}
+}
+
+// ctxStore rejects writes made with a cancelled context, like pgx does.
+type ctxStore struct{ fakeStore }
+
+func (s *ctxStore) Create(ctx context.Context, ip, zone, status string, response *string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return s.fakeStore.Create(ctx, ip, zone, status, response)
+}
+
+// Copilot review 3, finding 1: a run that exhausts its deadline still stores
+// what it found, and storage failures are reported.
+func TestCheckNowStoresResultsAfterTheDeadline(t *testing.T) {
+	r := &fakeResolver{answers: map[string][]string{"2.0.0.127.bl.spamcop.net": {"127.0.0.2"}}}
+	store := &ctxStore{}
+	m := NewRBLMonitor(store, []Lookuper{r},
+		func(context.Context) ([]string, error) { return []string{"203.0.113.7"}, nil },
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.lists = []Blocklist{spamcop}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the request deadline is already gone
+	results, err := m.CheckNow(ctx)
+	if err != nil {
+		t.Fatalf("CheckNow: %v", err)
+	}
+	// The result itself depends on the resolver (this fake ignores the
+	// context); what matters is that it was stored despite the dead context.
+	if len(results) != 1 || len(store.rows) != 1 {
+		t.Fatalf("results=%d rows=%+v, want the run's result stored", len(results), store.rows)
+	}
+}
+
+type failingStore struct{ fakeStore }
+
+func (failingStore) Create(context.Context, string, string, string, *string) (string, error) {
+	return "", errors.New("db down")
+}
+
+func TestCheckNowReportsStoreFailures(t *testing.T) {
+	r := &fakeResolver{answers: map[string][]string{"2.0.0.127.bl.spamcop.net": {"127.0.0.2"}}}
+	m := NewRBLMonitor(&failingStore{}, []Lookuper{r},
+		func(context.Context) ([]string, error) { return []string{"203.0.113.7"}, nil },
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.lists = []Blocklist{spamcop}
+	if _, err := m.CheckNow(context.Background()); err == nil {
+		t.Fatal("CheckNow succeeded although no result could be stored")
 	}
 }
