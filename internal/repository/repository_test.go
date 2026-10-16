@@ -1230,15 +1230,33 @@ func TestIPWarmup_Lifecycle(t *testing.T) {
 		t.Error("new warmup not in List")
 	}
 
-	if err := repo.IncrementSent(ctx, w.ID); err != nil {
-		t.Fatalf("increment: %v", err)
-	}
-	afterInc, _ := repo.GetByIP(ctx, ip)
-	if afterInc.DailySent != 1 {
-		t.Errorf("DailySent after increment = %d, want 1", afterInc.DailySent)
+	active, err := repo.GetActive(ctx)
+	if err != nil || active == nil || active.ID != w.ID {
+		t.Fatalf("GetActive = %v, %v; want the new entry", active, err)
 	}
 
-	if err := repo.AdvanceDay(ctx, w.ID, 2, 100); err != nil {
+	// Day 1 allows 50: 30 fits, another 30 doesn't, 20 more does.
+	got, ok, err := repo.Reserve(ctx, 30)
+	if err != nil || !ok || got.DailySent != 30 {
+		t.Fatalf("Reserve(30) = %+v, %v, %v; want ok with 30 sent", got, ok, err)
+	}
+	got, ok, err = repo.Reserve(ctx, 30)
+	if err != nil || ok || got == nil || got.DailySent != 30 {
+		t.Fatalf("Reserve(30) over the limit = %+v, %v, %v; want refused, still 30 sent", got, ok, err)
+	}
+	if _, ok, _ = repo.Reserve(ctx, 20); !ok {
+		t.Fatal("Reserve(20) to exactly the limit was refused")
+	}
+	if err := repo.Release(ctx, w.ID, 70); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	afterRel, _ := repo.GetByIP(ctx, ip)
+	if afterRel.DailySent != 0 {
+		t.Errorf("DailySent after releasing more than sent = %d, want 0", afterRel.DailySent)
+	}
+
+	resetAt := w.LastResetAt.Add(24 * time.Hour).Truncate(time.Microsecond) // Postgres keeps microseconds
+	if err := repo.AdvanceDay(ctx, w.ID, 2, 100, resetAt); err != nil {
 		t.Fatalf("advance day: %v", err)
 	}
 	afterAdv, _ := repo.GetByIP(ctx, ip)
@@ -1247,6 +1265,9 @@ func TestIPWarmup_Lifecycle(t *testing.T) {
 	}
 	if afterAdv.DailySent != 0 {
 		t.Errorf("DailySent after advance = %d, want 0 (reset)", afterAdv.DailySent)
+	}
+	if !afterAdv.LastResetAt.Equal(resetAt) {
+		t.Errorf("LastResetAt after advance = %v, want %v", afterAdv.LastResetAt, resetAt)
 	}
 
 	if err := repo.Deactivate(ctx, w.ID); err != nil {
@@ -1401,13 +1422,19 @@ func TestRBLCheck_CRUD(t *testing.T) {
 	ip := fmt.Sprintf("10.253.%d.%d", time.Now().Unix()%250, os.Getpid()%250)
 
 	response := "127.0.0.2"
-	id1, err := repo.Create(ctx, ip, "zen.spamhaus.org", repository.RBLStatusListed, &response)
+	now := time.Now().UTC()
+	id1, err := repo.Create(ctx, ip, "zen.spamhaus.org", repository.RBLStatusListed, &response, now)
 	if err != nil || id1 == "" {
 		t.Fatalf("create listed: %v", err)
 	}
-	id2, err := repo.Create(ctx, ip, "b.barracudacentral.org", repository.RBLStatusClean, nil)
+	id2, err := repo.Create(ctx, ip, "b.barracudacentral.org", repository.RBLStatusClean, nil, now)
 	if err != nil || id2 == "" {
 		t.Fatalf("create unlisted: %v", err)
+	}
+	// A slower, overlapping run saves an older clean answer after the listing:
+	// the latest result must still be the listing (ordered by observation).
+	if _, err := repo.Create(ctx, ip, "zen.spamhaus.org", repository.RBLStatusClean, nil, now.Add(-time.Minute)); err != nil {
+		t.Fatalf("create stale clean: %v", err)
 	}
 
 	latest, err := repo.GetLatestByIP(ctx, ip)

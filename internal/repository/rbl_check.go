@@ -45,8 +45,10 @@ func NewRBLCheckRepo(db *pgxpool.Pool) *RBLCheckRepo {
 }
 
 // Create records a new RBL check result. status is one of the RBLStatus*
-// constants; listed is written alongside it for pre-000025 readers.
-func (r *RBLCheckRepo) Create(ctx context.Context, ipAddress, rblName, status string, response *string) (string, error) {
+// constants; listed is written alongside it for pre-000025 readers. checkedAt
+// is when the answer was observed, not when it is saved, so the latest-result
+// queries (ordered by checked_at) stay right when two runs overlap.
+func (r *RBLCheckRepo) Create(ctx context.Context, ipAddress, rblName, status string, response *string, checkedAt time.Time) (string, error) {
 	switch status {
 	case RBLStatusListed, RBLStatusClean, RBLStatusUnknown:
 	default:
@@ -55,8 +57,8 @@ func (r *RBLCheckRepo) Create(ctx context.Context, ipAddress, rblName, status st
 	id := types.NewUUIDv7()
 	_, err := r.db.Exec(ctx,
 		`INSERT INTO rbl_checks (id, ip_address, rbl_name, status, listed, response, checked_at)
-		 VALUES ($1, $2::inet, $3, $4, $5, $6, NOW())`,
-		id, ipAddress, rblName, status, status == RBLStatusListed, response,
+		 VALUES ($1, $2::inet, $3, $4, $5, $6, $7)`,
+		id, ipAddress, rblName, status, status == RBLStatusListed, response, checkedAt,
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert rbl check: %w", err)

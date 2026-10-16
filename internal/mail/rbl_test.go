@@ -36,16 +36,19 @@ func (f *fakeResolver) LookupHost(_ context.Context, host string) ([]string, err
 	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 }
 
-type storedCheck struct{ ip, zone, status, response string }
+type storedCheck struct {
+	ip, zone, status, response string
+	at                         time.Time
+}
 
 type fakeStore struct{ rows []storedCheck }
 
-func (f *fakeStore) Create(_ context.Context, ip, zone, status string, response *string) (string, error) {
+func (f *fakeStore) Create(_ context.Context, ip, zone, status string, response *string, at time.Time) (string, error) {
 	r := ""
 	if response != nil {
 		r = *response
 	}
-	f.rows = append(f.rows, storedCheck{ip, zone, status, r})
+	f.rows = append(f.rows, storedCheck{ip, zone, status, r, at})
 	return "id", nil
 }
 
@@ -368,11 +371,11 @@ func TestCheckNowFitsTheRequestDeadlineWithAHungPrimary(t *testing.T) {
 // ctxStore rejects writes made with a cancelled context, like pgx does.
 type ctxStore struct{ fakeStore }
 
-func (s *ctxStore) Create(ctx context.Context, ip, zone, status string, response *string) (string, error) {
+func (s *ctxStore) Create(ctx context.Context, ip, zone, status string, response *string, at time.Time) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return s.fakeStore.Create(ctx, ip, zone, status, response)
+	return s.fakeStore.Create(ctx, ip, zone, status, response, at)
 }
 
 // Copilot review 3, finding 1: a run that exhausts its deadline still stores
@@ -400,7 +403,7 @@ func TestCheckNowStoresResultsAfterTheDeadline(t *testing.T) {
 
 type failingStore struct{ fakeStore }
 
-func (failingStore) Create(context.Context, string, string, string, *string) (string, error) {
+func (failingStore) Create(context.Context, string, string, string, *string, time.Time) (string, error) {
 	return "", errors.New("db down")
 }
 
@@ -442,10 +445,10 @@ type syncStore struct {
 	fakeStore
 }
 
-func (s *syncStore) Create(ctx context.Context, ip, zone, status string, response *string) (string, error) {
+func (s *syncStore) Create(ctx context.Context, ip, zone, status string, response *string, at time.Time) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.fakeStore.Create(ctx, ip, zone, status, response)
+	return s.fakeStore.Create(ctx, ip, zone, status, response, at)
 }
 
 // Copilot review 4, previously missed: the background loop and "Check now" can
@@ -485,5 +488,92 @@ func TestCheckNowOlderRunDoesNotOverwriteNewerIPs(t *testing.T) {
 
 	if ips := m.IPs(); len(ips) != 1 || ips[0] != "198.51.100.9" {
 		t.Errorf("IPs() = %v, want the newer run's [198.51.100.9]", ips)
+	}
+}
+
+// latest returns the newest result for ip on zone the way the repository's
+// latest-result queries pick it: by observation time, not by save order.
+func (s *syncStore) latest(ip, zone string) (storedCheck, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var best storedCheck
+	found := false
+	for _, r := range s.rows {
+		if r.ip == ip && r.zone == zone && (!found || r.at.After(best.at)) {
+			best, found = r, true
+		}
+	}
+	return best, found
+}
+
+// overlapResolver: SpamCop answers 203.0.113.7 clean the first time and listed
+// after that; Spamhaus's first lookup of it stalls until release.
+type overlapResolver struct {
+	mu           sync.Mutex
+	spamcopCalls int
+	stalled      bool
+	firstSpamcop chan struct{} // closed once the first SpamCop answer is in
+	stalling     chan struct{} // closed when the Spamhaus lookup starts stalling
+	release      chan struct{}
+}
+
+func (o *overlapResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	nx := &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	switch host {
+	case "2.0.0.127.bl.spamcop.net", "2.0.0.127.zen.spamhaus.org":
+		return []string{"127.0.0.2"}, nil
+	case "7.113.0.203.bl.spamcop.net":
+		o.mu.Lock()
+		o.spamcopCalls++
+		n := o.spamcopCalls
+		o.mu.Unlock()
+		if n == 1 {
+			defer close(o.firstSpamcop)
+			return nil, nx
+		}
+		return []string{"127.0.0.2"}, nil
+	case "7.113.0.203.zen.spamhaus.org":
+		o.mu.Lock()
+		first := !o.stalled
+		o.stalled = true
+		o.mu.Unlock()
+		if first {
+			close(o.stalling)
+			select {
+			case <-o.release:
+			case <-ctx.Done():
+			}
+		}
+		return nil, nx
+	}
+	return nil, nx
+}
+
+// Copilot review 5: overlapping runs must not let an older run's answer,
+// saved late, replace a newer run's listing as the latest result.
+func TestCheckNowOlderAnswerSavedLateDoesNotReplaceNewerListing(t *testing.T) {
+	r := &overlapResolver{firstSpamcop: make(chan struct{}), stalling: make(chan struct{}), release: make(chan struct{})}
+	store := &syncStore{}
+	m := NewRBLMonitor(store, []Lookuper{r}, func(context.Context) ([]string, error) {
+		return []string{"203.0.113.7"}, nil
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.lists = []Blocklist{spamcop, spamhaus}
+
+	older := make(chan error, 1)
+	go func() {
+		_, err := m.CheckNow(context.Background())
+		older <- err
+	}()
+	<-r.firstSpamcop // the older run has seen SpamCop clean ...
+	<-r.stalling     // ... and is stuck on Spamhaus, so hasn't saved yet
+	mustCheck(t, m)  // the newer run sees the listing and saves it
+	close(r.release)
+	if err := <-older; err != nil {
+		t.Fatalf("older CheckNow: %v", err)
+	}
+
+	got, ok := store.latest("203.0.113.7", "bl.spamcop.net")
+	if !ok || got.status != repository.RBLStatusListed {
+		t.Errorf("latest SpamCop result = %+v, want the newer run's listing", got)
 	}
 }

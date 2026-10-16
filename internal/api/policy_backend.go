@@ -91,15 +91,22 @@ func (s *Server) StartPolicyServer() {
 		return
 	}
 
-	s.policyServer = policy.New(policyBackend{s: s}, policy.Config{
+	cfg := policy.Config{
 		ListenAddr: addr,
 		Hostname:   s.hostname,
 		RateLimit:  os.Getenv("VECTIS_POLICY_RATELIMIT") != "false",
 		FailOpen:   os.Getenv("VECTIS_POLICY_FAILOPEN") != "false",
 		OnReject: func(reason string) {
 			vectismetrics.SubmissionPolicyRejects.WithLabelValues(reason).Inc()
+			if reason == "warmup_limit" {
+				vectismetrics.WarmupDeferrals.WithLabelValues("submission").Inc()
+			}
 		},
-	}, s.logger.With("component", "submission-policy"))
+	}
+	if s.warmupManager != nil {
+		cfg.Warmup = policyWarmup{s: s}
+	}
+	s.policyServer = policy.New(policyBackend{s: s}, cfg, s.logger.With("component", "submission-policy"))
 
 	if err := s.policyServer.Start(); err != nil {
 		s.logger.Error("failed to start submission policy server", "error", err)
@@ -111,4 +118,29 @@ func (s *Server) StopPolicyServer() {
 	if s.policyServer != nil {
 		s.policyServer.Stop()
 	}
+}
+
+// policyWarmup adapts the warmup manager to policy.Warmup, so authenticated
+// SMTP submission is held to the same IP warmup daily limit as the HTTP send
+// API (handle_send.go).
+type policyWarmup struct {
+	s *Server
+}
+
+// IsLocalDomain reports whether the domain is hosted (and active) here, the
+// same test the send API uses to count external recipients.
+func (w policyWarmup) IsLocalDomain(ctx context.Context, domain string) (bool, error) {
+	d, err := w.s.domains.GetByName(ctx, domain)
+	if err != nil {
+		return false, err
+	}
+	return d != nil && d.Active, nil
+}
+
+func (w policyWarmup) ReserveWarmup(ctx context.Context, n int) (bool, string, error) {
+	d, err := w.s.warmupManager.Reserve(ctx, n)
+	if err != nil || d.Allowed {
+		return true, "", err
+	}
+	return false, warmupLimitMessage(d, n), nil
 }

@@ -146,6 +146,13 @@ func TestPostfixMasterCFSubmissionPolicy(t *testing.T) {
 	if n := strings.Count(masterCF, policyHook); n != 2 {
 		t.Errorf("policy hook count = %d, want 2 (submission + smtps)\n%s", n, masterCF)
 	}
+	// The RCPT-stage hook counts external recipients for the IP warmup limit.
+	// It must run before permit_sasl_authenticated (which ends the list) and
+	// keep authenticated clients permitted.
+	const rcptHook = "-o smtpd_recipient_restrictions=vectis_submission_policy,permit_sasl_authenticated,reject"
+	if n := strings.Count(masterCF, rcptHook); n != 2 {
+		t.Errorf("RCPT policy hook count = %d, want 2 (submission + smtps)\n%s", n, masterCF)
+	}
 	if n := strings.Count(masterCF, "-o smtpd_policy_service_default_action=DUNNO"); n != 2 {
 		t.Errorf("policy default_action override count = %d, want 2", n)
 	}

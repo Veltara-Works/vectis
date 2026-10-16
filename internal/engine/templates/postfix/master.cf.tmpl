@@ -10,7 +10,11 @@ smtp      inet  n       -       n       -       -       smtpd
 # command, via the vectis_submission_policy restriction class defined in main.cf.
 # It enforces per-mailbox send_suspended + the abuse rate-limit/auto-suspend on
 # the authenticated submission path — the same controls the HTTP send API applies
-# — so a suspended or compromised mailbox can't bypass them via SMTP-AUTH. Scoped
+# — so a suspended or compromised mailbox can't bypass them via SMTP-AUTH. It is
+# also called once per recipient at RCPT, to count recipients outside this
+# server for the IP warmup daily limit, which it applies at DATA (452 deferral).
+# The RCPT list keeps the global behaviour for authenticated clients (permit);
+# unauthenticated ones were already refused by smtpd_relay_restrictions. Scoped
 # to submission/smtps only; inbound :25 is untouched. A restriction CLASS is used
 # (not an inline `check_policy_service inet:...`) because a master.cf -o value
 # cannot contain whitespace — it would be split into a stray argument.
@@ -22,6 +26,7 @@ submission inet  n       -       n       -       -       smtpd
   -o smtpd_tls_security_level=encrypt
   -o smtpd_sasl_auth_enable=yes
   -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
+  -o smtpd_recipient_restrictions=vectis_submission_policy,permit_sasl_authenticated,reject
   -o smtpd_data_restrictions=vectis_submission_policy
   -o smtpd_policy_service_default_action=DUNNO
   -o milter_macro_daemon_name=ORIGINATING{{ if .Postfix.SubmissionHeaderStripEnabled }}
@@ -31,6 +36,7 @@ smtps     inet  n       -       n       -       -       smtpd
   -o smtpd_tls_wrappermode=yes
   -o smtpd_sasl_auth_enable=yes
   -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
+  -o smtpd_recipient_restrictions=vectis_submission_policy,permit_sasl_authenticated,reject
   -o smtpd_data_restrictions=vectis_submission_policy
   -o smtpd_policy_service_default_action=DUNNO
   -o milter_macro_daemon_name=ORIGINATING{{ if .Postfix.SubmissionHeaderStripEnabled }}

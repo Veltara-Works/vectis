@@ -117,7 +117,7 @@ func isNotFound(err error) bool {
 
 // rblStore is the part of the results repository the monitor uses.
 type rblStore interface {
-	Create(ctx context.Context, ipAddress, rblName, status string, response *string) (string, error)
+	Create(ctx context.Context, ipAddress, rblName, status string, response *string, checkedAt time.Time) (string, error)
 	PruneOlderThan(ctx context.Context, age time.Duration) (int64, error)
 }
 
@@ -250,8 +250,14 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error
 	}
 	wg.Wait()
 
-	// Query every (IP, list) pair, at most rblConcurrency at a time.
-	type outcome struct{ status, reason string }
+	// Query every (IP, list) pair, at most rblConcurrency at a time. Each
+	// result keeps the time it was observed, which is what gets stored: runs
+	// can overlap (the loop and "Check now"), and a slower run saving later
+	// must not make its older answer look newer than another run's.
+	type outcome struct {
+		status, reason string
+		at             time.Time
+	}
 	outcomes := make([]outcome, len(ips)*len(m.lists))
 	sem := make(chan struct{}, rblConcurrency)
 	for ipIdx, ip := range ips {
@@ -259,7 +265,7 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error
 			k := ipIdx*len(m.lists) + listIdx
 			r := chosen[listIdx]
 			if r == nil {
-				outcomes[k] = outcome{repository.RBLStatusUnknown, "list unavailable: " + unhealthy[listIdx]}
+				outcomes[k] = outcome{repository.RBLStatusUnknown, "list unavailable: " + unhealthy[listIdx], time.Now().UTC()}
 				continue
 			}
 			wg.Add(1)
@@ -267,7 +273,7 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error
 			go func(k int, r Lookuper, ip string, l Blocklist) {
 				defer func() { <-sem; wg.Done() }()
 				st, why := m.lookup(ctx, r, ip, l)
-				outcomes[k] = outcome{st, why}
+				outcomes[k] = outcome{st, why, time.Now().UTC()}
 			}(k, r, ip, l)
 		}
 	}
@@ -285,7 +291,7 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error
 			if reason != "" {
 				respPtr = &reason
 			}
-			id, err := m.repo.Create(storeCtx, ip, l.Zone, status, respPtr)
+			id, err := m.repo.Create(storeCtx, ip, l.Zone, status, respPtr, o.at)
 			if err != nil {
 				m.logger.Error("store rbl check failed", "error", err, "ip", ip, "rbl", l.Zone)
 				storeErrs = append(storeErrs, fmt.Errorf("%s on %s: %w", ip, l.Zone, err))
@@ -294,7 +300,7 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error
 			results = append(results, repository.RBLCheck{
 				ID: id, IPAddress: ip, RBLName: l.Zone, Status: status,
 				Listed: status == repository.RBLStatusListed, Response: respPtr,
-				CheckedAt: time.Now().UTC(),
+				CheckedAt: o.at,
 			})
 			switch status {
 			case repository.RBLStatusListed:
