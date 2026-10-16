@@ -97,71 +97,21 @@ func (r *IPWarmupRepo) GetByIP(ctx context.Context, ipAddress string) (*IPWarmup
 	return &e, nil
 }
 
-// GetActive returns the active warmup entry, or nil when no warmup is
-// running. A server sends from one IP, so at most one entry is active; if
-// older data holds several, the oldest wins.
-func (r *IPWarmupRepo) GetActive(ctx context.Context) (*IPWarmup, error) {
-	var e IPWarmup
-	err := r.db.QueryRow(ctx,
-		`SELECT id, ip_address::text, label, warmup_started, warmup_day, daily_limit, daily_sent, last_reset_at, active, created_at, updated_at
-		 FROM ip_warmup WHERE active ORDER BY created_at ASC LIMIT 1`,
-	).Scan(&e.ID, &e.IPAddress, &e.Label, &e.WarmupStarted, &e.WarmupDay,
-		&e.DailyLimit, &e.DailySent, &e.LastResetAt, &e.Active, &e.CreatedAt, &e.UpdatedAt)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get active ip warmup: %w", err)
-	}
-	return &e, nil
-}
-
-// Reserve adds n to the active entry's daily_sent if that keeps it within
-// daily_limit, in a single UPDATE so concurrent sends can't overshoot. It
-// returns the entry after the update and true, or the entry unchanged and
-// false when n doesn't fit. A nil entry means no warmup is active.
-func (r *IPWarmupRepo) Reserve(ctx context.Context, n int) (*IPWarmup, bool, error) {
-	var e IPWarmup
-	err := r.db.QueryRow(ctx,
-		`UPDATE ip_warmup SET daily_sent = daily_sent + $1, updated_at = NOW()
-		 WHERE id = (SELECT id FROM ip_warmup WHERE active ORDER BY created_at ASC LIMIT 1)
-		   AND daily_sent + $1 <= daily_limit
-		 RETURNING id, ip_address::text, label, warmup_started, warmup_day, daily_limit, daily_sent, last_reset_at, active, created_at, updated_at`,
-		n,
-	).Scan(&e.ID, &e.IPAddress, &e.Label, &e.WarmupStarted, &e.WarmupDay,
-		&e.DailyLimit, &e.DailySent, &e.LastResetAt, &e.Active, &e.CreatedAt, &e.UpdatedAt)
-	if err == nil {
-		return &e, true, nil
-	}
-	if err != pgx.ErrNoRows {
-		return nil, false, fmt.Errorf("reserve ip warmup sends: %w", err)
-	}
-	// Nothing updated: either no warmup is active, or n doesn't fit today.
-	active, err := r.GetActive(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	return active, false, nil
-}
-
-// Release gives back n reserved sends (a message that was reserved but then
-// failed to send), never taking daily_sent below zero.
-func (r *IPWarmupRepo) Release(ctx context.Context, id string, n int) error {
+// IncrementSent increments the daily_sent counter for an IP.
+func (r *IPWarmupRepo) IncrementSent(ctx context.Context, id string) error {
 	_, err := r.db.Exec(ctx,
-		`UPDATE ip_warmup SET daily_sent = GREATEST(daily_sent - $1, 0), updated_at = NOW() WHERE id = $2`, n, id)
+		`UPDATE ip_warmup SET daily_sent = daily_sent + 1, updated_at = NOW() WHERE id = $1`, id)
 	if err != nil {
-		return fmt.Errorf("release ip warmup sends: %w", err)
+		return fmt.Errorf("increment ip warmup sent: %w", err)
 	}
 	return nil
 }
 
-// AdvanceDay resets daily_sent and advances the warmup day with a new daily
-// limit. resetAt becomes last_reset_at: the manager passes the scheduled
-// boundary rather than the time it noticed, so the day doesn't drift later.
-func (r *IPWarmupRepo) AdvanceDay(ctx context.Context, id string, newDay, newLimit int, resetAt time.Time) error {
+// AdvanceDay resets daily_sent and advances the warmup day with a new daily limit.
+func (r *IPWarmupRepo) AdvanceDay(ctx context.Context, id string, newDay, newLimit int) error {
 	_, err := r.db.Exec(ctx,
-		`UPDATE ip_warmup SET warmup_day = $1, daily_limit = $2, daily_sent = 0, last_reset_at = $3, updated_at = NOW() WHERE id = $4`,
-		newDay, newLimit, resetAt, id,
+		`UPDATE ip_warmup SET warmup_day = $1, daily_limit = $2, daily_sent = 0, last_reset_at = NOW(), updated_at = NOW() WHERE id = $3`,
+		newDay, newLimit, id,
 	)
 	if err != nil {
 		return fmt.Errorf("advance ip warmup day: %w", err)

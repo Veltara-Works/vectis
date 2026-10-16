@@ -1,11 +1,9 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -53,7 +51,6 @@ type sendOutcome struct {
 	httpStatus int    // 200 on success; the appropriate 4xx/5xx on failure
 	code       string // error code, "" on success
 	message    string // human-readable error, "" on success
-	retryAfter time.Duration // > 0: when the caller may retry (sent as Retry-After)
 }
 
 func sendOK(messageID string) sendOutcome {
@@ -81,9 +78,6 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	out := s.sendMessage(r, req, adminID, adminRole, apiKeyID, ip, sendVariant{auditAction: "mail.send"})
 	if out.code != "" {
-		if out.retryAfter > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(int(out.retryAfter.Round(time.Second).Seconds())))
-		}
 		respondError(w, r, out.httpStatus, out.code, out.message)
 		return
 	}
@@ -260,25 +254,6 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 			"Sending is not configured on this server")
 	}
 
-	// IP warmup: count the message's external recipients against today's
-	// limit. Over the limit, nothing is accepted and the caller is told when
-	// the limit resets. Fails open on a database error, like the abuse checks.
-	var warmup mail.WarmupDecision
-	externalCount := 0
-	if s.warmupManager != nil {
-		externalCount = s.countExternalRecipients(ctx, req.To, req.CC, req.BCC)
-		var err error
-		warmup, err = s.warmupManager.Reserve(ctx, externalCount)
-		if err != nil {
-			s.logger.Error("warmup reserve failed, allowing send", "error", err)
-		} else if !warmup.Allowed {
-			vectismetrics.WarmupDeferrals.WithLabelValues("api").Inc()
-			out := sendErr(http.StatusTooManyRequests, "WARMUP_LIMIT", warmupLimitMessage(warmup, externalCount))
-			out.retryAfter = warmup.RetryAfter(time.Now())
-			return out
-		}
-	}
-
 	// Build and send.
 	msg := &mail.Message{
 		From:        req.From,
@@ -296,10 +271,6 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 
 	result, err := s.mailSender.Send(msg)
 	if err != nil {
-		// Nothing was sent: give the reserved warmup sends back.
-		if s.warmupManager != nil {
-			s.warmupManager.Release(context.WithoutCancel(ctx), warmup, externalCount)
-		}
 		// Header-injection attempts are client errors, not server faults.
 		if errors.Is(err, mail.ErrHeaderInjection) {
 			s.logger.Warn("send rejected: header injection", "error", err, "from", req.From.Email)
@@ -388,47 +359,4 @@ func extractLocalPart(email string) string {
 		return ""
 	}
 	return strings.ToLower(parts[0])
-}
-
-// countExternalRecipients counts the recipients whose domain this server
-// doesn't host (or hosts but has deactivated). Only those leave the server and
-// count toward the sending IP's warmup; local deliveries don't. A lookup error
-// counts the recipient as external, so warmup errs towards limiting.
-func (s *Server) countExternalRecipients(ctx context.Context, lists ...[]mail.Address) int {
-	local := map[string]bool{}
-	n := 0
-	for _, list := range lists {
-		for _, a := range list {
-			dom := strings.ToLower(extractDomain(a.Email))
-			isLocal, seen := local[dom]
-			if !seen {
-				d, err := s.domains.GetByName(ctx, dom)
-				if err != nil {
-					s.logger.Warn("warmup: recipient domain lookup failed, counting as external", "domain", dom, "error", err)
-				}
-				isLocal = err == nil && d != nil && d.Active
-				local[dom] = isLocal
-			}
-			if !isLocal {
-				n++
-			}
-		}
-	}
-	return n
-}
-
-// warmupLimitMessage explains a WARMUP_LIMIT refusal.
-func warmupLimitMessage(d mail.WarmupDecision, external int) string {
-	reset := d.ResetAt.UTC().Format("2006-01-02 15:04 UTC")
-	if external > d.Limit {
-		return fmt.Sprintf("This message has %d external recipients, more than the %d a day allowed on day %d of IP warmup for %s. "+
-			"Split it into smaller sends; the limit rises at %s.", external, d.Limit, d.Day, warmupIP(d.IP), reset)
-	}
-	return fmt.Sprintf("IP warmup daily limit reached for %s: day %d allows %d external recipients and %d have been used. "+
-		"Sending resumes at %s.", warmupIP(d.IP), d.Day, d.Limit, d.Sent, reset)
-}
-
-// warmupIP strips the /32 Postgres adds when it prints an inet.
-func warmupIP(ip string) string {
-	return strings.TrimSuffix(ip, "/32")
 }
