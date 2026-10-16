@@ -64,6 +64,19 @@ const (
 	rblStoreTimeout  = 10 * time.Second // storing a run's results; independent of the lookups' deadline
 )
 
+// rblRetryInterval is how soon the loop tries again when it couldn't find
+// any IP to check, rather than waiting a whole interval.
+const rblRetryInterval = 5 * time.Minute
+
+// DiscoveryError reports that a run couldn't determine the server's IPs and
+// had none from an earlier run to check instead, so nothing was checked.
+type DiscoveryError struct{ Err error }
+
+func (e *DiscoveryError) Error() string {
+	return "could not determine the server's IP addresses: " + e.Err.Error()
+}
+func (e *DiscoveryError) Unwrap() error { return e.Err }
+
 // testAddress is the RFC 5782 test entry every list should answer as listed.
 const testAddress = "127.0.0.2"
 
@@ -130,6 +143,7 @@ type RBLMonitor struct {
 	ipSource  func(ctx context.Context) ([]string, error)
 	lists     []Blocklist
 	interval  time.Duration
+	retry     time.Duration // after a run that found no IP to check
 	timeout   time.Duration
 	stopCh    chan struct{}
 
@@ -151,6 +165,7 @@ func NewRBLMonitor(repo rblStore, resolvers []Lookuper, ipSource func(ctx contex
 		ipSource:  ipSource,
 		lists:     DefaultBlocklists,
 		interval:  6 * time.Hour,
+		retry:     rblRetryInterval,
 		timeout:   rblLookupTimeout,
 		stopCh:    make(chan struct{}),
 	}
@@ -160,18 +175,27 @@ func NewRBLMonitor(repo rblStore, resolvers []Lookuper, ipSource func(ctx contex
 func (m *RBLMonitor) Start() {
 	m.logger.Info("starting RBL monitor", "lists", len(m.lists), "interval", m.interval)
 	go func() {
-		m.checkAll()
-		ticker := time.NewTicker(m.interval)
-		defer ticker.Stop()
+		timer := time.NewTimer(m.nextDelay(m.checkAll()))
+		defer timer.Stop()
 		for {
 			select {
 			case <-m.stopCh:
 				return
-			case <-ticker.C:
-				m.checkAll()
+			case <-timer.C:
+				timer.Reset(m.nextDelay(m.checkAll()))
 			}
 		}
 	}()
+}
+
+// nextDelay is the wait before the next run: the normal interval, or a short
+// retry when the last run couldn't find any IP to check.
+func (m *RBLMonitor) nextDelay(runErr error) time.Duration {
+	var de *DiscoveryError
+	if errors.As(runErr, &de) {
+		return m.retry
+	}
+	return m.interval
 }
 
 // Stop signals the monitor to stop.
@@ -190,8 +214,9 @@ func (m *RBLMonitor) IPs() []string {
 // CheckNow checks every IP against every list and stores the results. ctx
 // bounds the DNS work only: results are stored under their own short deadline
 // that isn't cancelled with ctx, so a run that hits its deadline still records
-// what it found (pending lookups as unknown). The error reports results that
-// could not be stored.
+// what it found (pending lookups as unknown). The error is a *DiscoveryError
+// when no IP could be found to check, and otherwise reports results that could
+// not be stored.
 func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error) {
 	// The background loop and "Check now" can overlap. Number each run as it
 	// starts, so a slower run that began earlier can't overwrite the IPs a
@@ -211,10 +236,14 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error
 	}
 	if len(ips) == 0 {
 		// A clean discovery that finds nothing (e.g. the A record was removed)
-		// clears what the dashboard shows; a failed one keeps the old IPs.
-		if err == nil {
-			m.publishLocked(seq, nil)
+		// clears what the dashboard shows. A failed one with nothing known
+		// from before is reported, so it isn't mistaken for a run.
+		m.mu.Unlock()
+		if err != nil {
+			return nil, &DiscoveryError{Err: err}
 		}
+		m.mu.Lock()
+		m.publishLocked(seq, nil)
 		m.mu.Unlock()
 		return nil, nil
 	}
@@ -229,6 +258,7 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error
 	// deadline, so a whole run fits inside an API request ("Check now").
 	chosen := make([]Lookuper, len(m.lists))
 	unhealthy := make([]string, len(m.lists))
+	unhealthyAt := make([]time.Time, len(m.lists)) // when the list failed its self-test
 	var wg sync.WaitGroup
 	for i, l := range m.lists {
 		wg.Add(1)
@@ -246,6 +276,7 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error
 				}
 			}
 			unhealthy[i] = reason
+			unhealthyAt[i] = time.Now().UTC()
 		}(i, l)
 	}
 	wg.Wait()
@@ -265,7 +296,7 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error
 			k := ipIdx*len(m.lists) + listIdx
 			r := chosen[listIdx]
 			if r == nil {
-				outcomes[k] = outcome{repository.RBLStatusUnknown, "list unavailable: " + unhealthy[listIdx], time.Now().UTC()}
+				outcomes[k] = outcome{repository.RBLStatusUnknown, "list unavailable: " + unhealthy[listIdx], unhealthyAt[listIdx]}
 				continue
 			}
 			wg.Add(1)
@@ -382,10 +413,16 @@ func classifyAnswer(addrs []string, l Blocklist) (string, string) {
 	return repository.RBLStatusUnknown, "list returned a status code, not a listing: " + answer
 }
 
-func (m *RBLMonitor) checkAll() {
+// checkAll runs one check and prunes old results. It returns the run's error.
+func (m *RBLMonitor) checkAll() error {
 	ctx := context.Background()
-	if _, err := m.CheckNow(ctx); err != nil {
-		m.logger.Error("rbl run: some results were not stored", "error", err)
+	_, runErr := m.CheckNow(ctx)
+	var de *DiscoveryError
+	switch {
+	case errors.As(runErr, &de):
+		m.logger.Warn("rbl run: nothing checked, retrying soon", "error", runErr, "retry_in", m.retry)
+	case runErr != nil:
+		m.logger.Error("rbl run: some results were not stored", "error", runErr)
 	}
 
 	// Prune old results (keep 30 days).
@@ -395,6 +432,7 @@ func (m *RBLMonitor) checkAll() {
 	} else if pruned > 0 {
 		m.logger.Debug("pruned old rbl checks", "count", pruned)
 	}
+	return runErr
 }
 
 // HostnameIPs returns the IPv4 addresses the mail hostname resolves to. These

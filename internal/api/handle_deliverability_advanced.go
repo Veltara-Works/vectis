@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -208,6 +209,13 @@ func (s *Server) handleRBLCheckNow(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	results, err := s.rblMonitor.CheckNow(ctx)
+	var discoveryErr *mail.DiscoveryError
+	if errors.As(err, &discoveryErr) {
+		s.logger.Warn("rbl check: no server IP to check", "error", err)
+		respondError(w, r, http.StatusServiceUnavailable, "RBL_DISCOVERY_FAILED",
+			"Could not determine this server's IP address to check: "+discoveryErr.Err.Error())
+		return
+	}
 	if err != nil {
 		s.logger.Error("rbl check: results not stored", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "RBL_STORE_FAILED",

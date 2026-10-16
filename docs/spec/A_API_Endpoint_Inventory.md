@@ -311,7 +311,7 @@ Behaviour at the gate:
 | POST | /api/v1/deliverability/warmup | Create warmup schedule | super |
 | DELETE | /api/v1/deliverability/warmup/{warmupID} | Cancel warmup schedule | super |
 | GET | /api/v1/deliverability/rbl | Latest RBL result per list for each server IP: `status` (listed / clean / unknown), `list_name`, `delist_url`, `listed_count`, `unknown_count`; `clean` only when every list answered and none lists the IP. `status: "no_ips_yet"` before the first run | super |
-| POST | /api/v1/deliverability/rbl/check | Run a check now; returns the results plus `listed` / `unknown` counts | super |
+| POST | /api/v1/deliverability/rbl/check | Run a check now; returns the results plus `listed` / `unknown` counts. 503 `RBL_DISCOVERY_FAILED` when the server's IP can't be determined and none is known from an earlier run (the background loop then retries in 5 minutes, not 6 hours); 500 `RBL_STORE_FAILED` when results ran but could not be saved | super |
 | GET | /api/v1/deliverability/fbl | List feedback-loop reports | super |
 | POST | /api/v1/deliverability/fbl | Configure new FBL provider | super |
 

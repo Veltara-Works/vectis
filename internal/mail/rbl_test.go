@@ -577,3 +577,108 @@ func TestCheckNowOlderAnswerSavedLateDoesNotReplaceNewerListing(t *testing.T) {
 		t.Errorf("latest SpamCop result = %+v, want the newer run's listing", got)
 	}
 }
+
+// Copilot review 6, previously missed 1: a failed discovery with no IPs known
+// from before is reported, not passed off as a run, and the loop retries soon.
+func TestCheckNowReportsDiscoveryFailureWithNoKnownIPs(t *testing.T) {
+	r := &fakeResolver{answers: map[string][]string{"2.0.0.127.bl.spamcop.net": {"127.0.0.2"}}}
+	m, store := testMonitor(r, nil, spamcop)
+	m.ipSource = func(context.Context) ([]string, error) { return nil, errors.New("resolve mail.example.com: timeout") }
+
+	_, err := m.CheckNow(context.Background())
+	var de *DiscoveryError
+	if !errors.As(err, &de) {
+		t.Fatalf("CheckNow error = %v, want a *DiscoveryError", err)
+	}
+	if len(store.rows) != 0 || len(m.IPs()) != 0 {
+		t.Errorf("stored %d rows, IPs %v; want nothing", len(store.rows), m.IPs())
+	}
+	if got := m.nextDelay(err); got != rblRetryInterval {
+		t.Errorf("next run after a discovery failure in %v, want %v", got, rblRetryInterval)
+	}
+
+	// With an IP known from an earlier run, a failed discovery still checks it.
+	m.ipSource = func(context.Context) ([]string, error) { return []string{"203.0.113.7"}, nil }
+	mustCheck(t, m)
+	m.ipSource = func(context.Context) ([]string, error) { return nil, errors.New("timeout") }
+	if _, err := m.CheckNow(context.Background()); err != nil {
+		t.Fatalf("CheckNow with a known IP = %v, want the known IP checked", err)
+	}
+	if got := m.nextDelay(nil); got != m.interval {
+		t.Errorf("next run after a normal run in %v, want %v", got, m.interval)
+	}
+}
+
+// selfTestOverlapResolver: SpamCop fails its self-test the first time and
+// passes after that (and lists 203.0.113.7); Spamhaus's first self-test
+// stalls until release.
+type selfTestOverlapResolver struct {
+	mu            sync.Mutex
+	spamcopTests  int
+	stalled       bool
+	firstSelfTest chan struct{}
+	stalling      chan struct{}
+	release       chan struct{}
+}
+
+func (o *selfTestOverlapResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	nx := &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	switch host {
+	case "2.0.0.127.bl.spamcop.net":
+		o.mu.Lock()
+		o.spamcopTests++
+		n := o.spamcopTests
+		o.mu.Unlock()
+		if n == 1 {
+			defer close(o.firstSelfTest)
+			return nil, nx
+		}
+		return []string{"127.0.0.2"}, nil
+	case "7.113.0.203.bl.spamcop.net":
+		return []string{"127.0.0.2"}, nil
+	case "2.0.0.127.zen.spamhaus.org":
+		o.mu.Lock()
+		first := !o.stalled
+		o.stalled = true
+		o.mu.Unlock()
+		if first {
+			close(o.stalling)
+			select {
+			case <-o.release:
+			case <-ctx.Done():
+			}
+		}
+		return []string{"127.0.0.2"}, nil
+	}
+	return nil, nx
+}
+
+// Copilot review 6, previously missed 2: a list's failed self-test is
+// timestamped when it fails, not after the other lists finish, so an older
+// "unknown" can't replace a newer run's listing.
+func TestCheckNowSelfTestFailureKeepsItsOwnTime(t *testing.T) {
+	r := &selfTestOverlapResolver{firstSelfTest: make(chan struct{}), stalling: make(chan struct{}), release: make(chan struct{})}
+	store := &syncStore{}
+	m := NewRBLMonitor(store, []Lookuper{r}, func(context.Context) ([]string, error) {
+		return []string{"203.0.113.7"}, nil
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.lists = []Blocklist{spamcop, spamhaus}
+
+	older := make(chan error, 1)
+	go func() {
+		_, err := m.CheckNow(context.Background())
+		older <- err
+	}()
+	<-r.firstSelfTest // the older run's SpamCop self-test has failed ...
+	<-r.stalling      // ... while its Spamhaus self-test is stuck
+	mustCheck(t, m)   // the newer run sees SpamCop list the IP and saves it
+	close(r.release)
+	if err := <-older; err != nil {
+		t.Fatalf("older CheckNow: %v", err)
+	}
+
+	got, ok := store.latest("203.0.113.7", "bl.spamcop.net")
+	if !ok || got.status != repository.RBLStatusListed {
+		t.Errorf("latest SpamCop result = %+v, want the newer run's listing", got)
+	}
+}
