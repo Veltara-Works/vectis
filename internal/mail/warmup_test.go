@@ -306,3 +306,64 @@ func TestWarmupAdvanceFromAStaleListingDoesNotSkipADay(t *testing.T) {
 		t.Errorf("WarmupDay = %d after two advances from one listing, want 2", e.WarmupDay)
 	}
 }
+
+// rolloverRaceStore simulates the loop advancing the day between the store's
+// failed UPDATE and its read-back, once.
+type rolloverRaceStore struct {
+	*fakeWarmupStore
+	raced bool
+}
+
+func (r *rolloverRaceStore) Reserve(ctx context.Context, n int, dayStartedAfter time.Time) (*repository.IPWarmup, bool, error) {
+	if !r.raced {
+		r.raced = true
+		// The UPDATE saw day 1 (expired, full) and matched nothing; before the
+		// read-back, the loop moves the entry on to day 2.
+		if _, err := r.fakeWarmupStore.AdvanceDay(ctx, "w1", warmupT0, 2, repository.WarmupSchedule(2), warmupT0.Add(24*time.Hour)); err != nil {
+			return nil, false, err
+		}
+		r.fakeWarmupStore.mu.Lock()
+		e := r.fakeWarmupStore.entries[0]
+		r.fakeWarmupStore.mu.Unlock()
+		return &e, false, nil
+	}
+	return r.fakeWarmupStore.Reserve(ctx, n, dayStartedAfter)
+}
+
+// Copilot #288 review 4, previously missed 1: a refusal read back from a day
+// that has just started, with room, is retried rather than refused for a day.
+func TestWarmupReserveRetriesWhenTheDayAdvancesMidReservation(t *testing.T) {
+	full := dayOne()
+	full.DailySent = 50
+	store := &rolloverRaceStore{fakeWarmupStore: &fakeWarmupStore{entries: []repository.IPWarmup{full}}}
+	m := NewWarmupManager(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.now = func() time.Time { return warmupT0.Add(24*time.Hour + time.Second) }
+
+	d, err := m.Reserve(context.Background(), 10)
+	if err != nil || !d.Allowed || d.Day != 2 || d.Sent != 10 {
+		t.Fatalf("Reserve across a concurrent rollover = %+v, %v; want allowed on day 2 with 10 sent", d, err)
+	}
+}
+
+// failingAdvanceStore fails every AdvanceDay.
+type failingAdvanceStore struct{ *fakeWarmupStore }
+
+func (failingAdvanceStore) AdvanceDay(context.Context, string, time.Time, int, int, time.Time) (bool, error) {
+	return false, errors.New("db down")
+}
+
+// Copilot #288 review 4, previously missed 2: a rollover that fails is a
+// database error, so the send fails open with the error rather than being
+// refused as over the limit.
+func TestWarmupReserveFailsOpenWhenTheRolloverFails(t *testing.T) {
+	full := dayOne()
+	full.DailySent = 50
+	store := failingAdvanceStore{&fakeWarmupStore{entries: []repository.IPWarmup{full}}}
+	m := NewWarmupManager(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.now = func() time.Time { return warmupT0.Add(24*time.Hour + time.Second) }
+
+	d, err := m.Reserve(context.Background(), 1)
+	if err == nil || !d.Allowed {
+		t.Fatalf("Reserve with a failing rollover = %+v, %v; want allowed with the error", d, err)
+	}
+}

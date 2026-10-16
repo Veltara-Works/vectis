@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -97,7 +98,7 @@ func decisionFrom(e *repository.IPWarmup, allowed bool) WarmupDecision {
 func (m *WarmupManager) Start() {
 	m.logger.Info("starting IP warmup manager", "interval", m.interval)
 	go func() {
-		m.advanceSchedules(context.Background())
+		_ = m.advanceSchedules(context.Background()) // logged inside
 
 		ticker := time.NewTicker(m.interval)
 		defer ticker.Stop()
@@ -106,7 +107,7 @@ func (m *WarmupManager) Start() {
 			case <-m.stopCh:
 				return
 			case <-ticker.C:
-				m.advanceSchedules(context.Background())
+				_ = m.advanceSchedules(context.Background())
 			}
 		}
 	}()
@@ -129,16 +130,33 @@ func (m *WarmupManager) Reserve(ctx context.Context, n int) (WarmupDecision, err
 	// the reset is due, the store refuses, and the day is advanced here
 	// before trying again, so a send after the boundary is charged to the new
 	// day rather than to yesterday's count (which the reset would then wipe).
-	e, ok, err := m.repo.Reserve(ctx, n, m.now().Add(-warmupDayLength))
-	if err != nil {
-		return WarmupDecision{Allowed: true}, err
-	}
-	if e != nil && !ok && !m.now().Before(e.LastResetAt.Add(warmupDayLength)) {
-		m.advanceSchedules(ctx)
+	//
+	// A refusal is only final when the entry read back is on a current day
+	// and really has no room. The day can roll over between the store's
+	// UPDATE and its read-back (the loop advanced it), which reads back as a
+	// refusal with room to spare; that is retried. A rollover that fails
+	// (a database error) fails open with the error, like any other.
+	var e *repository.IPWarmup
+	var ok bool
+	for attempt := 0; attempt < 3; attempt++ {
+		var err error
 		e, ok, err = m.repo.Reserve(ctx, n, m.now().Add(-warmupDayLength))
 		if err != nil {
 			return WarmupDecision{Allowed: true}, err
 		}
+		if e == nil || ok {
+			break
+		}
+		if !m.now().Before(e.LastResetAt.Add(warmupDayLength)) {
+			if err := m.advanceSchedules(ctx); err != nil {
+				return WarmupDecision{Allowed: true}, fmt.Errorf("advance warmup day: %w", err)
+			}
+			continue
+		}
+		if e.DailySent+n <= e.DailyLimit {
+			continue // changed between the update and the read-back
+		}
+		break
 	}
 	return decisionFrom(e, ok), nil
 }
@@ -159,15 +177,21 @@ func (m *WarmupManager) Release(ctx context.Context, d WarmupDecision, n int) {
 // has passed since its last reset, and completes it after the last day. Missed
 // days (the api was down) advance the schedule by one day, not several: the
 // ramp only speeds up on days the server actually sent. The reset stays at the
-// same time of day.
-func (m *WarmupManager) advanceSchedules(ctx context.Context) {
+// same time of day. Failures are logged, and the first is returned.
+func (m *WarmupManager) advanceSchedules(ctx context.Context) error {
 	m.advanceMu.Lock()
 	defer m.advanceMu.Unlock()
 
 	entries, err := m.repo.List(ctx)
 	if err != nil {
 		m.logger.Error("list warmup entries failed", "error", err)
-		return
+		return err
+	}
+	var firstErr error
+	keep := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
 
 	now := m.now()
@@ -184,6 +208,7 @@ func (m *WarmupManager) advanceSchedules(ctx context.Context) {
 		if newDay > WarmupDays {
 			if err := m.repo.Deactivate(ctx, entry.ID); err != nil {
 				m.logger.Error("deactivate warmup failed", "error", err, "ip", entry.IPAddress)
+				keep(err)
 			} else {
 				m.logger.Info("warmup complete: IP fully warmed, sending no longer limited", "ip", entry.IPAddress)
 			}
@@ -195,6 +220,7 @@ func (m *WarmupManager) advanceSchedules(ctx context.Context) {
 		advanced, err := m.repo.AdvanceDay(ctx, entry.ID, entry.LastResetAt, newDay, newLimit, resetAt)
 		if err != nil {
 			m.logger.Error("advance warmup day failed", "error", err, "ip", entry.IPAddress)
+			keep(err)
 			continue
 		}
 		if !advanced {
@@ -207,4 +233,5 @@ func (m *WarmupManager) advanceSchedules(ctx context.Context) {
 			"previous_sent", entry.DailySent,
 		)
 	}
+	return firstErr
 }
