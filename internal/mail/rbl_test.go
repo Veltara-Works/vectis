@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,11 +18,15 @@ import (
 type fakeResolver struct {
 	answers map[string][]string
 	errs    map[string]error
-	calls   int
+
+	mu    sync.Mutex
+	calls int
 }
 
 func (f *fakeResolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	f.mu.Lock()
 	f.calls++
+	f.mu.Unlock()
 	if err, ok := f.errs[host]; ok {
 		return nil, err
 	}
@@ -296,5 +301,56 @@ func TestCheckNowMergesIPsOnPartialDiscovery(t *testing.T) {
 	}
 	if ips := m.IPs(); len(ips) != 2 {
 		t.Errorf("IPs() = %v, want both kept", ips)
+	}
+}
+
+// Copilot review 2, finding 2: a clean discovery that finds no IPs clears
+// what the dashboard shows; a failed one keeps the old IPs.
+func TestCheckNowClearsIPsOnSuccessfulEmptyDiscovery(t *testing.T) {
+	r := &fakeResolver{answers: map[string][]string{"2.0.0.127.bl.spamcop.net": {"127.0.0.2"}}}
+	m, _ := testMonitor(r, []string{"203.0.113.7"}, spamcop)
+	m.CheckNow(context.Background())
+
+	m.ipSource = func(context.Context) ([]string, error) { return nil, errors.New("dns blip") }
+	m.CheckNow(context.Background())
+	if len(m.IPs()) != 1 {
+		t.Fatalf("after a failed discovery IPs() = %v, want the old IP kept", m.IPs())
+	}
+	m.ipSource = func(context.Context) ([]string, error) { return nil, nil }
+	m.CheckNow(context.Background())
+	if len(m.IPs()) != 0 {
+		t.Errorf("after an empty successful discovery IPs() = %v, want none", m.IPs())
+	}
+}
+
+// Copilot review 2, finding 1: a hung primary resolver must not stretch a run
+// past the API's response deadline.
+func TestCheckNowFitsTheRequestDeadlineWithAHungPrimary(t *testing.T) {
+	secondary := &fakeResolver{answers: map[string][]string{}}
+	lists := []Blocklist{}
+	for _, z := range []string{"a.example", "b.example", "c.example", "d.example", "e.example", "f.example"} {
+		lists = append(lists, Blocklist{Zone: z, Name: z, ListedCodes: []string{"127.0.0.2"}})
+		secondary.answers["2.0.0.127."+z] = []string{"127.0.0.2"}
+	}
+	store := &fakeStore{}
+	m := NewRBLMonitor(store, []Lookuper{blockingResolver{}, secondary},
+		func(context.Context) ([]string, error) { return []string{"203.0.113.7"}, nil },
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.lists = lists
+	m.timeout = 100 * time.Millisecond
+
+	start := time.Now()
+	m.CheckNow(context.Background())
+	// Sequential would be 6 lists x 100 ms on the hung primary alone.
+	if took := time.Since(start); took > 400*time.Millisecond {
+		t.Errorf("run took %v; lists should be self-tested concurrently", took)
+	}
+	if len(store.rows) != len(lists) {
+		t.Fatalf("rows = %d, want %d", len(store.rows), len(lists))
+	}
+	for _, row := range store.rows {
+		if row.status != repository.RBLStatusClean {
+			t.Errorf("%s: %q, want clean via the secondary", row.zone, row.status)
+		}
 	}
 }

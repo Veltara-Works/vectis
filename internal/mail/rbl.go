@@ -54,6 +54,15 @@ func BlocklistByZone(zone string) (Blocklist, bool) {
 	return Blocklist{}, false
 }
 
+// A run makes at most 2 sequential self-test lookups per list (one per
+// resolver, lists in parallel) and then the IP lookups, rblConcurrency at a
+// time, each bounded by rblLookupTimeout. For one IP and six lists that is at
+// most ~4 lookups deep (~16 s), inside the API's 30 s write timeout.
+const (
+	rblLookupTimeout = 4 * time.Second
+	rblConcurrency   = 8
+)
+
 // testAddress is the RFC 5782 test entry every list should answer as listed.
 const testAddress = "127.0.0.2"
 
@@ -139,7 +148,7 @@ func NewRBLMonitor(repo rblStore, resolvers []Lookuper, ipSource func(ctx contex
 		ipSource:  ipSource,
 		lists:     DefaultBlocklists,
 		interval:  6 * time.Hour,
-		timeout:   10 * time.Second,
+		timeout:   rblLookupTimeout,
 		stopCh:    make(chan struct{}),
 	}
 }
@@ -185,42 +194,75 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) []repository.RBLCheck {
 		m.logger.Warn("rbl monitor: could not fully determine server IPs", "error", err)
 		ips = unionIPs(m.ips, ips)
 	}
-	m.mu.Unlock()
 	if len(ips) == 0 {
+		// A clean discovery that finds nothing (e.g. the A record was removed)
+		// clears what the dashboard shows; a failed one keeps the old IPs.
+		if err == nil {
+			m.ips = nil
+		}
+		m.mu.Unlock()
 		return nil
 	}
+	m.mu.Unlock()
 
 	// Pick a resolver per list: the first that answers the list's own RFC 5782
 	// test address as listed. That list's IP queries then use the same
 	// resolver, so a "not listed" answer is only trusted from a resolver the
 	// list was just seen to answer (an unregistered or refused resolver often
 	// returns NXDOMAIN for everything). No resolver passing means unknown.
-	chosen := make(map[string]Lookuper, len(m.lists))
-	unhealthy := make(map[string]string, len(m.lists))
-	for _, l := range m.lists {
-		reason := "list did not answer its test address"
-		for _, r := range m.resolvers {
-			st, why := m.lookup(ctx, r, testAddress, l)
-			if st == repository.RBLStatusListed {
-				chosen[l.Zone] = r
-				break
+	// Lists are tested concurrently, and every lookup has its own short
+	// deadline, so a whole run fits inside an API request ("Check now").
+	chosen := make([]Lookuper, len(m.lists))
+	unhealthy := make([]string, len(m.lists))
+	var wg sync.WaitGroup
+	for i, l := range m.lists {
+		wg.Add(1)
+		go func(i int, l Blocklist) {
+			defer wg.Done()
+			reason := "list did not answer its test address"
+			for _, r := range m.resolvers {
+				st, why := m.lookup(ctx, r, testAddress, l)
+				if st == repository.RBLStatusListed {
+					chosen[i] = r
+					return
+				}
+				if why != "" {
+					reason = "list did not answer its test address: " + why
+				}
 			}
-			if why != "" {
-				reason = "list did not answer its test address: " + why
+			unhealthy[i] = reason
+		}(i, l)
+	}
+	wg.Wait()
+
+	// Query every (IP, list) pair, at most rblConcurrency at a time.
+	type outcome struct{ status, reason string }
+	outcomes := make([]outcome, len(ips)*len(m.lists))
+	sem := make(chan struct{}, rblConcurrency)
+	for ipIdx, ip := range ips {
+		for listIdx, l := range m.lists {
+			k := ipIdx*len(m.lists) + listIdx
+			r := chosen[listIdx]
+			if r == nil {
+				outcomes[k] = outcome{repository.RBLStatusUnknown, "list unavailable: " + unhealthy[listIdx]}
+				continue
 			}
-		}
-		if chosen[l.Zone] == nil {
-			unhealthy[l.Zone] = reason
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(k int, r Lookuper, ip string, l Blocklist) {
+				defer func() { <-sem; wg.Done() }()
+				st, why := m.lookup(ctx, r, ip, l)
+				outcomes[k] = outcome{st, why}
+			}(k, r, ip, l)
 		}
 	}
+	wg.Wait()
 
 	var results []repository.RBLCheck
-	for _, ip := range ips {
-		for _, l := range m.lists {
-			status, reason := repository.RBLStatusUnknown, "list unavailable: "+unhealthy[l.Zone]
-			if r := chosen[l.Zone]; r != nil {
-				status, reason = m.lookup(ctx, r, ip, l)
-			}
+	for ipIdx, ip := range ips {
+		for listIdx, l := range m.lists {
+			o := outcomes[ipIdx*len(m.lists)+listIdx]
+			status, reason := o.status, o.reason
 			var respPtr *string
 			if reason != "" {
 				respPtr = &reason

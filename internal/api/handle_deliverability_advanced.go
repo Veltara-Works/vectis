@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -200,7 +201,11 @@ func (s *Server) handleRBLCheckNow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// One row per (IP, list) actually checked in this run.
-	results := s.rblMonitor.CheckNow(r.Context())
+	// Bounded below the server's 30 s WriteTimeout so the response always gets
+	// out; lookups still running at the deadline are recorded as unknown.
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	results := s.rblMonitor.CheckNow(ctx)
 	views := make([]rblCheckView, 0, len(results))
 	listed, unknown := 0, 0
 	for _, c := range results {
