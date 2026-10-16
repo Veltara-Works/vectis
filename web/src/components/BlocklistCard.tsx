@@ -60,7 +60,8 @@ export default function BlocklistCard() {
         </p>
       )}
       {data?.ips.map(ip => {
-        const s = summarizeIP(ip.listed_count, ip.unknown_count, ip.checks.length)
+        const checks = ip.checks ?? []
+        const s = summarizeIP(ip.listed_count, ip.unknown_count, checks.length)
         return (
           <div key={ip.ip_address} style={{ marginBottom: '1rem' }}>
             <p style={{ marginBottom: '0.5rem' }}>
@@ -72,7 +73,7 @@ export default function BlocklistCard() {
                 <tr><th>Blocklist</th><th>Status</th><th>Detail</th></tr>
               </thead>
               <tbody>
-                {ip.checks.map(c => (
+                {checks.map(c => (
                   <tr key={c.rbl_name}>
                     <td>{c.list_name}</td>
                     <td><span className={`badge ${rblBadge(c.status)}`}>{c.status === 'clean' ? 'not listed' : c.status}</span></td>

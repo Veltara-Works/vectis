@@ -53,6 +53,14 @@ describe('BlocklistCard', () => {
     await waitFor(() => expect(container).toBeEmptyDOMElement())
   })
 
+  it('does not crash when an IP has no checks array', async () => {
+    mockApi.rblStatus.mockResolvedValue({
+      ips: [{ ip_address: '203.0.113.7', listed_count: 0, unknown_count: 0, clean: false, checks: null as unknown as [] }],
+    })
+    render(<BlocklistCard />)
+    await waitFor(() => expect(screen.getByText('not checked yet')).toBeInTheDocument())
+  })
+
   it('says when there are no results yet', async () => {
     mockApi.rblStatus.mockResolvedValue({ status: 'no_ips_yet', ips: [] })
     render(<BlocklistCard />)

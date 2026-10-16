@@ -54,7 +54,7 @@ var (
 
 func testMonitor(r Lookuper, ips []string, lists ...Blocklist) (*RBLMonitor, *fakeStore) {
 	store := &fakeStore{}
-	m := NewRBLMonitor(store, r, func(context.Context) ([]string, error) { return ips, nil },
+	m := NewRBLMonitor(store, []Lookuper{r}, func(context.Context) ([]string, error) { return ips, nil },
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	m.lists = lists
 	return m, store
@@ -206,5 +206,95 @@ func TestDefaultBlocklistsHaveDelistPages(t *testing.T) {
 		if l.Zone == "dnsbl.sorbs.net" {
 			t.Error("SORBS shut down in 2024 and must not be checked")
 		}
+	}
+}
+
+// blockingResolver never answers until its context ends.
+type blockingResolver struct{}
+
+func (blockingResolver) LookupHost(ctx context.Context, _ string) ([]string, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// Copilot finding 2: a list's "not listed" must come from the resolver that
+// just passed that list's self-test.
+func TestCheckNowUsesTheResolverThatPassedSelfTest(t *testing.T) {
+	primary := &fakeResolver{errs: map[string]error{
+		"2.0.0.127.bl.spamcop.net": &net.DNSError{Err: "i/o timeout", IsTimeout: true},
+	}}
+	secondary := &fakeResolver{answers: map[string][]string{"2.0.0.127.bl.spamcop.net": {"127.0.0.2"}}}
+	store := &fakeStore{}
+	m := NewRBLMonitor(store, []Lookuper{primary, secondary},
+		func(context.Context) ([]string, error) { return []string{"203.0.113.7"}, nil },
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.lists = []Blocklist{spamcop}
+	m.CheckNow(context.Background())
+
+	if len(store.rows) != 1 || store.rows[0].status != repository.RBLStatusClean {
+		t.Fatalf("rows = %+v, want clean via the secondary", store.rows)
+	}
+	if primary.calls != 1 {
+		t.Errorf("primary calls = %d, want only the failed self-test", primary.calls)
+	}
+}
+
+// ...and a resolver that passed the self-test but then fails an IP query
+// gives unknown, not a fallback answer from an untested resolver.
+func TestCheckNowNoMidRunFallback(t *testing.T) {
+	primary := &fakeResolver{
+		answers: map[string][]string{"2.0.0.127.bl.spamcop.net": {"127.0.0.2"}},
+		errs:    map[string]error{"7.113.0.203.bl.spamcop.net": &net.DNSError{Err: "server misbehaving"}},
+	}
+	secondary := &fakeResolver{}
+	store := &fakeStore{}
+	m := NewRBLMonitor(store, []Lookuper{primary, secondary},
+		func(context.Context) ([]string, error) { return []string{"203.0.113.7"}, nil },
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.lists = []Blocklist{spamcop}
+	m.CheckNow(context.Background())
+
+	if len(store.rows) != 1 || store.rows[0].status != repository.RBLStatusUnknown {
+		t.Fatalf("rows = %+v, want unknown", store.rows)
+	}
+	if secondary.calls != 0 {
+		t.Errorf("secondary calls = %d, want 0", secondary.calls)
+	}
+}
+
+// Copilot finding 3: a primary that hangs must not use up the deadline the
+// secondary needs.
+func TestFallbackLookuperPrimaryDeadline(t *testing.T) {
+	secondary := &fakeResolver{answers: map[string][]string{"mail.example.com": {"203.0.113.7"}}}
+	f := FallbackLookuper{Primary: blockingResolver{}, Secondary: secondary, PrimaryTimeout: 50 * time.Millisecond}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	a, err := f.LookupHost(ctx, "mail.example.com")
+	if err != nil || len(a) != 1 {
+		t.Fatalf("got %v, %v; want the secondary's answer within the caller's deadline", a, err)
+	}
+}
+
+// Copilot finding 4: partial IP discovery must not drop a known IP.
+func TestCheckNowMergesIPsOnPartialDiscovery(t *testing.T) {
+	r := &fakeResolver{answers: map[string][]string{"2.0.0.127.bl.spamcop.net": {"127.0.0.2"}}}
+	m, store := testMonitor(r, []string{"203.0.113.7", "198.51.100.9"}, spamcop)
+	m.CheckNow(context.Background())
+
+	// The hostname lookup fails; only the warmup IP comes back.
+	m.ipSource = func(context.Context) ([]string, error) {
+		return []string{"198.51.100.9"}, errors.New("resolve mail.example.com: timeout")
+	}
+	store.rows = nil
+	m.CheckNow(context.Background())
+	got := map[string]bool{}
+	for _, row := range store.rows {
+		got[row.ip] = true
+	}
+	if !got["203.0.113.7"] || !got["198.51.100.9"] {
+		t.Fatalf("second run checked %v, want both IPs", got)
+	}
+	if ips := m.IPs(); len(ips) != 2 {
+		t.Errorf("IPs() = %v, want both kept", ips)
 	}
 }

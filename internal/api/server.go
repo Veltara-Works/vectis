@@ -394,9 +394,10 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	// resolver; refusals are recorded as unknown, never as clean. The IPs are
 	// the mail hostname's A records plus any active warmup IPs, re-read each
 	// run, unless cfg.ServerIPs pins them.
-	rblResolver := mail.FallbackLookuper{Primary: mail.NewServerResolver(rblResolverAddr), Secondary: net.DefaultResolver}
-	s.rblMonitor = mail.NewRBLMonitor(s.rblChecks, rblResolver,
-		s.rblIPSource(cfg.ServerIPs, cfg.Hostname, rblResolver), logger.With("component", "rbl-monitor"))
+	rspamdResolver := mail.NewServerResolver(rblResolverAddr)
+	hostResolver := mail.FallbackLookuper{Primary: rspamdResolver, Secondary: net.DefaultResolver, PrimaryTimeout: 3 * time.Second}
+	s.rblMonitor = mail.NewRBLMonitor(s.rblChecks, []mail.Lookuper{rspamdResolver, net.DefaultResolver},
+		s.rblIPSource(cfg.ServerIPs, cfg.Hostname, hostResolver), logger.With("component", "rbl-monitor"))
 
 	// Initialize IP warmup manager.
 	s.warmupManager = mail.NewWarmupManager(s.ipWarmup, logger.With("component", "warmup-manager"))

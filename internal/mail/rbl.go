@@ -63,16 +63,25 @@ type Lookuper interface {
 }
 
 // FallbackLookuper tries Primary and, when it fails for a reason other than
-// "name not found", Secondary. It lets the monitor prefer the resolver the
-// blocklists accept (rspamd's bundled unbound, ADR-026 amendment A) without
-// going dark when that resolver is down or disabled.
+// "name not found", Secondary. The monitor uses it only for positive lookups
+// (the mail hostname's A records); blocklist queries pick one resolver per
+// list per run instead, so a "not listed" answer always comes from a resolver
+// that just passed that list's self-test.
 type FallbackLookuper struct {
 	Primary, Secondary Lookuper
+	// PrimaryTimeout bounds the Primary attempt so Secondary still has time
+	// within the caller's deadline. Zero means no separate bound.
+	PrimaryTimeout time.Duration
 }
 
 // LookupHost implements Lookuper.
 func (f FallbackLookuper) LookupHost(ctx context.Context, host string) ([]string, error) {
-	addrs, err := f.Primary.LookupHost(ctx, host)
+	pctx, cancel := ctx, context.CancelFunc(func() {})
+	if f.PrimaryTimeout > 0 {
+		pctx, cancel = context.WithTimeout(ctx, f.PrimaryTimeout)
+	}
+	addrs, err := f.Primary.LookupHost(pctx, host)
+	cancel()
 	if err == nil || isNotFound(err) || f.Secondary == nil {
 		return addrs, err
 	}
@@ -105,31 +114,33 @@ type rblStore interface {
 // RBLMonitor periodically checks the server's sending IPs against DNS
 // blocklists.
 type RBLMonitor struct {
-	repo     rblStore
-	logger   *slog.Logger
-	resolver Lookuper
-	ipSource func(ctx context.Context) ([]string, error)
-	lists    []Blocklist
-	interval time.Duration
-	timeout  time.Duration
-	stopCh   chan struct{}
+	repo      rblStore
+	logger    *slog.Logger
+	resolvers []Lookuper // tried in order per list; see CheckNow
+	ipSource  func(ctx context.Context) ([]string, error)
+	lists     []Blocklist
+	interval  time.Duration
+	timeout   time.Duration
+	stopCh    chan struct{}
 
 	mu  sync.Mutex
 	ips []string // IPs from the most recent run
 }
 
-// NewRBLMonitor creates a monitor. ipSource returns the IPs to check on each
-// run, so a changed A record or a new warmup IP is picked up without a restart.
-func NewRBLMonitor(repo rblStore, resolver Lookuper, ipSource func(ctx context.Context) ([]string, error), logger *slog.Logger) *RBLMonitor {
+// NewRBLMonitor creates a monitor. resolvers are tried in order for each list
+// (rspamd's bundled resolver first, then the default). ipSource returns the IPs
+// to check on each run, so a changed A record or a new warmup IP is picked up
+// without a restart.
+func NewRBLMonitor(repo rblStore, resolvers []Lookuper, ipSource func(ctx context.Context) ([]string, error), logger *slog.Logger) *RBLMonitor {
 	return &RBLMonitor{
-		repo:     repo,
-		logger:   logger,
-		resolver: resolver,
-		ipSource: ipSource,
-		lists:    DefaultBlocklists,
-		interval: 6 * time.Hour,
-		timeout:  10 * time.Second,
-		stopCh:   make(chan struct{}),
+		repo:      repo,
+		logger:    logger,
+		resolvers: resolvers,
+		ipSource:  ipSource,
+		lists:     DefaultBlocklists,
+		interval:  6 * time.Hour,
+		timeout:   10 * time.Second,
+		stopCh:    make(chan struct{}),
 	}
 }
 
@@ -167,40 +178,48 @@ func (m *RBLMonitor) IPs() []string {
 // CheckNow checks every IP against every list and stores the results.
 func (m *RBLMonitor) CheckNow(ctx context.Context) []repository.RBLCheck {
 	ips, err := m.ipSource(ctx)
-	if err != nil {
-		m.logger.Warn("rbl monitor: could not determine server IPs", "error", err)
-	}
 	m.mu.Lock()
-	if len(ips) > 0 || err == nil {
-		m.ips = ips
-	} else {
-		ips = m.ips // keep checking the last known IPs through a lookup blip
+	if err != nil {
+		// Partial or failed discovery: keep checking every IP we knew about,
+		// so a DNS blip can't silently drop the server's main address.
+		m.logger.Warn("rbl monitor: could not fully determine server IPs", "error", err)
+		ips = unionIPs(m.ips, ips)
 	}
 	m.mu.Unlock()
 	if len(ips) == 0 {
 		return nil
 	}
 
-	// Self-test each list once per run: a list that doesn't answer its own test
-	// address (unregistered resolver, refused query, list down) can't be trusted
-	// to say "clean" either.
-	healthy := make(map[string]string, len(m.lists)) // zone -> reason when unhealthy
+	// Pick a resolver per list: the first that answers the list's own RFC 5782
+	// test address as listed. That list's IP queries then use the same
+	// resolver, so a "not listed" answer is only trusted from a resolver the
+	// list was just seen to answer (an unregistered or refused resolver often
+	// returns NXDOMAIN for everything). No resolver passing means unknown.
+	chosen := make(map[string]Lookuper, len(m.lists))
+	unhealthy := make(map[string]string, len(m.lists))
 	for _, l := range m.lists {
-		st, reason := m.lookup(ctx, testAddress, l)
-		if st != repository.RBLStatusListed {
-			if reason == "" {
-				reason = "list did not answer its test address"
+		reason := "list did not answer its test address"
+		for _, r := range m.resolvers {
+			st, why := m.lookup(ctx, r, testAddress, l)
+			if st == repository.RBLStatusListed {
+				chosen[l.Zone] = r
+				break
 			}
-			healthy[l.Zone] = reason
+			if why != "" {
+				reason = "list did not answer its test address: " + why
+			}
+		}
+		if chosen[l.Zone] == nil {
+			unhealthy[l.Zone] = reason
 		}
 	}
 
 	var results []repository.RBLCheck
 	for _, ip := range ips {
 		for _, l := range m.lists {
-			status, reason := m.lookup(ctx, ip, l)
-			if r, bad := healthy[l.Zone]; bad && status != repository.RBLStatusListed {
-				status, reason = repository.RBLStatusUnknown, "list unavailable: "+r
+			status, reason := repository.RBLStatusUnknown, "list unavailable: "+unhealthy[l.Zone]
+			if r := chosen[l.Zone]; r != nil {
+				status, reason = m.lookup(ctx, r, ip, l)
 			}
 			var respPtr *string
 			if reason != "" {
@@ -224,12 +243,31 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) []repository.RBLCheck {
 			}
 		}
 	}
+
+	// Publish the IPs only once their results are stored, so the dashboard
+	// never shows an IP mid-run.
+	m.mu.Lock()
+	m.ips = ips
+	m.mu.Unlock()
 	return results
+}
+
+// unionIPs returns a's IPs followed by any in b that a lacks.
+func unionIPs(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	var out []string
+	for _, ip := range append(append([]string(nil), a...), b...) {
+		if !seen[ip] {
+			seen[ip] = true
+			out = append(out, ip)
+		}
+	}
+	return out
 }
 
 // lookup queries one list for one IPv4 address. It returns the status and, for
 // listed, the answer, or for unknown, the reason.
-func (m *RBLMonitor) lookup(ctx context.Context, ipAddr string, l Blocklist) (string, string) {
+func (m *RBLMonitor) lookup(ctx context.Context, r Lookuper, ipAddr string, l Blocklist) (string, string) {
 	ip := net.ParseIP(ipAddr).To4()
 	if ip == nil {
 		return repository.RBLStatusUnknown, "not an IPv4 address"
@@ -238,7 +276,7 @@ func (m *RBLMonitor) lookup(ctx context.Context, ipAddr string, l Blocklist) (st
 
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
-	addrs, err := m.resolver.LookupHost(ctx, query)
+	addrs, err := r.LookupHost(ctx, query)
 	if err != nil {
 		if isNotFound(err) {
 			return repository.RBLStatusClean, ""

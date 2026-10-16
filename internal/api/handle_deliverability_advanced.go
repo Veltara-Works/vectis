@@ -118,11 +118,20 @@ type rblCheckView struct {
 	DelistURL string `json:"delist_url,omitempty"`
 }
 
+// viewRBLChecks returns one view per checked list, in the monitor's list
+// order. A list with no stored result (a run still in progress, or a failed
+// write) is shown as unknown, so a partial set can never read as all-clear.
 func viewRBLChecks(checks []repository.RBLCheck) (views []rblCheckView, listed, unknown int) {
+	byZone := make(map[string]repository.RBLCheck, len(checks))
 	for _, c := range checks {
-		v := rblCheckView{RBLCheck: c, ListName: c.RBLName}
-		if l, ok := mail.BlocklistByZone(c.RBLName); ok {
-			v.ListName, v.DelistURL = l.Name, l.DelistURL
+		byZone[c.RBLName] = c
+	}
+	views = []rblCheckView{}
+	for _, l := range mail.DefaultBlocklists {
+		c, ok := byZone[l.Zone]
+		if !ok {
+			reason := "not checked yet"
+			c = repository.RBLCheck{RBLName: l.Zone, Status: repository.RBLStatusUnknown, Response: &reason}
 		}
 		switch c.Status {
 		case repository.RBLStatusListed:
@@ -130,7 +139,7 @@ func viewRBLChecks(checks []repository.RBLCheck) (views []rblCheckView, listed, 
 		case repository.RBLStatusUnknown:
 			unknown++
 		}
-		views = append(views, v)
+		views = append(views, rblCheckView{RBLCheck: c, ListName: l.Name, DelistURL: l.DelistURL})
 	}
 	return views, listed, unknown
 }
@@ -172,7 +181,7 @@ func (s *Server) handleRBLStatus(w http.ResponseWriter, r *http.Request) {
 			Checks:    views,
 			Listed:    listed,
 			Unknown:   unknown,
-			Clean:     len(views) > 0 && listed == 0 && unknown == 0,
+			Clean:     listed == 0 && unknown == 0,
 		})
 	}
 
@@ -190,7 +199,23 @@ func (s *Server) handleRBLCheckNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	views, listed, unknown := viewRBLChecks(s.rblMonitor.CheckNow(r.Context()))
+	// One row per (IP, list) actually checked in this run.
+	results := s.rblMonitor.CheckNow(r.Context())
+	views := make([]rblCheckView, 0, len(results))
+	listed, unknown := 0, 0
+	for _, c := range results {
+		v := rblCheckView{RBLCheck: c, ListName: c.RBLName}
+		if l, ok := mail.BlocklistByZone(c.RBLName); ok {
+			v.ListName, v.DelistURL = l.Name, l.DelistURL
+		}
+		switch c.Status {
+		case repository.RBLStatusListed:
+			listed++
+		case repository.RBLStatusUnknown:
+			unknown++
+		}
+		views = append(views, v)
+	}
 
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
