@@ -230,7 +230,7 @@ func (s *Server) sendMessage(r *http.Request, req sendRequest, adminID, adminRol
 		}
 		defer func() {
 			if !sent {
-				s.warmupManager.Release(context.WithoutCancel(ctx), warmup, externalCount)
+				s.warmupManager.Release(ctx, warmup, externalCount)
 			}
 		}()
 	}

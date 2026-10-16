@@ -140,7 +140,7 @@ func (w policyWarmup) IsLocalDomain(ctx context.Context, domain string) (bool, e
 func (w policyWarmup) ReserveWarmup(ctx context.Context, n int) (bool, string, func(), error) {
 	d, err := w.s.warmupManager.Reserve(ctx, n)
 	if err != nil || d.Allowed {
-		release := func() { w.s.warmupManager.Release(context.WithoutCancel(ctx), d, n) }
+		release := func() { w.s.warmupManager.Release(ctx, d, n) }
 		return true, "", release, err
 	}
 	return false, warmupLimitMessage(d, n), nil, nil

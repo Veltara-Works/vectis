@@ -14,6 +14,10 @@ import (
 // stops limiting) when the day after the last one begins.
 const WarmupDays = 30
 
+// warmupReleaseTimeout bounds giving a reservation back. It is best-effort,
+// and runs while an HTTP error response or an SMTP DATA decision waits.
+const warmupReleaseTimeout = 5 * time.Second
+
 // warmupDayLength is one warmup day: the daily count resets, and the schedule
 // advances, this long after the previous reset.
 const warmupDayLength = 24 * time.Hour
@@ -35,6 +39,7 @@ type WarmupManager struct {
 	repo     warmupStore
 	logger   *slog.Logger
 	interval time.Duration
+	release  time.Duration // bound on Release
 	now      func() time.Time
 	stopCh   chan struct{}
 
@@ -47,6 +52,7 @@ func NewWarmupManager(repo warmupStore, logger *slog.Logger) *WarmupManager {
 		repo:     repo,
 		logger:   logger,
 		interval: 5 * time.Minute,
+		release:  warmupReleaseTimeout,
 		now:      func() time.Time { return time.Now().UTC() },
 		stopCh:   make(chan struct{}),
 	}
@@ -162,12 +168,15 @@ func (m *WarmupManager) Reserve(ctx context.Context, n int) (WarmupDecision, err
 }
 
 // Release returns sends reserved by a decision whose message then failed to
-// send. If the day has reset since, nothing is given back. Best-effort:
-// errors are logged.
+// send. If the day has reset since, nothing is given back. Best-effort: it
+// runs under its own short deadline, detached from ctx's cancellation (the
+// request may already be finishing), and errors are logged.
 func (m *WarmupManager) Release(ctx context.Context, d WarmupDecision, n int) {
 	if !d.Limited || !d.Allowed || n <= 0 {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.release)
+	defer cancel()
 	if err := m.repo.Release(ctx, d.EntryID, n, d.dayStart); err != nil {
 		m.logger.Error("release warmup sends failed", "error", err, "ip", d.IP, "count", n)
 	}

@@ -367,3 +367,27 @@ func TestWarmupReserveFailsOpenWhenTheRolloverFails(t *testing.T) {
 		t.Fatalf("Reserve with a failing rollover = %+v, %v; want allowed with the error", d, err)
 	}
 }
+
+// hangingReleaseStore's Release waits until its context is done.
+type hangingReleaseStore struct{ *fakeWarmupStore }
+
+func (hangingReleaseStore) Release(ctx context.Context, _ string, _ int, _ time.Time) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// Copilot #288 review 6: a refund can't hold up the request that triggered
+// it; it runs under its own deadline, even when the caller's ctx has none.
+func TestWarmupReleaseIsBounded(t *testing.T) {
+	store := hangingReleaseStore{&fakeWarmupStore{entries: []repository.IPWarmup{dayOne()}}}
+	m := NewWarmupManager(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.now = func() time.Time { return warmupT0 }
+	m.release = 50 * time.Millisecond
+	d, _ := m.Reserve(context.Background(), 1)
+
+	start := time.Now()
+	m.Release(context.Background(), d, 1)
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("Release took %v against a hung store, want about %v", took, m.release)
+	}
+}
