@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -166,7 +168,7 @@ type Config struct {
 	OrchestratorToken   string   // bearer token for orchestrator internal API (fallback)
 	OrchestratorCertDir string   // mTLS certificate directory; when set, upgrades to mTLS
 	CallbackBaseURL     string   // base URL for OIDC callbacks (e.g. https://mail.example.com)
-	ServerIPs           []string // server IP addresses for RBL monitoring
+	ServerIPs           []string // pins the IPs the RBL monitor checks; empty = the hostname's A records + warmup IPs
 	PostfixLogPath      string   // path to Postfix mail log for delivery/bounce event tailing; empty disables
 }
 
@@ -387,10 +389,18 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	// Initialize Sieve client for ManageSieve protocol.
 	s.sieveClient = mail.NewSieveClient("vectis-dovecot", "4190", logger.With("component", "sieve-client"))
 
-	// Initialize RBL monitor if server IPs are configured.
-	if len(cfg.ServerIPs) > 0 {
-		s.rblMonitor = mail.NewRBLMonitor(s.rblChecks, cfg.ServerIPs, logger.With("component", "rbl-monitor"))
-	}
+	// RBL monitor (#283). Lookups go to rspamd's bundled resolver, which the
+	// blocklists accept (ADR-026 amendment A), falling back to the default
+	// resolver; refusals are recorded as unknown, never as clean. The IPs are
+	// the mail hostname's A records plus any active warmup IPs, re-read each
+	// run, unless cfg.ServerIPs pins them.
+	rspamdResolver := mail.NewServerResolver(rblResolverAddr)
+	// The hostname's own A record: the fallback must be a public resolver,
+	// because Docker's embedded DNS answers the mail hostname with Postfix's
+	// private container address (see publicDNSResolver).
+	hostResolver := mail.FallbackLookuper{Primary: rspamdResolver, Secondary: publicDNSResolver, PrimaryTimeout: 3 * time.Second}
+	s.rblMonitor = mail.NewRBLMonitor(s.rblChecks, []mail.Lookuper{rspamdResolver, net.DefaultResolver},
+		s.rblIPSource(cfg.ServerIPs, cfg.Hostname, hostResolver), logger.With("component", "rbl-monitor"))
 
 	// Initialize IP warmup manager.
 	s.warmupManager = mail.NewWarmupManager(s.ipWarmup, logger.With("component", "warmup-manager"))
@@ -827,6 +837,47 @@ func (s *Server) StartCluster() {
 func (s *Server) StopCluster() {
 	if s.nodeMgr != nil {
 		s.nodeMgr.Stop()
+	}
+}
+
+// rblResolverAddr is rspamd's bundled resolver, reachable over vectis-data.
+const rblResolverAddr = "vectis-rspamd:53"
+
+// rblIPSource returns the IPs the RBL monitor checks: pinned when configured,
+// otherwise the hostname's public IPv4 addresses plus active warmup IPs.
+func (s *Server) rblIPSource(pinned []string, hostname string, r mail.Lookuper) func(ctx context.Context) ([]string, error) {
+	return func(ctx context.Context) ([]string, error) {
+		if len(pinned) > 0 {
+			return pinned, nil
+		}
+		seen := map[string]bool{}
+		var ips []string
+		add := func(ip string) {
+			if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil && !seen[parsed.String()] {
+				seen[parsed.String()] = true
+				ips = append(ips, parsed.String())
+			}
+		}
+		var errs []error
+		if hostname != "" {
+			hostIPs, err := mail.HostnameIPs(ctx, r, hostname)
+			if err != nil {
+				errs = append(errs, err)
+			}
+			for _, ip := range hostIPs {
+				add(ip)
+			}
+		}
+		if warmups, err := s.ipWarmup.List(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("list warmup IPs: %w", err))
+		} else {
+			for _, w := range warmups {
+				if w.Active {
+					add(strings.TrimSuffix(w.IPAddress, "/32"))
+				}
+			}
+		}
+		return ips, errors.Join(errs...)
 	}
 }
 

@@ -125,6 +125,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	srv.StartPolicyServer()
 	srv.StartUsageReporter()
 	srv.StartLicenseRefresher()
+	srv.StartRBLMonitor()
 	srv.EnsureRspamdConfigFresh()
 
 	// Graceful shutdown.

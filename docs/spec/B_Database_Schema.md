@@ -567,7 +567,7 @@ Hourly aggregated counters per domain for the analytics dashboard.
 ### ip_warmup, rbl_checks, fbl_reports
 
 - **ip_warmup**: Tracks IP reputation warmup schedule with daily volume targets.
-- **rbl_checks**: DNS blacklist monitoring results for server IPs.
+- **rbl_checks**: DNS blacklist monitoring results for server IPs (three-way `status` from 000025, B.22).
 - **fbl_reports**: ISP feedback loop (ARF) complaint reports.
 
 Also adds `audit_log.impersonation_target` column (UUID FK to mailboxes) for admin impersonation audit trails.
@@ -647,7 +647,7 @@ CREATE INDEX idx_password_reset_tokens_expires ON password_reset_tokens(expires_
 
 ---
 
-## B.22 Schema additions (Migrations 000012–000024)
+## B.22 Schema additions (Migrations 000012–000025)
 
 This section brings the outline current with migrations applied after 000011.
 For each, the migration file under `internal/database/migrations/` remains the
@@ -824,6 +824,14 @@ Grants: `SELECT` to `vectis_dovecot` (read in the passdb hot path; see [`ADR-019
 The per-domain Rspamd `add_header` (spam, files to Junk) threshold, Pro (`advanced_spam`); the API field is `spam_threshold`. A set value is rendered as that domain's `add_header` action in Rspamd `settings.conf`, alongside `reject_threshold` and `greylist_enabled` (000016), which follow the same NULL-means-default model. `null` in a PATCH clears it.
 
 Expand/contract: the migration only adds this column. The legacy `spam_threshold` (B.2) keeps its `NOT NULL DEFAULT 15.0` because the previous release's API is still serving while an update applies, and it reads that column as a non-nullable number. Legacy values are not copied: they were never applied, so every domain starts with no override and keeps the threshold it actually used. A later release drops the legacy column.
+
+### rbl_checks — status (Migration 000025)
+
+| Column | Type | Notes |
+|--------|------|-------|
+| status | VARCHAR(16) | `listed` \| `clean` \| `unknown`, CHECK-constrained. NULL on rows written before 000025: derive from `listed`. |
+
+An RBL lookup has three outcomes, not two. `unknown` covers a list refusing the query (Spamhaus answers `127.255.255.x` to shared or public resolvers), a lookup error, and a list that failed its own RFC 5782 test address during that run. Unknown must never read as clean. `listed` is still written (true only for `listed`) so the previous release's API reads new rows correctly during an update; `response` holds the DNS answer when listed, or the reason when unknown. Additive only (#283).
 
 ---
 

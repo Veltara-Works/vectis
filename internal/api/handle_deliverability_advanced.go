@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Veltara-Works/vectis/internal/mail"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
@@ -109,46 +112,78 @@ func (s *Server) handleDeleteWarmup(w http.ResponseWriter, r *http.Request) {
 
 // ── RBL Monitoring ─────────────────────────────────────────────────────
 
-// handleRBLStatus returns the latest RBL check results for all server IPs.
+// rblCheckView is an RBL check as the API returns it: the stored result plus
+// the list's display name and delisting page.
+type rblCheckView struct {
+	repository.RBLCheck
+	ListName  string `json:"list_name"`
+	DelistURL string `json:"delist_url,omitempty"`
+}
+
+// viewRBLChecks returns one view per checked list, in the monitor's list
+// order. A list with no stored result (a run still in progress, or a failed
+// write) is shown as unknown, so a partial set can never read as all-clear.
+func viewRBLChecks(checks []repository.RBLCheck) (views []rblCheckView, listed, unknown int) {
+	byZone := make(map[string]repository.RBLCheck, len(checks))
+	for _, c := range checks {
+		byZone[c.RBLName] = c
+	}
+	views = []rblCheckView{}
+	for _, l := range mail.DefaultBlocklists {
+		c, ok := byZone[l.Zone]
+		if !ok {
+			reason := "not checked yet"
+			c = repository.RBLCheck{RBLName: l.Zone, Status: repository.RBLStatusUnknown, Response: &reason}
+		}
+		switch c.Status {
+		case repository.RBLStatusListed:
+			listed++
+		case repository.RBLStatusUnknown:
+			unknown++
+		}
+		views = append(views, rblCheckView{RBLCheck: c, ListName: l.Name, DelistURL: l.DelistURL})
+	}
+	return views, listed, unknown
+}
+
+// handleRBLStatus returns the latest RBL check results for the server's IPs.
+// clean is true only when every list answered and none lists the IP; an
+// unknown result is never reported as clean.
 func (s *Server) handleRBLStatus(w http.ResponseWriter, r *http.Request) {
 	type rblIPStatus struct {
-		IPAddress string                `json:"ip_address"`
-		Checks    []repository.RBLCheck `json:"checks"`
-		Listed    int                   `json:"listed_count"`
-		Clean     bool                  `json:"clean"`
+		IPAddress string         `json:"ip_address"`
+		Checks    []rblCheckView `json:"checks"`
+		Listed    int            `json:"listed_count"`
+		Unknown   int            `json:"unknown_count"`
+		Clean     bool           `json:"clean"`
 	}
 
-	// Get unique IPs from warmup or configured IPs.
 	var ips []string
 	if s.rblMonitor != nil {
 		ips = s.rblMonitor.IPs()
 	}
 	if len(ips) == 0 {
 		respond(w, r, http.StatusOK, map[string]any{
-			"status": "no_ips_configured",
+			"status": "no_ips_yet",
 			"ips":    []any{},
 		})
 		return
 	}
 
-	var statuses []rblIPStatus
+	statuses := []rblIPStatus{}
 	for _, ipAddr := range ips {
 		checks, err := s.rblChecks.GetLatestByIP(r.Context(), ipAddr)
 		if err != nil {
 			s.logger.Error("get rbl status failed", "error", err, "ip", ipAddr)
 			continue
 		}
-		listedCount := 0
-		for _, c := range checks {
-			if c.Listed {
-				listedCount++
-			}
-		}
+		views, listed, unknown := viewRBLChecks(checks)
 		statuses = append(statuses, rblIPStatus{
 			IPAddress: ipAddr,
-			Checks:    checks,
-			Listed:    listedCount,
-			Clean:     listedCount == 0,
+			Checks:    views,
+			Listed:    listed,
+			Unknown:   unknown,
+			Clean:     listed == 0 && unknown == 0,
 		})
 	}
 
@@ -166,24 +201,53 @@ func (s *Server) handleRBLCheckNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := s.rblMonitor.CheckNow(r.Context())
-
-	listedCount := 0
+	// One row per (IP, list) actually checked in this run.
+	// The DNS work is capped at 20 s, leaving room within the server's 30 s
+	// WriteTimeout to store the results (CheckNow stores them under its own
+	// deadline) and respond. Lookups still running at 20 s are recorded as
+	// unknown.
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	results, err := s.rblMonitor.CheckNow(ctx)
+	var discoveryErr *mail.DiscoveryError
+	if errors.As(err, &discoveryErr) {
+		s.logger.Warn("rbl check: no server IP to check", "error", err)
+		respondError(w, r, http.StatusServiceUnavailable, "RBL_DISCOVERY_FAILED",
+			"Could not determine this server's IP address to check: "+discoveryErr.Err.Error())
+		return
+	}
+	if err != nil {
+		s.logger.Error("rbl check: results not stored", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "RBL_STORE_FAILED",
+			"The blocklist check ran but some results could not be saved")
+		return
+	}
+	views := make([]rblCheckView, 0, len(results))
+	listed, unknown := 0, 0
 	for _, c := range results {
-		if c.Listed {
-			listedCount++
+		v := rblCheckView{RBLCheck: c, ListName: c.RBLName}
+		if l, ok := mail.BlocklistByZone(c.RBLName); ok {
+			v.ListName, v.DelistURL = l.Name, l.DelistURL
 		}
+		switch c.Status {
+		case repository.RBLStatusListed:
+			listed++
+		case repository.RBLStatusUnknown:
+			unknown++
+		}
+		views = append(views, v)
 	}
 
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "rbl.check", "system", nil,
-		map[string]any{"checks": len(results), "listed": listedCount}, &ip)
+		map[string]any{"checks": len(views), "listed": listed, "unknown": unknown}, &ip)
 
 	respond(w, r, http.StatusOK, map[string]any{
-		"checks": results,
-		"total":  len(results),
-		"listed": listedCount,
+		"checks":  views,
+		"total":   len(views),
+		"listed":  listed,
+		"unknown": unknown,
 	})
 }
 
