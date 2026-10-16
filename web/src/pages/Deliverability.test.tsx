@@ -9,6 +9,9 @@ vi.mock('../api/client', () => ({
     deliverability: vi.fn(),
     rblStatus: vi.fn().mockResolvedValue({ ips: [] }),
     rblCheckNow: vi.fn(),
+    warmupList: vi.fn().mockResolvedValue([]),
+    warmupStart: vi.fn(),
+    warmupCancel: vi.fn(),
   },
 }))
 

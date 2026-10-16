@@ -3,6 +3,7 @@ import { api } from '../api/client.ts'
 import { extractError } from '../lib/errors.ts'
 import DomainSelect from '../components/DomainSelect.tsx'
 import BlocklistCard from '../components/BlocklistCard.tsx'
+import WarmupCard from '../components/WarmupCard.tsx'
 
 interface Domain { id: string; name: string }
 interface Check { name: string; status: string; value?: string; hint?: string }
@@ -73,6 +74,8 @@ export default function DeliverabilityPage() {
       {error && <div className="alert alert-error">{error}</div>}
 
       <BlocklistCard />
+
+      <WarmupCard />
 
       <div className="card">
         <div className="form-group">
