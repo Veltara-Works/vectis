@@ -46,6 +46,12 @@ var (
 		Help:      "Total authenticated-submission (587/465) sends rejected by the Postfix policy server",
 	}, []string{"reason"}) // "suspended", "rate_limit"
 
+	WarmupDeferrals = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "warmup_deferrals_total",
+		Help:      "Total outbound messages refused or deferred because the IP warmup daily limit was reached",
+	}, []string{"path"}) // "api" (429), "submission" (452)
+
 	WebhookDeliveries = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "webhook_deliveries_total",
@@ -104,6 +110,7 @@ func init() {
 		EmailsBounced,
 		EmailsSendSuspended,
 		SubmissionPolicyRejects,
+		WarmupDeferrals,
 		WebhookDeliveries,
 		APIRequests,
 		BatchMessagesSent,

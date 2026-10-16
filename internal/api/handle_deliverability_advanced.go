@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -35,8 +37,10 @@ func (s *Server) handleListWarmup(w http.ResponseWriter, r *http.Request) {
 	// Add schedule info.
 	type warmupEntry struct {
 		repository.IPWarmup
-		ScheduleLimit  int     `json:"schedule_limit"`  // recommended limit for current day
-		UtilizationPct float64 `json:"utilization_pct"` // daily_sent / daily_limit * 100
+		ScheduleLimit  int       `json:"schedule_limit"`  // recommended limit for current day
+		UtilizationPct float64   `json:"utilization_pct"` // daily_sent / daily_limit * 100
+		DaysTotal      int       `json:"days_total"`      // length of the schedule
+		NextResetAt    time.Time `json:"next_reset_at"`   // when daily_sent resets and the next day starts
 	}
 
 	result := make([]warmupEntry, len(entries))
@@ -45,10 +49,13 @@ func (s *Server) handleListWarmup(w http.ResponseWriter, r *http.Request) {
 		if e.DailyLimit > 0 {
 			utilization = float64(e.DailySent) / float64(e.DailyLimit) * 100
 		}
+		e.IPAddress = warmupIP(e.IPAddress)
 		result[i] = warmupEntry{
 			IPWarmup:       e,
 			ScheduleLimit:  repository.WarmupSchedule(e.WarmupDay),
 			UtilizationPct: utilization,
+			DaysTotal:      mail.WarmupDays,
+			NextResetAt:    e.LastResetAt.Add(24 * time.Hour),
 		}
 	}
 	respond(w, r, http.StatusOK, result)
@@ -61,8 +68,13 @@ func (s *Server) handleCreateWarmup(w http.ResponseWriter, r *http.Request) {
 		respondError(w, r, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON request body")
 		return
 	}
+	req.IPAddress = strings.TrimSpace(req.IPAddress)
 	if req.IPAddress == "" {
 		respondError(w, r, http.StatusBadRequest, "MISSING_FIELDS", "ip_address is required")
+		return
+	}
+	if net.ParseIP(req.IPAddress) == nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_IP", "ip_address must be an IPv4 or IPv6 address")
 		return
 	}
 
@@ -71,6 +83,19 @@ func (s *Server) handleCreateWarmup(w http.ResponseWriter, r *http.Request) {
 	if existing != nil {
 		respondError(w, r, http.StatusConflict, "ALREADY_EXISTS",
 			"Warmup tracking already exists for this IP")
+		return
+	}
+	// The server sends from one IP, and the daily limit applies to all outbound
+	// mail, so only one warmup can run at a time.
+	active, err := s.ipWarmup.GetActive(r.Context())
+	if err != nil {
+		s.logger.Error("get active ip warmup failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to check existing warmups")
+		return
+	}
+	if active != nil {
+		respondError(w, r, http.StatusConflict, "WARMUP_ACTIVE",
+			"A warmup is already running for "+warmupIP(active.IPAddress)+"; cancel it before starting another")
 		return
 	}
 
