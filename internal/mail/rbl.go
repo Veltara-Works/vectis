@@ -133,8 +133,10 @@ type RBLMonitor struct {
 	timeout   time.Duration
 	stopCh    chan struct{}
 
-	mu  sync.Mutex
-	ips []string // IPs from the most recent run
+	mu     sync.Mutex
+	ips    []string // IPs from the most recent run to publish
+	runSeq uint64   // numbers runs in the order they start
+	pubSeq uint64   // the run that last published ips
 }
 
 // NewRBLMonitor creates a monitor. resolvers are tried in order for each list
@@ -191,6 +193,14 @@ func (m *RBLMonitor) IPs() []string {
 // what it found (pending lookups as unknown). The error reports results that
 // could not be stored.
 func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error) {
+	// The background loop and "Check now" can overlap. Number each run as it
+	// starts, so a slower run that began earlier can't overwrite the IPs a
+	// newer run (with a fresher discovery) has already published.
+	m.mu.Lock()
+	m.runSeq++
+	seq := m.runSeq
+	m.mu.Unlock()
+
 	ips, err := m.ipSource(ctx)
 	m.mu.Lock()
 	if err != nil {
@@ -203,7 +213,7 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error
 		// A clean discovery that finds nothing (e.g. the A record was removed)
 		// clears what the dashboard shows; a failed one keeps the old IPs.
 		if err == nil {
-			m.ips = nil
+			m.publishLocked(seq, nil)
 		}
 		m.mu.Unlock()
 		return nil, nil
@@ -298,9 +308,19 @@ func (m *RBLMonitor) CheckNow(ctx context.Context) ([]repository.RBLCheck, error
 	// Publish the IPs only once their results are stored, so the dashboard
 	// never shows an IP mid-run.
 	m.mu.Lock()
-	m.ips = ips
+	m.publishLocked(seq, ips)
 	m.mu.Unlock()
 	return results, errors.Join(storeErrs...)
+}
+
+// publishLocked sets the published IPs for run seq unless a newer run has
+// already published. m.mu must be held.
+func (m *RBLMonitor) publishLocked(seq uint64, ips []string) {
+	if seq < m.pubSeq {
+		return
+	}
+	m.ips = ips
+	m.pubSeq = seq
 }
 
 // unionIPs returns a's IPs followed by any in b that a lacks.

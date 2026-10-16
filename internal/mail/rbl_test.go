@@ -414,3 +414,76 @@ func TestCheckNowReportsStoreFailures(t *testing.T) {
 		t.Fatal("CheckNow succeeded although no result could be stored")
 	}
 }
+
+// gatedResolver answers like fakeResolver, but a lookup of gate blocks until
+// release is closed, signalling entered when it starts waiting.
+type gatedResolver struct {
+	fakeResolver
+	gate    string
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (g *gatedResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	if host == g.gate {
+		g.once.Do(func() { close(g.entered) })
+		select {
+		case <-g.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return g.fakeResolver.LookupHost(ctx, host)
+}
+
+type syncStore struct {
+	mu sync.Mutex
+	fakeStore
+}
+
+func (s *syncStore) Create(ctx context.Context, ip, zone, status string, response *string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fakeStore.Create(ctx, ip, zone, status, response)
+}
+
+// Copilot review 4, previously missed: the background loop and "Check now" can
+// overlap. A run that started earlier and finishes later must not overwrite
+// the IPs a newer run already published.
+func TestCheckNowOlderRunDoesNotOverwriteNewerIPs(t *testing.T) {
+	r := &gatedResolver{
+		fakeResolver: fakeResolver{answers: map[string][]string{"2.0.0.127.bl.spamcop.net": {"127.0.0.2"}}},
+		gate:         "7.113.0.203.bl.spamcop.net",
+		entered:      make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+	var calls int
+	var callsMu sync.Mutex
+	m := NewRBLMonitor(&syncStore{}, []Lookuper{r}, func(context.Context) ([]string, error) {
+		callsMu.Lock()
+		defer callsMu.Unlock()
+		calls++
+		if calls == 1 {
+			return []string{"203.0.113.7"}, nil // older run: the address it checks hangs
+		}
+		return []string{"198.51.100.9"}, nil // newer run: fresher discovery
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.lists = []Blocklist{spamcop}
+
+	older := make(chan error, 1)
+	go func() {
+		_, err := m.CheckNow(context.Background())
+		older <- err
+	}()
+	<-r.entered
+	mustCheck(t, m) // the newer run completes while the older one is stuck
+	close(r.release)
+	if err := <-older; err != nil {
+		t.Fatalf("older CheckNow: %v", err)
+	}
+
+	if ips := m.IPs(); len(ips) != 1 || ips[0] != "198.51.100.9" {
+		t.Errorf("IPs() = %v, want the newer run's [198.51.100.9]", ips)
+	}
+}
