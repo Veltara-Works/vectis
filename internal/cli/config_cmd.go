@@ -3,9 +3,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -84,6 +87,39 @@ func splitCompose(files []engine.GeneratedFile) (compose, rest []engine.Generate
 		}
 	}
 	return compose, rest
+}
+
+// carryLiveImagePins copies the live compose's `@sha256` image pins onto the
+// rendered docker-compose.yml in files (#262), so diff and apply compare and
+// write the pinned form `vectis update apply` left behind instead of silently
+// un-pinning every vectis-* image. Returns the services whose pin could not be
+// carried because the rendered image tag differs from the live one (a CLI of
+// another version); a service removed from the rendered compose is not one. A
+// missing live compose is not an error (fresh install).
+func carryLiveImagePins(configDir string, files []engine.GeneratedFile) (uncarried []string, err error) {
+	cur, err := os.ReadFile(filepath.Join(configDir, composeRelPath))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read live compose: %w", err)
+	}
+	for i := range files {
+		if files[i].RelPath == composeRelPath {
+			files[i].Content = engine.CarryComposeImagePins(files[i].Content, cur)
+			uncarried = engine.UncarriedComposeImagePins(files[i].Content, cur)
+		}
+	}
+	return uncarried, nil
+}
+
+// reportPins tells the operator which pins could not be carried.
+func reportPins(cmd *cobra.Command, uncarried []string) {
+	if len(uncarried) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"Warning: the image digest pin for %s was not kept: this CLI renders a different image tag than the live docker-compose.yml.\n"+
+				"Use the CLI matching the running version, or run `vectis update apply` to pin the images again.\n", strings.Join(uncarried, ", "))
+	}
 }
 
 // diffAllFiles diffs per-service configs against the bind-mounted genDir and
@@ -487,8 +523,16 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Compare against disk (compose against configDir, configs against genDir).
+	// Compare against disk (compose against configDir, configs against genDir),
+	// with the live image pins carried over so they don't show as a change.
 	configDir, _ := cmd.Flags().GetString("config-dir")
+	uncarried, err := carryLiveImagePins(configDir, files)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+	reportPins(cmd, uncarried)
 	diffs, err := diffAllFiles(outputDir, configDir, files)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
@@ -601,9 +645,20 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Keep the image digest pins `vectis update apply` wrote (#262): the
+	// templates render images by tag only, and writing that over the live
+	// compose would un-pin every vectis-* image.
+	configDir, _ := cmd.Flags().GetString("config-dir")
+	uncarried, err := carryLiveImagePins(configDir, files)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+	reportPins(cmd, uncarried)
+
 	// Diff first to know what changed (compose against configDir, configs
 	// against genDir — see diffAllFiles).
-	configDir, _ := cmd.Flags().GetString("config-dir")
 	diffs, err := diffAllFiles(outputDir, configDir, files)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
