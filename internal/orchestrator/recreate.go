@@ -226,24 +226,24 @@ func (o *Orchestrator) takeReservation(id string) *recreateReservation {
 // failure and reports the rest as skipped. It needs the reservation from
 // BeginRecreate; the orchestrator is already in `recreating`.
 func (o *Orchestrator) Recreate(ctx context.Context, req RecreateRequest) (*RecreateResult, error) {
-	res := o.takeReservation(req.Reservation)
-	if res == nil {
+	rsv := o.takeReservation(req.Reservation)
+	if rsv == nil {
 		return nil, &ErrRecreateRequest{Reason: "no active recreate reservation (expired, released, or the orchestrator restarted); run `vectis config apply` again"}
 	}
 	release, err := o.acquireAdvisoryLock(ctx)
 	if err != nil {
-		o.restoreAfterReservation(ctx, res)
+		o.restoreAfterReservation(ctx, rsv)
 		return nil, fmt.Errorf("orchestrator busy: %w", err)
 	}
 	defer release()
 
 	defined, err := o.docker.composeServices(ctx)
 	if err != nil {
-		o.restoreAfterReservation(ctx, res)
+		o.restoreAfterReservation(ctx, rsv)
 		return nil, fmt.Errorf("enumerate compose services: %w", err)
 	}
 	if err := validateRecreateRequest(req, defined); err != nil {
-		o.restoreAfterReservation(ctx, res)
+		o.restoreAfterReservation(ctx, rsv)
 		return nil, &ErrRecreateRequest{Reason: err.Error()}
 	}
 
