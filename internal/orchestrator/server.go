@@ -387,6 +387,9 @@ func (s *Server) handleRecreate(w http.ResponseWriter, r *http.Request) {
 	// 30 s WriteTimeout, so refuse instead.
 	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(RecreateMaxDuration + time.Minute)); err != nil {
 		s.logger.Error("recreate: cannot extend write deadline", "error", err)
+		// The CLI treats its reservation as spent once it sends the recreate,
+		// so release it here rather than hold the orchestrator until it expires.
+		_ = s.orch.CancelRecreate(r.Context(), req.Reservation)
 		s.respondError(w, http.StatusInternalServerError, "RECREATE_UNAVAILABLE", "cannot extend the response deadline for a recreate")
 		return
 	}

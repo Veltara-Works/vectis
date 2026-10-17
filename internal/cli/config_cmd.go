@@ -755,17 +755,13 @@ func runApply(cmd *cobra.Command, args []string) error {
 	// Write files: per-service configs to genDir; docker-compose.yml to the
 	// canonical configDir (and genDir) so apply updates the LIVE compose.
 	if err := writeAllFiles(outputDir, configDir, files); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: write failed: %s\n", err)
-		os.Exit(1)
-		return nil
+		return fail(1, "write failed: %s", err)
 	}
 
 	// Write Docker secret files.
 	secretsDir := filepath.Join(outputDir, "secrets")
 	if err := engine.WriteSecrets(secretsDir, data); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: write secrets failed: %s\n", err)
-		os.Exit(1)
-		return nil
+		return fail(1, "write secrets failed: %s", err)
 	}
 
 	// Determine and execute service actions. A service being recreated skips
