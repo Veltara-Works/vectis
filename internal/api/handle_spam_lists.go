@@ -291,14 +291,32 @@ const (
 // contain whitespace or a separator: every accepted form is canonicalised
 // (netip) or charset-constrained (validDomainRe).
 func normalizeExceptionNetwork(network string) (string, string, string) {
+	n, code, msg := normalizeExceptionNetworkForm(network)
+	// The result becomes one field of an rspamd map line: whatever the form,
+	// it must be a single token (no whitespace or control characters).
+	if code == "" && strings.IndexFunc(n, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
+		return "", "INVALID_NETWORK", "network contains whitespace or control characters"
+	}
+	return n, code, msg
+}
+
+func normalizeExceptionNetworkForm(network string) (string, string, string) {
 	n := strings.ToLower(strings.TrimSpace(network))
 	if strings.Contains(n, "/") {
 		p, err := netip.ParsePrefix(n)
-		if err != nil {
+		if err != nil || p.Addr().Zone() != "" {
 			return "", "INVALID_NETWORK", "network is not a valid CIDR"
 		}
+		// An IPv4-mapped IPv6 prefix (::ffff:a.b.c.d/N) counts its 96-bit
+		// IPv6 head: judge and store it as the IPv4 prefix it is.
+		if p.Addr().Is4In6() {
+			if p.Bits() < 96 {
+				return "", "NETWORK_TOO_BROAD", fmt.Sprintf("a DMARC exception network may be at most /%d for IPv4 or /%d for IPv6", minExceptionPrefixV4, minExceptionPrefixV6)
+			}
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
 		min := minExceptionPrefixV4
-		if p.Addr().Is6() && !p.Addr().Is4In6() {
+		if p.Addr().Is6() {
 			min = minExceptionPrefixV6
 		}
 		if p.Bits() < min {
@@ -307,6 +325,9 @@ func normalizeExceptionNetwork(network string) (string, string, string) {
 		return p.Masked().String(), "", ""
 	}
 	if a, err := netip.ParseAddr(n); err == nil {
+		if a.Zone() != "" {
+			return "", "INVALID_NETWORK", "an IPv6 zone (%...) isn't allowed in a DMARC exception network"
+		}
 		return a.Unmap().String(), "", ""
 	}
 	host := strings.TrimPrefix(n, ".")

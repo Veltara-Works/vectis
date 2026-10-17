@@ -328,24 +328,45 @@ rspamd_config:register_symbol{
   priority = 9,
   callback = function(task)
     if next(dmarc_exceptions) == nil then return end
-    local rcpt_domain = principal_rcpt_domain(task)
     local hdr_domain = mime_from_domain(task)
-    if not rcpt_domain or not hdr_domain then return end
-    local entries = dmarc_exceptions[rcpt_domain .. ':' .. hdr_domain]
-    if not entries then return end
-    for _, e in ipairs(entries) do
-      if dmarc_exception_matches(task, e) then
-        task:disable_symbol('DMARC_CHECK')
-        task:insert_result('VECTIS_DMARC_EXCEPTION', 1.0, hdr_domain, e.text)
-        rspamd_logger.infox(task, 'vectis: DMARC exception applied rcpt=%s from=%s via=%s',
-          rcpt_domain, hdr_domain, e.text)
-        return
+    if not hdr_domain then return end
+
+    -- One message is one DMARC decision, so the check is only switched off
+    -- when EVERY recipient domain has an exception for this sender that
+    -- matches where the message came from. A message to an excepted and a
+    -- non-excepted domain is still judged by DMARC for all of them.
+    local rcpts = task:get_recipients('smtp')
+    if not rcpts or #rcpts == 0 then return end
+    local via, seen, any = nil, {}, false
+    for _, r in ipairs(rcpts) do
+      local rd = r.domain and string.lower(r.domain)
+      if not rd or rd == '' then return end
+      if not seen[rd] then
+        seen[rd] = true
+        local entries = dmarc_exceptions[rd .. ':' .. hdr_domain]
+        local matched
+        if entries then
+          any = true
+          for _, e in ipairs(entries) do
+            if dmarc_exception_matches(task, e) then matched = e.text; break end
+          end
+        end
+        if not matched then
+          if any then
+            -- The near-miss matters: an exception exists, but not for this
+            -- network, or not for every recipient domain, so DMARC decides.
+            rspamd_logger.infox(task, 'vectis: DMARC exception for %s NOT applied — rcpt domain %s has no matching exception (ip=%s host=%s)',
+              hdr_domain, rd, tostring(task:get_from_ip()), tostring(task:get_hostname()))
+          end
+          return
+        end
+        via = via or matched
       end
     end
-    -- The near-miss matters: the domain has an exception, but this message
-    -- came from somewhere else, so DMARC still decides.
-    rspamd_logger.infox(task, 'vectis: DMARC exception for %s NOT applied — ip=%s host=%s not in its networks',
-      hdr_domain, tostring(task:get_from_ip()), tostring(task:get_hostname()))
+
+    task:disable_symbol('DMARC_CHECK')
+    task:insert_result('VECTIS_DMARC_EXCEPTION', 1.0, hdr_domain, via)
+    rspamd_logger.infox(task, 'vectis: DMARC exception applied from=%s via=%s', hdr_domain, via)
   end,
 }
 
