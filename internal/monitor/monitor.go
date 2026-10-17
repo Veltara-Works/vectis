@@ -61,7 +61,7 @@ type Monitor struct {
 	postfixExec bool             // whether `docker exec vectis-postfix` is viable (implies dockerCLI)
 	now         func() time.Time // injectable for tests; defaults to time.Now
 
-	vkMemMu sync.Mutex     // RunCheck can also run from the API, concurrently with the loop
+	vkMemMu sync.Mutex     // serialises checkValkeyMemory (read, decide, alert): RunCheck can also run from the API
 	vkMem   valkeyMemState // eviction baseline for checkValkeyMemory
 
 	// backupProvider, when set, returns the LIVE effective backup settings on

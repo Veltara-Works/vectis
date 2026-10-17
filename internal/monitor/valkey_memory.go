@@ -109,7 +109,14 @@ func mib(b int64) string { return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20)) }
 // checkValkeyMemory warns on Valkey memory pressure and evictions. Its service
 // name is "valkey-memory", not "valkey", so its WARN can't dedup against or be
 // resolved by the connection check's alerts.
+//
+// The whole check runs under vkMemMu: RunCheck can also be triggered from the
+// API, and an overlapping run that read an older, healthy sample must not
+// resolve a newer run's eviction WARN.
 func (m *Monitor) checkValkeyMemory(ctx context.Context) {
+	m.vkMemMu.Lock()
+	defer m.vkMemMu.Unlock()
+
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	out, err := m.vk.Do(checkCtx, m.vk.B().Info().Section("memory", "stats").Build()).ToString()
@@ -123,10 +130,8 @@ func (m *Monitor) checkValkeyMemory(ctx context.Context) {
 		return
 	}
 
-	m.vkMemMu.Lock()
 	st, msg := evalValkeyMemory(m.vkMem, info, m.now())
 	m.vkMem = st
-	m.vkMemMu.Unlock()
 
 	if msg != "" {
 		m.alerter.Send(ctx, "WARN", "valkey-memory", msg)

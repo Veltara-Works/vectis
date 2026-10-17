@@ -385,7 +385,8 @@ func suggestAction(service string) string {
 	case "valkey":
 		return "Check Valkey status: docker compose exec valkey valkey-cli PING"
 	case "valkey-memory":
-		return "Check what is using Valkey memory (docker exec vectis-valkey valkey-cli INFO memory); a larger resources.profile raises its limit"
+		return "Check what is using Valkey memory: docker exec -it vectis-valkey valkey-cli --askpass INFO memory " +
+			"(enter valkey.password from /etc/vectis/secrets.yaml at the prompt); a larger resources.profile raises its limit"
 	case "disk":
 		return "Free disk space or expand volume"
 	case "queue":
