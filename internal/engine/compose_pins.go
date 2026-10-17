@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -80,4 +81,60 @@ func ComposeImagePinCount(compose []byte) int {
 		}
 	}
 	return n
+}
+
+// ComposeImageTagMismatches lists vectis-* services present in both composes
+// whose image tag differs, as "svc (live → rendered)", sorted. A non-empty
+// result means the rendering CLI is a different release than the running
+// stack: writing that compose would change versions outside `vectis update
+// apply` (no snapshot, no migrations, orchestrator left behind).
+func ComposeImageTagMismatches(rendered, live []byte) []string {
+	liveTags := map[string]string{}
+	for _, m := range composeVectisImageRe.FindAllStringSubmatch(string(live), -1) {
+		liveTags[m[3]] = m[4]
+	}
+	var out []string
+	for _, m := range composeVectisImageRe.FindAllStringSubmatch(string(rendered), -1) {
+		if lt, ok := liveTags[m[3]]; ok && lt != m[4] {
+			out = append(out, fmt.Sprintf("%s (%s → %s)", m[3], strings.TrimPrefix(lt, ":"), strings.TrimPrefix(m[4], ":")))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// UnpinnedComposeImages lists the vectis-* services whose image line has no
+// digest, sorted.
+func UnpinnedComposeImages(compose []byte) []string {
+	var out []string
+	for _, m := range composeVectisImageRe.FindAllStringSubmatch(string(compose), -1) {
+		if m[5] == "" {
+			out = append(out, m[3])
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// PinComposeImages adds `@<digest>` to each unpinned vectis-* image line whose
+// service is in digests (service → "sha256:…", as a signed release manifest
+// lists them). Already-pinned lines are left alone.
+func PinComposeImages(compose []byte, digests map[string]string) []byte {
+	return []byte(composeVectisImageRe.ReplaceAllStringFunc(string(compose), func(line string) string {
+		m := composeVectisImageRe.FindStringSubmatch(line)
+		d, ok := digests[m[3]]
+		if m[5] != "" || !ok || m[4] == "" {
+			return line
+		}
+		return m[1] + m[2] + m[4] + "@" + d
+	}))
+}
+
+// ComposeImageTag returns the tag of the first vectis-* image in the compose
+// (all of them carry the release tag), or "" if there is none.
+func ComposeImageTag(compose []byte) string {
+	if m := composeVectisImageRe.FindStringSubmatch(string(compose)); m != nil {
+		return strings.TrimPrefix(m[4], ":")
+	}
+	return ""
 }

@@ -15,7 +15,7 @@ interface OrchestratorStatus {
 // own, and so the in-progress banner surfaces `current_step` without waiting
 // for the user to refresh. Without this, the ~60s Apply window before
 // self_upgrade_until is written feels frozen (rc45 human-UI finding).
-const NON_TERMINAL_STATES = new Set(['validating', 'planning', 'applying', 'rolling_back'])
+const NON_TERMINAL_STATES = new Set(['validating', 'planning', 'applying', 'rolling_back', 'recreating'])
 
 interface HistoryEntry {
   id: string; action: string; status: string; plan_summary?: string;
@@ -360,6 +360,11 @@ function OperationInProgressBanner({ state }: { state: string }) {
       phrase: 'rolling back to the previous version',
       duration: 'around 60 seconds',
       safety: 'Please wait — do not click Apply Update.',
+    },
+    recreating: {
+      phrase: 'restarting services to apply a configuration change',
+      duration: 'a minute or two',
+      safety: 'Please wait — updates are paused until it finishes.',
     },
   }
   const m = messages[state]

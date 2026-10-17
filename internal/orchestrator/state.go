@@ -27,6 +27,10 @@ const (
 	StateRollingBack State = "rolling_back"
 	StateFailed      State = "failed"
 	StateCompleted   State = "completed"
+	// StateRecreating: `vectis config apply` is recreating the services whose
+	// compose block changed (#262). Holds the same advisory lock as plan/apply,
+	// so neither can run during a recreate.
+	StateRecreating State = "recreating"
 )
 
 // ValidTransitions defines the allowed state transitions per Spec D.3.
@@ -36,6 +40,7 @@ var ValidTransitions = map[State]map[State]bool{
 		StatePlanning:    true,
 		StateValidating:  true,
 		StateRollingBack: true,
+		StateRecreating:  true,
 	},
 	StatePlanning: {
 		StateIdle:   true,
@@ -57,11 +62,17 @@ var ValidTransitions = map[State]map[State]bool{
 	StateFailed: {
 		StateRollingBack: true,
 		StatePlanning:    true,
+		StateRecreating:  true, // re-run config apply after fixing what failed
 	},
 	StateCompleted: {
 		StatePlanning:    true,
 		StateValidating:  true,
 		StateRollingBack: true,
+		StateRecreating:  true,
+	},
+	StateRecreating: {
+		StateIdle:   true,
+		StateFailed: true,
 	},
 }
 
@@ -91,6 +102,12 @@ func (s State) CanApply() bool {
 
 // CanRollback reports whether a Rollback operation is allowed in this state.
 func (s State) CanRollback() bool {
+	return s == StateIdle || s == StateFailed || s == StateCompleted
+}
+
+// CanRecreate reports whether a config-apply recreate is allowed in this state.
+// Allowed after a failure too, so the operator can fix the config and re-run.
+func (s State) CanRecreate() bool {
 	return s == StateIdle || s == StateFailed || s == StateCompleted
 }
 
@@ -234,10 +251,21 @@ func (sm *StateMachine) CompleteOperation(ctx context.Context, operationID, stat
 
 // LastOperation returns the most recent orchestrator_history entry.
 func (sm *StateMachine) LastOperation(ctx context.Context) (*OperationRecord, error) {
+	return sm.lastOperationWhere(ctx, "")
+}
+
+// LastVersionOperation returns the most recent entry that isn't a config-apply
+// recreate (#262), so rollback finds the last update's snapshot exactly as it
+// did before recreates were recorded.
+func (sm *StateMachine) LastVersionOperation(ctx context.Context) (*OperationRecord, error) {
+	return sm.lastOperationWhere(ctx, "WHERE action <> 'recreate'")
+}
+
+func (sm *StateMachine) lastOperationWhere(ctx context.Context, where string) (*OperationRecord, error) {
 	row := sm.db.QueryRow(ctx,
 		`SELECT id, action, status, config_hash, plan_summary, snapshot_path,
 		        container_versions, error_message, started_at, completed_at
-		 FROM orchestrator_history
+		 FROM orchestrator_history `+where+`
 		 ORDER BY started_at DESC
 		 LIMIT 1`,
 	)

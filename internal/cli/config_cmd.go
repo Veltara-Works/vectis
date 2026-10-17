@@ -16,6 +16,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/engine"
 	"github.com/Veltara-Works/vectis/internal/repository"
+	"github.com/Veltara-Works/vectis/internal/version"
 )
 
 // configCmd is the parent command for configuration-related subcommands.
@@ -111,15 +112,6 @@ func carryLiveImagePins(configDir string, files []engine.GeneratedFile) (uncarri
 		}
 	}
 	return uncarried, nil
-}
-
-// reportPins tells the operator which pins could not be carried.
-func reportPins(cmd *cobra.Command, uncarried []string) {
-	if len(uncarried) > 0 {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"Warning: the image digest pin for %s was not kept: this CLI renders a different image tag than the live docker-compose.yml.\n"+
-				"Use the CLI matching the running version, or run `vectis update apply` to pin the images again.\n", strings.Join(uncarried, ", "))
-	}
 }
 
 // diffAllFiles diffs per-service configs against the bind-mounted genDir and
@@ -477,6 +469,7 @@ type diffResult struct {
 	HasChanges bool                   `json:"has_changes"`
 	Files      []engine.FileDiff      `json:"files"`
 	Actions    []engine.ServiceAction `json:"actions"`
+	Recreate   recreatePlan           `json:"recreate"`
 }
 
 func runDiff(cmd *cobra.Command, args []string) error {
@@ -526,13 +519,17 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	// Compare against disk (compose against configDir, configs against genDir),
 	// with the live image pins carried over so they don't show as a change.
 	configDir, _ := cmd.Flags().GetString("config-dir")
-	uncarried, err := carryLiveImagePins(configDir, files)
-	if err != nil {
+	if _, err := carryLiveImagePins(configDir, files); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
 		os.Exit(1)
 		return nil
 	}
-	reportPins(cmd, uncarried)
+	if live, rendered, err := liveAndRenderedCompose(configDir, files); err == nil {
+		if mm := engine.ComposeImageTagMismatches(rendered, live); len(mm) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: this CLI (%s) renders different image tags than the running stack: %s.\n"+
+				"`vectis config apply` will refuse; use the CLI that matches the running release.\n", version.Version, strings.Join(mm, ", "))
+		}
+	}
 	diffs, err := diffAllFiles(outputDir, configDir, files)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
@@ -540,16 +537,32 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Determine service actions.
-	actions := engine.DetermineActions(diffs)
+	// Preview the containers config apply would recreate (#262).
+	live, rendered, err := liveAndRenderedCompose(configDir, files)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+	pending, _ := readRecreatePending(configDir)
+	plan, err := planRecreate(live, rendered, pending)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
 
-	hasChanges := len(diffs) > 0
+	// Determine service actions.
+	actions := supersedeActions(engine.DetermineActions(diffs), plan)
+
+	hasChanges := len(diffs) > 0 || !plan.empty()
 
 	if jsonOutput {
 		result := diffResult{
 			HasChanges: hasChanges,
 			Files:      diffs,
 			Actions:    actions,
+			Recreate:   plan,
 		}
 		out, _ := json.MarshalIndent(result, "", "  ")
 		fmt.Fprintln(cmd.OutOrStdout(), string(out))
@@ -573,6 +586,11 @@ func runDiff(cmd *cobra.Command, args []string) error {
 				}
 				fmt.Fprintln(cmd.OutOrStdout())
 			}
+			if !plan.empty() || plan.OrchestratorChanged {
+				fmt.Fprintln(cmd.OutOrStdout())
+				fmt.Fprintln(cmd.OutOrStdout(), "Containers to recreate (compose-level changes):")
+				printRecreatePlan(cmd, plan)
+			}
 		}
 	}
 
@@ -592,6 +610,7 @@ type applyResult struct {
 	Diffs        []engine.FileDiff      `json:"diffs"`
 	Actions      []engine.ServiceAction `json:"actions"`
 	Results      []engine.ReloadResult  `json:"results,omitempty"`
+	Recreate     *recreateOutcome       `json:"recreate,omitempty"`
 	Success      bool                   `json:"success"`
 }
 
@@ -645,25 +664,92 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	configDir, _ := cmd.Flags().GetString("config-dir")
+	var res *orchReservation
+	fail := func(code int, format string, a ...any) error {
+		res.release()
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: "+format+"\n", a...)
+		os.Exit(code)
+		return nil
+	}
+
+	// One config apply at a time: it writes the live compose and configs, and
+	// the orchestrator then recreates containers from them (#262).
+	unlock, err := lockConfigApply(configDir)
+	if err != nil {
+		return fail(1, "%s", err)
+	}
+	defer unlock()
+
+	// Reserve the orchestrator before reading the live compose, so no update,
+	// rollback or self-replace can start while this run plans, writes and
+	// recreates. An unreachable orchestrator is fine as long as nothing needs
+	// recreating (checked below).
+	res, err = reserveOrchestrator(cmd)
+	if err != nil {
+		return fail(1, "%s. Nothing was written.", err)
+	}
+
 	// Keep the image digest pins `vectis update apply` wrote (#262): the
 	// templates render images by tag only, and writing that over the live
 	// compose would un-pin every vectis-* image.
-	configDir, _ := cmd.Flags().GetString("config-dir")
-	uncarried, err := carryLiveImagePins(configDir, files)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
-		os.Exit(1)
-		return nil
+	if _, err := carryLiveImagePins(configDir, files); err != nil {
+		return fail(1, "%s", err)
 	}
-	reportPins(cmd, uncarried)
+	live, rendered, err := liveAndRenderedCompose(configDir, files)
+	if err != nil {
+		return fail(1, "%s", err)
+	}
 
-	// Diff first to know what changed (compose against configDir, configs
-	// against genDir — see diffAllFiles).
+	// Versions change only through `vectis update apply` (snapshot, migrations,
+	// orchestrator self-replace). A CLI of another release renders other image
+	// tags; writing them, let alone recreating from them, would bypass all that.
+	if mm := engine.ComposeImageTagMismatches(rendered, live); len(mm) > 0 {
+		return fail(2, "this CLI (%s) renders different image tags than the running stack: %s.\n"+
+			"Nothing was written. Use the vectis CLI that matches the running release; change versions with `vectis update apply`.",
+			version.Version, strings.Join(mm, ", "))
+	}
+
+	// Work out which containers need recreating for compose-level changes.
+	pending, err := readRecreatePending(configDir)
+	if err != nil {
+		// Ignoring it would silently drop containers still waiting for a recreate.
+		return fail(1, "%s. Inspect %s (it lists containers still to recreate); remove it to discard them. Nothing was written.",
+			err, filepath.Join(configDir, recreatePendingFile))
+	}
+	plan, err := planRecreate(live, rendered, pending)
+	if err != nil {
+		return fail(1, "%s", err)
+	}
+	if !plan.empty() {
+		// The orchestrator does the recreate: it must be reachable and reserved.
+		if res == nil {
+			return fail(1, "containers need recreating (%s) but the orchestrator is unreachable. Nothing was written.",
+				strings.Join(append(append([]string(nil), plan.Services...), plan.Removed...), ", "))
+		}
+		// A service just switched on has no live pin to carry: pin it to the
+		// installed release's signed manifest rather than a mutable tag.
+		if err := pinNewServices(files, live, rendered); err != nil {
+			return fail(1, "%s. Nothing was written.", err)
+		}
+		// Record the work before the first live write, so an interruption
+		// anywhere after this point is retried by the next config apply.
+		if err := writeRecreatePending(configDir, plan); err != nil {
+			return fail(1, "record pending recreate: %s. Nothing was written.", err)
+		}
+	}
+
+	// Diff to know what changed (compose against configDir, configs against
+	// genDir — see diffAllFiles).
 	diffs, err := diffAllFiles(outputDir, configDir, files)
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
-		os.Exit(1)
-		return nil
+		return fail(1, "diff failed: %s", err)
+	}
+	var backup string
+	if composeChanged(diffs) {
+		if backup, err = backupLiveCompose(configDir, live, time.Now()); err != nil {
+			return fail(1, "back up docker-compose.yml: %s", err)
+		}
 	}
 
 	// Write files: per-service configs to genDir; docker-compose.yml to the
@@ -682,8 +768,9 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Determine and execute service actions.
-	actions := engine.DetermineActions(diffs)
+	// Determine and execute service actions. A service being recreated skips
+	// its reload/restart: the recreate starts it on the new configs.
+	actions := supersedeActions(engine.DetermineActions(diffs), plan)
 	results := engine.ExecuteActions(actions)
 
 	// Check for partial failures.
@@ -695,12 +782,31 @@ func runApply(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Recreate the containers whose compose block changed.
+	var recreate *recreateOutcome
+	if !plan.empty() || plan.OrchestratorChanged {
+		recreate = &recreateOutcome{Plan: plan, Backup: backup}
+	}
+	if !plan.empty() {
+		result, err := runRecreate(res, configDir, plan)
+		recreate.Result = result
+		if err != nil {
+			recreate.Error = err.Error()
+			allSuccess = false
+		} else if !result.Success {
+			allSuccess = false
+		}
+	} else {
+		res.release() // nothing to recreate: hand the orchestrator back
+	}
+
 	if jsonOutput {
 		result := applyResult{
 			FilesWritten: len(files),
 			Diffs:        diffs,
 			Actions:      actions,
 			Results:      results,
+			Recreate:     recreate,
 			Success:      allSuccess,
 		}
 		out, _ := json.MarshalIndent(result, "", "  ")
@@ -716,12 +822,8 @@ func runApply(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "No files changed.")
 		}
 
-		if composeChanged(diffs) {
-			fmt.Fprintln(cmd.OutOrStdout())
-			fmt.Fprintln(cmd.OutOrStdout(), "Note: docker-compose.yml changed. Compose-level settings (for example")
-			fmt.Fprintln(cmd.OutOrStdout(), "rspamd.local_resolver, optional services, resource limits) take effect when")
-			fmt.Fprintln(cmd.OutOrStdout(), "the affected containers are recreated, e.g. by the next `vectis update apply`.")
-			fmt.Fprintln(cmd.OutOrStdout(), "Restarting or reloading a service does not apply them.")
+		if recreate != nil {
+			printRecreateOutcome(cmd, recreate)
 		}
 
 		if len(results) > 0 {
