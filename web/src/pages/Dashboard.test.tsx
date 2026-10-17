@@ -34,6 +34,24 @@ beforeEach(() => {
 })
 
 describe('DashboardPage', () => {
+  it('asks for the mail-service probes and shows their results, with the reason on a failure (#264)', async () => {
+    mockApi.health.mockResolvedValue({
+      status: 'healthy',
+      services: {
+        postgres: { status: 'healthy', response_ms: 1 },
+        postfix: { status: 'unhealthy', response_ms: 1000, error: 'no greeting: i/o timeout' },
+        dovecot: { status: 'healthy', response_ms: 2 },
+      },
+    })
+    mockApi.listDomains.mockResolvedValue([])
+    renderWithRouter(<DashboardPage />)
+    await waitFor(() => expect(screen.getByText('postfix')).toBeInTheDocument())
+    expect(mockApi.health).toHaveBeenCalledWith(true)
+    expect(screen.getByText('unhealthy')).toHaveAttribute('title', 'no greeting: i/o timeout')
+    // Services the api reported aren't also shown as "unchecked"; ones it didn't are.
+    expect(screen.getAllByText('unchecked')).toHaveLength(2) // rspamd, traefik
+  })
+
   it('shows the release-integrity card for a super_admin', async () => {
     mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
     mockApi.listDomains.mockResolvedValue([])

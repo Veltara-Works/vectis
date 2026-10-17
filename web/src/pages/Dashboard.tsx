@@ -12,7 +12,7 @@ interface SetupProgress {
 }
 
 export default function DashboardPage() {
-  const [health, setHealth] = useState<{ status: string; services: Record<string, { status: string; response_ms: number }> } | null>(null)
+  const [health, setHealth] = useState<{ status: string; services: Record<string, { status: string; response_ms: number; error?: string }> } | null>(null)
   const [domains, setDomains] = useState<Array<{ id: string; name: string; active: boolean; verification_status?: string }>>([])
   const [error, setError] = useState('')
   const [verify, setVerify] = useState<VerifyStatus | null>(null)
@@ -37,7 +37,7 @@ export default function DashboardPage() {
   }, [])
 
   useEffect(() => {
-    api.health().then(setHealth).catch(() => setError('Failed to load health'))
+    api.health(true).then(setHealth).catch(() => setError('Failed to load health'))
     // super_admin only: anyone else gets a 403 and the card simply isn't
     // shown. Any other failure is surfaced, so a super_admin never loses
     // this card silently to a network or server error.
@@ -163,19 +163,18 @@ export default function DashboardPage() {
                 <tr key={name}>
                   <td>{name}</td>
                   <td>
-                    <span className={`badge ${svc.status === 'healthy' ? 'badge-success' : 'badge-danger'}`}>
+                    <span className={`badge ${svc.status === 'healthy' ? 'badge-success' : 'badge-danger'}`} title={svc.error || undefined}>
                       {svc.status}
                     </span>
                   </td>
                 </tr>
               ))}
               {/*
-                The api container has no Docker socket access (only the
-                orchestrator does), so container-level health for
-                postfix/dovecot/rspamd/traefik can't be queried here.
-                Render them as "unchecked" — but only if the health API
-                didn't already report on them, so we don't double-count
-                when the orchestrator eventually takes over these checks.
+                The api has no Docker socket, so it checks postfix/dovecot/
+                rspamd/traefik over the network instead (#264: greeting,
+                milter handshake, /ping). An older api doesn't report them:
+                render those as "unchecked" — only if the health API didn't
+                report on them.
 
                 Important: do NOT render anything that implies "this
                 service is healthy" here — the api genuinely cannot tell.
@@ -190,7 +189,7 @@ export default function DashboardPage() {
                   <tr key={`unchecked-${name}`}>
                     <td>{name}</td>
                     <td>
-                      <span className="badge badge-muted" title="This service's runtime health cannot be checked from the api container (no Docker socket access). Its status here reflects only whether the api knows about it — NOT whether it is actually running. Check 'docker ps' on the host, or wait for the orchestrator-driven health rollup in a future release.">
+                      <span className="badge badge-muted" title="This server's API doesn't report this service's health (an older version). This is NOT a sign that it's running. Check 'docker ps' on the host, or update.">
                         unchecked
                       </span>
                     </td>

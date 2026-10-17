@@ -154,7 +154,10 @@ export const api = {
   totpDisable: (code: string) => request<{ message: string }>('DELETE', '/auth/totp', { code }),
 
   // Health
-  health: () => request<{ status: string; services: Record<string, { status: string; response_ms: number }> }>('GET', '/health'),
+  // probes=true also checks postfix, dovecot, rspamd and traefik over the
+  // network (cached ~15 s server-side); they never change the overall status.
+  health: (probes = false) =>
+    request<{ status: string; services: Record<string, { status: string; response_ms: number; error?: string }> }>('GET', probes ? '/health?probes=1' : '/health'),
 
   // Domains
   listDomains: () => request<Array<{

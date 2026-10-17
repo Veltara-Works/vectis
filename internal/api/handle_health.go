@@ -19,6 +19,7 @@ type healthResponse struct {
 type serviceHealth struct {
 	Status     string `json:"status"`
 	ResponseMs int64  `json:"response_ms"`
+	Error      string `json:"error,omitempty"` // why a probed service is unhealthy
 }
 
 type tlsHealth struct {
@@ -31,27 +32,53 @@ type certHealth struct {
 	DaysLeft int    `json:"days_left,omitempty"`
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	services := make(map[string]serviceHealth)
-	overall := "healthy"
+// dependencyHealth pings the api's own dependencies, Postgres and Valkey;
+// these alone decide the overall status. Overridable in tests.
+func (s *Server) dependencyHealth(r *http.Request) map[string]serviceHealth {
+	if s.pingDeps != nil {
+		return s.pingDeps(r.Context())
+	}
+	services := make(map[string]serviceHealth, 2)
 
-	// Check Postgres with timing.
 	pgStart := time.Now()
 	if err := s.db.Ping(r.Context()); err != nil {
 		services["postgres"] = serviceHealth{Status: "unhealthy", ResponseMs: time.Since(pgStart).Milliseconds()}
-		overall = "degraded"
 	} else {
 		services["postgres"] = serviceHealth{Status: "healthy", ResponseMs: time.Since(pgStart).Milliseconds()}
 	}
 
-	// Check Valkey with timing.
 	vkStart := time.Now()
 	cmd := s.vk.B().Ping().Build()
 	if err := s.vk.Do(r.Context(), cmd).Error(); err != nil {
 		services["valkey"] = serviceHealth{Status: "unhealthy", ResponseMs: time.Since(vkStart).Milliseconds()}
-		overall = "degraded"
 	} else {
 		services["valkey"] = serviceHealth{Status: "healthy", ResponseMs: time.Since(vkStart).Milliseconds()}
+	}
+	return services
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	// Copy into a map this request owns: probe rows are added below, and the
+	// dependency map may be shared (a test fixture, or a future cache).
+	services := make(map[string]serviceHealth)
+	overall := "healthy"
+	for name, h := range s.dependencyHealth(r) {
+		services[name] = h
+		if h.Status != "healthy" {
+			overall = "degraded"
+		}
+	}
+
+	// Mail services, probed over the network (#264), only when asked
+	// (?probes=1, as the dashboard does): the container healthcheck calls this
+	// endpoint every few seconds and shouldn't open mail connections. They
+	// add per-service rows but never change the overall status, which the
+	// api's own healthcheck reads, so a postfix blip can't mark the api
+	// unhealthy.
+	if s.serviceProbes != nil && r.URL.Query().Get("probes") == "1" {
+		for name, h := range s.serviceProbes.Results(r.Context()) {
+			services[name] = h
+		}
 	}
 
 	// Check mail TLS cert.
