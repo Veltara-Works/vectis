@@ -2300,7 +2300,9 @@ func TestDMARCExceptionsMap(t *testing.T) {
 		t.Error("DMARC exception leaked into allow_domain.map")
 	}
 	lua := get("rspamd/rspamd.local.lua")
-	for _, want := range []string{"VECTIS_DMARC_EXCEPTIONS", "dmarc_exceptions.map", "task:disable_symbol('DMARC_CHECK')"} {
+	for _, want := range []string{"VECTIS_DMARC_EXCEPTIONS", "dmarc_exceptions.map", "task:disable_symbol('DMARC_CHECK')",
+		// #265 follow-up: rejections are recorded for the admin UI (key shared with internal/api).
+		"VECTIS_DMARC_REJECT_LOG", "type = 'idempotent'", "local dmarc_reject_key = 'vectis_dmarc_rejects'"} {
 		if !strings.Contains(lua, want) {
 			t.Errorf("rspamd.local.lua missing %q", want)
 		}

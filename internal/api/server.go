@@ -1113,6 +1113,11 @@ func (s *Server) buildRouter() chi.Router {
 				r.With(advancedSpamGate, requireAdminOrAbove()).Get("/spam-lists", s.handleListSpamListEntries)
 				r.With(advancedSpamGate, requireAdminOrAbove()).Post("/spam-lists", s.handleCreateSpamListEntry)
 				r.With(advancedSpamGate, requireAdminOrAbove()).Delete("/spam-lists/{entryID}", s.handleDeleteSpamListEntry)
+
+				// Mail DMARC enforcement rejected for this domain (#265). Not
+				// gated: seeing lost mail matters on every tier; adding a DMARC
+				// exception (spam-lists above) is the Pro part.
+				r.With(requireAdminOrAbove()).Get("/dmarc-rejections", s.handleDMARCRejections)
 			})
 
 			// Mailboxes — all roles (domain_admin scoped in handlers).

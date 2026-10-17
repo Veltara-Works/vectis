@@ -22,7 +22,7 @@ type createSpamListRequest struct {
 	Kind    string `json:"kind"`              // 'allow' | 'block' | 'dmarc_exception'
 	Scope   string `json:"scope"`             // 'email' | 'domain' (dmarc_exception: 'domain')
 	Pattern string `json:"pattern"`           // exact-match value; lowercased on insert
-	Network string `json:"network,omitempty"` // dmarc_exception only: IP, CIDR, hostname or .suffix
+	Network string `json:"network,omitempty"` // dmarc_exception only: IP, CIDR or exact hostname
 }
 
 type spamListResponse struct {

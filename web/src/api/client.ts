@@ -99,6 +99,32 @@ export interface SpamListEntry {
   created_at: string
 }
 
+export interface DMARCRejectSource {
+  ip: string
+  hostname?: string
+  count: number
+  last_seen: string
+}
+
+export interface DMARCRejectSender {
+  from_domain: string
+  count: number
+  first_seen: string
+  last_seen: string
+  example_from: string
+  envelope_from_domains: string[]
+  spf: string
+  dkim: string
+  sources: DMARCRejectSource[]
+}
+
+export interface DMARCRejections {
+  domain: string
+  days: number
+  total: number
+  senders: DMARCRejectSender[]
+}
+
 export interface WarmupEntry {
   id: string
   ip_address: string
@@ -194,6 +220,8 @@ export const api = {
     ),
   deleteSpamListEntry: (domainId: string, entryId: string) =>
     request<void>('DELETE', `/domains/${domainId}/spam-lists/${entryId}`),
+  dmarcRejections: (domainId: string, days: number) =>
+    request<DMARCRejections>('GET', `/domains/${domainId}/dmarc-rejections?days=${days}`),
   getDKIM: (id: string) =>
     request<{ dns_name: string; dns_value: string; selector: string }>('GET', `/domains/${id}/dkim`),
   generateDKIM: (id: string) =>
