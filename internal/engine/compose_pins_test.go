@@ -50,6 +50,9 @@ func TestCarryComposeImagePins(t *testing.T) {
 			t.Errorf("%s: missing %q in\n%s", c.name, c.want, got)
 		}
 	}
+	if unc := UncarriedComposeImagePins([]byte(got), []byte(live)); len(unc) != 1 || unc[0] != "dovecot" {
+		t.Errorf("uncarried = %v, want [dovecot] (tag differs; rspamd was never pinned)", unc)
+	}
 	if n := ComposeImagePinCount([]byte(got)); n != 2 {
 		t.Errorf("pin count = %d, want 2 (api carried + postfix rendered)", n)
 	}

@@ -89,19 +89,25 @@ func TestCarryLiveImagePins(t *testing.T) {
 	}
 
 	// Fresh install: no live compose, nothing to carry, no error.
-	fs0 := files()
-	if live, kept, err := carryLiveImagePins(dir, fs0); err != nil || live != 0 || kept != 0 {
-		t.Fatalf("no live compose: live=%d kept=%d err=%v", live, kept, err)
+	if unc, err := carryLiveImagePins(dir, files()); err != nil || len(unc) != 0 {
+		t.Fatalf("no live compose: uncarried=%v err=%v", unc, err)
 	}
 
-	live := "services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.56" + pin + "\n  webmail:\n    image: ghcr.io/veltara-works/vectis-webmail:v0.1.56" + pin + "\n"
+	// Live: api + webmail pinned at v0.1.56, plus clamav, which the new render dropped.
+	live := "services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.56" + pin +
+		"\n  webmail:\n    image: ghcr.io/veltara-works/vectis-webmail:v0.1.56" + pin +
+		"\n  clamav:\n    image: ghcr.io/veltara-works/vectis-clamav:v0.1.56" + pin + "\n"
 	if err := os.WriteFile(filepath.Join(dir, composeRelPath), []byte(live), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fs1 := files()
-	l, k, err := carryLiveImagePins(dir, fs1)
-	if err != nil || l != 2 || k != 1 {
-		t.Fatalf("live=%d kept=%d err=%v, want 2 live, 1 kept (webmail tag differs)", l, k, err)
+	unc, err := carryLiveImagePins(dir, fs1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only webmail (tag differs) is reported; the removed clamav is not.
+	if len(unc) != 1 || unc[0] != "webmail" {
+		t.Fatalf("uncarried = %v, want [webmail]", unc)
 	}
 	if got := string(fs1[0].Content); !strings.Contains(got, "vectis-api:v0.1.56"+pin+"\n") || strings.Contains(got, "vectis-webmail:v0.1.57@") {
 		t.Errorf("compose after carry:\n%s", got)

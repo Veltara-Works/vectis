@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -91,34 +92,33 @@ func splitCompose(files []engine.GeneratedFile) (compose, rest []engine.Generate
 // carryLiveImagePins copies the live compose's `@sha256` image pins onto the
 // rendered docker-compose.yml in files (#262), so diff and apply compare and
 // write the pinned form `vectis update apply` left behind instead of silently
-// un-pinning every vectis-* image. Returns how many pins the live compose had
-// and how many were carried; a pin is dropped only when the rendered image tag
-// differs from the live one (a CLI of another version). A missing live compose
-// is not an error (fresh install).
-func carryLiveImagePins(configDir string, files []engine.GeneratedFile) (live, kept int, err error) {
+// un-pinning every vectis-* image. Returns the services whose pin could not be
+// carried because the rendered image tag differs from the live one (a CLI of
+// another version); a service removed from the rendered compose is not one. A
+// missing live compose is not an error (fresh install).
+func carryLiveImagePins(configDir string, files []engine.GeneratedFile) (uncarried []string, err error) {
 	cur, err := os.ReadFile(filepath.Join(configDir, composeRelPath))
 	if errors.Is(err, fs.ErrNotExist) {
-		return 0, 0, nil
+		return nil, nil
 	}
 	if err != nil {
-		return 0, 0, fmt.Errorf("read live compose: %w", err)
+		return nil, fmt.Errorf("read live compose: %w", err)
 	}
-	live = engine.ComposeImagePinCount(cur)
 	for i := range files {
 		if files[i].RelPath == composeRelPath {
 			files[i].Content = engine.CarryComposeImagePins(files[i].Content, cur)
-			kept = engine.ComposeImagePinCount(files[i].Content)
+			uncarried = engine.UncarriedComposeImagePins(files[i].Content, cur)
 		}
 	}
-	return live, kept, nil
+	return uncarried, nil
 }
 
-// reportPins tells the operator when pins could not be carried.
-func reportPins(cmd *cobra.Command, live, kept int) {
-	if kept < live {
+// reportPins tells the operator which pins could not be carried.
+func reportPins(cmd *cobra.Command, uncarried []string) {
+	if len(uncarried) > 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(),
-			"Warning: %d of %d image digest pin(s) in the live docker-compose.yml were not kept because this CLI renders a different image tag.\n"+
-				"Run `vectis update apply` (or use the CLI matching the running version) to restore them.\n", live-kept, live)
+			"Warning: the image digest pin for %s was not kept: this CLI renders a different image tag than the live docker-compose.yml.\n"+
+				"Use the CLI matching the running version, or run `vectis update apply` to pin the images again.\n", strings.Join(uncarried, ", "))
 	}
 }
 
@@ -526,13 +526,13 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	// Compare against disk (compose against configDir, configs against genDir),
 	// with the live image pins carried over so they don't show as a change.
 	configDir, _ := cmd.Flags().GetString("config-dir")
-	livePins, keptPins, err := carryLiveImagePins(configDir, files)
+	uncarried, err := carryLiveImagePins(configDir, files)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
 		os.Exit(1)
 		return nil
 	}
-	reportPins(cmd, livePins, keptPins)
+	reportPins(cmd, uncarried)
 	diffs, err := diffAllFiles(outputDir, configDir, files)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
@@ -649,13 +649,13 @@ func runApply(cmd *cobra.Command, args []string) error {
 	// templates render images by tag only, and writing that over the live
 	// compose would un-pin every vectis-* image.
 	configDir, _ := cmd.Flags().GetString("config-dir")
-	livePins, keptPins, err := carryLiveImagePins(configDir, files)
+	uncarried, err := carryLiveImagePins(configDir, files)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
 		os.Exit(1)
 		return nil
 	}
-	reportPins(cmd, livePins, keptPins)
+	reportPins(cmd, uncarried)
 
 	// Diff first to know what changed (compose against configDir, configs
 	// against genDir — see diffAllFiles).

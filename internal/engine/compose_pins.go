@@ -2,6 +2,7 @@ package engine
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -46,6 +47,28 @@ func CarryComposeImagePins(rendered, live []byte) []byte {
 		}
 		return prefix + repo + tag + p.digest
 	}))
+}
+
+// UncarriedComposeImagePins lists the services (sorted) that are pinned in the
+// live compose and still present in the rendered one, but whose rendered image
+// line has no digest: their tag differs, so CarryComposeImagePins didn't copy
+// the pin. A service dropped from the rendered compose (e.g. webmail switched
+// off) is not listed.
+func UncarriedComposeImagePins(rendered, live []byte) []string {
+	pinned := map[string]bool{}
+	for _, m := range composeVectisImageRe.FindAllStringSubmatch(string(live), -1) {
+		if m[5] != "" {
+			pinned[m[3]] = true
+		}
+	}
+	var out []string
+	for _, m := range composeVectisImageRe.FindAllStringSubmatch(string(rendered), -1) {
+		if pinned[m[3]] && m[5] == "" {
+			out = append(out, m[3])
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ComposeImagePinCount reports how many vectis-* image lines carry a digest.
