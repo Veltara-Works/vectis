@@ -364,6 +364,26 @@ func run(logger *slog.Logger) error {
 	go orchestrator.RunNetworkWatchdog(ctx, watchdogDocker, 60*time.Second, logger)
 
 	// -----------------------------------------------------------------------
+	// Background: self-replace helper clean-up (#290)
+	// -----------------------------------------------------------------------
+	// Each apply that replaces the orchestrator leaves an exited
+	// vectis-apply-helper-* container, which pins the old orchestrator image.
+	// This orchestrator starting is the proof that the last helper worked, so
+	// prune the old ones once it has had time to exit. Best-effort.
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(orchestrator.ApplyHelperCleanupDelay):
+		}
+		pruneCtx, pruneCancel := context.WithTimeout(ctx, 60*time.Second)
+		defer pruneCancel()
+		if _, err := watchdogDocker.PruneApplyHelpers(pruneCtx); err != nil {
+			logger.Warn("apply helper clean-up failed (non-fatal)", "error", err)
+		}
+	}()
+
+	// -----------------------------------------------------------------------
 	// Graceful shutdown
 	// -----------------------------------------------------------------------
 	sigCh := make(chan os.Signal, 1)
