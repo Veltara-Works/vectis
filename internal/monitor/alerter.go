@@ -384,6 +384,8 @@ func suggestAction(service string) string {
 		return "Check database status and connection pool"
 	case "valkey":
 		return "Check Valkey status: docker compose exec valkey valkey-cli PING"
+	case "valkey-memory":
+		return "Check what is using Valkey memory (docker exec vectis-valkey valkey-cli INFO memory); a larger resources.profile raises its limit"
 	case "disk":
 		return "Free disk space or expand volume"
 	case "queue":

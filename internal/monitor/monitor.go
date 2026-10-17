@@ -61,6 +61,9 @@ type Monitor struct {
 	postfixExec bool             // whether `docker exec vectis-postfix` is viable (implies dockerCLI)
 	now         func() time.Time // injectable for tests; defaults to time.Now
 
+	vkMemMu sync.Mutex     // RunCheck can also run from the API, concurrently with the loop
+	vkMem   valkeyMemState // eviction baseline for checkValkeyMemory
+
 	// backupProvider, when set, returns the LIVE effective backup settings on
 	// every check. Preferred over the static cfg.Backup* fields so a runtime
 	// schedule change (admin UI) can't leave the staleness threshold pinned to a
@@ -149,6 +152,7 @@ func (m *Monitor) RunCheck(ctx context.Context) {
 	m.checkCertExpiry(ctx)
 	m.checkPostgres(ctx)
 	m.checkValkey(ctx)
+	m.checkValkeyMemory(ctx)
 	m.checkBackupAge(ctx)
 }
 
