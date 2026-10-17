@@ -126,7 +126,8 @@ type Server struct {
 	// Deliverability services
 	rblMonitor    *mail.RBLMonitor
 	warmupManager *mail.WarmupManager
-	serviceProbes *serviceProber // mail-service network probes for /health?probes=1 (#264)
+	serviceProbes *serviceProber                                     // mail-service network probes for /health?probes=1 (#264)
+	pingDeps      func(ctx context.Context) map[string]serviceHealth // tests: replaces the Postgres/Valkey pings
 
 	// Clustering
 	nodeMgr       *cluster.NodeManager

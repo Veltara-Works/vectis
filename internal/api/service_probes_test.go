@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -186,5 +188,75 @@ func TestServiceProbesLive(t *testing.T) {
 		if h.Status != "healthy" {
 			t.Errorf("%s unhealthy: %s", name, h.Error)
 		}
+	}
+}
+
+// Handler-level tests (Copilot #289): controlled dependency pings and probes.
+func healthServer(deps map[string]serviceHealth, probeCalls *atomic.Int32, probeErr error) *Server {
+	s := &Server{
+		pingDeps: func(context.Context) map[string]serviceHealth { return deps },
+		serviceProbes: newServiceProber([]serviceProbe{
+			{"postfix", func(context.Context) error { probeCalls.Add(1); return probeErr }},
+		}),
+	}
+	return s
+}
+
+func getHealth(t *testing.T, s *Server, url string) (int, healthResponse) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.handleHealth(rec, httptest.NewRequest(http.MethodGet, url, nil))
+	var body struct {
+		Data healthResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("health body: %v (%s)", err, rec.Body.String())
+	}
+	return rec.Code, body.Data
+}
+
+var healthyDeps = map[string]serviceHealth{"postgres": {Status: "healthy"}, "valkey": {Status: "healthy"}}
+
+func TestHealthRunsNoProbesUnlessAsked(t *testing.T) {
+	var calls atomic.Int32
+	s := healthServer(healthyDeps, &calls, nil)
+	code, h := getHealth(t, s, "/api/v1/health")
+	if code != http.StatusOK || h.Status != "healthy" {
+		t.Fatalf("plain /health = %d %s, want 200 healthy", code, h.Status)
+	}
+	if calls.Load() != 0 {
+		t.Errorf("plain /health ran %d probes, want none", calls.Load())
+	}
+	if _, ok := h.Services["postfix"]; ok {
+		t.Error("plain /health reported postfix")
+	}
+}
+
+func TestHealthProbeFailureDoesNotChangeOverallStatus(t *testing.T) {
+	var calls atomic.Int32
+	s := healthServer(healthyDeps, &calls, errors.New("no greeting: i/o timeout"))
+	code, h := getHealth(t, s, "/api/v1/health?probes=1")
+	if code != http.StatusOK || h.Status != "healthy" {
+		t.Fatalf("/health?probes=1 with postfix down = %d %s, want 200 healthy", code, h.Status)
+	}
+	pf := h.Services["postfix"]
+	if pf.Status != "unhealthy" || pf.Error != "no greeting: i/o timeout" {
+		t.Errorf("postfix row = %+v, want unhealthy with the probe error", pf)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("probes ran %d times, want 1", calls.Load())
+	}
+}
+
+func TestHealthDependencyFailureStill503WithProbes(t *testing.T) {
+	var calls atomic.Int32
+	deps := map[string]serviceHealth{"postgres": {Status: "unhealthy"}, "valkey": {Status: "healthy"}}
+	s := healthServer(deps, &calls, nil)
+	code, h := getHealth(t, s, "/api/v1/health?probes=1")
+	if code != http.StatusServiceUnavailable || h.Status != "degraded" {
+		t.Errorf("/health?probes=1 with Postgres down = %d %s, want 503 degraded", code, h.Status)
+	}
+	if h.Services["postfix"].Status != "healthy" {
+		t.Errorf("postfix row = %+v, want healthy (probes still reported)", h.Services["postfix"])
 	}
 }

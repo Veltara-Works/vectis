@@ -32,27 +32,38 @@ type certHealth struct {
 	DaysLeft int    `json:"days_left,omitempty"`
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	services := make(map[string]serviceHealth)
-	overall := "healthy"
+// dependencyHealth pings the api's own dependencies, Postgres and Valkey;
+// these alone decide the overall status. Overridable in tests.
+func (s *Server) dependencyHealth(r *http.Request) map[string]serviceHealth {
+	if s.pingDeps != nil {
+		return s.pingDeps(r.Context())
+	}
+	services := make(map[string]serviceHealth, 2)
 
-	// Check Postgres with timing.
 	pgStart := time.Now()
 	if err := s.db.Ping(r.Context()); err != nil {
 		services["postgres"] = serviceHealth{Status: "unhealthy", ResponseMs: time.Since(pgStart).Milliseconds()}
-		overall = "degraded"
 	} else {
 		services["postgres"] = serviceHealth{Status: "healthy", ResponseMs: time.Since(pgStart).Milliseconds()}
 	}
 
-	// Check Valkey with timing.
 	vkStart := time.Now()
 	cmd := s.vk.B().Ping().Build()
 	if err := s.vk.Do(r.Context(), cmd).Error(); err != nil {
 		services["valkey"] = serviceHealth{Status: "unhealthy", ResponseMs: time.Since(vkStart).Milliseconds()}
-		overall = "degraded"
 	} else {
 		services["valkey"] = serviceHealth{Status: "healthy", ResponseMs: time.Since(vkStart).Milliseconds()}
+	}
+	return services
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	services := s.dependencyHealth(r)
+	overall := "healthy"
+	for _, h := range services {
+		if h.Status != "healthy" {
+			overall = "degraded"
+		}
 	}
 
 	// Mail services, probed over the network (#264), only when asked
