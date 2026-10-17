@@ -905,8 +905,8 @@ func (dm *DockerManager) ApplyComposeServices(ctx context.Context, services []st
 // recreation of the orchestrator container with whatever image tag is in the
 // compose file (rewritten by Phase 3.5 to the target rc). The helper reuses
 // the currently-running orchestrator image (guaranteed-working docker CLI
-// that can talk to the mounted socket), runs with --rm so it self-cleans,
-// and has no network dependencies — just /var/run/docker.sock and /etc/vectis
+// that can talk to the mounted socket), is removed by the next orchestrator's
+// start-up clean-up (PruneApplyHelpers, #290), and has no network dependencies — just /var/run/docker.sock and /etc/vectis
 // bind-mounted in.
 //
 // Rationale: Phase 4.3's ordinary `docker compose up -d` gets SIGTERM'd
@@ -973,8 +973,8 @@ func (dm *DockerManager) SpawnSelfReplaceHelper(ctx context.Context, helperImage
 	// --rm intentionally omitted: when the helper fails, --rm wipes its
 	// logs along with the container. Keeping the exited container lets
 	// `docker logs vectis-apply-helper-<suffix>` surface the failure.
-	// Stale containers can be pruned with
-	// `docker rm $(docker ps -aq --filter name=vectis-apply-helper-)`.
+	// The new orchestrator prunes old helpers on start-up, keeping the newest
+	// successful one and the newest few failed ones (PruneApplyHelpers, #290).
 
 	dm.logger.Info("spawning orchestrator self-replace helper",
 		"helper_name", helperName,
