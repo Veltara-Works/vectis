@@ -27,6 +27,10 @@ const (
 	StateRollingBack State = "rolling_back"
 	StateFailed      State = "failed"
 	StateCompleted   State = "completed"
+	// StateRecreating: `vectis config apply` is recreating the services whose
+	// compose block changed (#262). Holds the same advisory lock as plan/apply,
+	// so neither can run during a recreate.
+	StateRecreating State = "recreating"
 )
 
 // ValidTransitions defines the allowed state transitions per Spec D.3.
@@ -36,6 +40,7 @@ var ValidTransitions = map[State]map[State]bool{
 		StatePlanning:    true,
 		StateValidating:  true,
 		StateRollingBack: true,
+		StateRecreating:  true,
 	},
 	StatePlanning: {
 		StateIdle:   true,
@@ -57,11 +62,17 @@ var ValidTransitions = map[State]map[State]bool{
 	StateFailed: {
 		StateRollingBack: true,
 		StatePlanning:    true,
+		StateRecreating:  true, // re-run config apply after fixing what failed
 	},
 	StateCompleted: {
 		StatePlanning:    true,
 		StateValidating:  true,
 		StateRollingBack: true,
+		StateRecreating:  true,
+	},
+	StateRecreating: {
+		StateIdle:   true,
+		StateFailed: true,
 	},
 }
 
@@ -91,6 +102,12 @@ func (s State) CanApply() bool {
 
 // CanRollback reports whether a Rollback operation is allowed in this state.
 func (s State) CanRollback() bool {
+	return s == StateIdle || s == StateFailed || s == StateCompleted
+}
+
+// CanRecreate reports whether a config-apply recreate is allowed in this state.
+// Allowed after a failure too, so the operator can fix the config and re-run.
+func (s State) CanRecreate() bool {
 	return s == StateIdle || s == StateFailed || s == StateCompleted
 }
 

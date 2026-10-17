@@ -18,13 +18,14 @@ The orchestrator exposes an internal HTTP API (bearer token authenticated, inter
 
 | State | Description | API Accepts |
 |-------|-------------|-------------|
-| `idle` | No operation in progress. System is stable. | plan, apply (if plan exists), rollback |
+| `idle` | No operation in progress. System is stable. | plan, apply (if plan exists), rollback, recreate |
 | `planning` | Computing diff between current and desired state. | status only |
 | `validating` | Running validation checks on planned changes. | status only |
 | `applying` | Executing the update plan (snapshot → migrate → pull → restart → health check). | status only |
 | `rolling_back` | Reverting to previous state after failure or manual trigger. | status only |
-| `failed` | Last operation failed. System may be in inconsistent state. | rollback, plan |
-| `completed` | Last operation completed successfully. Transitions to idle automatically. | plan, apply, rollback |
+| `failed` | Last operation failed. System may be in inconsistent state. | rollback, plan, recreate |
+| `completed` | Last operation completed successfully. Transitions to idle automatically. | plan, apply, rollback, recreate |
+| `recreating` | `vectis config apply` is recreating the services whose compose block changed (#262). Not part of the update pipeline; no rollback. | status only |
 
 ---
 
@@ -47,6 +48,9 @@ All transitions not listed below are rejected with `HTTP 409 Conflict`.
 | `failed` | `rolling_back` | `POST /rollback` | Recovery from failed state |
 | `rolling_back` | `idle` | Rollback succeeds | System restored to previous state |
 | `rolling_back` | `failed` | Rollback fails | **CRITICAL:** Manual intervention required |
+| `idle` / `completed` / `failed` | `recreating` | `POST /internal/recreate` | `config apply` changed compose-level settings (#262) |
+| `recreating` | `idle` | Every removal and recreate succeeded, each recreated service healthy | History `action = recreate`, `status = completed` |
+| `recreating` | `failed` | A step failed (stops there; later steps skipped) | No rollback: the change is configuration. Fix it and re-run `config apply` (allowed from `failed`) |
 
 ### Transition diagram (text representation)
 
@@ -299,6 +303,17 @@ This prevents applying an update plan that was computed against a different syst
 
 ---
 
+## D.9a Config-apply recreate (#262)
+
+`vectis config apply` rewrites the live `docker-compose.yml`. Settings that live in the compose (container environment, healthchecks, `mem_limit`, mounts, optional services switched on or off) only take effect when the container is recreated, so `config apply` asks the orchestrator to do it:
+
+1. The CLI compares the live and rendered compose per service (decoded values; formatting and key order don't count) and merges any recreate a previous run left pending (`.config-apply-recreate-pending.json` in the config dir). It backs up the live compose (`docker-compose.yml.pre-config-apply-<UTC>`), writes the new one, drops the reload/restart for services being recreated, and sends `POST /internal/recreate`.
+2. The orchestrator takes the advisory lock (same as plan/apply), validates the request against the live compose (names `^[a-z0-9][a-z0-9-]{0,40}$`; never `orchestrator`; core services can't be removed; a removed service must be gone from the compose, a recreated one present), enters `recreating`, and records `action = recreate` in `orchestrator_history`.
+3. Removed services are stopped (30 s) and their containers removed (volumes kept). Changed and added services are recreated in `ServiceStartOrder`, then the rest alphabetically, with `docker compose up -d --no-deps <svc>`, each waiting for its healthcheck (`ServiceHealthTimeouts`, default 60 s) or, without one, for 5 s of running.
+4. The first failure stops the run; the rest are reported as skipped and the state becomes `failed`. The CLI keeps the pending marker, so the next `config apply` retries them.
+
+A change to the orchestrator's own compose block is not recreated here; it takes effect on the next `vectis update apply` (self-replace helper, D.8).
+
 ## D.10 Orchestrator Internal API
 
 The orchestrator exposes these internal HTTP endpoints (Docker internal network only, bearer token authenticated):
@@ -308,6 +323,7 @@ The orchestrator exposes these internal HTTP endpoints (Docker internal network 
 | POST | /internal/plan | `{}` | `{ plan: {...}, state: "idle" }` |
 | POST | /internal/apply | `{}` | `{ job_id: "uuid", state: "validating" }` |
 | POST | /internal/rollback | `{}` | `{ job_id: "uuid", state: "rolling_back" }` |
+| POST | /internal/recreate | `{ services: ["api", ...], removed: ["clamav", ...] }` | `{ state: "idle", data: { result: { success, steps: [{service, action, success, error, seconds}], skipped } } }` — synchronous (up to 15 min); 400 `INVALID_RECREATE`, 409 `STATE_CONFLICT` |
 | GET | /internal/status | — | `{ state: "idle", last_operation: {...} }` |
 | GET | /internal/health | — | `{ healthy: true }` |
 

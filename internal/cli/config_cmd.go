@@ -477,6 +477,7 @@ type diffResult struct {
 	HasChanges bool                   `json:"has_changes"`
 	Files      []engine.FileDiff      `json:"files"`
 	Actions    []engine.ServiceAction `json:"actions"`
+	Recreate   recreatePlan           `json:"recreate"`
 }
 
 func runDiff(cmd *cobra.Command, args []string) error {
@@ -540,16 +541,32 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Determine service actions.
-	actions := engine.DetermineActions(diffs)
+	// Preview the containers config apply would recreate (#262).
+	live, rendered, err := liveAndRenderedCompose(configDir, files)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+	pending, _ := readRecreatePending(configDir)
+	plan, err := planRecreate(live, rendered, pending)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
 
-	hasChanges := len(diffs) > 0
+	// Determine service actions.
+	actions := supersedeActions(engine.DetermineActions(diffs), plan)
+
+	hasChanges := len(diffs) > 0 || !plan.empty()
 
 	if jsonOutput {
 		result := diffResult{
 			HasChanges: hasChanges,
 			Files:      diffs,
 			Actions:    actions,
+			Recreate:   plan,
 		}
 		out, _ := json.MarshalIndent(result, "", "  ")
 		fmt.Fprintln(cmd.OutOrStdout(), string(out))
@@ -573,6 +590,11 @@ func runDiff(cmd *cobra.Command, args []string) error {
 				}
 				fmt.Fprintln(cmd.OutOrStdout())
 			}
+			if !plan.empty() || plan.OrchestratorChanged {
+				fmt.Fprintln(cmd.OutOrStdout())
+				fmt.Fprintln(cmd.OutOrStdout(), "Containers to recreate (compose-level changes):")
+				printRecreatePlan(cmd, plan)
+			}
 		}
 	}
 
@@ -592,6 +614,7 @@ type applyResult struct {
 	Diffs        []engine.FileDiff      `json:"diffs"`
 	Actions      []engine.ServiceAction `json:"actions"`
 	Results      []engine.ReloadResult  `json:"results,omitempty"`
+	Recreate     *recreateOutcome       `json:"recreate,omitempty"`
 	Success      bool                   `json:"success"`
 }
 
@@ -666,6 +689,33 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Work out which containers need recreating for compose-level changes
+	// (#262), before the live compose is overwritten.
+	live, rendered, err := liveAndRenderedCompose(configDir, files)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+	pending, err := readRecreatePending(configDir)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: ignoring unreadable pending recreate: %s\n", err)
+	}
+	plan, err := planRecreate(live, rendered, pending)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+	var backup string
+	if composeChanged(diffs) {
+		if backup, err = backupLiveCompose(configDir, live, time.Now()); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: back up docker-compose.yml: %s\n", err)
+			os.Exit(1)
+			return nil
+		}
+	}
+
 	// Write files: per-service configs to genDir; docker-compose.yml to the
 	// canonical configDir (and genDir) so apply updates the LIVE compose.
 	if err := writeAllFiles(outputDir, configDir, files); err != nil {
@@ -682,8 +732,9 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Determine and execute service actions.
-	actions := engine.DetermineActions(diffs)
+	// Determine and execute service actions. A service being recreated skips
+	// its reload/restart: the recreate starts it on the new configs.
+	actions := supersedeActions(engine.DetermineActions(diffs), plan)
 	results := engine.ExecuteActions(actions)
 
 	// Check for partial failures.
@@ -695,12 +746,29 @@ func runApply(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Recreate the containers whose compose block changed.
+	var recreate *recreateOutcome
+	if !plan.empty() || plan.OrchestratorChanged {
+		recreate = &recreateOutcome{Plan: plan, Backup: backup}
+	}
+	if !plan.empty() {
+		res, err := runRecreate(cmd, configDir, plan)
+		recreate.Result = res
+		if err != nil {
+			recreate.Error = err.Error()
+			allSuccess = false
+		} else if !res.Success {
+			allSuccess = false
+		}
+	}
+
 	if jsonOutput {
 		result := applyResult{
 			FilesWritten: len(files),
 			Diffs:        diffs,
 			Actions:      actions,
 			Results:      results,
+			Recreate:     recreate,
 			Success:      allSuccess,
 		}
 		out, _ := json.MarshalIndent(result, "", "  ")
@@ -716,12 +784,8 @@ func runApply(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "No files changed.")
 		}
 
-		if composeChanged(diffs) {
-			fmt.Fprintln(cmd.OutOrStdout())
-			fmt.Fprintln(cmd.OutOrStdout(), "Note: docker-compose.yml changed. Compose-level settings (for example")
-			fmt.Fprintln(cmd.OutOrStdout(), "rspamd.local_resolver, optional services, resource limits) take effect when")
-			fmt.Fprintln(cmd.OutOrStdout(), "the affected containers are recreated, e.g. by the next `vectis update apply`.")
-			fmt.Fprintln(cmd.OutOrStdout(), "Restarting or reloading a service does not apply them.")
+		if recreate != nil {
+			printRecreateOutcome(cmd, recreate)
 		}
 
 		if len(results) > 0 {

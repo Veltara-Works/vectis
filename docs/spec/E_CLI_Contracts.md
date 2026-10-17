@@ -204,7 +204,7 @@ Configuration validation failed:
 | Property | Value |
 |----------|-------|
 | **Input** | Reads config.yaml, secrets.yaml, DB state, current generated configs |
-| **Output** | Per-file diff; per-service action summary |
+| **Output** | Per-file diff; per-service action summary; containers `config apply` would recreate or remove (`recreate` in `--json`) |
 | **Side effects** | None (read-only) |
 | **Exit code 0** | No changes pending |
 | **Exit code 1** | Changes pending (diff shown) |
@@ -241,9 +241,9 @@ Run 'vectis config apply' to apply these changes.
 |----------|-------|
 | **Input** | Reads config.yaml, secrets.yaml, DB state |
 | **Output** | Changes applied; per-service actions taken |
-| **Side effects** | Regenerates config files; triggers reloads/restarts as needed |
+| **Side effects** | Regenerates config files; triggers reloads/restarts as needed; recreates containers whose compose block changed and removes services dropped from the compose, through the orchestrator (D.9a), backing up the previous compose first |
 | **Exit code 0** | All changes applied successfully |
-| **Exit code 1** | Partial failure (some reloads failed; details in output) |
+| **Exit code 1** | Partial failure (some reloads or recreates failed, or the orchestrator was unreachable; details in output; a re-run retries pending recreates) |
 | **Exit code 2** | Config validation failed; no changes made |
 | **Flags** | `--dry-run` (equivalent to `vectis config diff`) |
 

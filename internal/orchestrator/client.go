@@ -303,3 +303,27 @@ func (c *Client) doJSONWithBody(ctx context.Context, method, path string, reqBod
 
 	return nil
 }
+
+type recreateEnvelope struct {
+	Data struct {
+		Result RecreateResult `json:"result"`
+	} `json:"data"`
+}
+
+// Recreate asks the orchestrator to recreate the services whose compose block
+// `vectis config apply` changed, and remove the ones it dropped (#262). It
+// waits for the whole run (health-gated, up to RecreateMaxDuration), so it
+// bypasses the client's usual 30 s timeout; ctx bounds it instead.
+func (c *Client) Recreate(ctx context.Context, req RecreateRequest) (*RecreateResult, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("recreate: marshal: %w", err)
+	}
+	long := *c
+	long.http = &http.Client{Transport: c.http.Transport}
+	var env recreateEnvelope
+	if err := long.doJSONWithBody(ctx, http.MethodPost, "/internal/recreate", bytes.NewReader(body), &env); err != nil {
+		return nil, fmt.Errorf("recreate: %w", err)
+	}
+	return &env.Data.Result, nil
+}
