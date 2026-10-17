@@ -157,12 +157,22 @@ func probeMilter(ctx context.Context, addr string) error {
 	if _, err := conn.Write(pkt); err != nil {
 		return err
 	}
-	hdr := make([]byte, 5)
-	if _, err := io.ReadFull(conn, hdr); err != nil {
+	// Reply: length(4) | 'O' | version(4) | actions(4) | protocol(4) [| macros].
+	// Read the whole frame, so a truncated or stalled negotiation fails.
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
 		return fmt.Errorf("no milter reply: %w", err)
 	}
-	if hdr[4] != 'O' {
-		return fmt.Errorf("unexpected milter reply %q", hdr[4])
+	n := binary.BigEndian.Uint32(lenBuf[:])
+	if n < 13 || n > 4096 {
+		return fmt.Errorf("milter reply length %d, want an OPTNEG frame", n)
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(conn, body); err != nil {
+		return fmt.Errorf("incomplete milter reply: %w", err)
+	}
+	if body[0] != 'O' {
+		return fmt.Errorf("unexpected milter reply %q", body[0])
 	}
 	// Close the session cleanly: SMFIC_QUIT.
 	_, _ = conn.Write([]byte{0, 0, 0, 1, 'Q'})

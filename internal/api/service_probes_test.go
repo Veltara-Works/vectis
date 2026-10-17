@@ -83,6 +83,29 @@ func TestProbeMilter(t *testing.T) {
 	if err := probeMilter(probeCtx(t), bad); err == nil {
 		t.Error("non-OPTNEG reply = nil error")
 	}
+	// Copilot #289: a reply cut short after the header must not pass.
+	truncated := fakeServer(t, func(c net.Conn) {
+		io.ReadFull(c, make([]byte, 17))
+		c.Write([]byte{0, 0, 0, 13, 'O'}) // header only, then close
+	})
+	if err := probeMilter(probeCtx(t), truncated); err == nil {
+		t.Error("truncated OPTNEG = nil error")
+	}
+	stalled := fakeServer(t, func(c net.Conn) {
+		io.ReadFull(c, make([]byte, 17))
+		c.Write([]byte{0, 0, 0, 13, 'O', 0, 0}) // part of the body, then silence
+		time.Sleep(2 * time.Second)
+	})
+	if err := probeMilter(probeCtx(t), stalled); err == nil {
+		t.Error("stalled OPTNEG = nil error")
+	}
+	tooShort := fakeServer(t, func(c net.Conn) {
+		io.ReadFull(c, make([]byte, 17))
+		c.Write([]byte{0, 0, 0, 1, 'O'}) // claims a 1-byte frame
+	})
+	if err := probeMilter(probeCtx(t), tooShort); err == nil {
+		t.Error("1-byte OPTNEG frame = nil error")
+	}
 }
 
 func TestProbeHTTPPing(t *testing.T) {
