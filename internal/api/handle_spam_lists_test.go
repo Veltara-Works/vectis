@@ -16,7 +16,10 @@ func TestNormalizeExceptionNetwork(t *testing.T) {
 		{"2001:db8::/32", "", "NETWORK_TOO_BROAD"},
 		{"::ffff:27.111.95.31", "27.111.95.31", ""},
 		{"Mail-P4-FV.ipv4.au.ds.network", "mail-p4-fv.ipv4.au.ds.network", ""},
-		{".ipv4.au.ds.network", ".ipv4.au.ds.network", ""},
+		// Copilot #291: no suffixes (".com.au" is a public suffix).
+		{".ipv4.au.ds.network", "", "NETWORK_TOO_BROAD"},
+		{".com.au", "", "NETWORK_TOO_BROAD"},
+		{".co.uk", "", "NETWORK_TOO_BROAD"},
 		{".network", "", "NETWORK_TOO_BROAD"},
 		{".com", "", "NETWORK_TOO_BROAD"},
 		{"not a host", "", "INVALID_NETWORK"},

@@ -53,9 +53,9 @@ describe('SpamListsPage — DMARC exceptions (#265)', () => {
     fireEvent.change(screen.getByLabelText('Sender domain (header From)'), { target: { value: 'registrar.example' } })
     const add = screen.getByRole('button', { name: 'Add exception' })
     expect(add).toBeDisabled() // no network yet
-    fireEvent.change(screen.getByLabelText('Sends from (IP, range or hostname)'), { target: { value: ' .mail.example.net ' } })
+    fireEvent.change(screen.getByLabelText('Sends from (IP, range or hostname)'), { target: { value: ' mail.example.net ' } })
     fireEvent.click(add)
-    await waitFor(() => expect(mockApi.createSpamListEntry).toHaveBeenCalledWith('d1', 'dmarc_exception', 'domain', 'registrar.example', '.mail.example.net'))
+    await waitFor(() => expect(mockApi.createSpamListEntry).toHaveBeenCalledWith('d1', 'dmarc_exception', 'domain', 'registrar.example', 'mail.example.net'))
   })
 
   it('creates allow and block entries without a network', async () => {

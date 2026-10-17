@@ -251,7 +251,8 @@ rspamd_config:set_metric_symbol({
 -- The allow list can't help (it only applies to authenticated senders, and
 -- must stay that way). A DMARC exception lets one header-From domain through
 -- DMARC enforcement for one recipient domain, but ONLY from a stated sending
--- network: an IP, a CIDR, or a hostname (a leading "." makes it a suffix).
+-- network: an IP, a CIDR, or an exact hostname. (The API refuses hostname
+-- suffixes; the leading-"." form below only matters for a hand-edited map.)
 -- A hostname is matched against the client's name, which an attacker controls
 -- for their own IP (reverse DNS), so it is only trusted after this rule
 -- FORWARD-CONFIRMS it: the name's A/AAAA records must include the connecting

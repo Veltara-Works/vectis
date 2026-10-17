@@ -284,8 +284,13 @@ const (
 // its canonical form, or an error code and message. Accepted:
 //   - an IP address ("27.111.95.31", "2001:db8::25")
 //   - a CIDR no wider than /24 (IPv4) or /48 (IPv6), stored masked
-//   - a hostname ("mail.example.net"), or a suffix (".mail.example.net"),
-//     matched against the forward-confirmed client name Postfix passes on
+//   - an exact hostname ("mail.example.net"), which rspamd forward-confirms
+//     (its A/AAAA must include the client IP) before trusting.
+//
+// Hostname suffixes are refused: a suffix like ".com.au" is a public suffix,
+// so anyone registering a domain under it could pass forward confirmation;
+// telling those apart needs the public suffix list, which isn't worth a new
+// dependency when an IP, a range or exact hostnames cover real senders.
 //
 // The result is written verbatim into an rspamd map line, so it must never
 // contain whitespace or a separator: every accepted form is canonicalised
@@ -330,12 +335,11 @@ func normalizeExceptionNetworkForm(network string) (string, string, string) {
 		}
 		return a.Unmap().String(), "", ""
 	}
-	host := strings.TrimPrefix(n, ".")
-	if strings.HasPrefix(n, ".") && !strings.Contains(host, ".") {
-		return "", "NETWORK_TOO_BROAD", "a hostname suffix needs at least two labels (for example .mail.example.net)"
+	if strings.HasPrefix(n, ".") {
+		return "", "NETWORK_TOO_BROAD", "hostname suffixes aren't supported (a suffix such as .com.au would let anyone with a domain under it through); use an IP, a range, or exact hostnames"
 	}
-	if !validDomainRe.MatchString(host) {
-		return "", "INVALID_NETWORK", "network must be an IP address, a CIDR, a hostname, or a .suffix"
+	if !validDomainRe.MatchString(n) {
+		return "", "INVALID_NETWORK", "network must be an IP address, a CIDR, or a hostname"
 	}
 	return n, "", ""
 }
