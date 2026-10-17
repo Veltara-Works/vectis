@@ -179,7 +179,7 @@ type SpamListInfo struct {
 	Kind       string // "allow" | "block" | "dmarc_exception"
 	Scope      string // "email" | "domain"
 	Pattern    string
-	Network    string // dmarc_exception only: IP, CIDR or hostname (".suffix")
+	Network    string // dmarc_exception only: IP, CIDR or exact hostname
 }
 
 // SpamListInfosFrom converts the rows from repository.SpamListRepo.ListAll

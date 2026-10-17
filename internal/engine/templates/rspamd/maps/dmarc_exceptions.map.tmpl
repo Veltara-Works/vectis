@@ -1,4 +1,4 @@
 # Vectis per-domain DMARC exceptions (#265) — generated, do not edit
-# <recipient-domain>:<header-From domain> <network>   (network: IP, CIDR, hostname, or .suffix)
+# <recipient-domain>:<header-From domain> <network>   (network: IP, CIDR, or exact hostname)
 {{ range .SpamListEntries }}{{ if eq .Kind "dmarc_exception" }}{{ .DomainName }}:{{ .Pattern }} {{ .Network }}
 {{ end }}{{ end }}

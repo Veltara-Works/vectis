@@ -415,3 +415,97 @@ rspamd_config:set_metric_symbol({
   score = 0.0,
   description = 'DMARC check skipped: sender domain and network are on the recipient DMARC exception list',
 })
+
+-- VECTIS_DMARC_REJECT_LOG (#265 follow-up)
+--
+-- A message rejected by DMARC enforcement leaves no trace but an SMTP log line,
+-- so an operator can't see a legitimate sender with broken DNS being turned
+-- away. This records each one in Valkey for the admin UI's "Rejected by DMARC"
+-- view (GET /domains/{id}/dmarc-rejections), which is where a DMARC exception
+-- gets added from.
+--
+-- It runs after the action is final (idempotent: it can't change the result)
+-- and only for a reject that DMARC took part in: DMARC_POLICY_REJECT plus the
+-- final action reject. It stores no content: domains, the header From address,
+-- the client IP and name, and which SPF/DKIM symbols fired. One sorted set,
+-- scored by time, trimmed to 30 days and 5000 entries on every write.
+
+local lua_redis = require "lua_redis"
+local rspamd_util = require "rspamd_util"
+local ucl = require "ucl"
+
+local dmarc_reject_key = 'vectis_dmarc_rejects'
+local dmarc_reject_keep_secs = 30 * 86400
+local dmarc_reject_max = 5000
+local dmarc_reject_redis = lua_redis.parse_redis_server('vectis_dmarc_rejects')
+
+-- ZADD + trim in one round trip, so the set can't grow past its bounds.
+local dmarc_reject_script = [[
+redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', tonumber(ARGV[1]) - tonumber(ARGV[3]))
+redis.call('ZREMRANGEBYRANK', KEYS[1], 0, -(tonumber(ARGV[4]) + 1))
+redis.call('EXPIRE', KEYS[1], ARGV[3])
+]]
+
+local function first_symbol(task, names)
+  for _, n in ipairs(names) do
+    if task:has_symbol(n) then return n end
+  end
+  return 'none'
+end
+
+if dmarc_reject_redis then
+  rspamd_config:register_symbol{
+    name = 'VECTIS_DMARC_REJECT_LOG',
+    type = 'idempotent',
+    callback = function(task)
+      if not task:has_symbol('DMARC_POLICY_REJECT') then return end
+      local action = task:get_metric_action()
+      if action ~= 'reject' then return end
+
+      local hdr_domain = mime_from_domain(task)
+      if not hdr_domain then return end
+      local mf = task:get_from('mime')
+      local ef = task:get_from('smtp')
+      local rcpt_domains, seen = {}, {}
+      for _, r in ipairs(task:get_recipients('smtp') or {}) do
+        local d = r.domain and string.lower(r.domain)
+        if d and d ~= '' and not seen[d] then
+          seen[d] = true
+          table.insert(rcpt_domains, d)
+        end
+      end
+      if #rcpt_domains == 0 then return end
+      local host = task:get_hostname()
+      if host == 'unknown' then host = nil end
+      local now = math.floor(rspamd_util.get_time())
+
+      local entry = ucl.to_format({
+        t = now,
+        id = task:get_queue_id() or task:get_uid(),
+        from = mf and mf[1] and mf[1].addr and string.lower(mf[1].addr) or hdr_domain,
+        from_domain = hdr_domain,
+        env_from_domain = ef and ef[1] and ef[1].domain and string.lower(ef[1].domain) or '',
+        ip = tostring(task:get_from_ip() or ''),
+        host = host and string.lower(host) or '',
+        rcpt_domains = rcpt_domains,
+        spf = first_symbol(task, { 'R_SPF_ALLOW', 'R_SPF_FAIL', 'R_SPF_SOFTFAIL', 'R_SPF_NEUTRAL', 'R_SPF_DNSFAIL', 'R_SPF_PERMFAIL', 'R_SPF_NA' }),
+        dkim = first_symbol(task, { 'R_DKIM_ALLOW', 'R_DKIM_REJECT', 'R_DKIM_TEMPFAIL', 'R_DKIM_PERMFAIL', 'R_DKIM_NA' }),
+      }, 'json-compact')
+
+      local ok = lua_redis.redis_make_request(task, dmarc_reject_redis, dmarc_reject_key, true,
+        function(err)
+          if err then
+            rspamd_logger.warnx(task, 'vectis: could not record DMARC rejection of %s: %s', hdr_domain, err)
+          end
+        end,
+        'EVAL', { dmarc_reject_script, '1', dmarc_reject_key, tostring(now), entry,
+                  tostring(dmarc_reject_keep_secs), tostring(dmarc_reject_max) })
+      if not ok then
+        rspamd_logger.warnx(task, 'vectis: could not record DMARC rejection of %s: no Redis connection', hdr_domain)
+      end
+    end,
+  }
+else
+  rspamd_logger.warnx(rspamd_config, 'vectis: no Redis configured; DMARC rejections will not be recorded')
+end

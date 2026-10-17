@@ -2,6 +2,7 @@ import { useState, useEffect, FormEvent } from 'react'
 import { useParams, Link } from 'react-router'
 import { api, type SpamListEntry, type SpamListKind } from '../api/client.ts'
 import { extractError } from '../lib/errors.ts'
+import DMARCRejectionsCard from '../components/DMARCRejectionsCard.tsx'
 
 type Entry = SpamListEntry
 
@@ -64,8 +65,16 @@ export default function SpamListsPage({ features = [] }: SpamListsPageProps) {
             <Link to="/admin/license">License page</Link> to enable this feature.
           </p>
         </div>
+        {domainID && <DMARCRejectionsCard domainID={domainID} />}
       </div>
     )
+  }
+
+  const fillFromRejection = (fromDomain: string, net: string) => {
+    setPattern(fromDomain)
+    setNetwork(net)
+    setError('')
+    setSuccess(`Check the network, then press "Add exception" to let ${fromDomain} through from ${net}.`)
   }
 
   const handleAdd = async (e: FormEvent) => {
@@ -216,6 +225,8 @@ export default function SpamListsPage({ features = [] }: SpamListsPageProps) {
           </tbody>
         </table>
       </div>
+
+      {isException && domainID && <DMARCRejectionsCard domainID={domainID} onUse={fillFromRejection} />}
     </div>
   )
 }
