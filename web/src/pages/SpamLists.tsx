@@ -142,7 +142,8 @@ export default function SpamListsPage({ features = [] }: SpamListsPageProps) {
             Some legitimate senders publish that policy but send from a server their own SPF doesn't list, so all their
             mail is rejected. An exception lets that sender's domain through DMARC for this domain, but only from the
             network you name: an IP, a range (at most /24, or /48 for IPv6), or a hostname (start with a dot for a
-            suffix, e.g. <span className="mono">.mail.example.net</span>). Use the narrowest network that covers them.
+            suffix, e.g. <span className="mono">.mail.example.net</span>; a hostname only counts if it resolves back to the
+            sending IP). Use the narrowest network that covers them.
             If they send from a shared platform, others on that platform could also send as their domain from it.
             Spam scoring and antivirus still apply. The best fix is still for the sender to correct their SPF/DKIM.
           </p>
