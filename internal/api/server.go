@@ -126,6 +126,7 @@ type Server struct {
 	// Deliverability services
 	rblMonitor    *mail.RBLMonitor
 	warmupManager *mail.WarmupManager
+	serviceProbes *serviceProber // mail-service network probes for /health?probes=1 (#264)
 
 	// Clustering
 	nodeMgr       *cluster.NodeManager
@@ -401,6 +402,8 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	hostResolver := mail.FallbackLookuper{Primary: rspamdResolver, Secondary: publicDNSResolver, PrimaryTimeout: 3 * time.Second}
 	s.rblMonitor = mail.NewRBLMonitor(s.rblChecks, []mail.Lookuper{rspamdResolver, net.DefaultResolver},
 		s.rblIPSource(cfg.ServerIPs, cfg.Hostname, hostResolver), logger.With("component", "rbl-monitor"))
+
+	s.serviceProbes = newServiceProber(defaultServiceProbes())
 
 	// Initialize IP warmup manager.
 	s.warmupManager = mail.NewWarmupManager(s.ipWarmup, logger.With("component", "warmup-manager"))

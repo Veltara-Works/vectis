@@ -19,6 +19,7 @@ type healthResponse struct {
 type serviceHealth struct {
 	Status     string `json:"status"`
 	ResponseMs int64  `json:"response_ms"`
+	Error      string `json:"error,omitempty"` // why a probed service is unhealthy
 }
 
 type tlsHealth struct {
@@ -52,6 +53,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		overall = "degraded"
 	} else {
 		services["valkey"] = serviceHealth{Status: "healthy", ResponseMs: time.Since(vkStart).Milliseconds()}
+	}
+
+	// Mail services, probed over the network (#264), only when asked
+	// (?probes=1, as the dashboard does): the container healthcheck calls this
+	// endpoint every few seconds and shouldn't open mail connections. They
+	// add per-service rows but never change the overall status, which the
+	// api's own healthcheck reads, so a postfix blip can't mark the api
+	// unhealthy.
+	if s.serviceProbes != nil && r.URL.Query().Get("probes") == "1" {
+		for name, h := range s.serviceProbes.Results(r.Context()) {
+			services[name] = h
+		}
 	}
 
 	// Check mail TLS cert.
