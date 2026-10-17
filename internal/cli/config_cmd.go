@@ -751,16 +751,7 @@ func fetchSpamListEntries(cmd *cobra.Command) []engine.SpamListInfo {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load spam list entries (advanced spam config will be empty): %s\n", err)
 		return nil
 	}
-	out := make([]engine.SpamListInfo, 0, len(entries))
-	for _, e := range entries {
-		out = append(out, engine.SpamListInfo{
-			DomainName: e.DomainName,
-			Kind:       e.Kind,
-			Scope:      e.Scope,
-			Pattern:    e.Pattern,
-		})
-	}
-	return out
+	return engine.SpamListInfosFrom(entries)
 }
 
 func init() {

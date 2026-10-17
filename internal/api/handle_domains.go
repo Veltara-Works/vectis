@@ -557,16 +557,7 @@ func (s *Server) loadSpamListInfos(ctx context.Context) []engine.SpamListInfo {
 		s.logger.Warn("failed to load spam list entries (advanced spam config will be empty)", "error", err)
 		return nil
 	}
-	out := make([]engine.SpamListInfo, 0, len(entries))
-	for _, e := range entries {
-		out = append(out, engine.SpamListInfo{
-			DomainName: e.DomainName,
-			Kind:       e.Kind,
-			Scope:      e.Scope,
-			Pattern:    e.Pattern,
-		})
-	}
-	return out
+	return engine.SpamListInfosFrom(entries)
 }
 
 // regenerateRspamdSpamConfig rewrites the four per-recipient-domain
@@ -593,15 +584,7 @@ func (s *Server) regenerateRspamdSpamConfig() {
 	}
 
 	data := engine.NewTemplateData(s.cfg, s.secrets, domains)
-	data.SpamListEntries = make([]engine.SpamListInfo, 0, len(entries))
-	for _, e := range entries {
-		data.SpamListEntries = append(data.SpamListEntries, engine.SpamListInfo{
-			DomainName: e.DomainName,
-			Kind:       e.Kind,
-			Scope:      e.Scope,
-			Pattern:    e.Pattern,
-		})
-	}
+	data.SpamListEntries = engine.SpamListInfosFrom(entries)
 
 	files, err := engine.Generate(data)
 	if err != nil {
@@ -610,12 +593,13 @@ func (s *Server) regenerateRspamdSpamConfig() {
 	}
 
 	wanted := map[string]bool{
-		"rspamd/settings.conf":         true,
-		"rspamd/rspamd.local.lua":      true,
-		"rspamd/maps/allow_email.map":  true,
-		"rspamd/maps/allow_domain.map": true,
-		"rspamd/maps/block_email.map":  true,
-		"rspamd/maps/block_domain.map": true,
+		"rspamd/settings.conf":             true,
+		"rspamd/rspamd.local.lua":          true,
+		"rspamd/maps/allow_email.map":      true,
+		"rspamd/maps/allow_domain.map":     true,
+		"rspamd/maps/block_email.map":      true,
+		"rspamd/maps/block_domain.map":     true,
+		"rspamd/maps/dmarc_exceptions.map": true,
 	}
 	subset := make([]engine.GeneratedFile, 0, len(wanted))
 	for _, f := range files {

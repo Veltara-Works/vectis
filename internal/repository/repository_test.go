@@ -1609,3 +1609,68 @@ func TestDovecotAuthToken_RevokeByTarget(t *testing.T) {
 		t.Errorf("second revoke removed %d rows, want 0", again)
 	}
 }
+
+// DMARC exceptions (#265) are spam-list entries of kind dmarc_exception that
+// must carry a network; the database enforces it.
+func TestSpamList_DMARCExceptions(t *testing.T) {
+	ctx := context.Background()
+	domains := repository.NewDomainRepo(testPool)
+	d, err := domains.Create(ctx, repository.DomainCreate{Name: fmt.Sprintf("dmarcexc-%d.test", time.Now().UnixNano())})
+	if err != nil {
+		t.Fatalf("create domain: %v", err)
+	}
+	defer domains.Delete(ctx, d.ID)
+	repo := repository.NewSpamListRepo(testPool)
+
+	e1, err := repo.Create(ctx, repository.SpamListCreate{DomainID: d.ID, Kind: repository.SpamListDMARCException,
+		Scope: "domain", Pattern: "registrar.example", Network: "27.111.95.31"})
+	if err != nil || e1.Network == nil || *e1.Network != "27.111.95.31" {
+		t.Fatalf("create exception = %+v, %v", e1, err)
+	}
+	// The same sender from a second network is a separate entry.
+	if _, err := repo.Create(ctx, repository.SpamListCreate{DomainID: d.ID, Kind: repository.SpamListDMARCException,
+		Scope: "domain", Pattern: "registrar.example", Network: ".ipv4.mail.example.net"}); err != nil {
+		t.Fatalf("second network: %v", err)
+	}
+	// ...but the same network twice is a duplicate.
+	if _, err := repo.Create(ctx, repository.SpamListCreate{DomainID: d.ID, Kind: repository.SpamListDMARCException,
+		Scope: "domain", Pattern: "registrar.example", Network: "27.111.95.31"}); err == nil {
+		t.Error("duplicate exception was accepted")
+	}
+	// The database refuses an exception without a network, and a network on an allow entry.
+	if _, err := repo.Create(ctx, repository.SpamListCreate{DomainID: d.ID, Kind: repository.SpamListDMARCException,
+		Scope: "domain", Pattern: "anyone.example"}); err == nil {
+		t.Error("exception without a network was accepted")
+	}
+	if _, err := repo.Create(ctx, repository.SpamListCreate{DomainID: d.ID, Kind: repository.SpamListAllow,
+		Scope: "domain", Pattern: "trusted.example", Network: "1.2.3.4"}); err == nil {
+		t.Error("allow entry with a network was accepted")
+	}
+	// An allow entry for the same pattern as an exception is still fine.
+	if _, err := repo.Create(ctx, repository.SpamListCreate{DomainID: d.ID, Kind: repository.SpamListAllow,
+		Scope: "domain", Pattern: "registrar.example"}); err != nil {
+		t.Errorf("allow entry alongside an exception: %v", err)
+	}
+
+	all, err := repo.ListAll(ctx)
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	var nets []string
+	for _, e := range all {
+		if e.DomainID == d.ID && e.Kind == repository.SpamListDMARCException {
+			nets = append(nets, e.Network)
+		}
+	}
+	if len(nets) != 2 {
+		t.Errorf("ListAll exception networks = %v, want 2", nets)
+	}
+	listed, err := repo.ListByDomain(ctx, d.ID, nil)
+	if err != nil || len(listed) != 3 {
+		t.Fatalf("ListByDomain = %d entries, %v; want 3", len(listed), err)
+	}
+	got, err := repo.GetByID(ctx, e1.ID)
+	if err != nil || got == nil || got.Network == nil || *got.Network != "27.111.95.31" {
+		t.Errorf("GetByID = %+v, %v; want the network", got, err)
+	}
+}

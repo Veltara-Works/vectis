@@ -112,9 +112,11 @@ Auth column legend used throughout: `none` = public; `session` = signed admin se
 | POST | /api/v1/domains/{domainID}/dkim/generate | Generate new DKIM key pair | admin+ |
 | POST | /api/v1/domains/{domainID}/dkim/rotate | Rotate DKIM key with new selector | admin+ |
 | POST | /api/v1/domains/{domainID}/verify | Re-run DNS/PTR verification | admin+ |
-| GET | /api/v1/domains/{domainID}/spam-lists | List per-domain allow/block list entries | admin+, gated by `advanced_spam` |
-| POST | /api/v1/domains/{domainID}/spam-lists | Add an allow/block list entry | admin+, gated by `advanced_spam` |
-| DELETE | /api/v1/domains/{domainID}/spam-lists/{entryID} | Remove an allow/block list entry | admin+, gated by `advanced_spam` |
+| GET | /api/v1/domains/{domainID}/spam-lists | List per-domain allow/block list entries and DMARC exceptions (`?kind=allow\|block\|dmarc_exception`) | admin+, gated by `advanced_spam` |
+| POST | /api/v1/domains/{domainID}/spam-lists | Add an allow/block list entry, or a DMARC exception (`kind: "dmarc_exception"`, `pattern` = header-From domain, `network` required: IP, CIDR no wider than /24 (v4) or /48 (v6), hostname or `.suffix`). 400 `MISSING_NETWORK`, `INVALID_NETWORK`, `NETWORK_TOO_BROAD`; `network` on allow/block → 400 `INVALID_NETWORK`; 409 `ENTRY_EXISTS` | admin+, gated by `advanced_spam` |
+| DELETE | /api/v1/domains/{domainID}/spam-lists/{entryID} | Remove an allow/block list entry or a DMARC exception | admin+, gated by `advanced_spam` |
+
+- **DMARC exceptions (#265).** With `rspamd.enforce_dmarc` on, mail failing DMARC for a `p=reject` domain is rejected. An exception lets one header-From domain through for this recipient domain, **only from its network**: the rspamd prefilter `VECTIS_DMARC_EXCEPTIONS` matches the client IP against an IP/CIDR, or the client hostname Postfix passes (set only after a forward-confirmed reverse lookup; `unknown` never matches) against a hostname or `.suffix`, and then switches off `DMARC_CHECK` for that message and records `VECTIS_DMARC_EXCEPTION` (score 0). SPF, DKIM, antivirus and every other rule still run. Mail claiming the domain from any other network is still rejected. Rendered to `rspamd/maps/dmarc_exceptions.map` by every renderer that writes the spam-list maps.
 
 Spam-list field-level extensions to `PATCH /domains/{domainID}` (`spam_threshold`, `reject_threshold`, `greylist_enabled`) are gated inside the handler; the core domain CRUD route stays open to Free for its ungated fields (`active`, `dkim_*`, `max_mailboxes`). Setting one of the three needs Pro; sending `null` clears the override back to the config.yaml default and is allowed on any tier. `spam_threshold` was ungated, and never applied, before v0.1.50. See [`internal/api/handle_domains.go`].
 
