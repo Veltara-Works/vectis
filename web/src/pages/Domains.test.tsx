@@ -24,7 +24,7 @@ beforeEach(() => {
 describe('DomainsPage', () => {
   it('renders page title and add button', () => {
     mockApi.listDomains.mockResolvedValue([])
-    render(<DomainsPage />)
+    render(<MemoryRouter><DomainsPage /></MemoryRouter>)
     expect(screen.getByText('Domains')).toBeInTheDocument()
     expect(screen.getByText('Add Domain')).toBeInTheDocument()
   })
@@ -35,7 +35,7 @@ describe('DomainsPage', () => {
       { id: '2', name: 'test.com', active: false, dkim_enabled: false, dkim_selector: 'vectis', verification_status: 'pending', created_at: '2026-02-01', spam_threshold: 5 },
     ] as never)
 
-    render(<DomainsPage />)
+    render(<MemoryRouter><DomainsPage /></MemoryRouter>)
 
     await waitFor(() => {
       expect(screen.getByText('example.com')).toBeInTheDocument()
@@ -47,7 +47,7 @@ describe('DomainsPage', () => {
 
   it('shows empty state when no domains', async () => {
     mockApi.listDomains.mockResolvedValue([])
-    render(<DomainsPage />)
+    render(<MemoryRouter><DomainsPage /></MemoryRouter>)
 
     await waitFor(() => {
       expect(screen.getByText('No domains yet')).toBeInTheDocument()
@@ -56,7 +56,7 @@ describe('DomainsPage', () => {
 
   it('toggles add domain form', async () => {
     mockApi.listDomains.mockResolvedValue([])
-    render(<DomainsPage />)
+    render(<MemoryRouter><DomainsPage /></MemoryRouter>)
 
     const user = userEvent.setup()
     await user.click(screen.getByText('Add Domain'))
@@ -77,7 +77,7 @@ describe('DomainsPage', () => {
       dkim: { dns_name: 'vectis._domainkey.new.com', dns_value: 'v=DKIM1; k=rsa; p=MIIBIjAN...' },
     })
 
-    render(<DomainsPage />)
+    render(<MemoryRouter><DomainsPage /></MemoryRouter>)
     const user = userEvent.setup()
 
     await user.click(screen.getByText('Add Domain'))
@@ -94,7 +94,7 @@ describe('DomainsPage', () => {
     mockApi.listDomains.mockResolvedValue([])
     mockApi.createDomain.mockRejectedValue(new Error('Domain already exists'))
 
-    render(<DomainsPage />)
+    render(<MemoryRouter><DomainsPage /></MemoryRouter>)
     const user = userEvent.setup()
 
     await user.click(screen.getByText('Add Domain'))
@@ -115,7 +115,7 @@ describe('DomainsPage', () => {
       txt_record_name: 'test.com', txt_record_value: 'tok123', found: true,
     })
 
-    render(<DomainsPage />)
+    render(<MemoryRouter><DomainsPage /></MemoryRouter>)
 
     await waitFor(() => expect(screen.getByText('Verify')).toBeInTheDocument())
 
@@ -134,7 +134,7 @@ describe('DomainsPage', () => {
       txt_record_name: '_vectis.test.com', txt_record_value: 'vectis-verify=tok123', found: false,
     })
 
-    render(<DomainsPage />)
+    render(<MemoryRouter><DomainsPage /></MemoryRouter>)
 
     await waitFor(() => expect(screen.getByText('Verify')).toBeInTheDocument())
 
@@ -147,6 +147,16 @@ describe('DomainsPage', () => {
     })
   })
 
+  it('links every domain to its DMARC rejections without Pro (#265)', async () => {
+    mockApi.listDomains.mockResolvedValue([
+      { id: '7', name: 'free.example', active: true, dkim_enabled: true, dkim_selector: 'vectis', verification_status: 'verified', created_at: '2026-01-01' },
+    ] as never)
+    render(<MemoryRouter><DomainsPage /></MemoryRouter>)
+    const link = await screen.findByRole('link', { name: 'DMARC rejections' })
+    expect(link).toHaveAttribute('href', '/admin/domains/7/spam-lists')
+    expect(screen.queryByText('Edit spam')).not.toBeInTheDocument()
+  })
+
   describe('per-domain spam overrides (Pro)', () => {
     const pro = ['advanced_spam']
     // Pro rows link to the spam-lists page, so they need a router.
@@ -154,6 +164,12 @@ describe('DomainsPage', () => {
     const domain = (over: Record<string, unknown>) => ({
       id: '1', name: 'test.com', active: true, dkim_enabled: true, dkim_selector: 'vectis',
       verification_status: 'verified', created_at: '2026-01-01', ...over,
+    })
+
+    it('links to the spam lists page', async () => {
+      mockApi.listDomains.mockResolvedValue([domain({})] as never)
+      renderPro()
+      expect(await screen.findByRole('link', { name: 'Spam lists' })).toHaveAttribute('href', '/admin/domains/1/spam-lists')
     })
 
     it('shows unset overrides as the system default', async () => {
@@ -192,7 +208,7 @@ describe('DomainsPage', () => {
 
     it('hides the spam columns without the Pro feature', async () => {
       mockApi.listDomains.mockResolvedValue([domain({ spam_threshold: 4 })] as never)
-      render(<DomainsPage />)
+      render(<MemoryRouter><DomainsPage /></MemoryRouter>)
       await waitFor(() => expect(screen.getByText('test.com')).toBeInTheDocument())
       expect(screen.queryByText('Spam')).not.toBeInTheDocument()
       expect(screen.queryByText('Edit spam')).not.toBeInTheDocument()

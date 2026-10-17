@@ -331,13 +331,13 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
                   ) : (
                     <>
                       {hasAdvancedSpam && (
-                        <>
-                          <button className="btn btn-sm" onClick={() => startEditAdvanced(d)}>Edit spam</button>
-                          <Link className="btn btn-sm" to={`/admin/domains/${d.id}/spam-lists`} style={{ marginLeft: '0.25rem' }}>
-                            Spam lists
-                          </Link>
-                        </>
+                        <button className="btn btn-sm" onClick={() => startEditAdvanced(d)} style={{ marginRight: '0.25rem' }}>Edit spam</button>
                       )}
+                      {/* Every tier: the page also shows mail DMARC enforcement rejected
+                          (#265, read-only without Pro); the lists themselves are Pro. */}
+                      <Link className="btn btn-sm" to={`/admin/domains/${d.id}/spam-lists`}>
+                        {hasAdvancedSpam ? 'Spam lists' : 'DMARC rejections'}
+                      </Link>
                       <button className="btn btn-sm btn-danger" style={{ marginLeft: '0.25rem' }} onClick={() => handleDelete(d.id, d.name)}>Delete</button>
                     </>
                   )}
