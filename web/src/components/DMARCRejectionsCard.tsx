@@ -8,8 +8,11 @@ interface Props {
   onUse?: (fromDomain: string, network: string) => void
 }
 
-const symbolLabel = (s: string) =>
-  s === 'none' || !s ? 'none' : s.replace(/^R_(SPF|DKIM)_/, '').toLowerCase()
+// R_SPF_FAIL → "fail"; *_NA (no SPF record / no DKIM signature) → "none".
+const symbolLabel = (s: string) => {
+  const v = (s || 'none').replace(/^R_(SPF|DKIM)_/, '').toLowerCase()
+  return v === 'na' ? 'none' : v
+}
 
 // Mail to this domain that DMARC enforcement rejected (#265). The only other
 // trace of these is an SMTP log line, so a legitimate sender with broken DNS

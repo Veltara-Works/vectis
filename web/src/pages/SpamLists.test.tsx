@@ -37,7 +37,7 @@ beforeEach(() => {
     domain: 'example.com', days: 7, total: 3,
     senders: [{
       from_domain: 'registrar.example', count: 3, first_seen: '2026-10-16T00:00:00Z', last_seen: '2026-10-17T00:00:00Z',
-      example_from: 'notices@registrar.example', envelope_from_domains: ['registrar.example'], spf: 'R_SPF_FAIL', dkim: 'none',
+      example_from: 'notices@registrar.example', envelope_from_domains: ['registrar.example'], spf: 'R_SPF_FAIL', dkim: 'R_DKIM_NA',
       sources: [{ ip: '198.51.100.20', hostname: 'mail.platform.example', count: 3, last_seen: '2026-10-17T00:00:00Z' }],
     }],
   })
