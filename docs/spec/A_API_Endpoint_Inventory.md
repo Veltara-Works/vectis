@@ -46,7 +46,7 @@ Auth column legend used throughout: `none` = public; `session` = signed admin se
 
 | Method | Endpoint | Purpose | Auth |
 |--------|----------|---------|------|
-| GET | /api/v1/health | System health summary | none |
+| GET | /api/v1/health | System health summary: `status` (from Postgres + Valkey only; 503 when either is down) and per-service rows. `?probes=1` also probes postfix (`220` on :25), dovecot (`* OK` on :143), rspamd (milter OPTNEG on :11332) and traefik (`/ping`) over the network, 1 s timeout each, cached 15 s; these rows carry `error` when unhealthy and never change `status` (#264) | none |
 | GET | /api/v1/version | Vectis version + per-container image tags | none |
 | GET | /api/v1/metrics/prometheus | Prometheus scrape endpoint (collector registered in `internal/metrics`) | super_admin |
 | POST | /api/v1/auth/login | Authenticate admin, return session cookie | none |
