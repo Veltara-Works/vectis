@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Veltara-Works/vectis/internal/engine"
@@ -74,5 +75,38 @@ func TestComposeChanged(t *testing.T) {
 	}
 	if composeChanged(nil) {
 		t.Error("no diffs must not report a compose change")
+	}
+}
+
+func TestCarryLiveImagePins(t *testing.T) {
+	const pin = "@sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+	dir := t.TempDir()
+	files := func() []engine.GeneratedFile {
+		return []engine.GeneratedFile{
+			{RelPath: composeRelPath, Content: []byte("services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.56\n  webmail:\n    image: ghcr.io/veltara-works/vectis-webmail:v0.1.57\n")},
+			{RelPath: "postfix/main.cf", Content: []byte("myhostname = x\n")},
+		}
+	}
+
+	// Fresh install: no live compose, nothing to carry, no error.
+	fs0 := files()
+	if live, kept, err := carryLiveImagePins(dir, fs0); err != nil || live != 0 || kept != 0 {
+		t.Fatalf("no live compose: live=%d kept=%d err=%v", live, kept, err)
+	}
+
+	live := "services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.56" + pin + "\n  webmail:\n    image: ghcr.io/veltara-works/vectis-webmail:v0.1.56" + pin + "\n"
+	if err := os.WriteFile(filepath.Join(dir, composeRelPath), []byte(live), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fs1 := files()
+	l, k, err := carryLiveImagePins(dir, fs1)
+	if err != nil || l != 2 || k != 1 {
+		t.Fatalf("live=%d kept=%d err=%v, want 2 live, 1 kept (webmail tag differs)", l, k, err)
+	}
+	if got := string(fs1[0].Content); !strings.Contains(got, "vectis-api:v0.1.56"+pin+"\n") || strings.Contains(got, "vectis-webmail:v0.1.57@") {
+		t.Errorf("compose after carry:\n%s", got)
+	}
+	if string(fs1[1].Content) != "myhostname = x\n" {
+		t.Error("non-compose files must be untouched")
 	}
 }

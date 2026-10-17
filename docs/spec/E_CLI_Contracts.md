@@ -247,6 +247,8 @@ Run 'vectis config apply' to apply these changes.
 | **Exit code 2** | Config validation failed; no changes made |
 | **Flags** | `--dry-run` (equivalent to `vectis config diff`) |
 
+**Image digest pins (#262).** The templates render vectis-* images by tag only; `vectis update apply` pins each to its signed manifest digest (`…:vX.Y.Z@sha256:…`). `config diff` and `config apply` carry those pins over from the live `docker-compose.yml` for every service whose rendered repo and tag match the live line, so an apply with no config change leaves the compose byte-identical and `vectis verify` keeps passing. A pin whose tag differs (a CLI of another version) is not carried, and both commands print a warning to stderr with the count.
+
 ---
 
 ## E.5 Update Commands
