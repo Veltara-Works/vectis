@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Veltara-Works/vectis/internal/types"
 )
 
 // Recreate applies compose-level changes made by `vectis config apply` (#262):
@@ -23,8 +25,9 @@ import (
 // RecreateRequest names the services whose compose block changed (Services,
 // including newly added ones) and those removed from the compose (Removed).
 type RecreateRequest struct {
-	Services []string `json:"services"`
-	Removed  []string `json:"removed"`
+	Reservation string   `json:"reservation"` // from BeginRecreate
+	Services    []string `json:"services"`
+	Removed     []string `json:"removed"`
 }
 
 // RecreateStep is the outcome for one service.
@@ -126,34 +129,124 @@ func recreateOrder(services []string) []string {
 	return out
 }
 
-// Recreate removes the services dropped from the compose, then recreates the
-// changed ones in dependency order, each health-gated. It stops at the first
-// failure and reports the rest as skipped.
-func (o *Orchestrator) Recreate(ctx context.Context, req RecreateRequest) (*RecreateResult, error) {
-	// Fail fast instead of queueing behind a running apply on the lock.
+// recreateReservationTTL bounds how long a reservation holds the orchestrator
+// in `recreating` without a recreate (a CLI that died mid-apply). A var so the
+// live test can shorten it.
+var recreateReservationTTL = 10 * time.Minute
+
+// recreateReservation is the orchestrator held for one `vectis config apply`.
+type recreateReservation struct {
+	id    string
+	prev  State // state to return to when released without a recreate
+	timer *time.Timer
+}
+
+// BeginRecreate reserves the orchestrator for one `vectis config apply`
+// (#262): it moves to `recreating` straight away, so plan, apply and rollback
+// are refused while the CLI reads the live compose, plans, and writes files.
+// The reservation is consumed by Recreate, released by CancelRecreate, or
+// expires after recreateReservationTTL. Refused during an orchestrator
+// self-replace window, which would replace this process mid-recreate.
+func (o *Orchestrator) BeginRecreate(ctx context.Context) (string, error) {
 	if !o.sm.State().CanRecreate() {
-		return nil, &ErrInvalidTransition{From: o.sm.State(), Op: "recreate"}
+		return "", &ErrInvalidTransition{From: o.sm.State(), Op: "recreate"}
 	}
 	release, err := o.acquireAdvisoryLock(ctx)
 	if err != nil {
+		return "", fmt.Errorf("orchestrator busy: %w", err)
+	}
+	defer release()
+	prev := o.sm.State()
+	if !prev.CanRecreate() {
+		return "", &ErrInvalidTransition{From: prev, Op: "recreate"}
+	}
+	if until := o.SelfUpgradeUntil(ctx); until != nil {
+		return "", &ErrInvalidTransition{From: prev, Op: "recreate (orchestrator self-update in progress until " + until.Format(time.RFC3339) + ")"}
+	}
+	if err := o.sm.Transition(ctx, StateRecreating); err != nil {
+		return "", err
+	}
+	res := &recreateReservation{id: types.NewUUIDv7(), prev: prev}
+	res.timer = time.AfterFunc(recreateReservationTTL, func() {
+		if o.releaseReservation(context.Background(), res.id) {
+			o.logger.Warn("recreate reservation expired unused; orchestrator released", "reservation", res.id)
+		}
+	})
+	o.resMu.Lock()
+	o.res = res
+	o.resMu.Unlock()
+	o.logger.Info("recreate reserved", "reservation", res.id, "ttl", recreateReservationTTL.String())
+	return res.id, nil
+}
+
+// CancelRecreate releases a reservation without recreating (config apply found
+// nothing to recreate, or stopped before writing).
+func (o *Orchestrator) CancelRecreate(ctx context.Context, id string) error {
+	if !o.releaseReservation(ctx, id) {
+		return &ErrRecreateRequest{Reason: "no active recreate reservation " + id}
+	}
+	o.logger.Info("recreate reservation released", "reservation", id)
+	return nil
+}
+
+// releaseReservation returns the orchestrator to its pre-reservation state if
+// id is the active reservation. A reservation taken from `completed` returns to
+// `idle` (recreating can't go back to completed).
+func (o *Orchestrator) releaseReservation(ctx context.Context, id string) bool {
+	res := o.takeReservation(id)
+	if res == nil {
+		return false
+	}
+	to := StateIdle
+	if res.prev == StateFailed {
+		to = StateFailed
+	}
+	if err := o.sm.Transition(ctx, to); err != nil {
+		o.logger.Error("recreate: release transition failed", "to", to, "error", err)
+	}
+	return true
+}
+
+// takeReservation claims the active reservation if it matches id, stopping its
+// expiry timer. Returns nil if there is none or it doesn't match.
+func (o *Orchestrator) takeReservation(id string) *recreateReservation {
+	o.resMu.Lock()
+	defer o.resMu.Unlock()
+	if o.res == nil || id == "" || o.res.id != id {
+		return nil
+	}
+	res := o.res
+	o.res = nil
+	res.timer.Stop()
+	return res
+}
+
+// Recreate removes the services dropped from the compose, then recreates the
+// changed ones in dependency order, each health-gated. It stops at the first
+// failure and reports the rest as skipped. It needs the reservation from
+// BeginRecreate; the orchestrator is already in `recreating`.
+func (o *Orchestrator) Recreate(ctx context.Context, req RecreateRequest) (*RecreateResult, error) {
+	res := o.takeReservation(req.Reservation)
+	if res == nil {
+		return nil, &ErrRecreateRequest{Reason: "no active recreate reservation (expired, released, or the orchestrator restarted); run `vectis config apply` again"}
+	}
+	release, err := o.acquireAdvisoryLock(ctx)
+	if err != nil {
+		o.restoreAfterReservation(ctx, res)
 		return nil, fmt.Errorf("orchestrator busy: %w", err)
 	}
 	defer release()
-	if !o.sm.State().CanRecreate() {
-		return nil, &ErrInvalidTransition{From: o.sm.State(), Op: "recreate"}
-	}
 
 	defined, err := o.docker.composeServices(ctx)
 	if err != nil {
+		o.restoreAfterReservation(ctx, res)
 		return nil, fmt.Errorf("enumerate compose services: %w", err)
 	}
 	if err := validateRecreateRequest(req, defined); err != nil {
+		o.restoreAfterReservation(ctx, res)
 		return nil, &ErrRecreateRequest{Reason: err.Error()}
 	}
 
-	if err := o.sm.Transition(ctx, StateRecreating); err != nil {
-		return nil, err
-	}
 	opID, err := o.sm.RecordOperation(ctx, "recreate", "running", "",
 		map[string]any{"services": req.Services, "removed": req.Removed}, nil)
 	if err != nil {
@@ -221,6 +314,18 @@ func (o *Orchestrator) Recreate(ctx context.Context, req RecreateRequest) (*Recr
 		o.logger.Error("recreate: final state transition failed", "to", final, "error", err)
 	}
 	return res, nil
+}
+
+// restoreAfterReservation returns to the pre-reservation state when a claimed
+// reservation ends without any container work.
+func (o *Orchestrator) restoreAfterReservation(ctx context.Context, res *recreateReservation) {
+	to := StateIdle
+	if res.prev == StateFailed {
+		to = StateFailed
+	}
+	if err := o.sm.Transition(ctx, to); err != nil {
+		o.logger.Error("recreate: restore transition failed", "to", to, "error", err)
+	}
 }
 
 // ErrRecreateRequest is a request the orchestrator refuses (400, not 500).

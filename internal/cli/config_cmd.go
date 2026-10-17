@@ -665,7 +665,9 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 
 	configDir, _ := cmd.Flags().GetString("config-dir")
+	var res *orchReservation
 	fail := func(code int, format string, a ...any) error {
+		res.release()
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: "+format+"\n", a...)
 		os.Exit(code)
 		return nil
@@ -678,6 +680,15 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return fail(1, "%s", err)
 	}
 	defer unlock()
+
+	// Reserve the orchestrator before reading the live compose, so no update,
+	// rollback or self-replace can start while this run plans, writes and
+	// recreates. An unreachable orchestrator is fine as long as nothing needs
+	// recreating (checked below).
+	res, err = reserveOrchestrator(cmd)
+	if err != nil {
+		return fail(1, "%s. Nothing was written.", err)
+	}
 
 	// Keep the image digest pins `vectis update apply` wrote (#262): the
 	// templates render images by tag only, and writing that over the live
@@ -702,22 +713,24 @@ func runApply(cmd *cobra.Command, args []string) error {
 	// Work out which containers need recreating for compose-level changes.
 	pending, err := readRecreatePending(configDir)
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: ignoring unreadable pending recreate: %s\n", err)
+		// Ignoring it would silently drop containers still waiting for a recreate.
+		return fail(1, "%s. Inspect %s (it lists containers still to recreate); remove it to discard them. Nothing was written.",
+			err, filepath.Join(configDir, recreatePendingFile))
 	}
 	plan, err := planRecreate(live, rendered, pending)
 	if err != nil {
 		return fail(1, "%s", err)
 	}
 	if !plan.empty() {
+		// The orchestrator does the recreate: it must be reachable and reserved.
+		if res == nil {
+			return fail(1, "containers need recreating (%s) but the orchestrator is unreachable. Nothing was written.",
+				strings.Join(append(append([]string(nil), plan.Services...), plan.Removed...), ", "))
+		}
 		// A service just switched on has no live pin to carry: pin it to the
 		// installed release's signed manifest rather than a mutable tag.
 		if err := pinNewServices(files, live, rendered); err != nil {
 			return fail(1, "%s. Nothing was written.", err)
-		}
-		// The orchestrator does the recreate: make sure it can before writing.
-		if err := preflightRecreate(cmd); err != nil {
-			return fail(1, "containers need recreating (%s) but %s. Nothing was written.",
-				strings.Join(append(append([]string(nil), plan.Services...), plan.Removed...), ", "), err)
 		}
 		// Record the work before the first live write, so an interruption
 		// anywhere after this point is retried by the next config apply.
@@ -775,14 +788,16 @@ func runApply(cmd *cobra.Command, args []string) error {
 		recreate = &recreateOutcome{Plan: plan, Backup: backup}
 	}
 	if !plan.empty() {
-		res, err := runRecreate(cmd, configDir, plan)
-		recreate.Result = res
+		result, err := runRecreate(res, configDir, plan)
+		recreate.Result = result
 		if err != nil {
 			recreate.Error = err.Error()
 			allSuccess = false
-		} else if !res.Success {
+		} else if !result.Success {
 			allSuccess = false
 		}
+	} else {
+		res.release() // nothing to recreate: hand the orchestrator back
 	}
 
 	if jsonOutput {

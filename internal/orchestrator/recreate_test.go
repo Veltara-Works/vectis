@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -121,5 +122,46 @@ func TestWriteDeadlineExtendsThroughLoggingMiddleware(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "done" {
 		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestClientBeginAndCancelRecreate(t *testing.T) {
+	var cancelled string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/recreate/begin":
+			_, _ = io.WriteString(w, `{"state":"recreating","data":{"reservation":"res-1"}}`)
+		case "/internal/recreate/cancel":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			cancelled = body["reservation"]
+			_, _ = io.WriteString(w, `{"state":"idle"}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "tok")
+	id, err := c.BeginRecreate(context.Background())
+	if err != nil || id != "res-1" {
+		t.Fatalf("begin: %q %v", id, err)
+	}
+	if err := c.CancelRecreate(context.Background(), id); err != nil || cancelled != "res-1" {
+		t.Fatalf("cancel: %v (server saw %q)", err, cancelled)
+	}
+
+	// Unreachable orchestrator is distinguishable from a refusal.
+	_, err = NewClient("http://127.0.0.1:1", "tok").BeginRecreate(context.Background())
+	if !errors.Is(err, ErrOrchestratorUnreachable) {
+		t.Fatalf("unreachable: %v", err)
+	}
+	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"error":{"code":"STATE_CONFLICT","message":"busy"}}`)
+	}))
+	defer busy.Close()
+	_, err = NewClient(busy.URL, "tok").BeginRecreate(context.Background())
+	if err == nil || errors.Is(err, ErrOrchestratorUnreachable) {
+		t.Fatalf("refusal must be an error but not 'unreachable': %v", err)
 	}
 }

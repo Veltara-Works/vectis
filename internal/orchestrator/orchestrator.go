@@ -62,6 +62,9 @@ type Orchestrator struct {
 	plan   *Plan
 	lastOp *Operation
 
+	resMu sync.Mutex
+	res   *recreateReservation // active config-apply reservation (#262), nil when none
+
 	sm         *StateMachine
 	cfg        Config
 	db         *pgxpool.Pool

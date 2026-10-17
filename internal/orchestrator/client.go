@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -48,6 +49,10 @@ func NewMTLSClient(baseURL string, tlsConfig *tls.Config) *Client {
 		},
 	}
 }
+
+// ErrOrchestratorUnreachable wraps transport failures (connection refused,
+// timeout), as opposed to an error response from a running orchestrator.
+var ErrOrchestratorUnreachable = errors.New("orchestrator unreachable")
 
 // --- Response types ---
 
@@ -278,7 +283,7 @@ func (c *Client) doJSONWithBody(ctx context.Context, method, path string, reqBod
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("orchestrator unreachable: %w", err)
+		return fmt.Errorf("%w: %w", ErrOrchestratorUnreachable, err)
 	}
 	defer resp.Body.Close()
 
@@ -326,4 +331,36 @@ func (c *Client) Recreate(ctx context.Context, req RecreateRequest) (*RecreateRe
 		return nil, fmt.Errorf("recreate: %w", err)
 	}
 	return &env.Data.Result, nil
+}
+
+type reservationEnvelope struct {
+	Data struct {
+		Reservation string `json:"reservation"`
+	} `json:"data"`
+}
+
+// BeginRecreate reserves the orchestrator for one `vectis config apply`
+// (state `recreating`) and returns the reservation id for Recreate or
+// CancelRecreate.
+func (c *Client) BeginRecreate(ctx context.Context) (string, error) {
+	var env reservationEnvelope
+	if err := c.doJSONWithBody(ctx, http.MethodPost, "/internal/recreate/begin", bytes.NewReader([]byte("{}")), &env); err != nil {
+		return "", fmt.Errorf("reserve: %w", err)
+	}
+	if env.Data.Reservation == "" {
+		return "", fmt.Errorf("reserve: orchestrator returned no reservation")
+	}
+	return env.Data.Reservation, nil
+}
+
+// CancelRecreate releases a reservation without recreating.
+func (c *Client) CancelRecreate(ctx context.Context, reservation string) error {
+	body, err := json.Marshal(map[string]string{"reservation": reservation})
+	if err != nil {
+		return err
+	}
+	if err := c.doJSONWithBody(ctx, http.MethodPost, "/internal/recreate/cancel", bytes.NewReader(body), nil); err != nil {
+		return fmt.Errorf("release reservation: %w", err)
+	}
+	return nil
 }

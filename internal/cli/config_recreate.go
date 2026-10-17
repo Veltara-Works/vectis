@@ -111,12 +111,35 @@ func readRecreatePending(configDir string) (recreatePlan, error) {
 	return p, nil
 }
 
+// writeRecreatePending writes the marker atomically (temp file, fsync,
+// rename), so an interruption leaves the old marker or the new one, never a
+// truncated file.
 func writeRecreatePending(configDir string, p recreatePlan) error {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(configDir, recreatePendingFile), b, 0o600)
+	tmp, err := os.CreateTemp(configDir, recreatePendingFile+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // no-op after a successful rename
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), filepath.Join(configDir, recreatePendingFile))
 }
 
 func clearRecreatePending(configDir string) error {
@@ -155,23 +178,59 @@ func supersedeActions(actions []engine.ServiceAction, p recreatePlan) []engine.S
 	return out
 }
 
-// runRecreate asks the orchestrator to carry out the plan. The caller writes
-// the pending marker before touching any live file; it is cleared here only on
-// full success.
-func runRecreate(cmd *cobra.Command, configDir string, p recreatePlan) (*orchestrator.RecreateResult, error) {
+// orchReservation is the orchestrator held for this config apply (#262).
+type orchReservation struct {
+	client   *orchestrator.Client
+	id       string
+	consumed bool
+}
+
+// reserveOrchestrator reserves the orchestrator for this run. It returns nil
+// (and no error) when the orchestrator is unreachable: a config apply that
+// needs no recreate may still go ahead. A running orchestrator that refuses
+// (busy, mid self-update) is an error.
+func reserveOrchestrator(cmd *cobra.Command) (*orchReservation, error) {
 	client, err := newOrchestratorClient(cmd)
 	if err != nil {
-		return nil, err
+		return nil, nil
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	id, err := client.BeginRecreate(ctx)
+	if errors.Is(err, orchestrator.ErrOrchestratorUnreachable) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("the orchestrator can't take a config apply now: %w", err)
+	}
+	return &orchReservation{client: client, id: id}, nil
+}
+
+// release hands an unused reservation back. Safe on nil and after use.
+func (r *orchReservation) release() {
+	if r == nil || r.consumed || r.id == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_ = r.client.CancelRecreate(ctx, r.id) // on failure it expires on its own
+	r.consumed = true
+}
+
+// runRecreate asks the orchestrator to carry out the plan, consuming the
+// reservation. The caller wrote the pending marker before touching any live
+// file; it is cleared here only on full success.
+func runRecreate(r *orchReservation, configDir string, p recreatePlan) (*orchestrator.RecreateResult, error) {
+	r.consumed = true
 	ctx, cancel := context.WithTimeout(context.Background(), orchestrator.RecreateMaxDuration+time.Minute)
 	defer cancel()
-	res, err := client.Recreate(ctx, orchestrator.RecreateRequest{Services: p.Services, Removed: p.Removed})
+	res, err := r.client.Recreate(ctx, orchestrator.RecreateRequest{Reservation: r.id, Services: p.Services, Removed: p.Removed})
 	if err != nil {
 		return nil, err
 	}
 	if res.Success {
 		if err := clearRecreatePending(configDir); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not remove %s: %s\n", recreatePendingFile, err)
+			return res, fmt.Errorf("recreate succeeded but %s could not be removed: %w", recreatePendingFile, err)
 		}
 	}
 	return res, nil
@@ -262,25 +321,6 @@ func lockConfigApply(configDir string) (func(), error) {
 		return nil, fmt.Errorf("lock: %w", err)
 	}
 	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
-}
-
-// preflightRecreate checks, before anything is written, that the orchestrator
-// is reachable and in a state that allows a recreate.
-func preflightRecreate(cmd *cobra.Command) error {
-	client, err := newOrchestratorClient(cmd)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	st, err := client.Status(ctx)
-	if err != nil {
-		return err
-	}
-	if !orchestrator.State(st.State).CanRecreate() {
-		return fmt.Errorf("the orchestrator is %s; try again when it is idle", st.State)
-	}
-	return nil
 }
 
 // manifestDigests returns the image digests a signed release manifest lists
