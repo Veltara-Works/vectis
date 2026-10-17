@@ -62,7 +62,9 @@ func TestCarryComposeImagePins(t *testing.T) {
 // The #262 acceptance test: re-rendering an unchanged config over a compose
 // `vectis update apply` pinned must give back the live file byte for byte.
 func TestCarryComposeImagePins_UnchangedConfigIsByteIdentical(t *testing.T) {
-	files, err := Generate(testData())
+	data := testData()
+	data.Version = "v0.1.56" // testData leaves it empty, which renders tagless images
+	files, err := Generate(data)
 	if err != nil {
 		t.Fatal(err)
 	}
