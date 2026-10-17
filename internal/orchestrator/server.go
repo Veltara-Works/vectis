@@ -350,7 +350,14 @@ func (s *Server) handleRecreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(RecreateMaxDuration + time.Minute))
+	// Extend the write deadline before doing anything: if it can't be
+	// extended, the result of a long recreate would be lost to the server's
+	// 30 s WriteTimeout, so refuse instead.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(RecreateMaxDuration + time.Minute)); err != nil {
+		s.logger.Error("recreate: cannot extend write deadline", "error", err)
+		s.respondError(w, http.StatusInternalServerError, "RECREATE_UNAVAILABLE", "cannot extend the response deadline for a recreate")
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), RecreateMaxDuration)
 	defer cancel()
 
@@ -438,6 +445,10 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+// Unwrap lets http.ResponseController reach the underlying writer, e.g. so a
+// long-running handler can extend its write deadline (handleRecreate).
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // clientIP extracts the IP from r.RemoteAddr, stripping the port.
 func clientIP(r *http.Request) string {

@@ -244,10 +244,10 @@ Run 'vectis config apply' to apply these changes.
 | **Side effects** | Regenerates config files; triggers reloads/restarts as needed; recreates containers whose compose block changed and removes services dropped from the compose, through the orchestrator (D.9a), backing up the previous compose first |
 | **Exit code 0** | All changes applied successfully |
 | **Exit code 1** | Partial failure (some reloads or recreates failed, or the orchestrator was unreachable; details in output; a re-run retries pending recreates) |
-| **Exit code 2** | Config validation failed; no changes made |
+| **Exit code 2** | Config validation failed, or the CLI renders different image tags than the running stack; no changes made |
 | **Flags** | `--dry-run` (equivalent to `vectis config diff`) |
 
-**Image digest pins (#262).** The templates render vectis-* images by tag only; `vectis update apply` pins each to its signed manifest digest (`…:vX.Y.Z@sha256:…`). `config diff` and `config apply` carry those pins over from the live `docker-compose.yml` for every service whose rendered repo and tag match the live line, so an apply with no config change leaves the compose byte-identical and `vectis verify` keeps passing. A pin whose tag differs (a CLI of another version) is not carried, and both commands print a warning to stderr naming those services. A service removed from the compose (e.g. webmail switched off) is not counted as an uncarried pin.
+**Image digest pins (#262).** The templates render vectis-* images by tag only; `vectis update apply` pins each to its signed manifest digest (`…:vX.Y.Z@sha256:…`). `config diff` and `config apply` carry those pins over from the live `docker-compose.yml` for every service whose rendered repo and tag match the live line, so an apply with no config change leaves the compose byte-identical and `vectis verify` keeps passing. If the CLI renders different vectis-* image tags than the live compose (a CLI of another release), `config diff` warns and `config apply` exits 2 without writing anything: versions change only through `vectis update apply`.
 
 ---
 

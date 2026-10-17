@@ -16,6 +16,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/engine"
 	"github.com/Veltara-Works/vectis/internal/repository"
+	"github.com/Veltara-Works/vectis/internal/version"
 )
 
 // configCmd is the parent command for configuration-related subcommands.
@@ -111,15 +112,6 @@ func carryLiveImagePins(configDir string, files []engine.GeneratedFile) (uncarri
 		}
 	}
 	return uncarried, nil
-}
-
-// reportPins tells the operator which pins could not be carried.
-func reportPins(cmd *cobra.Command, uncarried []string) {
-	if len(uncarried) > 0 {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"Warning: the image digest pin for %s was not kept: this CLI renders a different image tag than the live docker-compose.yml.\n"+
-				"Use the CLI matching the running version, or run `vectis update apply` to pin the images again.\n", strings.Join(uncarried, ", "))
-	}
 }
 
 // diffAllFiles diffs per-service configs against the bind-mounted genDir and
@@ -527,13 +519,17 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	// Compare against disk (compose against configDir, configs against genDir),
 	// with the live image pins carried over so they don't show as a change.
 	configDir, _ := cmd.Flags().GetString("config-dir")
-	uncarried, err := carryLiveImagePins(configDir, files)
-	if err != nil {
+	if _, err := carryLiveImagePins(configDir, files); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
 		os.Exit(1)
 		return nil
 	}
-	reportPins(cmd, uncarried)
+	if live, rendered, err := liveAndRenderedCompose(configDir, files); err == nil {
+		if mm := engine.ComposeImageTagMismatches(rendered, live); len(mm) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: this CLI (%s) renders different image tags than the running stack: %s.\n"+
+				"`vectis config apply` will refuse; use the CLI that matches the running release.\n", version.Version, strings.Join(mm, ", "))
+		}
+	}
 	diffs, err := diffAllFiles(outputDir, configDir, files)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
@@ -668,51 +664,78 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	configDir, _ := cmd.Flags().GetString("config-dir")
+	fail := func(code int, format string, a ...any) error {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: "+format+"\n", a...)
+		os.Exit(code)
+		return nil
+	}
+
+	// One config apply at a time: it writes the live compose and configs, and
+	// the orchestrator then recreates containers from them (#262).
+	unlock, err := lockConfigApply(configDir)
+	if err != nil {
+		return fail(1, "%s", err)
+	}
+	defer unlock()
+
 	// Keep the image digest pins `vectis update apply` wrote (#262): the
 	// templates render images by tag only, and writing that over the live
 	// compose would un-pin every vectis-* image.
-	configDir, _ := cmd.Flags().GetString("config-dir")
-	uncarried, err := carryLiveImagePins(configDir, files)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
-		os.Exit(1)
-		return nil
+	if _, err := carryLiveImagePins(configDir, files); err != nil {
+		return fail(1, "%s", err)
 	}
-	reportPins(cmd, uncarried)
-
-	// Diff first to know what changed (compose against configDir, configs
-	// against genDir — see diffAllFiles).
-	diffs, err := diffAllFiles(outputDir, configDir, files)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
-		os.Exit(1)
-		return nil
-	}
-
-	// Work out which containers need recreating for compose-level changes
-	// (#262), before the live compose is overwritten.
 	live, rendered, err := liveAndRenderedCompose(configDir, files)
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
-		os.Exit(1)
-		return nil
+		return fail(1, "%s", err)
 	}
+
+	// Versions change only through `vectis update apply` (snapshot, migrations,
+	// orchestrator self-replace). A CLI of another release renders other image
+	// tags; writing them, let alone recreating from them, would bypass all that.
+	if mm := engine.ComposeImageTagMismatches(rendered, live); len(mm) > 0 {
+		return fail(2, "this CLI (%s) renders different image tags than the running stack: %s.\n"+
+			"Nothing was written. Use the vectis CLI that matches the running release; change versions with `vectis update apply`.",
+			version.Version, strings.Join(mm, ", "))
+	}
+
+	// Work out which containers need recreating for compose-level changes.
 	pending, err := readRecreatePending(configDir)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: ignoring unreadable pending recreate: %s\n", err)
 	}
 	plan, err := planRecreate(live, rendered, pending)
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
-		os.Exit(1)
-		return nil
+		return fail(1, "%s", err)
+	}
+	if !plan.empty() {
+		// A service just switched on has no live pin to carry: pin it to the
+		// installed release's signed manifest rather than a mutable tag.
+		if err := pinNewServices(files, live, rendered); err != nil {
+			return fail(1, "%s. Nothing was written.", err)
+		}
+		// The orchestrator does the recreate: make sure it can before writing.
+		if err := preflightRecreate(cmd); err != nil {
+			return fail(1, "containers need recreating (%s) but %s. Nothing was written.",
+				strings.Join(append(append([]string(nil), plan.Services...), plan.Removed...), ", "), err)
+		}
+		// Record the work before the first live write, so an interruption
+		// anywhere after this point is retried by the next config apply.
+		if err := writeRecreatePending(configDir, plan); err != nil {
+			return fail(1, "record pending recreate: %s. Nothing was written.", err)
+		}
+	}
+
+	// Diff to know what changed (compose against configDir, configs against
+	// genDir — see diffAllFiles).
+	diffs, err := diffAllFiles(outputDir, configDir, files)
+	if err != nil {
+		return fail(1, "diff failed: %s", err)
 	}
 	var backup string
 	if composeChanged(diffs) {
 		if backup, err = backupLiveCompose(configDir, live, time.Now()); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: back up docker-compose.yml: %s\n", err)
-			os.Exit(1)
-			return nil
+			return fail(1, "back up docker-compose.yml: %s", err)
 		}
 	}
 

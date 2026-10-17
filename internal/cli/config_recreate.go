@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -152,12 +155,10 @@ func supersedeActions(actions []engine.ServiceAction, p recreatePlan) []engine.S
 	return out
 }
 
-// runRecreate asks the orchestrator to carry out the plan. The pending marker
-// is written first and cleared only on full success.
+// runRecreate asks the orchestrator to carry out the plan. The caller writes
+// the pending marker before touching any live file; it is cleared here only on
+// full success.
 func runRecreate(cmd *cobra.Command, configDir string, p recreatePlan) (*orchestrator.RecreateResult, error) {
-	if err := writeRecreatePending(configDir, p); err != nil {
-		return nil, fmt.Errorf("record pending recreate: %w", err)
-	}
 	client, err := newOrchestratorClient(cmd)
 	if err != nil {
 		return nil, err
@@ -242,4 +243,87 @@ func printRecreateOutcome(cmd *cobra.Command, o *recreateOutcome) {
 			fmt.Fprintf(w, "  The previous docker-compose.yml is saved at %s.\n", o.Backup)
 		}
 	}
+}
+
+// lockConfigApply takes an exclusive, non-blocking lock in the config dir for
+// the whole config apply, so a second run can't rewrite the compose or configs
+// while the first one's recreate is using them. The lock is released when the
+// process exits.
+func lockConfigApply(configDir string) (func(), error) {
+	f, err := os.OpenFile(filepath.Join(configDir, ".config-apply.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("another `vectis config apply` is running")
+		}
+		return nil, fmt.Errorf("lock: %w", err)
+	}
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
+}
+
+// preflightRecreate checks, before anything is written, that the orchestrator
+// is reachable and in a state that allows a recreate.
+func preflightRecreate(cmd *cobra.Command) error {
+	client, err := newOrchestratorClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	st, err := client.Status(ctx)
+	if err != nil {
+		return err
+	}
+	if !orchestrator.State(st.State).CanRecreate() {
+		return fmt.Errorf("the orchestrator is %s; try again when it is idle", st.State)
+	}
+	return nil
+}
+
+// manifestDigests returns the image digests a signed release manifest lists
+// for tag (verified against the embedded release key).
+var manifestDigests = func(tag string) (map[string]string, error) {
+	m, _, err := fetchVerifyManifest(verifyEnv{http: &http.Client{Timeout: 30 * time.Second}, baseURL: vectisDownloadBase}, tag)
+	if err != nil {
+		return nil, err
+	}
+	return m.Images, nil
+}
+
+// pinNewServices pins the vectis-* images that have no digest in the rendered
+// compose (services just switched on, so there was no live pin to carry) to
+// the digests in the installed release's signed manifest. Only on an install
+// whose live compose is pinned: a pre-pinning install stays tag-only. A service
+// the manifest doesn't cover is an error, so nothing starts from a mutable tag
+// on a pinned install.
+func pinNewServices(files []engine.GeneratedFile, live, rendered []byte) error {
+	if engine.ComposeImagePinCount(live) == 0 {
+		return nil
+	}
+	unpinned := engine.UnpinnedComposeImages(rendered)
+	if len(unpinned) == 0 {
+		return nil
+	}
+	tag := engine.ComposeImageTag(rendered)
+	if tag == "" {
+		return fmt.Errorf("cannot tell the release tag of the rendered images")
+	}
+	digests, err := manifestDigests(tag)
+	if err != nil {
+		return fmt.Errorf("pin %s to the signed %s manifest: %w", strings.Join(unpinned, ", "), tag, err)
+	}
+	for _, s := range unpinned {
+		if digests[s] == "" {
+			return fmt.Errorf("the signed %s manifest has no digest for %s", tag, s)
+		}
+	}
+	for i := range files {
+		if files[i].RelPath == composeRelPath {
+			files[i].Content = engine.PinComposeImages(files[i].Content, digests)
+		}
+	}
+	return nil
 }

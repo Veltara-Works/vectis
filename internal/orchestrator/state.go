@@ -251,10 +251,21 @@ func (sm *StateMachine) CompleteOperation(ctx context.Context, operationID, stat
 
 // LastOperation returns the most recent orchestrator_history entry.
 func (sm *StateMachine) LastOperation(ctx context.Context) (*OperationRecord, error) {
+	return sm.lastOperationWhere(ctx, "")
+}
+
+// LastVersionOperation returns the most recent entry that isn't a config-apply
+// recreate (#262), so rollback finds the last update's snapshot exactly as it
+// did before recreates were recorded.
+func (sm *StateMachine) LastVersionOperation(ctx context.Context) (*OperationRecord, error) {
+	return sm.lastOperationWhere(ctx, "WHERE action <> 'recreate'")
+}
+
+func (sm *StateMachine) lastOperationWhere(ctx context.Context, where string) (*OperationRecord, error) {
 	row := sm.db.QueryRow(ctx,
 		`SELECT id, action, status, config_hash, plan_summary, snapshot_path,
 		        container_versions, error_message, started_at, completed_at
-		 FROM orchestrator_history
+		 FROM orchestrator_history `+where+`
 		 ORDER BY started_at DESC
 		 LIMIT 1`,
 	)

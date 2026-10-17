@@ -49,10 +49,12 @@ var recreateServiceNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
 
 // recreateNotRemovable are services the stack can't run without. The compose
 // template always renders them, so a request to remove one is a bug or a
-// tampered request, never a config change.
+// tampered request, never a config change. (cert-extractor is not listed: it is
+// rendered only for tls.provider letsencrypt, so switching to a custom
+// certificate legitimately removes it.)
 var recreateNotRemovable = map[string]bool{
 	"postgres": true, "valkey": true, "api": true, "orchestrator": true,
-	"postfix": true, "dovecot": true, "rspamd": true, "traefik": true, "cert-extractor": true,
+	"postfix": true, "dovecot": true, "rspamd": true, "traefik": true,
 }
 
 // RecreateMaxDuration bounds one recreate run (the slowest service, ClamAV,
@@ -174,7 +176,7 @@ func (o *Orchestrator) Recreate(ctx context.Context, req RecreateRequest) (*Recr
 		if j.action == "remove" {
 			stepErr = o.docker.RemoveServiceContainer(ctx, j.svc)
 		} else {
-			stepErr = o.docker.ApplyComposeServices(ctx, []string{j.svc})
+			stepErr = o.docker.ForceRecreateService(ctx, j.svc)
 			if stepErr == nil {
 				timeout, ok := ServiceHealthTimeouts[j.svc]
 				if !ok {
@@ -225,6 +227,22 @@ func (o *Orchestrator) Recreate(ctx context.Context, req RecreateRequest) (*Recr
 type ErrRecreateRequest struct{ Reason string }
 
 func (e *ErrRecreateRequest) Error() string { return "invalid recreate request: " + e.Reason }
+
+// ForceRecreateService recreates one service from the compose with
+// --force-recreate, so the container is replaced even when its definition
+// already matches (a retry after a partial failure, or a service whose bind-
+// mounted config changed while its reload was superseded). The update
+// pipeline's ApplyComposeServices is deliberately left without the flag.
+func (dm *DockerManager) ForceRecreateService(ctx context.Context, service string) error {
+	args := append([]string{"compose"}, dm.cfg.composeFileArgs()...)
+	args = append(args, "up", "-d", "--no-deps", "--force-recreate", service)
+	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker compose up --force-recreate %s: %w: %s", service, err, strings.TrimSpace(string(out)))
+	}
+	dm.logger.Info("service recreated", "service", service)
+	return nil
+}
 
 // RemoveServiceContainer stops and removes a service's container after the
 // service was dropped from the compose (e.g. ClamAV or webmail switched off).

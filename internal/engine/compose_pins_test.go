@@ -93,3 +93,31 @@ func TestCarryComposeImagePins_UnchangedConfigIsByteIdentical(t *testing.T) {
 		t.Fatalf("re-render over a pinned compose is not byte-identical (pins %d → %d)", n, ComposeImagePinCount(got))
 	}
 }
+
+func TestComposeImageTagMismatchesAndPinning(t *testing.T) {
+	live := "services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.57" + pinA + "\n  rspamd:\n    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.57\n"
+	same := "services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.57\n  rspamd:\n    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.57\n  webmail:\n    image: ghcr.io/veltara-works/vectis-webmail:v0.1.57\n"
+	if mm := ComposeImageTagMismatches([]byte(same), []byte(live)); len(mm) != 0 {
+		t.Errorf("same release: mismatches %v", mm)
+	}
+	other := strings.ReplaceAll(same, "v0.1.57", "v0.1.58")
+	mm := ComposeImageTagMismatches([]byte(other), []byte(live))
+	if len(mm) != 2 || mm[0] != "api (v0.1.57 → v0.1.58)" || mm[1] != "rspamd (v0.1.57 → v0.1.58)" {
+		t.Errorf("mismatches = %v (webmail is new, not a mismatch)", mm)
+	}
+
+	carried := CarryComposeImagePins([]byte(same), []byte(live))
+	if un := UnpinnedComposeImages(carried); len(un) != 2 || un[0] != "rspamd" || un[1] != "webmail" {
+		t.Fatalf("unpinned = %v", un)
+	}
+	pinned := string(PinComposeImages(carried, map[string]string{"webmail": strings.TrimPrefix(pinB, "@"), "api": strings.TrimPrefix(pinP, "@")}))
+	if !strings.Contains(pinned, "vectis-webmail:v0.1.57"+pinB+"\n") {
+		t.Errorf("webmail not pinned:\n%s", pinned)
+	}
+	if !strings.Contains(pinned, "vectis-api:v0.1.57"+pinA+"\n") {
+		t.Errorf("an existing pin must not be replaced:\n%s", pinned)
+	}
+	if !strings.Contains(pinned, "vectis-rspamd:v0.1.57\n") {
+		t.Errorf("rspamd has no digest in the map and must stay as it was:\n%s", pinned)
+	}
+}

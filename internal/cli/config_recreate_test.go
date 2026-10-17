@@ -139,3 +139,63 @@ func TestLiveAndRenderedCompose(t *testing.T) {
 		t.Fatalf("live read: %q %v", live, err)
 	}
 }
+
+func TestLockConfigApply(t *testing.T) {
+	dir := t.TempDir()
+	unlock, err := lockConfigApply(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockConfigApply(dir); err == nil || !strings.Contains(err.Error(), "another `vectis config apply` is running") {
+		t.Fatalf("second lock: err = %v", err)
+	}
+	unlock()
+	unlock2, err := lockConfigApply(dir)
+	if err != nil {
+		t.Fatalf("lock after unlock: %v", err)
+	}
+	unlock2()
+}
+
+func TestPinNewServices(t *testing.T) {
+	const pinned = "@sha256:e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+	const dWeb = "sha256:f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
+	live := []byte("services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.57" + pinned + "\n")
+	rendered := "services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.57" + pinned + "\n  webmail:\n    image: ghcr.io/veltara-works/vectis-webmail:v0.1.57\n"
+	files := func() []engine.GeneratedFile {
+		return []engine.GeneratedFile{{RelPath: composeRelPath, Content: []byte(rendered)}}
+	}
+	orig := manifestDigests
+	defer func() { manifestDigests = orig }()
+
+	var askedTag string
+	manifestDigests = func(tag string) (map[string]string, error) {
+		askedTag = tag
+		return map[string]string{"webmail": dWeb, "api": "sha256:ignored"}, nil
+	}
+	fs1 := files()
+	if err := pinNewServices(fs1, live, []byte(rendered)); err != nil {
+		t.Fatal(err)
+	}
+	if askedTag != "v0.1.57" || !strings.Contains(string(fs1[0].Content), "vectis-webmail:v0.1.57@"+dWeb+"\n") ||
+		!strings.Contains(string(fs1[0].Content), "vectis-api:v0.1.57"+pinned+"\n") {
+		t.Fatalf("tag %q, compose:\n%s", askedTag, fs1[0].Content)
+	}
+
+	// Pre-pinning install (no live pins): stays tag-only, no manifest fetch.
+	askedTag = ""
+	fs2 := files()
+	if err := pinNewServices(fs2, []byte("services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.57\n"), []byte(rendered)); err != nil || askedTag != "" || string(fs2[0].Content) != rendered {
+		t.Fatalf("unpinned install: err=%v asked=%q", err, askedTag)
+	}
+
+	// The manifest doesn't cover the new service, or can't be fetched: refuse.
+	manifestDigests = func(string) (map[string]string, error) { return map[string]string{"api": "sha256:x"}, nil }
+	if err := pinNewServices(files(), live, []byte(rendered)); err == nil || !strings.Contains(err.Error(), "no digest for webmail") {
+		t.Fatalf("missing digest: %v", err)
+	}
+	manifestDigests = func(string) (map[string]string, error) { return nil, os.ErrDeadlineExceeded }
+	if err := pinNewServices(files(), live, []byte(rendered)); err == nil {
+		t.Fatal("manifest fetch failure must refuse")
+	}
+}

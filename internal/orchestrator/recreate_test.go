@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -19,6 +20,7 @@ func TestValidateRecreateRequest(t *testing.T) {
 		{Services: []string{"api", "rspamd"}},
 		{Removed: []string{"clamav"}},
 		{Services: []string{"webmail"}, Removed: []string{"loki"}},
+		{Removed: []string{"cert-extractor"}}, // tls.provider switched to custom
 	}
 	for _, r := range ok {
 		if err := validateRecreateRequest(r, defined); err != nil {
@@ -90,5 +92,34 @@ func TestClientRecreate(t *testing.T) {
 	defer srv2.Close()
 	if _, err := NewClient(srv2.URL, "tok").Recreate(context.Background(), RecreateRequest{Services: []string{"api"}}); err == nil || !strings.Contains(err.Error(), "409") {
 		t.Fatalf("conflict: err = %v", err)
+	}
+}
+
+// handleRecreate extends its write deadline through loggingMiddleware's
+// statusWriter. Without Unwrap, ResponseController can't reach the real
+// writer, the server's WriteTimeout still applies, and the client loses the
+// response of any recreate longer than it (Copilot, #296/#297).
+func TestWriteDeadlineExtendsThroughLoggingMiddleware(t *testing.T) {
+	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	h := s.loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Errorf("SetWriteDeadline through the middleware: %v", err)
+		}
+		time.Sleep(600 * time.Millisecond) // longer than the server's WriteTimeout
+		_, _ = io.WriteString(w, "done")
+	}))
+	srv := httptest.NewUnstartedServer(h)
+	srv.Config.WriteTimeout = 200 * time.Millisecond
+	srv.Start()
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("response lost: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "done" {
+		t.Fatalf("body = %q", body)
 	}
 }
