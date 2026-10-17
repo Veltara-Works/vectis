@@ -242,3 +242,176 @@ rspamd_config:set_metric_symbol({
   score = -15.0,
   description = 'Sender is on the recipient allow list and passed authentication',
 })
+
+-- VECTIS_DMARC_EXCEPTIONS (#265)
+--
+-- DMARC enforcement (rspamd.enforce_dmarc) rejects mail that fails DMARC for a
+-- p=reject domain. Some legitimate senders publish p=reject but send from a
+-- platform their own SPF doesn't list, without DKIM, so every message fails.
+-- The allow list can't help (it only applies to authenticated senders, and
+-- must stay that way). A DMARC exception lets one header-From domain through
+-- DMARC enforcement for one recipient domain, but ONLY from a stated sending
+-- network: an IP, a CIDR, or an exact hostname. (The API refuses hostname
+-- suffixes; the leading-"." form below only matters for a hand-edited map.)
+-- A hostname is matched against the client's name, which an attacker controls
+-- for their own IP (reverse DNS), so it is only trusted after this rule
+-- FORWARD-CONFIRMS it: the name's A/AAAA records must include the connecting
+-- IP. rspamd may look the reverse name up itself when Postfix hasn't passed a
+-- verified one, so we don't rely on Postfix's check. Mail claiming the domain
+-- from anywhere else is still rejected.
+--
+-- On a match, only the DMARC check is switched off for that message:
+-- SPF, DKIM, antivirus and every other rule still run and score.
+--
+-- Map lines: "<recipient-domain>:<header-From domain> <network>"; one line
+-- per network, so it's loaded through a callback into a table of lists.
+
+local rspamd_ip = require "rspamd_ip"
+
+local dmarc_exceptions = {}
+
+local function parse_dmarc_exceptions(data)
+  local t = {}
+  for line in string.gmatch(tostring(data or ''), '[^\r\n]+') do
+    line = string.gsub(line, '#.*$', '')
+    local key, net = string.match(line, '^%s*(%S+)%s+(%S+)%s*$')
+    if key and net then
+      key = string.lower(key)
+      local addr, bits = string.match(net, '^([^/]+)/(%d+)$')
+      addr = addr or net
+      -- Decide IP vs hostname by syntax: rspamd_ip.from_string() also
+      -- "parses" a hostname such as ".ipv4.example.net" and reports it
+      -- valid, which would turn every hostname entry into a dead IP entry.
+      local looks_ip = string.match(addr, '^%d+%.%d+%.%d+%.%d+$') or string.find(addr, ':', 1, true)
+      local ip = looks_ip and rspamd_ip.from_string(addr) or nil
+      local entry
+      if ip and ip:is_valid() and (ip:get_version() == 4 or ip:get_version() == 6) then
+        local max = (ip:get_version() == 6) and 128 or 32
+        entry = { ip = ip, bits = tonumber(bits) or max, text = net }
+      elseif not looks_ip and not bits then
+        entry = { host = string.lower(net), text = net }
+      end
+      if entry then
+        t[key] = t[key] or {}
+        table.insert(t[key], entry)
+      else
+        rspamd_logger.warnx(rspamd_config, 'vectis: ignoring malformed DMARC exception network %s for %s', net, key)
+      end
+    end
+  end
+  dmarc_exceptions = t
+end
+
+rspamd_config:add_map{
+  url = '/etc/rspamd/local.d/maps/dmarc_exceptions.map',
+  type = 'callback',
+  description = 'Vectis per-domain DMARC exceptions (#265)',
+  callback = parse_dmarc_exceptions,
+}
+
+local function dmarc_exception_ip_matches(from, entry)
+  if not from or not from:is_valid() or from:get_version() ~= entry.ip:get_version() then
+    return false
+  end
+  return from:apply_mask(entry.bits):to_string() == entry.ip:apply_mask(entry.bits):to_string()
+end
+
+-- Name match only; the caller forward-confirms the name before trusting it.
+local function dmarc_exception_host_matches(host, entry)
+  if not host then return false end
+  if string.sub(entry.host, 1, 1) == '.' then
+    return #host > #entry.host and string.sub(host, -#entry.host) == entry.host
+  end
+  return host == entry.host
+end
+
+rspamd_config:register_symbol{
+  name = 'VECTIS_DMARC_EXCEPTIONS',
+  type = 'prefilter',
+  priority = 9,
+  callback = function(task)
+    if next(dmarc_exceptions) == nil then return end
+    local hdr_domain = mime_from_domain(task)
+    if not hdr_domain then return end
+
+    -- One message is one DMARC decision, so the check is only switched off
+    -- when EVERY recipient domain has an exception for this sender that
+    -- matches where the message came from. A message to an excepted and a
+    -- non-excepted domain is still judged by DMARC for all of them.
+    local rcpts = task:get_recipients('smtp')
+    if not rcpts or #rcpts == 0 then return end
+    local from_ip = task:get_from_ip()
+    local host = task:get_hostname()
+    if host == 'unknown' then host = nil end
+    if host then host = string.lower(host) end
+
+    local function apply(via)
+      task:disable_symbol('DMARC_CHECK')
+      task:insert_result('VECTIS_DMARC_EXCEPTION', 1.0, hdr_domain, via)
+      rspamd_logger.infox(task, 'vectis: DMARC exception applied from=%s via=%s', hdr_domain, via)
+    end
+
+    local via, need_confirm, seen, any = nil, false, {}, false
+    for _, r in ipairs(rcpts) do
+      local rd = r.domain and string.lower(r.domain)
+      if not rd or rd == '' then return end
+      if not seen[rd] then
+        seen[rd] = true
+        local entries = dmarc_exceptions[rd .. ':' .. hdr_domain]
+        local by_ip, by_host
+        if entries then
+          any = true
+          for _, e in ipairs(entries) do
+            if e.ip and dmarc_exception_ip_matches(from_ip, e) then by_ip = e.text; break end
+            if e.host and not by_host and dmarc_exception_host_matches(host, e) then by_host = e.text end
+          end
+        end
+        if by_ip then
+          via = via or by_ip
+        elseif by_host then
+          need_confirm = true
+          via = via or by_host
+        else
+          if any then
+            -- The near-miss matters: an exception exists, but not for this
+            -- network, or not for every recipient domain, so DMARC decides.
+            rspamd_logger.infox(task, 'vectis: DMARC exception for %s NOT applied — rcpt domain %s has no matching exception (ip=%s host=%s)',
+              hdr_domain, rd, tostring(from_ip), tostring(host))
+          end
+          return
+        end
+      end
+    end
+
+    if not need_confirm then
+      apply(via)
+      return
+    end
+
+    -- A hostname match only counts if the name resolves back to the client.
+    local qtype = (from_ip and from_ip:get_version() == 6) and 'aaaa' or 'a'
+    task:get_resolver():resolve(qtype, {
+      task = task,
+      name = host,
+      forced = true,
+      callback = function(_, _, results, err)
+        if results then
+          for _, addr in ipairs(results) do
+            if tostring(addr) == tostring(from_ip) then
+              apply(via .. ' (forward-confirmed)')
+              return
+            end
+          end
+        end
+        rspamd_logger.infox(task, 'vectis: DMARC exception for %s NOT applied — host %s does not resolve to %s (%s)',
+          hdr_domain, host, tostring(from_ip), tostring(err))
+      end,
+    })
+  end,
+}
+
+rspamd_config:set_metric_symbol({
+  name = 'VECTIS_DMARC_EXCEPTION',
+  score = 0.0,
+  description = 'DMARC check skipped: sender domain and network are on the recipient DMARC exception list',
+})

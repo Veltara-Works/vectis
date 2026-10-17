@@ -1,7 +1,9 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
+	"net/netip"
 	"regexp"
 	"strings"
 
@@ -17,9 +19,10 @@ import (
 // output into rspamd via regenerated multimap files.
 
 type createSpamListRequest struct {
-	Kind    string `json:"kind"`    // 'allow' | 'block'
-	Scope   string `json:"scope"`   // 'email' | 'domain'
-	Pattern string `json:"pattern"` // exact-match value; lowercased on insert
+	Kind    string `json:"kind"`              // 'allow' | 'block' | 'dmarc_exception'
+	Scope   string `json:"scope"`             // 'email' | 'domain' (dmarc_exception: 'domain')
+	Pattern string `json:"pattern"`           // exact-match value; lowercased on insert
+	Network string `json:"network,omitempty"` // dmarc_exception only: IP, CIDR, hostname or .suffix
 }
 
 type spamListResponse struct {
@@ -64,10 +67,41 @@ func (s *Server) handleCreateSpamListEntry(w http.ResponseWriter, r *http.Reques
 	kind := strings.ToLower(strings.TrimSpace(req.Kind))
 	scope := strings.ToLower(strings.TrimSpace(req.Scope))
 	pattern := strings.ToLower(strings.TrimSpace(req.Pattern))
+	network := strings.TrimSpace(req.Network)
 
-	if kind != "allow" && kind != "block" {
+	switch kind {
+	case repository.SpamListAllow, repository.SpamListBlock:
+		if network != "" {
+			respondError(w, r, http.StatusBadRequest, "INVALID_NETWORK",
+				"network applies only to kind 'dmarc_exception'")
+			return
+		}
+	case repository.SpamListDMARCException:
+		// A DMARC exception names the header-From domain it lets through,
+		// and must be tied to where that mail comes from (#265): an
+		// exception for a domain alone would let anyone forge it.
+		if scope == "" {
+			scope = "domain"
+		}
+		if scope != "domain" {
+			respondError(w, r, http.StatusBadRequest, "INVALID_SCOPE",
+				"a DMARC exception's scope is 'domain' (the header From domain)")
+			return
+		}
+		if network == "" {
+			respondError(w, r, http.StatusBadRequest, "MISSING_NETWORK",
+				"a DMARC exception needs the network the sender's mail comes from: an IP, a CIDR, or a hostname")
+			return
+		}
+		n, code, msg := normalizeExceptionNetwork(network)
+		if code != "" {
+			respondError(w, r, http.StatusBadRequest, code, msg)
+			return
+		}
+		network = n
+	default:
 		respondError(w, r, http.StatusBadRequest, "INVALID_KIND",
-			"kind must be 'allow' or 'block'")
+			"kind must be 'allow', 'block' or 'dmarc_exception'")
 		return
 	}
 	if scope != "email" && scope != "domain" {
@@ -90,6 +124,7 @@ func (s *Server) handleCreateSpamListEntry(w http.ResponseWriter, r *http.Reques
 		Kind:     kind,
 		Scope:    scope,
 		Pattern:  pattern,
+		Network:  network,
 	})
 	if err != nil {
 		// Duplicate hits the UNIQUE (domain, kind, scope, pattern) constraint.
@@ -99,7 +134,7 @@ func (s *Server) handleCreateSpamListEntry(w http.ResponseWriter, r *http.Reques
 		// other insert failure path is a 500.
 		if strings.Contains(err.Error(), "23505") || strings.Contains(err.Error(), "duplicate key") {
 			respondError(w, r, http.StatusConflict, "ENTRY_EXISTS",
-				"An entry with this kind+scope+pattern already exists for this domain")
+				"An entry with this kind+scope+pattern (and network) already exists for this domain")
 			return
 		}
 		s.logger.Error("create spam list entry failed", "error", err)
@@ -109,8 +144,11 @@ func (s *Server) handleCreateSpamListEntry(w http.ResponseWriter, r *http.Reques
 
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
-	s.audit.Log(r.Context(), &adminID, "spam_list.create", "domain", &domain.ID,
-		map[string]string{"kind": kind, "scope": scope, "pattern": pattern}, &ip)
+	details := map[string]string{"kind": kind, "scope": scope, "pattern": pattern}
+	if network != "" {
+		details["network"] = network
+	}
+	s.audit.Log(r.Context(), &adminID, "spam_list.create", "domain", &domain.ID, details, &ip)
 
 	if s.cfg != nil && s.secrets != nil && s.genDir != "" {
 		s.regenerateRspamdSpamConfig()
@@ -138,9 +176,9 @@ func (s *Server) handleListSpamListEntries(w http.ResponseWriter, r *http.Reques
 
 	var kindFilter *string
 	if k := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind"))); k != "" {
-		if k != "allow" && k != "block" {
+		if k != repository.SpamListAllow && k != repository.SpamListBlock && k != repository.SpamListDMARCException {
 			respondError(w, r, http.StatusBadRequest, "INVALID_KIND",
-				"kind filter must be 'allow' or 'block'")
+				"kind filter must be 'allow', 'block' or 'dmarc_exception'")
 			return
 		}
 		kindFilter = &k
@@ -192,8 +230,11 @@ func (s *Server) handleDeleteSpamListEntry(w http.ResponseWriter, r *http.Reques
 
 	adminID := getAdminID(r.Context())
 	ip := clientIP(r)
-	s.audit.Log(r.Context(), &adminID, "spam_list.delete", "domain", &domainID,
-		map[string]string{"entry_id": entryID, "kind": entry.Kind, "scope": entry.Scope, "pattern": entry.Pattern}, &ip)
+	delDetails := map[string]string{"entry_id": entryID, "kind": entry.Kind, "scope": entry.Scope, "pattern": entry.Pattern}
+	if entry.Network != nil {
+		delDetails["network"] = *entry.Network
+	}
+	s.audit.Log(r.Context(), &adminID, "spam_list.delete", "domain", &domainID, delDetails, &ip)
 
 	if s.cfg != nil && s.secrets != nil && s.genDir != "" {
 		s.regenerateRspamdSpamConfig()
@@ -230,4 +271,75 @@ func isValidSpamPattern(scope, pattern string) bool {
 		return validDomainRe.MatchString(pattern)
 	}
 	return false
+}
+
+// Narrowest-allowed CIDR prefixes for a DMARC exception network. Anything
+// wider would exempt a whole provider's address space.
+const (
+	minExceptionPrefixV4 = 24
+	minExceptionPrefixV6 = 48
+)
+
+// normalizeExceptionNetwork validates a DMARC exception network and returns
+// its canonical form, or an error code and message. Accepted:
+//   - an IP address ("27.111.95.31", "2001:db8::25")
+//   - a CIDR no wider than /24 (IPv4) or /48 (IPv6), stored masked
+//   - an exact hostname ("mail.example.net"), which rspamd forward-confirms
+//     (its A/AAAA must include the client IP) before trusting.
+//
+// Hostname suffixes are refused: a suffix like ".com.au" is a public suffix,
+// so anyone registering a domain under it could pass forward confirmation;
+// telling those apart needs the public suffix list, which isn't worth a new
+// dependency when an IP, a range or exact hostnames cover real senders.
+//
+// The result is written verbatim into an rspamd map line, so it must never
+// contain whitespace or a separator: every accepted form is canonicalised
+// (netip) or charset-constrained (validDomainRe).
+func normalizeExceptionNetwork(network string) (string, string, string) {
+	n, code, msg := normalizeExceptionNetworkForm(network)
+	// The result becomes one field of an rspamd map line: whatever the form,
+	// it must be a single token (no whitespace or control characters).
+	if code == "" && strings.IndexFunc(n, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
+		return "", "INVALID_NETWORK", "network contains whitespace or control characters"
+	}
+	return n, code, msg
+}
+
+func normalizeExceptionNetworkForm(network string) (string, string, string) {
+	n := strings.ToLower(strings.TrimSpace(network))
+	if strings.Contains(n, "/") {
+		p, err := netip.ParsePrefix(n)
+		if err != nil || p.Addr().Zone() != "" {
+			return "", "INVALID_NETWORK", "network is not a valid CIDR"
+		}
+		// An IPv4-mapped IPv6 prefix (::ffff:a.b.c.d/N) counts its 96-bit
+		// IPv6 head: judge and store it as the IPv4 prefix it is.
+		if p.Addr().Is4In6() {
+			if p.Bits() < 96 {
+				return "", "NETWORK_TOO_BROAD", fmt.Sprintf("a DMARC exception network may be at most /%d for IPv4 or /%d for IPv6", minExceptionPrefixV4, minExceptionPrefixV6)
+			}
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
+		min := minExceptionPrefixV4
+		if p.Addr().Is6() {
+			min = minExceptionPrefixV6
+		}
+		if p.Bits() < min {
+			return "", "NETWORK_TOO_BROAD", fmt.Sprintf("a DMARC exception network may be at most /%d for IPv4 or /%d for IPv6", minExceptionPrefixV4, minExceptionPrefixV6)
+		}
+		return p.Masked().String(), "", ""
+	}
+	if a, err := netip.ParseAddr(n); err == nil {
+		if a.Zone() != "" {
+			return "", "INVALID_NETWORK", "an IPv6 zone (%...) isn't allowed in a DMARC exception network"
+		}
+		return a.Unmap().String(), "", ""
+	}
+	if strings.HasPrefix(n, ".") {
+		return "", "NETWORK_TOO_BROAD", "hostname suffixes aren't supported (a suffix such as .com.au would let anyone with a domain under it through); use an IP, a range, or exact hostnames"
+	}
+	if !validDomainRe.MatchString(n) {
+		return "", "INVALID_NETWORK", "network must be an IP address, a CIDR, or a hostname"
+	}
+	return n, "", ""
 }

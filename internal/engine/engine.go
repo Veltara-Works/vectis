@@ -176,9 +176,10 @@ func (d TemplateData) GreylistOffForDomain(dom repository.Domain) bool {
 // templates.
 type SpamListInfo struct {
 	DomainName string
-	Kind       string // "allow" | "block"
+	Kind       string // "allow" | "block" | "dmarc_exception"
 	Scope      string // "email" | "domain"
 	Pattern    string
+	Network    string // dmarc_exception only: IP, CIDR or hostname (".suffix")
 }
 
 // SpamListInfosFrom converts the rows from repository.SpamListRepo.ListAll
@@ -193,6 +194,7 @@ func SpamListInfosFrom(entries []repository.SpamListJoined) []SpamListInfo {
 			Kind:       e.Kind,
 			Scope:      e.Scope,
 			Pattern:    e.Pattern,
+			Network:    e.Network,
 		})
 	}
 	return out

@@ -87,6 +87,18 @@ export interface RBLStatusResponse {
 
 // IP warmup (super_admin only). While active, each day's external recipients
 // are limited to daily_limit across the send API and SMTP submission.
+export type SpamListKind = 'allow' | 'block' | 'dmarc_exception'
+
+export interface SpamListEntry {
+  id: string
+  domain_id: string
+  kind: SpamListKind
+  scope: 'email' | 'domain'
+  pattern: string
+  network?: string
+  created_at: string
+}
+
 export interface WarmupEntry {
   id: string
   ip_address: string
@@ -172,14 +184,13 @@ export const api = {
     request<{ id: string; name: string; spam_threshold?: number | null; reject_threshold?: number | null; greylist_enabled?: boolean | null }>('PATCH', `/domains/${id}`, patch),
   deleteDomain: (id: string) => request<void>('DELETE', `/domains/${id}`),
 
-  // Spam lists (Pro — advanced_spam feature)
-  listSpamListEntries: (domainId: string, kind?: 'allow' | 'block') =>
-    request<Array<{ id: string; domain_id: string; kind: 'allow' | 'block'; scope: 'email' | 'domain'; pattern: string; created_at: string }>>(
-      'GET', `/domains/${domainId}/spam-lists${kind ? `?kind=${kind}` : ''}`
-    ),
-  createSpamListEntry: (domainId: string, kind: 'allow' | 'block', scope: 'email' | 'domain', pattern: string) =>
-    request<{ entry: { id: string; domain_id: string; kind: 'allow' | 'block'; scope: 'email' | 'domain'; pattern: string; created_at: string } }>(
-      'POST', `/domains/${domainId}/spam-lists`, { kind, scope, pattern }
+  // Spam lists (Pro — advanced_spam feature). A dmarc_exception (#265) lets
+  // one header-From domain through DMARC enforcement, only from `network`.
+  listSpamListEntries: (domainId: string, kind?: SpamListKind) =>
+    request<SpamListEntry[]>('GET', `/domains/${domainId}/spam-lists${kind ? `?kind=${kind}` : ''}`),
+  createSpamListEntry: (domainId: string, kind: SpamListKind, scope: 'email' | 'domain', pattern: string, network?: string) =>
+    request<{ entry: SpamListEntry }>(
+      'POST', `/domains/${domainId}/spam-lists`, { kind, scope, pattern, ...(network ? { network } : {}) }
     ),
   deleteSpamListEntry: (domainId: string, entryId: string) =>
     request<void>('DELETE', `/domains/${domainId}/spam-lists/${entryId}`),

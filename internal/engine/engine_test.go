@@ -2264,3 +2264,64 @@ func TestRspamdPerDomainSpamThreshold(t *testing.T) {
 		t.Errorf("the global threshold must still come from config.yaml; got:\n%s", ac)
 	}
 }
+
+// DMARC exceptions (#265) render one "<rcpt>:<sender> <network>" line each,
+// only into their own map, and the Lua prefilter that reads it is present.
+func TestDMARCExceptionsMap(t *testing.T) {
+	data := testData()
+	data.SpamListEntries = []SpamListInfo{
+		{DomainName: "example.com", Kind: "allow", Scope: "domain", Pattern: "trusted.example"},
+		{DomainName: "example.com", Kind: "dmarc_exception", Scope: "domain", Pattern: "registrar.example", Network: "27.111.95.31"},
+		{DomainName: "example.com", Kind: "dmarc_exception", Scope: "domain", Pattern: "registrar.example", Network: ".ipv4.mail.example.net"},
+	}
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	get := func(path string) string {
+		for _, f := range files {
+			if f.RelPath == path {
+				return string(f.Content)
+			}
+		}
+		t.Fatalf("%s not generated", path)
+		return ""
+	}
+	m := get("rspamd/maps/dmarc_exceptions.map")
+	for _, line := range []string{"example.com:registrar.example 27.111.95.31\n", "example.com:registrar.example .ipv4.mail.example.net\n"} {
+		if !strings.Contains(m, line) {
+			t.Errorf("dmarc_exceptions.map missing %q:\n%s", line, m)
+		}
+	}
+	if strings.Contains(m, "trusted.example") {
+		t.Errorf("allow entry leaked into dmarc_exceptions.map:\n%s", m)
+	}
+	if strings.Contains(get("rspamd/maps/allow_domain.map"), "registrar.example") {
+		t.Error("DMARC exception leaked into allow_domain.map")
+	}
+	lua := get("rspamd/rspamd.local.lua")
+	for _, want := range []string{"VECTIS_DMARC_EXCEPTIONS", "dmarc_exceptions.map", "task:disable_symbol('DMARC_CHECK')"} {
+		if !strings.Contains(lua, want) {
+			t.Errorf("rspamd.local.lua missing %q", want)
+		}
+	}
+}
+
+func TestDMARCExceptionsMapEmptyWithoutEntries(t *testing.T) {
+	data := testData()
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	for _, f := range files {
+		if f.RelPath == "rspamd/maps/dmarc_exceptions.map" {
+			for _, l := range strings.Split(string(f.Content), "\n") {
+				if l != "" && !strings.HasPrefix(l, "#") {
+					t.Errorf("unexpected entry with no exceptions: %q", l)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("dmarc_exceptions.map not generated (the file must always exist)")
+}

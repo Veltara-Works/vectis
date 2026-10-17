@@ -647,7 +647,7 @@ CREATE INDEX idx_password_reset_tokens_expires ON password_reset_tokens(expires_
 
 ---
 
-## B.22 Schema additions (Migrations 000012–000025)
+## B.22 Schema additions (Migrations 000012–000026)
 
 This section brings the outline current with migrations applied after 000011.
 For each, the migration file under `internal/database/migrations/` remains the
@@ -703,11 +703,14 @@ Pro "Advanced Spam". Two nullable `domains` columns (NULL = use system default):
 |--------|------|-------|
 | id | UUID | PK |
 | domain_id | UUID | FK → domains(id) ON DELETE CASCADE |
-| kind | TEXT | CHECK IN ('allow','block') |
+| kind | TEXT | CHECK IN ('allow','block','dmarc_exception') (dmarc_exception from 000026) |
 | scope | TEXT | CHECK IN ('email','domain') |
 | pattern | TEXT | |
 | created_at | TIMESTAMPTZ | DEFAULT NOW() |
-| | | UNIQUE (domain_id, kind, scope, pattern) |
+| network | TEXT | NULL. **Migration 000026:** required for `kind = 'dmarc_exception'`, forbidden otherwise (CHECK `domain_spam_lists_network_check`). IP, CIDR or exact hostname (the API refuses `.suffix`) |
+| | | UNIQUE INDEX `domain_spam_lists_entry_key` (domain_id, kind, scope, pattern, COALESCE(network, '')) — replaces the original UNIQUE (domain_id, kind, scope, pattern) |
+
+`kind` also accepts `dmarc_exception` from Migration 000026 (#265): `pattern` is the header-From domain let through DMARC enforcement for this recipient domain, and `network` is where that mail must come from, so an exception can never be created from a domain alone. `ListAll` falls back to reading without `network` when the column doesn't exist yet (an orchestrator rendering before the new api has migrated).
 
 Grants: `SELECT, INSERT, DELETE` to `vectis_api`. Consumed by the orchestrator when regenerating Rspamd multimap files.
 

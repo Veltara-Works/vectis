@@ -94,15 +94,7 @@ func loadTemplateData(cmd *cobra.Command) (*engine.TemplateData, error) {
 	// a no-op until entries are added.
 	spamRepo := repository.NewSpamListRepo(pool)
 	if entries, err := spamRepo.ListAll(ctx); err == nil {
-		data.SpamListEntries = make([]engine.SpamListInfo, 0, len(entries))
-		for _, e := range entries {
-			data.SpamListEntries = append(data.SpamListEntries, engine.SpamListInfo{
-				DomainName: e.DomainName,
-				Kind:       e.Kind,
-				Scope:      e.Scope,
-				Pattern:    e.Pattern,
-			})
-		}
+		data.SpamListEntries = engine.SpamListInfosFrom(entries)
 	} else {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load spam list entries (skipping advanced spam config): %s\n", err)
 	}
