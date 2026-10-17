@@ -26,7 +26,7 @@ func TestParseValkeyInfo(t *testing.T) {
 
 func TestEvalValkeyMemory(t *testing.T) {
 	t0 := time.Date(2026, 10, 17, 4, 0, 0, 0, time.UTC)
-	const max = 128 << 20
+	const max = 100 << 20 // 80% is a whole number of bytes
 	healthy := valkeyInfo{UsedMemory: 21 << 20, MaxMemory: max}
 
 	// Healthy first sample: nothing to say.
