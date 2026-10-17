@@ -58,9 +58,12 @@ func (s *Server) dependencyHealth(r *http.Request) map[string]serviceHealth {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	services := s.dependencyHealth(r)
+	// Copy into a map this request owns: probe rows are added below, and the
+	// dependency map may be shared (a test fixture, or a future cache).
+	services := make(map[string]serviceHealth)
 	overall := "healthy"
-	for _, h := range services {
+	for name, h := range s.dependencyHealth(r) {
+		services[name] = h
 		if h.Status != "healthy" {
 			overall = "degraded"
 		}

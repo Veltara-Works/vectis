@@ -248,6 +248,21 @@ func TestHealthProbeFailureDoesNotChangeOverallStatus(t *testing.T) {
 	}
 }
 
+// The handler must not write probe rows into the dependency map it was given
+// (Copilot #289): repeated requests, and repeated test runs, stay independent.
+func TestHealthDoesNotMutateTheDependencyMap(t *testing.T) {
+	var calls atomic.Int32
+	deps := map[string]serviceHealth{"postgres": {Status: "healthy"}, "valkey": {Status: "healthy"}}
+	s := healthServer(deps, &calls, nil)
+	getHealth(t, s, "/api/v1/health?probes=1")
+	if len(deps) != 2 {
+		t.Errorf("dependency map now has %d entries (%v), want the original 2", len(deps), deps)
+	}
+	if _, h := getHealth(t, s, "/api/v1/health"); len(h.Services) != 2 {
+		t.Errorf("plain /health after a probed one reported %v, want only postgres and valkey", h.Services)
+	}
+}
+
 func TestHealthDependencyFailureStill503WithProbes(t *testing.T) {
 	var calls atomic.Int32
 	deps := map[string]serviceHealth{"postgres": {Status: "unhealthy"}, "valkey": {Status: "healthy"}}
