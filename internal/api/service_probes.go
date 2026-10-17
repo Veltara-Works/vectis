@@ -190,7 +190,10 @@ func probeHTTPPing(ctx context.Context, url string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64))
+	if err != nil {
+		return fmt.Errorf("ping response: %w", err) // truncated or stalled
+	}
 	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "OK" {
 		return fmt.Errorf("ping answered %d %q", resp.StatusCode, truncate(string(body), 40))
 	}

@@ -119,6 +119,23 @@ func TestProbeHTTPPing(t *testing.T) {
 	if err := probeHTTPPing(probeCtx(t), bad.URL); err == nil {
 		t.Error("ping 503 = nil error")
 	}
+	// Copilot #289: a body cut short (declared longer than sent) or stalled
+	// must not pass.
+	truncated := fakeServer(t, func(c net.Conn) {
+		io.ReadAll(io.LimitReader(c, 1)) // wait for the request to start
+		io.WriteString(c, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nOK")
+	})
+	if err := probeHTTPPing(probeCtx(t), "http://"+truncated); err == nil {
+		t.Error("truncated ping body = nil error")
+	}
+	stalled := fakeServer(t, func(c net.Conn) {
+		io.ReadAll(io.LimitReader(c, 1))
+		io.WriteString(c, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nOK")
+		time.Sleep(2 * time.Second)
+	})
+	if err := probeHTTPPing(probeCtx(t), "http://"+stalled); err == nil {
+		t.Error("stalled ping body = nil error")
+	}
 }
 
 func TestServiceProberResultsAndCache(t *testing.T) {
