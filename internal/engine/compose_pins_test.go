@@ -97,11 +97,14 @@ func TestCarryComposeImagePins_UnchangedConfigIsByteIdentical(t *testing.T) {
 func TestComposeImageTagMismatchesAndPinning(t *testing.T) {
 	live := "services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.57" + pinA + "\n  rspamd:\n    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.57\n"
 	same := "services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.57\n  rspamd:\n    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.57\n  webmail:\n    image: ghcr.io/veltara-works/vectis-webmail:v0.1.57\n"
-	if mm := ComposeImageTagMismatches([]byte(same), []byte(live)); len(mm) != 0 {
-		t.Errorf("same release: mismatches %v", mm)
+	if mm, err := ComposeImageTagMismatches([]byte(same), []byte(live)); err != nil || len(mm) != 0 {
+		t.Errorf("same release: mismatches %v, err %v", mm, err)
 	}
 	other := strings.ReplaceAll(same, "v0.1.57", "v0.1.58")
-	mm := ComposeImageTagMismatches([]byte(other), []byte(live))
+	mm, err := ComposeImageTagMismatches([]byte(other), []byte(live))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(mm) != 2 || mm[0] != "api (v0.1.57 → v0.1.58)" || mm[1] != "rspamd (v0.1.57 → v0.1.58)" {
 		t.Errorf("mismatches = %v (webmail is new, not a mismatch)", mm)
 	}
@@ -119,5 +122,35 @@ func TestComposeImageTagMismatchesAndPinning(t *testing.T) {
 	}
 	if !strings.Contains(pinned, "vectis-rspamd:v0.1.57\n") {
 		t.Errorf("rspamd has no digest in the map and must stay as it was:\n%s", pinned)
+	}
+}
+
+// A hand-edited live compose (quoted image values, trailing comments) must not
+// hide a release mismatch, and an unparseable one must fail closed (Copilot, #297).
+func TestComposeImageTagMismatchesDecodesYAML(t *testing.T) {
+	live := "services:\n" +
+		"  api:\n    image: \"ghcr.io/veltara-works/vectis-api:v0.1.57" + pinA + "\"\n" +
+		"  rspamd:\n    image: 'ghcr.io/veltara-works/vectis-rspamd:v0.1.57' # pinned by hand\n" +
+		"  postfix:\n    image: ghcr.io/veltara-works/vectis-postfix:v0.1.57   # note\n" +
+		"  traefik:\n    image: traefik:v3.6\n"
+	rendered := "services:\n" +
+		"  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.58\n" +
+		"  rspamd:\n    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.58\n" +
+		"  postfix:\n    image: ghcr.io/veltara-works/vectis-postfix:v0.1.58\n" +
+		"  traefik:\n    image: traefik:v3.7\n"
+	mm, err := ComposeImageTagMismatches([]byte(rendered), []byte(live))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"api (v0.1.57 → v0.1.58)", "postfix (v0.1.57 → v0.1.58)", "rspamd (v0.1.57 → v0.1.58)"}
+	if strings.Join(mm, "|") != strings.Join(want, "|") {
+		t.Errorf("mismatches = %v, want %v", mm, want)
+	}
+
+	if mm, err := ComposeImageTagMismatches([]byte(rendered), nil); err != nil || len(mm) != 0 {
+		t.Errorf("no live compose: %v, %v", mm, err)
+	}
+	if _, err := ComposeImageTagMismatches([]byte(rendered), []byte("services: [\n")); err == nil {
+		t.Error("unparseable live compose must be an error")
 	}
 }

@@ -525,7 +525,9 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	if live, rendered, err := liveAndRenderedCompose(configDir, files); err == nil {
-		if mm := engine.ComposeImageTagMismatches(rendered, live); len(mm) > 0 {
+		if mm, err := engine.ComposeImageTagMismatches(rendered, live); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: can't compare image tags with the running stack (%s); `vectis config apply` will refuse.\n", err)
+		} else if len(mm) > 0 {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: this CLI (%s) renders different image tags than the running stack: %s.\n"+
 				"`vectis config apply` will refuse; use the CLI that matches the running release.\n", version.Version, strings.Join(mm, ", "))
 		}
@@ -704,7 +706,11 @@ func runApply(cmd *cobra.Command, args []string) error {
 	// Versions change only through `vectis update apply` (snapshot, migrations,
 	// orchestrator self-replace). A CLI of another release renders other image
 	// tags; writing them, let alone recreating from them, would bypass all that.
-	if mm := engine.ComposeImageTagMismatches(rendered, live); len(mm) > 0 {
+	mm, err := engine.ComposeImageTagMismatches(rendered, live)
+	if err != nil {
+		return fail(1, "can't compare image tags with the running stack: %s. Nothing was written.", err)
+	}
+	if len(mm) > 0 {
 		return fail(2, "this CLI (%s) renders different image tags than the running stack: %s.\n"+
 			"Nothing was written. Use the vectis CLI that matches the running release; change versions with `vectis update apply`.",
 			version.Version, strings.Join(mm, ", "))

@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // vectisImagePrefix is the registry path of the Vectis service images.
@@ -88,19 +90,55 @@ func ComposeImagePinCount(compose []byte) int {
 // result means the rendering CLI is a different release than the running
 // stack: writing that compose would change versions outside `vectis update
 // apply` (no snapshot, no migrations, orchestrator left behind).
-func ComposeImageTagMismatches(rendered, live []byte) []string {
-	liveTags := map[string]string{}
-	for _, m := range composeVectisImageRe.FindAllStringSubmatch(string(live), -1) {
-		liveTags[m[3]] = m[4]
+//
+// It compares decoded YAML image values, not lines, so a hand-edited live
+// compose (quoted value, trailing comment) can't hide a mismatch, and it fails
+// closed: a compose it can't parse is an error.
+func ComposeImageTagMismatches(rendered, live []byte) ([]string, error) {
+	liveTags, err := composeVectisImageTags(live)
+	if err != nil {
+		return nil, fmt.Errorf("live compose: %w", err)
+	}
+	renderedTags, err := composeVectisImageTags(rendered)
+	if err != nil {
+		return nil, fmt.Errorf("rendered compose: %w", err)
 	}
 	var out []string
-	for _, m := range composeVectisImageRe.FindAllStringSubmatch(string(rendered), -1) {
-		if lt, ok := liveTags[m[3]]; ok && lt != m[4] {
-			out = append(out, fmt.Sprintf("%s (%s → %s)", m[3], strings.TrimPrefix(lt, ":"), strings.TrimPrefix(m[4], ":")))
+	for svc, rt := range renderedTags {
+		if lt, ok := liveTags[svc]; ok && lt != rt {
+			out = append(out, fmt.Sprintf("%s (%s → %s)", svc, lt, rt))
 		}
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
+}
+
+// composeVectisImageTags decodes a compose file and returns compose service →
+// tag ("" when untagged) for each service running a vectis-* image. An empty
+// compose (no live file yet) has none.
+func composeVectisImageTags(compose []byte) (map[string]string, error) {
+	var doc struct {
+		Services map[string]struct {
+			Image string `yaml:"image"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(compose, &doc); err != nil {
+		return nil, fmt.Errorf("parse: %w", err)
+	}
+	tags := map[string]string{}
+	for svc, s := range doc.Services {
+		ref := strings.TrimSpace(s.Image)
+		if !strings.HasPrefix(strings.ToLower(ref), vectisImagePrefix) {
+			continue
+		}
+		ref, _, _ = strings.Cut(ref, "@") // drop any digest pin
+		tag := ""
+		if i := strings.LastIndex(ref, ":"); i > len(vectisImagePrefix) {
+			tag = ref[i+1:]
+		}
+		tags[svc] = tag
+	}
+	return tags, nil
 }
 
 // UnpinnedComposeImages lists the vectis-* services whose image line has no
