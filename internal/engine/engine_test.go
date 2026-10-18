@@ -2327,3 +2327,27 @@ func TestDMARCExceptionsMapEmptyWithoutEntries(t *testing.T) {
 	}
 	t.Fatal("dmarc_exceptions.map not generated (the file must always exist)")
 }
+
+// Postfix's queue must live on the postfix-spool named volume: in the
+// container's writable layer every recreate (update apply, config apply)
+// deletes mail already accepted with 250 (#298).
+func TestPostfixCompose_SpoolVolume(t *testing.T) {
+	files, _ := Generate(testData())
+	var compose string
+	for _, f := range files {
+		if f.RelPath == "docker-compose.yml" {
+			compose = string(f.Content)
+			break
+		}
+	}
+	if compose == "" {
+		t.Fatal("docker-compose.yml not generated")
+	}
+	block := serviceBlock(compose, "postfix")
+	if !strings.Contains(block, "- postfix-spool:/var/spool/postfix\n") {
+		t.Errorf("postfix must mount postfix-spool at /var/spool/postfix; got:\n%s", block)
+	}
+	if !strings.Contains(compose, "\n  postfix-spool:\n") {
+		t.Error("postfix-spool must be declared under top-level volumes")
+	}
+}

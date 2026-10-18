@@ -282,8 +282,9 @@ func (o *Orchestrator) Recreate(ctx context.Context, req RecreateRequest) (*Recr
 			stepErr = o.docker.RemoveServiceContainer(ctx, j.svc)
 		} else {
 			if j.svc == "postfix" {
-				// The queue isn't persisted (#298): recreating would delete it.
-				stepErr = o.docker.drainPostfixQueue(ctx, postfixDrainWait)
+				// A postfix without the postfix-spool volume (#298) keeps its
+				// queue in the container: recreating it would delete it.
+				stepErr = o.docker.guardPostfixQueue(ctx, postfixDrainWait)
 			}
 			if stepErr == nil {
 				stepErr = o.docker.ForceRecreateService(ctx, j.svc)
@@ -391,7 +392,7 @@ func (dm *DockerManager) postfixQueueLen(ctx context.Context) (int, error) {
 			return 0, nil
 		}
 		if strings.Contains(low, "is not running") || strings.Contains(low, "is restarting") || strings.Contains(low, "is paused") {
-			return 0, fmt.Errorf("%s isn't running, so its mail queue can't be checked; recreating it could delete queued mail (#298). "+
+			return 0, fmt.Errorf("%s isn't running, so its mail queue can't be checked; recreating it could delete queued mail (no postfix-spool volume, #298). "+
 				"Start it (`docker start %s`), let `postqueue -p` empty, then re-run `vectis config apply`", name, name)
 		}
 		return 0, fmt.Errorf("postqueue -j: %w: %s", err, strings.TrimSpace(string(out)))
@@ -405,13 +406,36 @@ func (dm *DockerManager) postfixQueueLen(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// drainPostfixQueue makes sure Postfix's queue is empty before its container
-// is recreated: /var/spool/postfix lives in the container's writable layer
-// (#298), so a recreate would delete accepted mail. A non-empty queue is
+// postfixSpoolMount is where the postfix-spool volume holds the queue (#298).
+const postfixSpoolMount = "/var/spool/postfix"
+
+// guardPostfixQueue protects Postfix's queue across a recreate. A container
+// whose queue is on a mount (the postfix-spool volume, #298) keeps it: nothing
+// to do. One without (an install still on a pre-#298 compose, e.g. after a
+// rollback) holds it in its writable layer, so it must be drained first.
+func (dm *DockerManager) guardPostfixQueue(ctx context.Context, wait time.Duration) error {
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format",
+		`{{range .Mounts}}{{if eq .Destination "`+postfixSpoolMount+`"}}mounted{{end}}{{end}}`, containerName("postfix")).CombinedOutput()
+	if err != nil {
+		if strings.Contains(strings.ToLower(string(out)), "no such") {
+			return nil // no container, no queue
+		}
+		return fmt.Errorf("inspect postfix mounts: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if strings.TrimSpace(string(out)) == "mounted" {
+		return nil
+	}
+	return dm.drainPostfixQueue(ctx, wait)
+}
+
+// drainPostfixQueue makes sure Postfix's queue is empty before a container
+// without the postfix-spool volume is recreated: its /var/spool/postfix lives
+// in the container's writable layer (#298), so a recreate would delete
+// accepted mail. A non-empty queue is
 // flushed and given up to wait to deliver; if mail is still queued the step
 // fails (the CLI keeps it pending, so the next config apply retries). Mail
 // accepted in the seconds between this check and the recreate isn't covered;
-// persisting the queue (#298) is the real fix.
+// the postfix-spool volume is what actually keeps the queue.
 func (dm *DockerManager) drainPostfixQueue(ctx context.Context, wait time.Duration) error {
 	n, err := dm.postfixQueueLen(ctx)
 	if err != nil || n == 0 {
@@ -430,7 +454,7 @@ func (dm *DockerManager) drainPostfixQueue(ctx context.Context, wait time.Durati
 			return err
 		}
 	}
-	return fmt.Errorf("%d message(s) still in the Postfix queue after %s; recreating postfix now would delete them (its queue isn't persisted, #298). "+
+	return fmt.Errorf("%d message(s) still in the Postfix queue after %s; recreating postfix now would delete them (its queue isn't on the postfix-spool volume, #298). "+
 		"Check `docker exec vectis-postfix postqueue -p` and re-run `vectis config apply` once they're delivered", n, wait)
 }
 

@@ -227,6 +227,10 @@ services:
       - mail-data:/var/vectis/mail
       - mail-certs:/etc/ssl/mail:ro
       - postfix-logs:/var/log/postfix
+      # The mail queue (#298). Without it the queue lives in the container's
+      # writable layer and every recreate (update, config apply) deletes mail
+      # already accepted with 250. A named volume: this is data, not config.
+      - postfix-spool:/var/spool/postfix
     depends_on:
       postgres:
         condition: service_healthy
@@ -780,6 +784,7 @@ volumes:
   mail-data:
   mail-certs:
   postfix-logs:
+  postfix-spool:
   traefik-acme:
   snapshots:
 {{ if ne .ClamAV.Profile "none" }}
