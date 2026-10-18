@@ -263,6 +263,27 @@ func liveAndRenderedCompose(configDir string, files []engine.GeneratedFile) (liv
 	return live, renderedCompose(files), nil
 }
 
+// finalRecreatePlan works out the containers config apply recreates. When
+// there are any, it first pins newly enabled vectis-* services in files to the
+// installed release's signed manifest (pinNewServices), then re-plans from the
+// pinned compose: pinning can also pin an unchanged, tag-only service (a
+// partially pinned install), which must then be recreated onto its digest
+// too. config diff and config apply both use it, so the preview matches apply.
+//
+// pinErr is a pinning failure (apply refuses; diff warns), returned with the
+// plan as it stood before pinning; err is a failure to plan at all.
+func finalRecreatePlan(files []engine.GeneratedFile, live []byte, pending recreatePlan) (plan recreatePlan, pinErr, err error) {
+	plan, err = planRecreate(live, renderedCompose(files), pending)
+	if err != nil || plan.empty() {
+		return plan, nil, err
+	}
+	if pinErr = pinNewServices(files, live, renderedCompose(files)); pinErr != nil {
+		return plan, pinErr, nil
+	}
+	plan, err = planRecreate(live, renderedCompose(files), pending)
+	return plan, nil, err
+}
+
 // renderedCompose returns the compose among the generated files (nil if none).
 func renderedCompose(files []engine.GeneratedFile) []byte {
 	var rendered []byte

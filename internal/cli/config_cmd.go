@@ -524,32 +524,42 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 		return nil
 	}
-	if live, rendered, err := liveAndRenderedCompose(configDir, files); err == nil {
-		if mm, err := engine.ComposeImageTagMismatches(rendered, live); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: can't compare image tags with the running stack (%s); `vectis config apply` will refuse.\n", err)
-		} else if len(mm) > 0 {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: this CLI (%s) renders different image tags than the running stack: %s.\n"+
-				"`vectis config apply` will refuse; use the CLI that matches the running release.\n", version.Version, strings.Join(mm, ", "))
-		}
-	}
-	diffs, err := diffAllFiles(outputDir, configDir, files)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
-		os.Exit(1)
-		return nil
-	}
-
-	// Preview the containers config apply would recreate (#262).
 	live, rendered, err := liveAndRenderedCompose(configDir, files)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
 		os.Exit(1)
 		return nil
 	}
-	pending, _ := readRecreatePending(configDir)
-	plan, err := planRecreate(live, rendered, pending)
+	if mm, err := engine.ComposeImageTagMismatches(rendered, live); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: can't compare image tags with the running stack (%s); `vectis config apply` will refuse.\n", err)
+	} else if len(mm) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: this CLI (%s) renders different image tags than the running stack: %s.\n"+
+			"`vectis config apply` will refuse; use the CLI that matches the running release.\n", version.Version, strings.Join(mm, ", "))
+	}
+
+	// Preview the containers config apply would recreate (#262), the same way
+	// apply works them out (including any pinning), before diffing the files,
+	// so the compose diff and the recreate list match what apply will do.
+	pending, err := readRecreatePending(configDir)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s. `vectis config apply` refuses until %s is fixed or removed (it lists containers still to recreate).\n",
+			err, filepath.Join(configDir, recreatePendingFile))
+		os.Exit(1)
+		return nil
+	}
+	plan, pinErr, err := finalRecreatePlan(files, live, pending)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", err)
+		os.Exit(1)
+		return nil
+	}
+	if pinErr != nil && !plan.empty() {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s; `vectis config apply` will refuse.\n", pinErr)
+	}
+
+	diffs, err := diffAllFiles(outputDir, configDir, files)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Error: diff failed: %s\n", err)
 		os.Exit(1)
 		return nil
 	}
@@ -723,9 +733,9 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return fail(1, "%s. Inspect %s (it lists containers still to recreate); remove it to discard them. Nothing was written.",
 			err, filepath.Join(configDir, recreatePendingFile))
 	}
-	plan, err := planRecreate(live, rendered, pending)
+	plan, pinErr, err := finalRecreatePlan(files, live, pending)
 	if err != nil {
-		return fail(1, "%s", err)
+		return fail(1, "%s. Nothing was written.", err)
 	}
 	if !plan.empty() {
 		// The orchestrator does the recreate: it must be reachable and reserved.
@@ -733,17 +743,8 @@ func runApply(cmd *cobra.Command, args []string) error {
 			return fail(1, "containers need recreating (%s) but the orchestrator is unreachable. Nothing was written.",
 				strings.Join(append(append([]string(nil), plan.Services...), plan.Removed...), ", "))
 		}
-		// A service just switched on has no live pin to carry: pin it to the
-		// installed release's signed manifest rather than a mutable tag.
-		if err := pinNewServices(files, live, rendered); err != nil {
-			return fail(1, "%s. Nothing was written.", err)
-		}
-		// Pinning can also pin an unchanged, tag-only service (a partially
-		// pinned install): re-plan from the final compose so that service is
-		// recreated onto its digest too.
-		rendered = renderedCompose(files)
-		if plan, err = planRecreate(live, rendered, pending); err != nil {
-			return fail(1, "%s. Nothing was written.", err)
+		if pinErr != nil {
+			return fail(1, "%s. Nothing was written.", pinErr)
 		}
 		// Record the work before the first live write, so an interruption
 		// anywhere after this point is retried by the next config apply.
