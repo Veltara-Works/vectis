@@ -134,6 +134,10 @@ func recreateOrder(services []string) []string {
 // live test can shorten it.
 var recreateReservationTTL = 10 * time.Minute
 
+// recreateFinishTimeout bounds recording a recreate's outcome (history row,
+// final state) after the run, on a context of its own.
+const recreateFinishTimeout = 45 * time.Second
+
 // recreateReservation is the orchestrator held for one `vectis config apply`.
 type recreateReservation struct {
 	id    string
@@ -299,18 +303,29 @@ func (o *Orchestrator) Recreate(ctx context.Context, req RecreateRequest) (*Recr
 		last := res.Steps[len(res.Steps)-1]
 		msg = fmt.Sprintf("%s %s: %s", last.Action, last.Service, last.Error)
 	}
+	// Record the outcome on a fresh context: ctx may have run out mid-step, and
+	// the history row and Valkey state must still be written. Bounded to fit
+	// the handler's write deadline (RecreateMaxDuration + 1 min).
+	finishCtx, cancelFinish := context.WithTimeout(context.WithoutCancel(ctx), recreateFinishTimeout)
+	defer cancelFinish()
 	if opID != "" {
 		// A recreated postgres drops the pool's connections; retry briefly.
 		for attempt := 0; attempt < 10; attempt++ {
-			if err := o.sm.CompleteOperation(ctx, opID, status, "", msg); err == nil {
+			err := o.sm.CompleteOperation(finishCtx, opID, status, "", msg)
+			if err == nil {
 				break
-			} else if attempt == 9 {
-				o.logger.Warn("recreate: could not complete operation record", "error", err)
 			}
-			time.Sleep(3 * time.Second)
+			if attempt == 9 || finishCtx.Err() != nil {
+				o.logger.Warn("recreate: could not complete operation record", "error", err)
+				break
+			}
+			select {
+			case <-finishCtx.Done():
+			case <-time.After(3 * time.Second):
+			}
 		}
 	}
-	if err := o.sm.Transition(ctx, final); err != nil {
+	if err := o.sm.Transition(finishCtx, final); err != nil {
 		o.logger.Error("recreate: final state transition failed", "to", final, "error", err)
 	}
 	return res, nil
