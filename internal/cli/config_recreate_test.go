@@ -223,14 +223,30 @@ func TestReplanAfterPinningPartiallyPinnedInstall(t *testing.T) {
 	if err != nil || strings.Join(before.Services, ",") != "webmail" {
 		t.Fatalf("initial plan = %+v, %v", before, err)
 	}
-	if err := pinNewServices(files, live, rendered); err != nil {
-		t.Fatal(err)
-	}
-	after, err := planRecreate(live, renderedCompose(files), recreatePlan{})
-	if err != nil {
-		t.Fatal(err)
+	// finalRecreatePlan (shared by config diff and apply) pins, then re-plans.
+	after, pinErr, err := finalRecreatePlan(files, live, recreatePlan{})
+	if err != nil || pinErr != nil {
+		t.Fatal(err, pinErr)
 	}
 	if strings.Join(after.Services, ",") != "rspamd,webmail" {
 		t.Fatalf("re-plan = %v, want rspamd (newly pinned) and webmail", after.Services)
+	}
+	if !strings.Contains(string(renderedCompose(files)), "vectis-rspamd:v0.1.57@"+dSpam+"\n") {
+		t.Errorf("rspamd not pinned in the final compose:\n%s", renderedCompose(files))
+	}
+
+	// A pinning failure comes back as pinErr, with the pre-pinning plan.
+	manifestDigests = func(string) (map[string]string, error) { return nil, os.ErrDeadlineExceeded }
+	fresh := []engine.GeneratedFile{{RelPath: composeRelPath, Content: rendered}}
+	p, pinErr, err := finalRecreatePlan(fresh, live, recreatePlan{})
+	if err != nil || pinErr == nil || strings.Join(p.Services, ",") != "webmail" {
+		t.Fatalf("pin failure: plan=%v pinErr=%v err=%v", p.Services, pinErr, err)
+	}
+
+	// Nothing to recreate: no manifest fetch at all.
+	manifestDigests = func(string) (map[string]string, error) { t.Fatal("unexpected manifest fetch"); return nil, nil }
+	same := []engine.GeneratedFile{{RelPath: composeRelPath, Content: live}}
+	if p, pinErr, err := finalRecreatePlan(same, live, recreatePlan{}); err != nil || pinErr != nil || !p.empty() {
+		t.Fatalf("no-op: plan=%+v pinErr=%v err=%v", p, pinErr, err)
 	}
 }
