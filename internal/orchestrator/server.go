@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -116,6 +117,9 @@ func (s *Server) buildRouter() chi.Router {
 			r.Post("/apply", s.handleApply)
 			r.Post("/rollback", s.handleRollback)
 			r.Post("/reload", s.handleReload)
+			r.Post("/recreate/begin", s.handleRecreateBegin)
+			r.Post("/recreate/cancel", s.handleRecreateCancel)
+			r.Post("/recreate", s.handleRecreate)
 			r.Get("/status", s.handleStatus)
 		})
 	})
@@ -331,6 +335,88 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRecreateBegin reserves the orchestrator for one `vectis config apply`
+// (state `recreating`); see Orchestrator.BeginRecreate.
+func (s *Server) handleRecreateBegin(w http.ResponseWriter, r *http.Request) {
+	id, err := s.orch.BeginRecreate(r.Context())
+	var conflict *ErrInvalidTransition
+	switch {
+	case errors.As(err, &conflict):
+		s.respondError(w, http.StatusConflict, "STATE_CONFLICT", conflict.Error())
+		return
+	case err != nil:
+		s.logger.Error("recreate begin failed", "error", err)
+		s.respondError(w, http.StatusInternalServerError, "RECREATE_FAILED", err.Error())
+		return
+	}
+	s.respondJSON(w, http.StatusOK, map[string]any{
+		"state": s.orch.State(),
+		"data":  map[string]any{"reservation": id},
+	})
+}
+
+// handleRecreateCancel releases a reservation without recreating.
+func (s *Server) handleRecreateCancel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Reservation string `json:"reservation"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&req); err != nil {
+		s.respondError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid cancel request body")
+		return
+	}
+	if err := s.orch.CancelRecreate(r.Context(), req.Reservation); err != nil {
+		s.respondError(w, http.StatusBadRequest, "INVALID_RECREATE", err.Error())
+		return
+	}
+	s.respondJSON(w, http.StatusOK, map[string]any{"state": s.orch.State()})
+}
+
+// handleRecreate recreates the services `vectis config apply` changed (#262).
+// Synchronous: the CLI waits for the result. It can outlast the server's 30 s
+// WriteTimeout, so the handler extends its own write deadline, and it runs on a
+// context detached from the request so a client that disconnects can't leave
+// a recreate half done.
+func (s *Server) handleRecreate(w http.ResponseWriter, r *http.Request) {
+	var req RecreateRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+		s.respondError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid recreate request body")
+		return
+	}
+	// Extend the write deadline before doing anything: if it can't be
+	// extended, the result of a long recreate would be lost to the server's
+	// 30 s WriteTimeout, so refuse instead.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(RecreateMaxDuration + time.Minute)); err != nil {
+		s.logger.Error("recreate: cannot extend write deadline", "error", err)
+		// The CLI treats its reservation as spent once it sends the recreate,
+		// so release it here rather than hold the orchestrator until it expires.
+		_ = s.orch.CancelRecreate(r.Context(), req.Reservation)
+		s.respondError(w, http.StatusInternalServerError, "RECREATE_UNAVAILABLE", "cannot extend the response deadline for a recreate")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), RecreateMaxDuration)
+	defer cancel()
+
+	res, err := s.orch.Recreate(ctx, req)
+	var badReq *ErrRecreateRequest
+	var conflict *ErrInvalidTransition
+	switch {
+	case errors.As(err, &badReq):
+		s.respondError(w, http.StatusBadRequest, "INVALID_RECREATE", badReq.Reason)
+		return
+	case errors.As(err, &conflict):
+		s.respondError(w, http.StatusConflict, "STATE_CONFLICT", conflict.Error())
+		return
+	case err != nil:
+		s.logger.Error("recreate failed", "error", err)
+		s.respondError(w, http.StatusInternalServerError, "RECREATE_FAILED", err.Error())
+		return
+	}
+	s.respondJSON(w, http.StatusOK, map[string]any{
+		"state": s.orch.State(),
+		"data":  map[string]any{"result": res},
+	})
+}
+
 // handleStatus returns the current state and last operation details.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	state := s.orch.State()
@@ -394,6 +480,10 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+// Unwrap lets http.ResponseController reach the underlying writer, e.g. so a
+// long-running handler can extend its write deadline (handleRecreate).
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // clientIP extracts the IP from r.RemoteAddr, stripping the port.
 func clientIP(r *http.Request) string {

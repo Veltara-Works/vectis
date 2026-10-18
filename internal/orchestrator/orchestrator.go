@@ -62,6 +62,9 @@ type Orchestrator struct {
 	plan   *Plan
 	lastOp *Operation
 
+	resMu sync.Mutex
+	res   *recreateReservation // active config-apply reservation (#262), nil when none
+
 	sm         *StateMachine
 	cfg        Config
 	db         *pgxpool.Pool
@@ -967,8 +970,9 @@ func (o *Orchestrator) RollbackWithJobID(ctx context.Context, jobID string) (str
 		return "", &ErrInvalidTransition{From: o.sm.State(), Op: "rollback"}
 	}
 
-	// Find the most recent snapshot.
-	lastOp, err := o.sm.LastOperation(ctx)
+	// Find the most recent snapshot. Config-apply recreates (#262) are not
+	// version operations and carry no snapshot, so they are skipped.
+	lastOp, err := o.sm.LastVersionOperation(ctx)
 	if err != nil {
 		return "", fmt.Errorf("find last operation for rollback: %w", err)
 	}

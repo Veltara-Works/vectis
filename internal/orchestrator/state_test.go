@@ -65,10 +65,33 @@ func TestCanRollback(t *testing.T) {
 	}
 }
 
+func TestCanRecreate(t *testing.T) {
+	want := map[State]bool{
+		StateIdle: true, StateFailed: true, StateCompleted: true,
+		StatePlanning: false, StateValidating: false, StateApplying: false, StateRollingBack: false, StateRecreating: false,
+	}
+	for s, w := range want {
+		if got := s.CanRecreate(); got != w {
+			t.Errorf("State(%q).CanRecreate() = %v, want %v", s, got, w)
+		}
+	}
+	// A recreate ends in idle or failed only; plan/apply can't start from it.
+	for to := range ValidTransitions[StateRecreating] {
+		if to != StateIdle && to != StateFailed {
+			t.Errorf("recreating -> %s must not be allowed", to)
+		}
+	}
+	for _, from := range []State{StateApplying, StateValidating, StateRollingBack, StatePlanning} {
+		if ValidTransitions[from][StateRecreating] {
+			t.Errorf("%s -> recreating must not be allowed", from)
+		}
+	}
+}
+
 func TestValidTransitions_Completeness(t *testing.T) {
 	allStates := []State{
 		StateIdle, StatePlanning, StateValidating,
-		StateApplying, StateRollingBack, StateFailed, StateCompleted,
+		StateApplying, StateRollingBack, StateFailed, StateCompleted, StateRecreating,
 	}
 	for _, s := range allStates {
 		if _, ok := ValidTransitions[s]; !ok {
