@@ -199,3 +199,38 @@ func TestPinNewServices(t *testing.T) {
 		t.Fatal("manifest fetch failure must refuse")
 	}
 }
+
+// On a partially pinned install, switching webmail on also pins the unchanged
+// but tag-only rspamd; re-planning from the final compose must recreate it
+// onto that digest too (Copilot, #297).
+func TestReplanAfterPinningPartiallyPinnedInstall(t *testing.T) {
+	const pinned = "@sha256:e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+	const dWeb = "sha256:f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
+	const dSpam = "sha256:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"
+	live := []byte("services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.57" + pinned +
+		"\n  rspamd:\n    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.57\n")
+	rendered := []byte("services:\n  api:\n    image: ghcr.io/veltara-works/vectis-api:v0.1.57" + pinned +
+		"\n  rspamd:\n    image: ghcr.io/veltara-works/vectis-rspamd:v0.1.57\n  webmail:\n    image: ghcr.io/veltara-works/vectis-webmail:v0.1.57\n")
+	files := []engine.GeneratedFile{{RelPath: composeRelPath, Content: rendered}}
+
+	orig := manifestDigests
+	defer func() { manifestDigests = orig }()
+	manifestDigests = func(string) (map[string]string, error) {
+		return map[string]string{"webmail": dWeb, "rspamd": dSpam}, nil
+	}
+
+	before, err := planRecreate(live, rendered, recreatePlan{})
+	if err != nil || strings.Join(before.Services, ",") != "webmail" {
+		t.Fatalf("initial plan = %+v, %v", before, err)
+	}
+	if err := pinNewServices(files, live, rendered); err != nil {
+		t.Fatal(err)
+	}
+	after, err := planRecreate(live, renderedCompose(files), recreatePlan{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(after.Services, ",") != "rspamd,webmail" {
+		t.Fatalf("re-plan = %v, want rspamd (newly pinned) and webmail", after.Services)
+	}
+}

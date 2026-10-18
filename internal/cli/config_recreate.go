@@ -260,12 +260,18 @@ func liveAndRenderedCompose(configDir string, files []engine.GeneratedFile) (liv
 	if err != nil {
 		return nil, nil, fmt.Errorf("read live compose: %w", err)
 	}
+	return live, renderedCompose(files), nil
+}
+
+// renderedCompose returns the compose among the generated files (nil if none).
+func renderedCompose(files []engine.GeneratedFile) []byte {
+	var rendered []byte
 	for _, f := range files {
 		if f.RelPath == composeRelPath {
 			rendered = f.Content
 		}
 	}
-	return live, rendered, nil
+	return rendered
 }
 
 // printRecreateOutcome reports what config apply recreated.

@@ -379,14 +379,20 @@ func (dm *DockerManager) ForceRecreateService(ctx context.Context, service strin
 }
 
 // postfixQueueLen counts the messages in the running Postfix's queue
-// (`postqueue -j` prints one JSON object per message). A postfix container
-// that doesn't exist or isn't running has no queue to lose here: 0.
+// (`postqueue -j` prints one JSON object per message). Only a missing postfix
+// container counts as empty: a stopped or restarting one still holds its queue
+// in its writable layer, which can't be read here, so that is an error.
 func (dm *DockerManager) postfixQueueLen(ctx context.Context) (int, error) {
-	out, err := exec.CommandContext(ctx, "docker", "exec", containerName("postfix"), "postqueue", "-j").CombinedOutput()
+	name := containerName("postfix")
+	out, err := exec.CommandContext(ctx, "docker", "exec", name, "postqueue", "-j").CombinedOutput()
 	if err != nil {
 		low := strings.ToLower(string(out))
-		if strings.Contains(low, "no such container") || strings.Contains(low, "is not running") {
+		if strings.Contains(low, "no such container") {
 			return 0, nil
+		}
+		if strings.Contains(low, "is not running") || strings.Contains(low, "is restarting") || strings.Contains(low, "is paused") {
+			return 0, fmt.Errorf("%s isn't running, so its mail queue can't be checked; recreating it could delete queued mail (#298). "+
+				"Start it (`docker start %s`), let `postqueue -p` empty, then re-run `vectis config apply`", name, name)
 		}
 		return 0, fmt.Errorf("postqueue -j: %w: %s", err, strings.TrimSpace(string(out)))
 	}

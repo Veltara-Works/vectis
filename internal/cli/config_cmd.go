@@ -738,6 +738,13 @@ func runApply(cmd *cobra.Command, args []string) error {
 		if err := pinNewServices(files, live, rendered); err != nil {
 			return fail(1, "%s. Nothing was written.", err)
 		}
+		// Pinning can also pin an unchanged, tag-only service (a partially
+		// pinned install): re-plan from the final compose so that service is
+		// recreated onto its digest too.
+		rendered = renderedCompose(files)
+		if plan, err = planRecreate(live, rendered, pending); err != nil {
+			return fail(1, "%s. Nothing was written.", err)
+		}
 		// Record the work before the first live write, so an interruption
 		// anywhere after this point is retried by the next config apply.
 		if err := writeRecreatePending(configDir, plan); err != nil {
