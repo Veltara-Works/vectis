@@ -68,6 +68,14 @@ const RecreateMaxDuration = 15 * time.Minute
 // ServiceHealthTimeouts (traefik, webmail, cert-extractor, observability).
 const recreateDefaultTimeout = 60 * time.Second
 
+// recreateStableRun is how long a recreated container without a healthcheck
+// must have been running (since its own StartedAt) to count as up.
+const recreateStableRun = 5 * time.Second
+
+// postfixDrainWait bounds how long a recreate waits for a flushed Postfix
+// queue to empty before refusing to recreate postfix (#298).
+const postfixDrainWait = 60 * time.Second
+
 // validateRecreateRequest checks a request against the services defined in the
 // live compose. The orchestrator never recreates itself here: that goes
 // through `vectis update apply`'s self-replace helper.
@@ -273,7 +281,13 @@ func (o *Orchestrator) Recreate(ctx context.Context, req RecreateRequest) (*Recr
 		if j.action == "remove" {
 			stepErr = o.docker.RemoveServiceContainer(ctx, j.svc)
 		} else {
-			stepErr = o.docker.ForceRecreateService(ctx, j.svc)
+			if j.svc == "postfix" {
+				// The queue isn't persisted (#298): recreating would delete it.
+				stepErr = o.docker.drainPostfixQueue(ctx, postfixDrainWait)
+			}
+			if stepErr == nil {
+				stepErr = o.docker.ForceRecreateService(ctx, j.svc)
+			}
 			if stepErr == nil {
 				timeout, ok := ServiceHealthTimeouts[j.svc]
 				if !ok {
@@ -364,6 +378,56 @@ func (dm *DockerManager) ForceRecreateService(ctx context.Context, service strin
 	return nil
 }
 
+// postfixQueueLen counts the messages in the running Postfix's queue
+// (`postqueue -j` prints one JSON object per message). A postfix container
+// that doesn't exist or isn't running has no queue to lose here: 0.
+func (dm *DockerManager) postfixQueueLen(ctx context.Context) (int, error) {
+	out, err := exec.CommandContext(ctx, "docker", "exec", containerName("postfix"), "postqueue", "-j").CombinedOutput()
+	if err != nil {
+		low := strings.ToLower(string(out))
+		if strings.Contains(low, "no such container") || strings.Contains(low, "is not running") {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("postqueue -j: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	n := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "{") {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// drainPostfixQueue makes sure Postfix's queue is empty before its container
+// is recreated: /var/spool/postfix lives in the container's writable layer
+// (#298), so a recreate would delete accepted mail. A non-empty queue is
+// flushed and given up to wait to deliver; if mail is still queued the step
+// fails (the CLI keeps it pending, so the next config apply retries). Mail
+// accepted in the seconds between this check and the recreate isn't covered;
+// persisting the queue (#298) is the real fix.
+func (dm *DockerManager) drainPostfixQueue(ctx context.Context, wait time.Duration) error {
+	n, err := dm.postfixQueueLen(ctx)
+	if err != nil || n == 0 {
+		return err
+	}
+	dm.logger.Info("postfix queue not empty before recreate; flushing", "messages", n)
+	_ = exec.CommandContext(ctx, "docker", "exec", containerName("postfix"), "postqueue", "-f").Run()
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+		if n, err = dm.postfixQueueLen(ctx); err != nil || n == 0 {
+			return err
+		}
+	}
+	return fmt.Errorf("%d message(s) still in the Postfix queue after %s; recreating postfix now would delete them (its queue isn't persisted, #298). "+
+		"Check `docker exec vectis-postfix postqueue -p` and re-run `vectis config apply` once they're delivered", n, wait)
+}
+
 // RemoveServiceContainer stops and removes a service's container after the
 // service was dropped from the compose (e.g. ClamAV or webmail switched off).
 // A container that's already gone counts as removed.
@@ -387,31 +451,27 @@ func (dm *DockerManager) RemoveServiceContainer(ctx context.Context, service str
 func (dm *DockerManager) WaitHealthyOrRunning(ctx context.Context, service string, timeout time.Duration) error {
 	name := containerName(service)
 	deadline := time.Now().Add(timeout)
-	var runningSince time.Time
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		out, err := exec.CommandContext(ctx, "docker", "inspect", "--format",
-			"{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", name).Output()
+			"{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.State.StartedAt}}", name).Output()
 		if err == nil {
-			f := strings.Fields(string(out))
-			if len(f) == 2 {
+			if f := strings.Fields(string(out)); len(f) == 3 {
 				switch {
 				case f[1] == "healthy":
 					return nil
 				case f[1] == "unhealthy":
 					return fmt.Errorf("container %s is unhealthy", name)
 				case f[1] == "none" && f[0] == "running":
-					if runningSince.IsZero() {
-						runningSince = time.Now()
-					} else if time.Since(runningSince) >= 5*time.Second {
+					// Measure the current run from the container's own start
+					// time: a restart between polls must reset the clock.
+					if started, perr := time.Parse(time.RFC3339Nano, f[2]); perr == nil && time.Since(started) >= recreateStableRun {
 						return nil
 					}
 				case f[0] == "exited" || f[0] == "dead":
 					return fmt.Errorf("container %s %s", name, f[0])
-				default:
-					runningSince = time.Time{}
 				}
 			}
 		}
