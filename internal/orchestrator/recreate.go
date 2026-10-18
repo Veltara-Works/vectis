@@ -259,10 +259,14 @@ func (o *Orchestrator) Recreate(ctx context.Context, req RecreateRequest) (*Recr
 		return nil, &ErrRecreateRequest{Reason: err.Error()}
 	}
 
+	// Like apply and rollback, no container work without a `running` history
+	// row: crash recovery (recoverState) reads it to land in `failed` rather
+	// than `idle` over a half-done recreate.
 	opID, err := o.sm.RecordOperation(ctx, "recreate", "running", "",
 		map[string]any{"services": req.Services, "removed": req.Removed}, nil)
 	if err != nil {
-		o.logger.Warn("recreate: could not record operation", "error", err)
+		o.restoreAfterReservation(ctx, rsv)
+		return nil, fmt.Errorf("record recreate operation: %w", err)
 	}
 
 	type job struct{ svc, action string }
@@ -490,7 +494,11 @@ func (dm *DockerManager) WaitHealthyOrRunning(ctx context.Context, service strin
 		if err == nil {
 			if f := strings.Fields(string(out)); len(f) == 3 {
 				switch {
-				case f[1] == "healthy":
+				case f[0] == "exited" || f[0] == "dead":
+					// Checked first: a stopped container keeps its last health
+					// status, so "healthy" alone doesn't mean it's up.
+					return fmt.Errorf("container %s %s", name, f[0])
+				case f[1] == "healthy" && f[0] == "running":
 					return nil
 				case f[1] == "unhealthy":
 					return fmt.Errorf("container %s is unhealthy", name)
@@ -500,8 +508,6 @@ func (dm *DockerManager) WaitHealthyOrRunning(ctx context.Context, service strin
 					if started, perr := time.Parse(time.RFC3339Nano, f[2]); perr == nil && time.Since(started) >= recreateStableRun {
 						return nil
 					}
-				case f[0] == "exited" || f[0] == "dead":
-					return fmt.Errorf("container %s %s", name, f[0])
 				}
 			}
 		}
