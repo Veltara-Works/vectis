@@ -299,7 +299,11 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	}
 
 	// Initialize mail sender, notification sender, webhook dispatcher, and abuse detector.
-	s.mailSender = mail.NewSender("vectis-postfix:25", cfg.Hostname, logger.With("component", "mail-sender"))
+	// The send API submits on Postfix's internal-only listener, which applies the
+	// submission trace sanitisation (#227). :25 is the fallback for the moment
+	// in an update when this api is up before Postfix has the new listener.
+	s.mailSender = mail.NewSender(internalSubmissionAddr, cfg.Hostname, logger.With("component", "mail-sender")).
+		WithFallback("vectis-postfix:25")
 	s.notifications = mail.NewNotificationSender(s.mailSender, cfg.Hostname)
 	s.webhookDispatcher = mail.NewWebhookDispatcher(s.webhooks, logger.With("component", "webhook-dispatcher"))
 	s.abuseDetector = mail.NewAbuseDetector(vk, mail.DefaultAbuseConfig(), logger.With("component", "abuse-detector"))

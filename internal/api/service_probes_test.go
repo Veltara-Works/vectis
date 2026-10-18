@@ -275,3 +275,26 @@ func TestHealthDependencyFailureStill503WithProbes(t *testing.T) {
 		t.Errorf("postfix row = %+v, want healthy (probes still reported)", h.Services["postfix"])
 	}
 }
+
+// The postfix probe checks both :25 and the internal send-API listener (#227):
+// the sender survives a missing internal listener by falling back to :25, so
+// the probe is what makes that visible.
+func TestAllProbesReportsTheFailingCheck(t *testing.T) {
+	ok := fakeServer(t, func(c net.Conn) { io.WriteString(c, "220 mail.example ESMTP\r\n"); io.ReadAll(c) })
+	wrong := fakeServer(t, func(c net.Conn) { io.WriteString(c, "554 go away\r\n") })
+	both := allProbes(
+		greetingProbe(ok, "220", "QUIT\r\n"),
+		labelProbe("internal submission listener", greetingProbe(ok, "220", "QUIT\r\n")),
+	)
+	if err := both(probeCtx(t)); err != nil {
+		t.Errorf("both listeners up = %v, want nil", err)
+	}
+	internalDown := allProbes(
+		greetingProbe(ok, "220", "QUIT\r\n"),
+		labelProbe("internal submission listener", greetingProbe(wrong, "220", "QUIT\r\n")),
+	)
+	err := internalDown(probeCtx(t))
+	if err == nil || !strings.HasPrefix(err.Error(), "internal submission listener: unexpected greeting") {
+		t.Errorf("internal listener down = %v, want a labelled unexpected-greeting error", err)
+	}
+}

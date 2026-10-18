@@ -26,14 +26,15 @@ var ErrHeaderInjection = errors.New("mail: header injection attempt (CR/LF in he
 
 // Sender submits outbound messages to Postfix via SMTP on the internal network.
 type Sender struct {
-	host   string // e.g. "vectis-postfix"
-	port   string // e.g. "25"
-	ehlo   string // EHLO hostname
-	logger *slog.Logger
+	host     string // e.g. "vectis-postfix"
+	port     string // e.g. "10587"
+	fallback string // optional "host:port" used when host:port can't be dialled
+	ehlo     string // EHLO hostname
+	logger   *slog.Logger
 }
 
 // NewSender creates a mail sender that submits to Postfix.
-// smtpAddr is "host:port" (e.g. "vectis-postfix:25").
+// smtpAddr is "host:port" (e.g. "vectis-postfix:10587").
 func NewSender(smtpAddr, ehlo string, logger *slog.Logger) *Sender {
 	host, port, err := net.SplitHostPort(smtpAddr)
 	if err != nil {
@@ -41,6 +42,32 @@ func NewSender(smtpAddr, ehlo string, logger *slog.Logger) *Sender {
 		port = "25"
 	}
 	return &Sender{host: host, port: port, ehlo: ehlo, logger: logger}
+}
+
+// WithFallback sets an address to submit to when the primary can't be dialled
+// or doesn't greet. Only that failure falls back: the fallback is tried before
+// any MAIL FROM is sent, and nothing is retried once the primary has accepted
+// the session, so a message can never be submitted twice.
+func (s *Sender) WithFallback(smtpAddr string) *Sender {
+	s.fallback = smtpAddr
+	return s
+}
+
+// dial connects to the primary address, or to the fallback if the primary
+// fails. It returns the address it connected to.
+func (s *Sender) dial() (*smtp.Client, string, error) {
+	addr := net.JoinHostPort(s.host, s.port)
+	c, err := smtp.Dial(addr)
+	if err == nil || s.fallback == "" {
+		return c, addr, err
+	}
+	s.logger.Warn("primary submission address unavailable, using the fallback",
+		"addr", addr, "fallback", s.fallback, "error", err)
+	fc, ferr := smtp.Dial(s.fallback)
+	if ferr != nil {
+		return nil, addr, fmt.Errorf("%w (fallback %s: %v)", err, s.fallback, ferr)
+	}
+	return fc, s.fallback, nil
 }
 
 // Message represents an outbound email to be sent.
@@ -133,8 +160,7 @@ func (s *Sender) Send(msg *Message) (*SendResult, error) {
 	}
 
 	// Connect and send via SMTP (no auth — internal trusted network).
-	addr := net.JoinHostPort(s.host, s.port)
-	c, err := smtp.Dial(addr)
+	c, addr, err := s.dial()
 	if err != nil {
 		return nil, fmt.Errorf("smtp dial %s: %w", addr, err)
 	}
@@ -170,6 +196,7 @@ func (s *Sender) Send(msg *Message) (*SendResult, error) {
 
 	s.logger.Info("message sent",
 		"message_id", messageID,
+		"via", addr,
 		"from", msg.From.Email,
 		"to_count", len(msg.To),
 		"subject", msg.Subject)

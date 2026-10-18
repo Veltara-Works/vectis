@@ -32,11 +32,19 @@ type serviceProbe struct {
 	check func(ctx context.Context) error
 }
 
+// internalSubmissionAddr is Postfix's internal-only listener that the send API
+// submits on (#227). It is probed with :25 so that a missing listener, which
+// the sender silently survives by falling back to :25, still shows up.
+const internalSubmissionAddr = "vectis-postfix:10587"
+
 // defaultServiceProbes probes the stack's mail services over the networks the
 // api already shares with them (vectis-data, vectis-frontend).
 func defaultServiceProbes() []serviceProbe {
 	return []serviceProbe{
-		{"postfix", greetingProbe("vectis-postfix:25", "220", "QUIT\r\n")},
+		{"postfix", allProbes(
+			greetingProbe("vectis-postfix:25", "220", "QUIT\r\n"),
+			labelProbe("internal submission listener", greetingProbe(internalSubmissionAddr, "220", "QUIT\r\n")),
+		)},
 		{"dovecot", greetingProbe("vectis-dovecot:143", "* OK", "a LOGOUT\r\n")},
 		{"rspamd", milterProbe("vectis-rspamd:11332")},
 		{"traefik", pingProbe("http://vectis-traefik:8080/ping")},
@@ -45,6 +53,29 @@ func defaultServiceProbes() []serviceProbe {
 
 func greetingProbe(addr, want, bye string) func(context.Context) error {
 	return func(ctx context.Context) error { return probeGreeting(ctx, addr, want, bye) }
+}
+
+// allProbes passes only when every check passes, and returns the first failure.
+func allProbes(checks ...func(context.Context) error) func(context.Context) error {
+	return func(ctx context.Context) error {
+		for _, check := range checks {
+			if err := check(ctx); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// labelProbe prefixes check's failure with label, so a service with several
+// checks reports which one failed.
+func labelProbe(label string, check func(context.Context) error) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if err := check(ctx); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+		return nil
+	}
 }
 
 func milterProbe(addr string) func(context.Context) error {
