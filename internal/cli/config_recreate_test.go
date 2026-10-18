@@ -23,7 +23,7 @@ const liveCompose = `services:
     image: ghcr.io/veltara-works/vectis-orchestrator:v0.1.57
 `
 
-const renderedCompose = `services:
+const renderedComposeFixture = `services:
   api:
     image: ghcr.io/veltara-works/vectis-api:v0.1.57
     mem_limit: 1g
@@ -37,7 +37,7 @@ const renderedCompose = `services:
 `
 
 func TestPlanRecreate(t *testing.T) {
-	p, err := planRecreate([]byte(liveCompose), []byte(renderedCompose), recreatePlan{})
+	p, err := planRecreate([]byte(liveCompose), []byte(renderedComposeFixture), recreatePlan{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestPlanRecreate(t *testing.T) {
 	// Nothing changed in the compose, but an earlier run left rspamd and a
 	// no-longer-defined service pending, plus a removal that's been undone.
 	pending := recreatePlan{Services: []string{"rspamd", "gone-svc"}, Removed: []string{"api", "loki"}}
-	p, err = planRecreate([]byte(renderedCompose), []byte(renderedCompose), pending)
+	p, err = planRecreate([]byte(renderedComposeFixture), []byte(renderedComposeFixture), pending)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestPlanRecreate(t *testing.T) {
 		t.Fatalf("plan with pending = %+v, want %+v", p, want)
 	}
 
-	if p, err := planRecreate([]byte(renderedCompose), []byte(renderedCompose), recreatePlan{}); err != nil || !p.empty() || p.OrchestratorChanged {
+	if p, err := planRecreate([]byte(renderedComposeFixture), []byte(renderedComposeFixture), recreatePlan{}); err != nil || !p.empty() || p.OrchestratorChanged {
 		t.Fatalf("no change: plan=%+v err=%v", p, err)
 	}
 }
@@ -127,9 +127,9 @@ func TestBackupLiveCompose(t *testing.T) {
 
 func TestLiveAndRenderedCompose(t *testing.T) {
 	dir := t.TempDir()
-	files := []engine.GeneratedFile{{RelPath: composeRelPath, Content: []byte(renderedCompose)}}
+	files := []engine.GeneratedFile{{RelPath: composeRelPath, Content: []byte(renderedComposeFixture)}}
 	live, rendered, err := liveAndRenderedCompose(dir, files)
-	if err != nil || live != nil || string(rendered) != renderedCompose {
+	if err != nil || live != nil || string(rendered) != renderedComposeFixture {
 		t.Fatalf("fresh install: live=%q err=%v", live, err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, composeRelPath), []byte(liveCompose), 0o600); err != nil {
