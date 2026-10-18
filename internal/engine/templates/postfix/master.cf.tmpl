@@ -9,8 +9,9 @@ smtp      inet  n       -       n       -       -       smtpd
 # Port 25 is for server-to-server mail: it doesn't offer AUTH. Mail clients and
 # webmail submit on 587/465, where the policy hooks below apply send-suspend,
 # the abuse rate limit and the IP warmup limit; offering AUTH on 25 let an
-# authenticated client bypass all three. Vectis's own senders on 25 (the send
-# API, alerts) are trusted via mynetworks and never authenticate.
+# authenticated client bypass all three. Vectis's own senders (the send API on
+# the internal 10587 listener below, alerts on 25) are trusted via mynetworks
+# and never authenticate.
 #
 # The submission/smtps services call the Vectis send-suspend policy server (the
 # api container's submission-policy listener) once per message at the DATA
@@ -48,13 +49,30 @@ smtps     inet  n       -       n       -       -       smtpd
   -o smtpd_policy_service_default_action=DUNNO
   -o milter_macro_daemon_name=ORIGINATING{{ if .Postfix.SubmissionHeaderStripEnabled }}
   -o cleanup_service_name=submission-cleanup{{ end }}
+# Internal submission for the Vectis send API (#227). The API used to submit on
+# :25, the inbound listener, so every API message carried its own client clause
+# (the api container's Docker address and EHLO name) to recipients, and the
+# submission trace sanitisation could not be applied there without also
+# stripping inbound Received chains. This listener is reached only over the
+# stack's Docker networks: the compose file publishes 25/465/587, never 10587.
+# It trusts mynetworks exactly as :25 trusts the API (no AUTH; anyone else is
+# refused) and inherits main.cf's milters, so rspamd treats this mail exactly as
+# it did on :25. Only the cleanup service differs.
+10587     inet  n       -       n       -       -       smtpd
+  -o syslog_name=postfix/internal
+  -o smtpd_sasl_auth_enable=no
+  -o smtpd_client_restrictions=permit_mynetworks,reject
+  -o smtpd_relay_restrictions=permit_mynetworks,reject
+  -o smtpd_recipient_restrictions=permit_mynetworks,reject{{ if .Postfix.SubmissionHeaderStripEnabled }}
+  -o cleanup_service_name=submission-cleanup{{ end }}
 pickup    unix  n       -       n       60      1       pickup
 cleanup   unix  n       -       n       -       0       cleanup
 {{- if .Postfix.SubmissionHeaderStripEnabled }}
 # Submission-only cleanup. Identical to the default cleanup service except that
 # it applies submission_header_checks, which sanitises the client trace headers
 # that authenticated submission would otherwise leak to recipients. Wired to
-# submission/smtps via their -o cleanup_service_name above; inbound :25 keeps
+# submission/smtps and the internal API listener (10587) via their
+# -o cleanup_service_name above; inbound :25 keeps
 # the default cleanup service so inbound Received chains and hop-count loop
 # detection are untouched. See submission_header_checks for the rules.
 submission-cleanup unix n  -       n       -       0       cleanup

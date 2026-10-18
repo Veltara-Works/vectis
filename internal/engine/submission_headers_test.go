@@ -42,8 +42,8 @@ func TestSubmissionHeaderStrip_DefaultOn(t *testing.T) {
 	if !strings.Contains(master, "submission-cleanup unix") {
 		t.Error("master.cf is missing the submission-cleanup service")
 	}
-	if got := strings.Count(master, "-o cleanup_service_name=submission-cleanup"); got != 2 {
-		t.Errorf("cleanup_service_name wired to %d listeners, want 2 (submission AND smtps)", got)
+	if got := strings.Count(master, "-o cleanup_service_name=submission-cleanup"); got != 3 {
+		t.Errorf("cleanup_service_name wired to %d listeners, want 3 (submission, smtps AND the internal API listener)", got)
 	}
 	if !strings.Contains(master, "-o header_checks=regexp:/etc/postfix/submission_header_checks") {
 		t.Error("submission-cleanup does not apply the header_checks map")
@@ -132,6 +132,77 @@ func TestSubmissionHeaderStrip_Disabled(t *testing.T) {
 	// Still mounted, so toggling never needs a compose/mount change.
 	if compose != "" && !strings.Contains(compose, "/etc/postfix/submission_header_checks:ro") {
 		t.Error("file should stay mounted even when disabled, to avoid a mount change on toggle")
+	}
+}
+
+// masterService returns the -o option lines of the master.cf service whose line
+// starts with prefix, or nil when there is no such service.
+func masterService(master, prefix string) []string {
+	lines := strings.Split(master, "\n")
+	for i, l := range lines {
+		if !strings.HasPrefix(l, prefix) {
+			continue
+		}
+		opts := []string{}
+		for _, o := range lines[i+1:] {
+			if !strings.HasPrefix(o, "  -o ") {
+				break
+			}
+			opts = append(opts, strings.TrimPrefix(o, "  -o "))
+		}
+		return opts
+	}
+	return nil
+}
+
+// The send API submits on an internal 10587 listener (#227) so its mail gets
+// the same trace sanitisation as authenticated submission. The listener must
+// trust only mynetworks, offer no AUTH, and use the submission cleanup service.
+func TestInternalSubmissionListener(t *testing.T) {
+	master, _, compose := renderPostfixFiles(t, nil)
+	opts := masterService(master, "10587     inet")
+	if opts == nil {
+		t.Fatal("master.cf has no internal 10587 smtpd listener")
+	}
+	want := []string{
+		"smtpd_sasl_auth_enable=no",
+		"smtpd_client_restrictions=permit_mynetworks,reject",
+		"smtpd_relay_restrictions=permit_mynetworks,reject",
+		"smtpd_recipient_restrictions=permit_mynetworks,reject",
+		"cleanup_service_name=submission-cleanup",
+	}
+	for _, w := range want {
+		found := false
+		for _, o := range opts {
+			if o == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("10587 listener is missing -o %s (has %v)", w, opts)
+		}
+	}
+	// Internal only: it must never be published on the host.
+	if strings.Contains(compose, "10587") {
+		t.Error("docker-compose.yml mentions 10587; the internal listener must not be published")
+	}
+}
+
+// With stripping disabled the listener still exists (the API always submits on
+// it) but uses the default cleanup service, exactly like submission/smtps.
+func TestInternalSubmissionListener_StripDisabled(t *testing.T) {
+	off := false
+	master, _, _ := renderPostfixFiles(t, func(d *TemplateData) {
+		d.Postfix.StripSubmissionClientHeaders = &off
+	})
+	opts := masterService(master, "10587     inet")
+	if opts == nil {
+		t.Fatal("10587 listener missing while stripping is disabled; the send API would fall back to :25")
+	}
+	for _, o := range opts {
+		if strings.HasPrefix(o, "cleanup_service_name=") {
+			t.Errorf("10587 listener sets %s while stripping is disabled", o)
+		}
 	}
 }
 
