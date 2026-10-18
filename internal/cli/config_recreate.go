@@ -226,6 +226,13 @@ func runRecreate(r *orchReservation, configDir string, p recreatePlan) (*orchest
 	defer cancel()
 	res, err := r.client.Recreate(ctx, orchestrator.RecreateRequest{Reservation: r.id, Services: p.Services, Removed: p.Removed})
 	if err != nil {
+		// The request may have failed before the orchestrator took the
+		// reservation (connection refused, refused up front): hand it back
+		// rather than block updates until it expires. Once a recreate has
+		// taken it, the orchestrator rejects the cancel, so a running
+		// recreate is never interrupted.
+		r.consumed = false
+		r.release()
 		return nil, err
 	}
 	if res.Success {
