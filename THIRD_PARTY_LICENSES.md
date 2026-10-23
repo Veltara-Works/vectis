@@ -33,8 +33,9 @@ section for the analysis.
 > SDK GOROOT. Reconciled **2026-06-26** against `go list -m` after a prelaunch
 > audit found four stale versions (`spf13/pflag` → v1.0.9, `x/oauth2` → v0.36.0,
 > `x/sync` → v0.21.0, `x/text` → v0.38.0); licenses unchanged (all BSD-3-Clause). Build toolchain bumped to **Go 1.26.7** on **2026-08-25**
-> (six stdlib advisories: GO-2026-6088/6089/6090/6091/6218/5972), then to **Go 1.26.9** on
-> **2026-10-09** (three `net/http` advisories: GO-2026-6617/6613/6612). **The closure is
+> (six stdlib advisories: GO-2026-6088/6089/6090/6091/6218/5972), to **Go 1.26.9** on
+> **2026-10-09** (three `net/http` advisories: GO-2026-6617/6613/6612), then to **Go 1.26.10**
+> on **2026-10-23** (`crypto/x509` intermediate denylist: GO-2026-6809). **The closure is
 > unchanged** — a toolchain patch bump moves the standard library, which carries no
 > row here, and no module dependency changed; `go.mod`/`go.sum` are untouched apart
 > from the `go` directive. Reproduction instructions below updated to match.
@@ -231,9 +232,9 @@ or a compose template.
 # go-licenses v1.6.0 needs a real SDK GOROOT (not the toolchain-cache GOROOT
 # that GOTOOLCHAIN=auto produces), or it fails to resolve the standard library.
 go install github.com/google/go-licenses@latest
-go install golang.org/dl/go1.26.9@latest && go1.26.9 download   # -> ~/sdk/go1.26.9
+go install golang.org/dl/go1.26.10@latest && go1.26.10 download   # -> ~/sdk/go1.26.10
 
-GOROOT="$HOME/sdk/go1.26.9" PATH="$HOME/sdk/go1.26.9/bin:$(go env GOPATH)/bin:$PATH" \
+GOROOT="$HOME/sdk/go1.26.10" PATH="$HOME/sdk/go1.26.10/bin:$(go env GOPATH)/bin:$PATH" \
   GOTOOLCHAIN=local \
   go-licenses csv ./... --ignore github.com/Veltara-Works/vectis
 ```
