@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Veltara-Works/vectis/internal/config"
+	"github.com/Veltara-Works/vectis/internal/database"
 	"github.com/Veltara-Works/vectis/internal/engine"
 	"github.com/Veltara-Works/vectis/internal/repository"
 )
@@ -44,13 +45,13 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		secrets.Database.APIUser,
-		secrets.Database.APIPassword,
-		secrets.Database.Host,
-		secrets.Database.Port,
-		secrets.Database.Name,
-	)
+	dsn := database.Config{
+		Host:     secrets.Database.Host,
+		Port:     secrets.Database.Port,
+		Name:     secrets.Database.Name,
+		User:     secrets.Database.APIUser,
+		Password: secrets.Database.APIPassword,
+	}.DSN()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		log.Fatalf("connect postgres: %v", err)

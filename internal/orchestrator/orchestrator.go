@@ -1191,13 +1191,21 @@ func (o *Orchestrator) completeRollback(opID, snapshotPath, reason string) {
 	o.logger.Info("rollback complete; orchestrator returned to idle", "op_id", opID, "reason", reason)
 }
 
+// dbDSN returns the escaped connection URI for the orchestrator's database user.
+func (o *Orchestrator) dbDSN() string {
+	return database.Config{
+		Host:     o.cfg.DBHost,
+		Port:     o.cfg.DBPort,
+		Name:     o.cfg.DBName,
+		User:     o.cfg.DBUser,
+		Password: o.cfg.DBPassword,
+	}.DSN()
+}
+
 // runMigrations runs pending forward-only database migrations using golang-migrate.
 func (o *Orchestrator) runMigrations(ctx context.Context) error {
 	o.logger.Info("running database migrations")
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		o.cfg.DBUser, o.cfg.DBPassword, o.cfg.DBHost, o.cfg.DBPort, o.cfg.DBName)
-
-	if err := database.RunMigrations(dsn, o.logger); err != nil {
+	if err := database.RunMigrations(o.dbDSN(), o.logger); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	return nil
@@ -1207,10 +1215,7 @@ func (o *Orchestrator) runMigrations(ctx context.Context) error {
 // the current migration version against the embedded migration files. Returns 0
 // if detection fails (non-fatal — plan still works without this information).
 func (o *Orchestrator) detectPendingMigrations() int {
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		o.cfg.DBUser, o.cfg.DBPassword, o.cfg.DBHost, o.cfg.DBPort, o.cfg.DBName)
-
-	currentVersion, _, err := database.MigrationStatus(dsn)
+	currentVersion, _, err := database.MigrationStatus(o.dbDSN())
 	if err != nil {
 		o.logger.Warn("failed to detect migration status", "error", err)
 		return 0

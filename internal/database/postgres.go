@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,10 +21,20 @@ type Config struct {
 	Password string
 }
 
-// DSN returns a PostgreSQL connection string.
+// DSN returns a PostgreSQL connection URI. Every component is
+// percent-encoded, so a password containing URI delimiters (@ # / ? % or a
+// space) reaches the server intact. pgx 5.11 parses URIs exactly as libpq
+// does (the first "@" ends the userinfo, "#" is data), so an unescaped
+// password that net/url used to tolerate would now fail to connect.
 func (c Config) DSN() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		c.User, c.Password, c.Host, c.Port, c.Name)
+	u := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(c.User, c.Password),
+		Host:     net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
+		Path:     "/" + c.Name,
+		RawQuery: "sslmode=disable",
+	}
+	return u.String()
 }
 
 // NewPool creates a pgxpool connection pool with sensible defaults.
