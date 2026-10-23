@@ -83,6 +83,12 @@ section for the analysis.
 > Category 2 recomputed from `web/package-lock.json` the same day: `react` +
 > `react-dom` → v19.3.1, `scheduler` → v0.28.0, `react-router` → v8.4.0, which adds
 > the runtime dependency `@remix-run/route-pattern` v0.22.1 (MIT): 6 packages, all MIT.
+>
+> **Full regeneration 2026-10-23** for the Dependabot batch #301–#309 (Go 1.26.9 SDK
+> GOROOT, `go-licenses` over `./...`, still 40 packages): `chi` → v5.5.0, `pgx` →
+> v5.11.0, `valkey-go` → v1.0.79. No module added or dropped, licenses unchanged.
+> Category 2 recomputed from `web/package-lock.json`: unchanged (the batch's npm
+> bumps are all dev-only), 6 packages, all MIT.
 
 ---
 
@@ -106,7 +112,7 @@ fork) and are listed separately to reflect that.
 | `github.com/crewjam/saml` | v0.5.1 | BSD-2-Clause |
 | `github.com/emersion/go-imap` | v1.2.1 | MIT |
 | `github.com/emersion/go-sasl` | b788ff22d5a6 | MIT |
-| `github.com/go-chi/chi/v5` | v5.3.2 | MIT |
+| `github.com/go-chi/chi/v5` | v5.5.0 | MIT |
 | `github.com/go-jose/go-jose/v4` | v4.1.4 | Apache-2.0 |
 | `github.com/go-jose/go-jose/v4/json` | v4.1.4 | BSD-3-Clause |
 | `github.com/golang-jwt/jwt/v4` | v4.5.2 | MIT |
@@ -115,7 +121,7 @@ fork) and are listed separately to reflect that.
 | `github.com/jackc/pgerrcode` | 469b46aa5efa | MIT |
 | `github.com/jackc/pgpassfile` | v1.0.0 | MIT |
 | `github.com/jackc/pgservicefile` | 5a60cdf6a761 | MIT |
-| `github.com/jackc/pgx/v5` | v5.10.0 | MIT |
+| `github.com/jackc/pgx/v5` | v5.11.0 | MIT |
 | `github.com/jackc/puddle/v2` | v2.2.2 | MIT |
 | `github.com/jonboulle/clockwork` | v0.5.0 | Apache-2.0 |
 | `github.com/mattermost/xml-roundtrip-validator` | v0.1.0 | Apache-2.0 |
@@ -130,7 +136,7 @@ fork) and are listed separately to reflect that.
 | `github.com/russellhaering/goxmldsig` | v1.6.0 | Apache-2.0 |
 | `github.com/spf13/cobra` | v1.10.2 | Apache-2.0 |
 | `github.com/spf13/pflag` | v1.0.9 | BSD-3-Clause |
-| `github.com/valkey-io/valkey-go` | v1.0.78 | Apache-2.0 |
+| `github.com/valkey-io/valkey-go` | v1.0.79 | Apache-2.0 |
 | `golang.org/x/crypto` | v0.58.0 | BSD-3-Clause |
 | `golang.org/x/oauth2` | v0.37.0 | BSD-3-Clause |
 | `golang.org/x/sync/semaphore` | v0.24.0 | BSD-3-Clause |
