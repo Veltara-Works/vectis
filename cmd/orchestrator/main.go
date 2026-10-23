@@ -14,6 +14,7 @@ import (
 	"github.com/valkey-io/valkey-go"
 
 	"github.com/Veltara-Works/vectis/internal/config"
+	"github.com/Veltara-Works/vectis/internal/database"
 	"github.com/Veltara-Works/vectis/internal/engine"
 	"github.com/Veltara-Works/vectis/internal/orchestrator"
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -123,13 +124,13 @@ func run(logger *slog.Logger) error {
 	// -----------------------------------------------------------------------
 	// Connect to Postgres
 	// -----------------------------------------------------------------------
-	pgDSN := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		secrets.Database.APIUser,
-		secrets.Database.APIPassword,
-		secrets.Database.Host,
-		secrets.Database.Port,
-		secrets.Database.Name,
-	)
+	pgDSN := database.Config{
+		Host:     secrets.Database.Host,
+		Port:     secrets.Database.Port,
+		Name:     secrets.Database.Name,
+		User:     secrets.Database.APIUser,
+		Password: secrets.Database.APIPassword,
+	}.DSN()
 
 	logger.Info("connecting to postgres", "host", secrets.Database.Host, "port", secrets.Database.Port)
 	dbPool, err := pgxpool.New(ctx, pgDSN)
