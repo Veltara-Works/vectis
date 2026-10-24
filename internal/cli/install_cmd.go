@@ -155,19 +155,20 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		os.MkdirAll(dir, 0755)
 	}
 
-	// Configure Docker daemon for IPv6 support (Spec G.7) if not already configured.
+	// Configure the Docker daemon: log rotation, IPv6 (Spec G.7) and live-restore (#311).
 	daemonJSON := "/etc/docker/daemon.json"
-	if _, err := os.Stat(daemonJSON); os.IsNotExist(err) {
-		ipv6Config := []byte(`{
-  "ipv6": true,
-  "fixed-cidr-v6": "fd00::/80",
-  "experimental": true,
-  "ip6tables": true
-}
-`)
-		os.MkdirAll("/etc/docker", 0755)
-		if writeErr := os.WriteFile(daemonJSON, ipv6Config, 0644); writeErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: could not write %s: %s\n", daemonJSON, writeErr)
+	switch change, err := ensureDockerDaemonConfig(daemonJSON); {
+	case err != nil:
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: could not configure %s: %s\n", daemonJSON, err)
+	case change == daemonConfigCreated:
+		// IPv6 settings only take effect on a restart; no Vectis containers run yet.
+		if out, err := exec.Command("systemctl", "restart", "docker").CombinedOutput(); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: docker restart failed: %s %s\n", err, out)
+		}
+	case change == daemonConfigUpdated:
+		// live-restore is reloadable: running containers are not touched.
+		if out, err := exec.Command("systemctl", "reload", "docker").CombinedOutput(); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: docker reload failed: %s %s\n", err, out)
 		}
 	}
 	done()

@@ -162,10 +162,34 @@ if [ ! -f "$DAEMON_JSON" ]; then
   },
   "ipv6": true,
   "fixed-cidr-v6": "fd00::/80",
-  "ip6tables": true
+  "ip6tables": true,
+  "live-restore": true
 }
 EOF
     systemctl restart docker
+elif ! grep -q '"live-restore"' "$DAEMON_JSON"; then
+    # live-restore keeps containers running while a docker-ce/containerd package
+    # upgrade restarts the daemon; without it a container can be left Exited
+    # (#311). Add the key only when absent (an explicit false is respected);
+    # a reload applies it without touching running containers.
+    info "Enabling Docker live-restore in $DAEMON_JSON..."
+    if python3 - "$DAEMON_JSON" <<'PY'
+import json, os, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg["live-restore"] = True
+tmp = p + ".vectis-tmp"
+with open(tmp, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+os.chmod(tmp, os.stat(p).st_mode & 0o777)
+os.replace(tmp, p)
+PY
+    then
+        systemctl reload docker || warn "docker reload failed; live-restore applies on the next Docker restart"
+    else
+        warn "Could not update $DAEMON_JSON (not valid JSON?). Add \"live-restore\": true by hand, then: systemctl reload docker"
+    fi
 fi
 
 # --- Directories + configs --------------------------------------------------
