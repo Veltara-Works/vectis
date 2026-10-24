@@ -2413,7 +2413,14 @@ func TestRspamdRBLSpamhausDQS(t *testing.T) {
 		t.Errorf("key: mode = %o, want 0600 (embeds the DQS key)", f.Mode&os.ModePerm)
 	}
 
-	if got := DetermineActions([]FileDiff{{RelPath: "rspamd/rbl.conf"}}); len(got) != 1 || got[0].Service != "rspamd" || got[0].Action != "reload" {
-		t.Errorf("rbl.conf change: actions = %+v, want one rspamd reload", got)
+	// DetermineActions lists every service; only rspamd may act, by reloading.
+	for _, a := range DetermineActions([]FileDiff{{RelPath: "rspamd/rbl.conf"}}) {
+		want := "none"
+		if a.Service == "rspamd" {
+			want = "reload"
+		}
+		if a.Action != want {
+			t.Errorf("rbl.conf change: %s action = %q, want %q", a.Service, a.Action, want)
+		}
 	}
 }

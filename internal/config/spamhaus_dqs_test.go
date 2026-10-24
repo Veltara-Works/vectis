@@ -15,10 +15,10 @@ func TestRspamdSecretsDQSKey(t *testing.T) {
 		{"abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"},
 		{"ABCDEFGHIJ0123456789klmnop", "abcdefghij0123456789klmnop"}, // lowercased for DNS
 		{"tooshort", ""},
-		{"abcdefghijklmnop.evil.example", ""},         // would add DNS labels
-		{"abcdefghijklmnop\";\n  rbl = \"x", ""},      // would break out of the rspamd string
-		{"abcdefghijklmnop qrstuvwxyz", ""},           // whitespace
-		{strings.Repeat("a", 64), ""},                 // longer than one DNS label
+		{"abcdefghijklmnop.evil.example", ""},    // would add DNS labels
+		{"abcdefghijklmnop\";\n  rbl = \"x", ""}, // would break out of the rspamd string
+		{"abcdefghijklmnop qrstuvwxyz", ""},      // whitespace
+		{strings.Repeat("a", 64), ""},            // longer than one DNS label
 	}
 	for _, c := range cases {
 		if got := (RspamdSecrets{SpamhausDQSKey: c.in}).DQSKey(); got != c.want {
