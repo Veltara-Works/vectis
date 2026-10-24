@@ -334,6 +334,39 @@ func TestDovecotMailLocation(t *testing.T) {
 	}
 }
 
+// TestDovecotLMTPNoReceivedHeader guards #314: LMTP must not add its own
+// Received header (internal Docker IP + container ID), which a Sieve redirect
+// would carry off the server. The setting must sit inside `protocol lmtp`.
+func TestDovecotLMTPNoReceivedHeader(t *testing.T) {
+	files, _ := Generate(testData())
+	var dc string
+	for _, f := range files {
+		if f.RelPath == "dovecot/dovecot.conf" {
+			dc = string(f.Content)
+			break
+		}
+	}
+	if dc == "" {
+		t.Fatal("dovecot.conf not found")
+	}
+
+	start := strings.Index(dc, "protocol lmtp {")
+	if start < 0 {
+		t.Fatal("dovecot.conf has no protocol lmtp block")
+	}
+	end := strings.Index(dc[start:], "\n}")
+	if end < 0 {
+		t.Fatal("protocol lmtp block is not closed")
+	}
+	block := dc[start : start+end]
+	if !strings.Contains(block, "lmtp_add_received_header = no") {
+		t.Errorf("protocol lmtp block missing lmtp_add_received_header = no:\n%s", block)
+	}
+	if strings.Contains(dc, "lmtp_add_received_header = yes") {
+		t.Error("dovecot.conf re-enables lmtp_add_received_header")
+	}
+}
+
 // TestAdvancedSpamConfig verifies the Pro per-domain advanced spam pipeline
 // (settings.conf overrides + Lua extension + four allow/block map files)
 // renders end-to-end from TemplateData. Empty-state coverage lives in
