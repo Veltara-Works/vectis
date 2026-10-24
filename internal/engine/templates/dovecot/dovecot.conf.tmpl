@@ -136,4 +136,10 @@ protocol imap {
 
 protocol lmtp {
     mail_plugins = quota sieve
+    # WHY: LMTP's own Received names the Postfix container's internal Docker IP
+    # and this container's ID (Dovecot's hostname). It leaves the server when a
+    # user's Sieve `redirect` forwards the message with all headers intact
+    # (#314). Postfix's Received for the inbound hop stays, so tracing keeps the
+    # hop that matters; the LMTP hop is plumbing between two of our containers.
+    lmtp_add_received_header = no
 }
