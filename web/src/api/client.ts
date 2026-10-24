@@ -83,6 +83,9 @@ export interface RBLStatusResponse {
   status?: 'no_ips_yet'
   checked_at?: string
   ips: RBLIPStatus[]
+  // The operator's own Spamhaus DQS key is configured (#260). Absent from
+  // servers older than the field.
+  spamhaus_dqs?: boolean
 }
 
 // IP warmup (super_admin only). While active, each day's external recipients

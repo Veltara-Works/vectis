@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError, type RBLCheck, type RBLStatusResponse } from '../api/client.ts'
 import { extractError } from '../lib/errors.ts'
+import SpamhausNotice from './SpamhausNotice.tsx'
 
 export const rblBadge = (status: RBLCheck['status']) => {
   switch (status) {
@@ -54,6 +55,7 @@ export default function BlocklistCard() {
         </button>
       </div>
       {error && <div className="alert alert-error">{error}</div>}
+      {data && data.spamhaus_dqs !== undefined && <SpamhausNotice configured={data.spamhaus_dqs} />}
       {data && data.ips.length === 0 && (
         <p className="text-muted" style={{ margin: 0 }}>
           No results yet. The server's IP comes from the mail hostname's DNS A record; the first check runs shortly after start-up.

@@ -125,6 +125,7 @@ type Server struct {
 
 	// Deliverability services
 	rblMonitor    *mail.RBLMonitor
+	spamhausDQS   bool // the operator's own Spamhaus DQS key is configured (#260)
 	warmupManager *mail.WarmupManager
 	serviceProbes *serviceProber                                     // mail-service network probes for /health?probes=1 (#264)
 	pingDeps      func(ctx context.Context) map[string]serviceHealth // tests: replaces the Postgres/Valkey pings
@@ -405,8 +406,20 @@ func New(db *pgxpool.Pool, vk valkey.Client, cfg Config, logger *slog.Logger) *S
 	// because Docker's embedded DNS answers the mail hostname with Postfix's
 	// private container address (see publicDNSResolver).
 	hostResolver := mail.FallbackLookuper{Primary: rspamdResolver, Secondary: publicDNSResolver, PrimaryTimeout: 3 * time.Second}
+	// Spamhaus through the operator's own DQS key when set (#260); rspamd gets
+	// the same key via rspamd/rbl.conf. Without one, both use the public
+	// mirrors, which Spamhaus allows only for non-commercial use: say so once.
+	var dqsKey string
+	if cfg.VectisSecrets != nil {
+		dqsKey = cfg.VectisSecrets.Rspamd.DQSKey()
+	}
+	s.spamhausDQS = dqsKey != ""
+	if !s.spamhausDQS {
+		logger.Warn(config.SpamhausDQSKeyNotice, "component", "rbl-monitor")
+	}
 	s.rblMonitor = mail.NewRBLMonitor(s.rblChecks, []mail.Lookuper{rspamdResolver, net.DefaultResolver},
-		s.rblIPSource(cfg.ServerIPs, cfg.Hostname, hostResolver), logger.With("component", "rbl-monitor"))
+		s.rblIPSource(cfg.ServerIPs, cfg.Hostname, hostResolver), logger.With("component", "rbl-monitor")).
+		WithSpamhausDQSKey(dqsKey)
 
 	s.serviceProbes = newServiceProber(defaultServiceProbes())
 

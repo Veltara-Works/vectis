@@ -682,3 +682,58 @@ func TestCheckNowSelfTestFailureKeepsItsOwnTime(t *testing.T) {
 		t.Errorf("latest SpamCop result = %+v, want the newer run's listing", got)
 	}
 }
+
+// TestSpamhausDQSKey covers #260 in the monitor: with a key, Spamhaus ZEN is
+// queried through the operator's DQS zone, while the stored zone, the stored
+// reason and every other list stay as they were. The key must never be stored.
+func TestSpamhausDQSKey(t *testing.T) {
+	const key = "abcdefghijklmnopqrstuvwxyz"
+	dqs := key + ".zen.dq.spamhaus.net"
+	r := &fakeResolver{
+		answers: map[string][]string{
+			// RFC 5782 test addresses (the per-list health check); DQS answers
+			// them like the public zone.
+			"2.0.0.127." + dqs:             {"127.0.0.2"},
+			"2.0.0.127.bl.spamcop.net":     {"127.0.0.2"},
+			"7.113.0.203." + dqs:           {"127.0.0.4"},
+			"7.113.0.203.bl.spamcop.net":   {"127.0.0.2"},
+			"7.113.0.203.zen.spamhaus.org": {"127.0.0.2"}, // must NOT be queried
+		},
+		errs: map[string]error{
+			"9.100.51.198." + dqs: &net.DNSError{Err: "i/o timeout", Name: "9.100.51.198." + dqs, IsTimeout: true},
+		},
+	}
+	m, store := testMonitor(r, []string{"203.0.113.7", "198.51.100.9"}, spamhaus, spamcop)
+	m.WithSpamhausDQSKey(key)
+	mustCheck(t, m)
+
+	got := map[string]storedCheck{}
+	for _, row := range store.rows {
+		got[row.ip+" "+row.zone] = row
+		if strings.Contains(row.zone+row.response, key) {
+			t.Errorf("DQS key leaked into a stored row: %+v", row)
+		}
+	}
+	if row := got["203.0.113.7 zen.spamhaus.org"]; row.status != repository.RBLStatusListed || row.response != "127.0.0.4" {
+		t.Errorf("ZEN via DQS: %+v, want listed with the DQS answer 127.0.0.4", row)
+	}
+	if row := got["203.0.113.7 bl.spamcop.net"]; row.status != repository.RBLStatusListed {
+		t.Errorf("other lists must be unaffected: %+v", row)
+	}
+	if row := got["198.51.100.9 zen.spamhaus.org"]; row.status != repository.RBLStatusUnknown || !strings.Contains(row.response, "zen.spamhaus.org (DQS)") {
+		t.Errorf("DQS lookup error: %+v, want unknown naming zen.spamhaus.org (DQS)", row)
+	}
+
+	// The package default list itself is never modified.
+	for _, b := range DefaultBlocklists {
+		if b.queryZone != "" {
+			t.Errorf("DefaultBlocklists mutated: %+v", b)
+		}
+	}
+
+	// No key: unchanged behaviour.
+	m2, _ := testMonitor(r, nil, spamhaus)
+	if m2.WithSpamhausDQSKey(""); m2.lists[0].lookupZone() != "zen.spamhaus.org" {
+		t.Errorf("empty key must leave the public zone, got %q", m2.lists[0].lookupZone())
+	}
+}

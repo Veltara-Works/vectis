@@ -211,6 +211,14 @@ func ValidateSecrets(secrets *VectisSecrets) *ValidationResult {
 		r.AddError("api.backup_encryption_key", "must not be empty — backup encryption is required; generate with: openssl rand -hex 32")
 	}
 
+	// rspamd.spamhaus_dqs_key — optional; when set it must look like a DQS key,
+	// because it is interpolated into rspamd's config and into DNS names.
+	if secrets.Rspamd.SpamhausDQSKey != "" && secrets.Rspamd.DQSKey() == "" {
+		r.AddError("rspamd.spamhaus_dqs_key", "must be the key from your Spamhaus DQS account (16-63 letters and digits); it is ignored until fixed")
+	} else if secrets.Rspamd.SpamhausDQSKey == "" {
+		r.AddWarning("rspamd.spamhaus_dqs_key", SpamhausDQSKeyNotice)
+	}
+
 	return r
 }
 
