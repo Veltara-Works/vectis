@@ -105,6 +105,9 @@ type TemplateData struct {
 	Database config.DatabaseSecrets
 	Valkey   config.ValkeySecrets
 	API      config.APISecrets
+	// SpamhausDQSKey is the operator's own Spamhaus DQS key, validated and
+	// lowercased (config.RspamdSecrets.DQSKey), or "" for the public mirrors.
+	SpamhausDQSKey string
 
 	// Clustering
 	Cluster config.ClusterConfig
@@ -427,10 +430,11 @@ func NewTemplateData(cfg *config.VectisConfig, secrets *config.VectisSecrets, do
 		Webmail:       cfg.Webmail,
 		Observability: cfg.Observability,
 		RateLimits:    rateLimits,
-		Database:      secrets.Database,
-		Valkey:        secrets.Valkey,
-		API:           secrets.API,
-		Cluster:       cfg.Cluster,
+		Database:       secrets.Database,
+		Valkey:         secrets.Valkey,
+		API:            secrets.API,
+		SpamhausDQSKey: secrets.Rspamd.DQSKey(),
+		Cluster:        cfg.Cluster,
 		Domains:       domains,
 	}
 }
@@ -459,13 +463,13 @@ type GeneratedFile struct {
 // non-webmail config consumer reads as root, so an over-tightened 0600 file is
 // still readable by its service; the failure mode is fail-closed.
 func (data *TemplateData) secretMaterial() []string {
-	return secretValues(data.Database, data.Valkey, data.API)
+	return secretValues(data.Database, data.Valkey, data.API, data.SpamhausDQSKey)
 }
 
 // secretValues collects the non-empty secret strings shared by Generate (mode
 // selection) and RepairConfigPerms (startup self-heal). See secretMaterial's
 // doc for the non-empty-only rationale.
-func secretValues(db config.DatabaseSecrets, vk config.ValkeySecrets, api config.APISecrets) []string {
+func secretValues(db config.DatabaseSecrets, vk config.ValkeySecrets, api config.APISecrets, dqsKey string) []string {
 	candidates := []string{
 		db.SuperuserPassword,
 		db.APIPassword,
@@ -473,6 +477,7 @@ func secretValues(db config.DatabaseSecrets, vk config.ValkeySecrets, api config
 		db.DovecotPassword,
 		vk.Password,
 		api.Secret,
+		dqsKey, // rspamd/rbl.conf
 	}
 	var out []string
 	for _, s := range candidates {
@@ -509,7 +514,7 @@ func RepairConfigPerms(genDir string, secrets *config.VectisSecrets) error {
 	if secrets == nil {
 		return nil
 	}
-	needles := secretValues(secrets.Database, secrets.Valkey, secrets.API)
+	needles := secretValues(secrets.Database, secrets.Valkey, secrets.API, secrets.Rspamd.DQSKey())
 	if len(needles) == 0 {
 		return nil
 	}

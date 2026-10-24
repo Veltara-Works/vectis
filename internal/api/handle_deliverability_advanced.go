@@ -190,8 +190,9 @@ func (s *Server) handleRBLStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(ips) == 0 {
 		respond(w, r, http.StatusOK, map[string]any{
-			"status": "no_ips_yet",
-			"ips":    []any{},
+			"status":       "no_ips_yet",
+			"ips":          []any{},
+			"spamhaus_dqs": s.spamhausDQS,
 		})
 		return
 	}
@@ -216,6 +217,9 @@ func (s *Server) handleRBLStatus(w http.ResponseWriter, r *http.Request) {
 	respond(w, r, http.StatusOK, map[string]any{
 		"checked_at": time.Now().UTC().Format(time.RFC3339),
 		"ips":        statuses,
+		// Whether Spamhaus is queried through the operator's own DQS key
+		// (#260); the admin UI warns when it is not.
+		"spamhaus_dqs": s.spamhausDQS,
 	})
 }
 

@@ -901,6 +901,8 @@ func TestGeneratedConfigsAreBindMounted(t *testing.T) {
 		// replies and history ("Modules disabled (no Redis)"). Found 2026-10-04:
 		// greylisting had never run on either production box.
 		`/var/vectis/generated/rspamd/redis.conf:/etc/rspamd/local.d/redis.conf:ro`,
+		// Spamhaus DQS zones (#260); rendered (comment-only) even without a key.
+		`/var/vectis/generated/rspamd/rbl.conf:/etc/rspamd/local.d/rbl.conf:ro`,
 		`/var/vectis/generated/rspamd/greylist.conf:/etc/rspamd/local.d/greylist.conf:ro`,
 		// DMARC policy enforcement (rspamd.enforce_dmarc).
 		`/var/vectis/generated/rspamd/dmarc.conf:/etc/rspamd/local.d/dmarc.conf:ro`,
@@ -2351,5 +2353,67 @@ func TestPostfixCompose_SpoolVolume(t *testing.T) {
 	}
 	if !strings.Contains(compose, "\n  postfix-spool:\n") {
 		t.Error("postfix-spool must be declared under top-level volumes")
+	}
+}
+
+// TestRspamdRBLSpamhausDQS covers #260: with no key rbl.conf overrides nothing
+// (rspamd keeps the public mirrors) and says why a business needs its own key;
+// with a key, the Spamhaus rules point at the operator's DQS zones and the file,
+// which then embeds the key, is 0600.
+func TestRspamdRBLSpamhausDQS(t *testing.T) {
+	find := func(files []GeneratedFile) GeneratedFile {
+		t.Helper()
+		for _, f := range files {
+			if f.RelPath == "rspamd/rbl.conf" {
+				return f
+			}
+		}
+		t.Fatal("rspamd/rbl.conf not generated")
+		return GeneratedFile{}
+	}
+
+	off, err := Generate(testData())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	f := find(off)
+	if strings.Contains(string(f.Content), "rbls") || strings.Contains(string(f.Content), "dq.spamhaus.net") {
+		t.Errorf("no key: rbl.conf must not override any rule; got:\n%s", f.Content)
+	}
+	for _, want := range []string{"non-commercial", "rspamd.spamhaus_dqs_key"} {
+		if !strings.Contains(string(f.Content), want) {
+			t.Errorf("no key: rbl.conf should explain the key (%q); got:\n%s", want, f.Content)
+		}
+	}
+	if f.Mode&os.ModePerm != 0o644 {
+		t.Errorf("no key: mode = %o, want 0644", f.Mode&os.ModePerm)
+	}
+
+	const key = "abcdefghijklmnopqrstuvwxyz"
+	d := testData()
+	d.SpamhausDQSKey = key
+	on, err := Generate(d)
+	if err != nil {
+		t.Fatalf("Generate (key): %v", err)
+	}
+	f = find(on)
+	for _, want := range []string{
+		`rbl = "` + key + `.zen.dq.spamhaus.net";`,
+		`rbl = "` + key + `.dbl.dq.spamhaus.net";`,
+		"spamhaus {", "DBL {",
+	} {
+		if !strings.Contains(string(f.Content), want) {
+			t.Errorf("key: rbl.conf missing %q; got:\n%s", want, f.Content)
+		}
+	}
+	if strings.Contains(string(f.Content), "zen.spamhaus.org") {
+		t.Errorf("key: rbl.conf must not point at the public mirror; got:\n%s", f.Content)
+	}
+	if f.Mode&os.ModePerm != 0o600 {
+		t.Errorf("key: mode = %o, want 0600 (embeds the DQS key)", f.Mode&os.ModePerm)
+	}
+
+	if got := DetermineActions([]FileDiff{{RelPath: "rspamd/rbl.conf"}}); len(got) != 1 || got[0].Service != "rspamd" || got[0].Action != "reload" {
+		t.Errorf("rbl.conf change: actions = %+v, want one rspamd reload", got)
 	}
 }

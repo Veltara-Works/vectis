@@ -66,4 +66,29 @@ describe('BlocklistCard', () => {
     render(<BlocklistCard />)
     await waitFor(() => expect(screen.getByText(/No results yet/)).toBeInTheDocument())
   })
+
+  // #260: operators must bring their own Spamhaus DQS key for business use.
+  it('warns when no Spamhaus DQS key is configured', async () => {
+    mockApi.rblStatus.mockResolvedValue({ status: 'no_ips_yet', ips: [], spamhaus_dqs: false })
+    render(<BlocklistCard />)
+    await waitFor(() => expect(screen.getByRole('note')).toBeInTheDocument())
+    expect(screen.getByRole('note')).toHaveTextContent(/non-commercial use/)
+    expect(screen.getByRole('note')).toHaveTextContent(/rspamd\.spamhaus_dqs_key/)
+    expect(screen.getByRole('link', { name: 'Spamhaus DQS key' })).toHaveAttribute('href', 'https://www.spamhaus.com/data-access/free-data-query-service/')
+  })
+
+  it('confirms when the DQS key is configured', async () => {
+    mockApi.rblStatus.mockResolvedValue({ status: 'no_ips_yet', ips: [], spamhaus_dqs: true })
+    render(<BlocklistCard />)
+    await waitFor(() => expect(screen.getByText(/queried through your own DQS key/)).toBeInTheDocument())
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+  })
+
+  it('says nothing about Spamhaus for a server that predates the field', async () => {
+    mockApi.rblStatus.mockResolvedValue({ status: 'no_ips_yet', ips: [] })
+    render(<BlocklistCard />)
+    await waitFor(() => expect(screen.getByText(/No results yet/)).toBeInTheDocument())
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+    expect(screen.queryByText(/DQS key/)).not.toBeInTheDocument()
+  })
 })

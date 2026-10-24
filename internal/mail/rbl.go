@@ -24,6 +24,40 @@ type Blocklist struct {
 	// answer is a list-side status code (Spamhaus answers 127.255.255.x when it
 	// refuses a query) and makes the result unknown, never listed or clean.
 	ListedCodes []string `json:"-"`
+	// queryZone, when set, is the zone actually queried instead of Zone: the
+	// operator's Spamhaus DQS zone, which embeds their key (#260). Zone stays
+	// the public name everywhere it is stored, logged or shown.
+	queryZone string
+}
+
+// lookupZone is the zone to query for this list.
+func (l Blocklist) lookupZone() string {
+	if l.queryZone != "" {
+		return l.queryZone
+	}
+	return l.Zone
+}
+
+// spamhausZENZone is the public zone the DQS key replaces in the monitor.
+const spamhausZENZone = "zen.spamhaus.org"
+
+// WithSpamhausDQSKey makes the monitor query Spamhaus ZEN through the
+// operator's own DQS account (<key>.zen.dq.spamhaus.net) instead of the public
+// mirror. The key must already be validated (config.RspamdSecrets.DQSKey); an
+// empty key leaves the monitor unchanged. Call before Start.
+func (m *RBLMonitor) WithSpamhausDQSKey(key string) *RBLMonitor {
+	if key == "" {
+		return m
+	}
+	lists := make([]Blocklist, len(m.lists))
+	copy(lists, m.lists)
+	for i := range lists {
+		if lists[i].Zone == spamhausZENZone {
+			lists[i].queryZone = key + ".zen.dq.spamhaus.net"
+		}
+	}
+	m.lists = lists
+	return m
 }
 
 // DefaultBlocklists are the lists checked by default. Each answers its RFC 5782
@@ -380,7 +414,7 @@ func (m *RBLMonitor) lookup(ctx context.Context, r Lookuper, ipAddr string, l Bl
 	if ip == nil {
 		return repository.RBLStatusUnknown, "not an IPv4 address"
 	}
-	query := fmt.Sprintf("%d.%d.%d.%d.%s", ip[3], ip[2], ip[1], ip[0], l.Zone)
+	query := fmt.Sprintf("%d.%d.%d.%d.%s", ip[3], ip[2], ip[1], ip[0], l.lookupZone())
 
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
@@ -389,7 +423,13 @@ func (m *RBLMonitor) lookup(ctx context.Context, r Lookuper, ipAddr string, l Bl
 		if isNotFound(err) {
 			return repository.RBLStatusClean, ""
 		}
-		return repository.RBLStatusUnknown, "lookup failed: " + err.Error()
+		reason := "lookup failed: " + err.Error()
+		if l.queryZone != "" {
+			// Resolver errors quote the query name; keep the DQS key out of
+			// the stored reason and the logs.
+			reason = strings.ReplaceAll(reason, l.queryZone, l.Zone+" (DQS)")
+		}
+		return repository.RBLStatusUnknown, reason
 	}
 	return classifyAnswer(addrs, l)
 }

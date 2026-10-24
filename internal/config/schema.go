@@ -1,5 +1,10 @@
 package config
 
+import (
+	"regexp"
+	"strings"
+)
+
 // ---------------------------------------------------------------------------
 // VectisConfig — maps to config.yaml ("what the system is")
 // ---------------------------------------------------------------------------
@@ -356,6 +361,47 @@ type VectisSecrets struct {
 	Cloudflare   *CloudflareSecrets  `yaml:"cloudflare,omitempty"`
 	ValidonX     *ValidonXSecrets    `yaml:"validonx,omitempty"`
 	License      *LicenseSecrets     `yaml:"license,omitempty"`
+	Rspamd       RspamdSecrets       `yaml:"rspamd,omitempty"`
+}
+
+// RspamdSecrets holds credentials used by the spam filter.
+//
+// SpamhausDQSKey is the operator's OWN Spamhaus Data Query Service key (#260).
+// Spamhaus allows its public mirrors (rspamd's default) only for non-commercial
+// use at modest volumes; anyone running Vectis for a business should register
+// their own DQS key, which is free if Spamhaus accepts the registration and paid
+// otherwise. Eligibility is between the operator and Spamhaus: Vectis never
+// ships or proxies a key. When set, rspamd's Spamhaus ZEN and DBL lookups and
+// the API's blocklist monitor query the operator's DQS zones
+// (<key>.zen.dq.spamhaus.net, <key>.dbl.dq.spamhaus.net) instead.
+type RspamdSecrets struct {
+	SpamhausDQSKey string `yaml:"spamhaus_dqs_key,omitempty"`
+
+	// Forward tolerates a forward-staged field on an older binary; see
+	// ValidonXSecrets.Forward for the rationale.
+	Forward map[string]any `yaml:",inline"`
+}
+
+// SpamhausDQSKeyNotice is the operator-facing warning shown while no DQS key is
+// configured (config validation, the startup log and the admin UI). Keep the
+// wording in step with web/src/components/SpamhausNotice.tsx.
+const SpamhausDQSKeyNotice = "no Spamhaus DQS key: spam filtering queries Spamhaus's public mirrors, " +
+	"which Spamhaus allows only for non-commercial use at modest volumes. If you run this server " +
+	"for a business, register your own Spamhaus DQS key (free or paid, depending on your " +
+	"eligibility with Spamhaus) and set rspamd.spamhaus_dqs_key in /etc/vectis/secrets.yaml"
+
+// dqsKeyPattern bounds what may be interpolated into rspamd's config and into
+// DNS names: letters and digits only, and short enough to be one DNS label.
+var dqsKeyPattern = regexp.MustCompile(`^[A-Za-z0-9]{16,63}$`)
+
+// DQSKey returns the configured Spamhaus DQS key, lowercased, or "" when it is
+// unset or malformed. A malformed key is dropped rather than rendered (it would
+// land inside rspamd's config and DNS queries); ValidateSecrets reports it.
+func (r RspamdSecrets) DQSKey() string {
+	if !dqsKeyPattern.MatchString(r.SpamhausDQSKey) {
+		return ""
+	}
+	return strings.ToLower(r.SpamhausDQSKey)
 }
 
 // DatabaseSecrets holds connection details and per-service credentials for
