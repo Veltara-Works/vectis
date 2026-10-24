@@ -153,15 +153,19 @@ rate_limits:
 # local SMTP listener, and turning this on without setting smtp_host to
 # a reachable relay would fail silently. To enable:
 #   1. Set enabled: true
-#   2. Set smtp_host to a reachable SMTP server. Using the bundled Postfix
-#      (`vectis-postfix:25`) works only if you also allow relay from the
-#      vectis-data subnet in the Postfix mynetworks directive.
+#   2. Set smtp_host to "vectis-postfix:10587", the bundled Postfix's
+#      internal listener (v0.1.58+). It accepts mail from the stack's own
+#      containers without a login and strips internal trace headers, as it
+#      does for the send API. "vectis-postfix:25" also works, but stamps the
+#      api container's internal address into the Received header. The
+#      alerter sends plain SMTP without logging in, so an external relay
+#      works only if it accepts unauthenticated mail from this server.
 #   3. Leave recipients empty to fall back to secrets.yaml api.admin_email,
 #      or list explicit addresses to override.
 alerts:
   email:
     enabled: false
-    smtp_host: ""            # e.g. "vectis-postfix:25" or "smtp.external.example:587"
+    smtp_host: ""            # e.g. "vectis-postfix:10587"
     recipients: []           # empty → falls back to secrets.yaml api.admin_email
   webhook:
     enabled: false
