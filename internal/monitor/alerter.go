@@ -93,7 +93,7 @@ type Alerter struct {
 // 127.0.0.1:25 inside the api container always failed silently.
 func NewAlerter(alerts *repository.AlertRepo, emailCfg config.AlertEmailConfig, webhookCfg config.AlertWebhookConfig, hostname string, logger *slog.Logger) *Alerter {
 	if emailCfg.Enabled && emailCfg.SMTPHost == "" {
-		logger.Warn("email alerts enabled but alerts.email.smtp_host is empty — email delivery disabled until set (e.g. 'vectis-postfix:25')")
+		logger.Warn("email alerts enabled but alerts.email.smtp_host is empty — email delivery disabled until set (e.g. 'vectis-postfix:10587')")
 	}
 	if emailCfg.Enabled && len(emailCfg.Recipients) == 0 {
 		logger.Warn("email alerts enabled but alerts.email.recipients is empty — email delivery disabled until set")
@@ -230,7 +230,8 @@ func (a *Alerter) ResolveServiceExcept(ctx context.Context, service, keepSeverit
 	}
 }
 
-// sendEmail sends an alert via the local Postfix on port 25.
+// sendEmail sends an alert to alerts.email.smtp_host (normally the bundled
+// Postfix's internal listener, vectis-postfix:10587).
 func (a *Alerter) sendEmail(severity, service, message, suggestedAction string) {
 	from := fmt.Sprintf("vectis@%s", a.hostname)
 	subject := fmt.Sprintf("[Vectis %s] %s — %s", severity, service, a.hostname)

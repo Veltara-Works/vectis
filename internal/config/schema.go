@@ -219,10 +219,14 @@ type AlertsConfig struct {
 // SMTPHost is the "host:port" the alerter dials to submit mail. Empty
 // disables email delivery even when Enabled=true — the api container
 // has no local SMTP listener and the previous hard-coded `127.0.0.1:25`
-// failed silently on every fresh install. Typical values:
-//   - "vectis-postfix:25"  — relay via the bundled Postfix (requires
-//     postfix's mynetworks to include the vectis-data subnet)
-//   - ""                    — disabled; monitor logs a warning once
+// failed silently on every fresh install. The alerter speaks plain SMTP with
+// no STARTTLS or AUTH. Typical values:
+//   - "vectis-postfix:10587" — the bundled Postfix's internal listener, which
+//     trusts the stack's networks (mynetworks) and applies the submission
+//     trace sanitisation, as for the send API (#227)
+//   - "vectis-postfix:25"    — also trusted via mynetworks, but stamps the
+//     api container's internal address into Received
+//   - ""                     — disabled; monitor logs a warning once
 //
 // Recipients may be left empty, in which case the alerter falls back
 // to the installer's admin_email so a fresh install doesn't require
