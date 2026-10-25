@@ -386,6 +386,10 @@ type RspamdSecrets struct {
 	Forward map[string]any `yaml:",inline"`
 }
 
+// SpamhausDQSKeyFormatError is the validation error for a set but malformed DQS
+// key. Shared by config.ValidateSecrets (API) and `vectis config validate` (CLI).
+const SpamhausDQSKeyFormatError = "must be the key from your Spamhaus DQS account (16-63 letters and digits); it is ignored until fixed"
+
 // SpamhausDQSKeyNotice is the operator-facing warning shown while no DQS key is
 // configured (config validation, the startup log and the admin UI). Keep the
 // wording in step with web/src/components/SpamhausNotice.tsx.
