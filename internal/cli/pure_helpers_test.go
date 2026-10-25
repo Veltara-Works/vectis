@@ -125,6 +125,8 @@ func TestValidateSecrets_FieldRules(t *testing.T) {
 		{"empty admin email", func(s *config.VectisSecrets) { s.API.AdminEmail = "" }, "api.admin_email"},
 		{"empty orchestrator token", func(s *config.VectisSecrets) { s.Orchestrator.Token = "" }, "orchestrator.token"},
 		{"empty dkim base path", func(s *config.VectisSecrets) { s.DKIM.KeyBasePath = "" }, "dkim.key_base_path"},
+		{"malformed dqs key", func(s *config.VectisSecrets) { s.Rspamd.SpamhausDQSKey = "not a key!" }, "rspamd.spamhaus_dqs_key"},
+		{"short dqs key", func(s *config.VectisSecrets) { s.Rspamd.SpamhausDQSKey = "abc123" }, "rspamd.spamhaus_dqs_key"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -135,6 +137,42 @@ func TestValidateSecrets_FieldRules(t *testing.T) {
 				t.Errorf("expected error on field %q, got %+v", tt.wantField, errs)
 			}
 		})
+	}
+}
+
+// TestValidateSecrets_ValidDQSKeyIsClean: a well-formed operator key is not an
+// error (only a malformed one is).
+func TestValidateSecrets_ValidDQSKeyIsClean(t *testing.T) {
+	s := validSecrets()
+	s.Rspamd.SpamhausDQSKey = "abcdefghijklmnop1234"
+	if errs := validateSecrets(&s); len(errs) != 0 {
+		t.Fatalf("valid DQS key produced errors: %+v", errs)
+	}
+}
+
+// TestValidateWarnings_SpamhausNotice guards the gap found on the v0.1.60-rc1
+// canary: `vectis config validate` must surface the shared validators'
+// warnings, here the bring-your-own-key notice while no DQS key is set (#260).
+func TestValidateWarnings_SpamhausNotice(t *testing.T) {
+	cfg := validConfig()
+
+	s := validSecrets()
+	warns := validateWarnings(&cfg, &s)
+	if len(warns) != 1 || warns[0].Field != "rspamd.spamhaus_dqs_key" || warns[0].Message != config.SpamhausDQSKeyNotice {
+		t.Fatalf("no key: want exactly the Spamhaus notice, got %+v", warns)
+	}
+
+	s.Rspamd.SpamhausDQSKey = "abcdefghijklmnop1234"
+	if warns := validateWarnings(&cfg, &s); len(warns) != 0 {
+		t.Fatalf("valid key: want no warnings, got %+v", warns)
+	}
+}
+
+func TestPrintValidateList(t *testing.T) {
+	var b strings.Builder
+	printValidateList(&b, []validateError{{Field: "a.b", Message: "m1"}, {Field: "c", Message: "m2"}})
+	if want := "  - a.b: m1\n  - c: m2\n"; b.String() != want {
+		t.Fatalf("got %q, want %q", b.String(), want)
 	}
 }
 

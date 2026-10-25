@@ -214,7 +214,7 @@ func ValidateSecrets(secrets *VectisSecrets) *ValidationResult {
 	// rspamd.spamhaus_dqs_key — optional; when set it must look like a DQS key,
 	// because it is interpolated into rspamd's config and into DNS names.
 	if secrets.Rspamd.SpamhausDQSKey != "" && secrets.Rspamd.DQSKey() == "" {
-		r.AddError("rspamd.spamhaus_dqs_key", "must be the key from your Spamhaus DQS account (16-63 letters and digits); it is ignored until fixed")
+		r.AddError("rspamd.spamhaus_dqs_key", SpamhausDQSKeyFormatError)
 	} else if secrets.Rspamd.SpamhausDQSKey == "" {
 		r.AddWarning("rspamd.spamhaus_dqs_key", SpamhausDQSKeyNotice)
 	}

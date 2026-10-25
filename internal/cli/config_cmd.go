@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -160,8 +161,9 @@ func writeAllFiles(genDir, configDir string, files []engine.GeneratedFile) error
 
 // validateResult is the JSON-serialisable output of the validate command.
 type validateResult struct {
-	Valid  bool            `json:"valid"`
-	Errors []validateError `json:"errors,omitempty"`
+	Valid    bool            `json:"valid"`
+	Errors   []validateError `json:"errors,omitempty"`
+	Warnings []validateError `json:"warnings,omitempty"`
 }
 
 type validateError struct {
@@ -203,27 +205,33 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	var errs []validateError
 	errs = append(errs, validateConfig(cfg)...)
 	errs = append(errs, validateSecrets(secrets)...)
+	warns := validateWarnings(cfg, secrets)
 
 	if len(errs) > 0 {
 		if jsonOutput {
-			result := validateResult{Valid: false, Errors: errs}
+			result := validateResult{Valid: false, Errors: errs, Warnings: warns}
 			out, _ := json.MarshalIndent(result, "", "  ")
 			fmt.Fprintln(cmd.OutOrStdout(), string(out))
 		} else {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Configuration has %d validation error(s):\n", len(errs))
-			for _, e := range errs {
-				fmt.Fprintf(cmd.ErrOrStderr(), "  - %s: %s\n", e.Field, e.Message)
+			printValidateList(cmd.ErrOrStderr(), errs)
+			if len(warns) > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "and %d warning(s):\n", len(warns))
+				printValidateList(cmd.ErrOrStderr(), warns)
 			}
 		}
 		os.Exit(2)
 		return nil
 	}
 
-	// All good.
+	// All good, possibly with warnings.
 	if jsonOutput {
-		result := validateResult{Valid: true}
+		result := validateResult{Valid: true, Warnings: warns}
 		out, _ := json.MarshalIndent(result, "", "  ")
 		fmt.Fprintln(cmd.OutOrStdout(), string(out))
+	} else if len(warns) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "Configuration is valid, with %d warning(s):\n", len(warns))
+		printValidateList(cmd.OutOrStdout(), warns)
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "Configuration is valid")
 	}
@@ -457,7 +465,33 @@ func validateSecrets(secrets *config.VectisSecrets) []validateError {
 		errs = append(errs, validateError{Field: "dkim.key_base_path", Message: "must not be empty"})
 	}
 
+	// Rspamd: the optional operator Spamhaus DQS key (#260). A malformed key is
+	// dropped at render time, so the operator must hear about it here too.
+	if secrets.Rspamd.SpamhausDQSKey != "" && secrets.Rspamd.DQSKey() == "" {
+		errs = append(errs, validateError{Field: "rspamd.spamhaus_dqs_key", Message: config.SpamhausDQSKeyFormatError})
+	}
+
 	return errs
+}
+
+// validateWarnings returns the advisory findings of the shared config
+// validators (such as the bring-your-own-key Spamhaus notice, #260). The CLI's
+// own checks above produce the errors; warnings never change the exit code.
+func validateWarnings(cfg *config.VectisConfig, secrets *config.VectisSecrets) []validateError {
+	var warns []validateError
+	for _, r := range []*config.ValidationResult{config.ValidateConfig(cfg), config.ValidateSecrets(secrets)} {
+		for _, w := range r.Warnings {
+			warns = append(warns, validateError{Field: w.Field, Message: w.Message})
+		}
+	}
+	return warns
+}
+
+// printValidateList writes one "  - field: message" line per entry.
+func printValidateList(w io.Writer, items []validateError) {
+	for _, e := range items {
+		fmt.Fprintf(w, "  - %s: %s\n", e.Field, e.Message)
+	}
 }
 
 // ---------------------------------------------------------------------------
