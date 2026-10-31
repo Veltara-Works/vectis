@@ -90,6 +90,10 @@ section for the analysis.
 > v5.11.0, `valkey-go` → v1.0.79. No module added or dropped, licenses unchanged.
 > Category 2 recomputed from `web/package-lock.json`: unchanged (the batch's npm
 > bumps are all dev-only), 6 packages, all MIT.
+>
+> **2026-10-31** (#321): `react-router` → v8.5.0. Category 2 recomputed from
+> `web/package-lock.json`: only that version changes (`@remix-run/route-pattern`
+> stays v0.22.1), 6 packages, all MIT. Category 1 unchanged (no Go change).
 
 ---
 
@@ -165,7 +169,7 @@ distributed and are out of scope.
 | `react` | 19.3.1 | MIT |
 | `react-dom` | 19.3.1 | MIT |
 | `scheduler` | 0.28.0 | MIT |
-| `react-router` | 8.4.0 | MIT |
+| `react-router` | 8.5.0 | MIT |
 | `@remix-run/route-pattern` | 0.22.1 | MIT |
 | `cookie-es` | 3.1.1 | MIT |
 
