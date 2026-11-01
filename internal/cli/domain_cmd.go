@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -281,6 +282,29 @@ func runDomainRemove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// composePostgresHost is the compose service name secrets.yaml ships with.
+const composePostgresHost = "postgres"
+
+// cliDBHost returns the address the CLI dials for Postgres. The service name
+// only resolves on the Docker data network, so on the host it fails to resolve
+// (every fresh install) or follows a hand-added /etc/hosts pin that goes stale
+// when containers are recreated. Ask Docker where the container is now. Inside
+// a container there is no docker binary, so the service name is kept; a custom
+// database host is never touched.
+func cliDBHost(configured string) string {
+	if configured != composePostgresHost {
+		return configured
+	}
+	out, err := dockerInspect("vectis-postgres", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}")
+	if err != nil {
+		return configured
+	}
+	if ips := strings.Fields(out); len(ips) > 0 {
+		return ips[0]
+	}
+	return configured
+}
+
 // connectDB creates a DB pool from secrets.yaml and returns it with a cleanup function.
 // If the calling command defines a --db-host flag and the caller passes a non-empty
 // value, that value overrides secrets.Database.Host for the connection (useful when
@@ -292,7 +316,7 @@ func runDomainRemove(cmd *cobra.Command, args []string) error {
 // field mapping that the CLI's DB entry points would otherwise each repeat.
 func openPool(ctx context.Context, secrets *config.VectisSecrets, dbHost string, logger *slog.Logger) (*pgxpool.Pool, error) {
 	if dbHost == "" {
-		dbHost = secrets.Database.Host
+		dbHost = cliDBHost(secrets.Database.Host)
 	}
 	dbCfg := database.ConfigFromSecrets(
 		dbHost, secrets.Database.Port, secrets.Database.Name,

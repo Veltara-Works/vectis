@@ -432,7 +432,8 @@ func (dm *DockerManager) MigrateLegacyDKIMVolume(ctx context.Context) (bool, err
 	// volume" means absent; any other error (daemon down, permission denied) is
 	// returned so the caller's warning fires instead of silently skipping.
 	if out, err := exec.CommandContext(ctx, "docker", "volume", "inspect", legacyDKIMVolume).CombinedOutput(); err != nil {
-		if strings.Contains(string(out), "No such volume") {
+		// Docker 29 says "get <name>: no such volume", older ones "No such volume".
+		if strings.Contains(strings.ToLower(string(out)), "no such volume") {
 			dm.logger.Info("dkim migration: no legacy volume, nothing to migrate", "volume", legacyDKIMVolume)
 			return false, nil
 		}

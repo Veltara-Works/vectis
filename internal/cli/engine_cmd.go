@@ -64,9 +64,9 @@ func loadTemplateData(cmd *cobra.Command) (*engine.TemplateData, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	dbHost := secrets.Database.Host
-	if override, _ := cmd.Flags().GetString("db-host"); override != "" {
-		dbHost = override
+	dbHost, _ := cmd.Flags().GetString("db-host")
+	if dbHost == "" {
+		dbHost = cliDBHost(secrets.Database.Host)
 	}
 	dbCfg := database.ConfigFromSecrets(
 		dbHost, secrets.Database.Port, secrets.Database.Name,

@@ -109,3 +109,31 @@ func TestGuardPostfixQueue(t *testing.T) {
 		}
 	})
 }
+
+// Docker 29 says "get <name>: no such volume", older ones "No such volume". Both
+// mean there is nothing to migrate; any other failure must still surface.
+func TestMigrateLegacyDKIMVolume_AbsentVolume(t *testing.T) {
+	dm := &DockerManager{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	stub := func(msg string) {
+		dir := t.TempDir()
+		script := "#!/bin/sh\nprintf '%s' \"$STUB_MSG\" >&2\nexit 1\n"
+		if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("STUB_MSG", msg)
+	}
+	for _, msg := range []string{
+		"Error response from daemon: get " + legacyDKIMVolume + ": no such volume",
+		"Error: No such volume: " + legacyDKIMVolume,
+	} {
+		stub(msg)
+		if moved, err := dm.MigrateLegacyDKIMVolume(context.Background()); err != nil || moved {
+			t.Errorf("%q: want nothing to migrate, got moved=%v err=%v", msg, moved, err)
+		}
+	}
+	stub("Cannot connect to the Docker daemon")
+	if _, err := dm.MigrateLegacyDKIMVolume(context.Background()); err == nil {
+		t.Error("a daemon failure must be returned, not read as an absent volume")
+	}
+}
