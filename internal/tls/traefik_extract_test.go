@@ -635,3 +635,41 @@ func TestWriteAtomic_ReplacesAtomically(t *testing.T) {
 		}
 	}
 }
+
+// A container mid-start when the cert lands exits just after the HUP, and the HUP
+// cancelled its restart policy, so each one gets a second start after the settle.
+func TestReloadMailServices_StartsAgainAfterHUP(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls.log")
+	script := "#!/bin/sh\necho \"$*\" >> \"$STUB_LOG\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("STUB_LOG", log)
+	old := hupSettle
+	hupSettle = 200 * time.Millisecond
+	t.Cleanup(func() { hupSettle = old })
+
+	began := time.Now()
+	reloadMailServices(context.Background(), ExtractOptions{
+		ReloadPostfix: "vectis-postfix",
+		ReloadDovecot: "vectis-dovecot",
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	// An immediate second start would be a no-op: the container hasn't exited yet.
+	if elapsed := time.Since(began); elapsed < hupSettle {
+		t.Errorf("second start ran after %v, before the %v settle", elapsed, hupSettle)
+	}
+
+	got, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "container start vectis-postfix\nkill --signal=HUP vectis-postfix\n" +
+		"container start vectis-dovecot\nkill --signal=HUP vectis-dovecot\n" +
+		"container start vectis-postfix\ncontainer start vectis-dovecot\n"
+	if string(got) != want {
+		t.Errorf("docker calls:\n%s\nwant:\n%s", got, want)
+	}
+}
