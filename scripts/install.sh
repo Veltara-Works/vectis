@@ -491,7 +491,8 @@ if [ "$current_hostname" = "mail.example.com" ] || [ -z "$current_hostname" ]; t
     # Only reached without a terminal (cloud-init, CI) and no usable PTR.
     echo "    1. Set the mail hostname and admin email: re-run this installer in a"
     echo "       terminal (it asks for both), or set 'hostname' and 'tls.email' in"
-    echo "       $CONFIG_DIR/config.yaml"
+    echo "       $CONFIG_DIR/config.yaml and 'api.admin_email' in"
+    echo "       $CONFIG_DIR/secrets.yaml"
     echo "    2. vectis preflight    # check OS, memory, ports and outbound port 25"
     echo "    3. vectis install      # start the mail server (about a minute)"
 else

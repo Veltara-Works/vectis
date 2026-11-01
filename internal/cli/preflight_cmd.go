@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -169,19 +170,50 @@ func checkPort(port int) checkResult {
 // port25GuideURL explains the outbound port 25 block per VPS provider.
 const port25GuideURL = "https://vectismail.com/guides/port-25-blocked/"
 
+// smtpProbeHost is a large mail server that always listens on port 25.
+const smtpProbeHost = "gmail-smtp-in.l.google.com"
+
 func checkOutboundSMTP() checkResult {
 	// Test outbound port 25 by connecting to a well-known SMTP server.
-	conn, err := net.DialTimeout("tcp", "gmail-smtp-in.l.google.com:25", 10*time.Second)
+	conn, err := net.DialTimeout("tcp", smtpProbeHost+":25", 10*time.Second)
 	if err != nil {
-		return checkResult{
-			Name:    "SMTP out",
-			Status:  "warn",
-			Value:   "port 25 blocked",
-			Message: "Your provider blocks outbound mail. How to get it lifted: " + port25GuideURL,
-		}
+		return outboundSMTPFailure(err)
 	}
 	conn.Close()
 	return checkResult{Name: "SMTP out", Status: "pass", Value: "port 25 reachable"}
+}
+
+// outboundSMTPFailure says why the port 25 probe failed. A failed DNS lookup
+// says nothing about port 25, so it gets its own message; any other failure
+// (a timeout, typically) is most often the provider's block, but a local
+// firewall looks the same, so the reason is shown alongside the guide link.
+func outboundSMTPFailure(err error) checkResult {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return checkResult{
+			Name:    "SMTP out",
+			Status:  "warn",
+			Value:   "not checked",
+			Message: "Could not look up " + smtpProbeHost + ": check this server's DNS, then re-run",
+		}
+	}
+	reason := "Connection timed out"
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		reason = err.Error()
+		if i := strings.LastIndex(reason, ": "); i >= 0 {
+			reason = reason[i+2:] // "dial tcp …:25: connect: connection refused" → "connection refused"
+		}
+		if reason != "" {
+			reason = strings.ToUpper(reason[:1]) + reason[1:]
+		}
+	}
+	return checkResult{
+		Name:    "SMTP out",
+		Status:  "warn",
+		Value:   "port 25 blocked",
+		Message: reason + ". Usually the provider blocks it (or check this server's firewall): " + port25GuideURL,
+	}
 }
 
 func checkDocker() checkResult {
