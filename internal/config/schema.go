@@ -278,7 +278,7 @@ type ObservabilityConfig struct {
 
 // WebmailConfig controls the optional Roundcube webmail container.
 type WebmailConfig struct {
-	Enabled     bool `yaml:"enabled"`                 // include webmail container; default false
+	Enabled     bool `yaml:"enabled"`                 // include webmail container; false when omitted, config.yaml.example turns it on
 	UploadMaxMB int  `yaml:"upload_max_mb,omitempty"` // max attachment size in MB; default 25
 }
 

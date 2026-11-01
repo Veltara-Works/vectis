@@ -35,6 +35,11 @@ resources:
 clamav:
   profile: none            # none, dev, small, production, enterprise
 
+# Roundcube webmail, served at https://<hostname>/webmail/. Set enabled to false
+# to omit the container (it uses about 50 MB of RAM when idle).
+webmail:
+  enabled: true
+
 # Rspamd spam-filtering thresholds.
 # spam_threshold  — score at which a message is flagged as spam
 # reject_threshold — score at which a message is rejected outright at SMTP.
