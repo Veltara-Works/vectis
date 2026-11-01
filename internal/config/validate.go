@@ -120,11 +120,19 @@ func ValidateConfig(cfg *VectisConfig) *ValidationResult {
 			r.AddError(field, "must be a valid header name (printable ASCII, no ':' or whitespace)")
 			continue
 		}
-		// Received and X-Originating-IP are always handled by the built-in
-		// rules; listing them again would emit a duplicate, unreachable rule.
+		// Received, X-Originating-IP and Authentication-Results are always
+		// handled by the built-in rules; listing them again would emit a
+		// duplicate, unreachable rule.
 		switch strings.ToLower(h) {
-		case "received", "x-originating-ip":
+		case "received", "x-originating-ip", "authentication-results":
 			r.AddError(field, "is already stripped by strip_submission_client_headers; remove it from this list")
+			continue
+		}
+		// The submission cleanup service runs after the rspamd milter has
+		// DKIM-signed the message, so removing a signed header breaks the
+		// signature on every message sent from this host.
+		if dkimSignedHeaders[strings.ToLower(h)] {
+			r.AddError(field, "is covered by the DKIM signature; removing it would break DKIM on every outgoing message")
 		}
 	}
 
@@ -226,6 +234,21 @@ func ValidateSecrets(secrets *VectisSecrets) *ValidationResult {
 // printable US-ASCII (33-126) excluding ":". Whitespace and control characters
 // are rejected, which also makes s safe to interpolate into a Postfix regexp
 // map rule.
+// dkimSignedHeaders is rspamd's default DKIM signing header list
+// (default_dkim_headers in lualib/lua_ffi/dkim.lua, rspamd 4.0.1), which
+// dkim_signing.conf does not override. Lower-case for case-insensitive lookup.
+var dkimSignedHeaders = map[string]bool{
+	"from": true, "sender": true, "reply-to": true, "subject": true,
+	"date": true, "message-id": true, "to": true, "cc": true,
+	"mime-version": true, "content-type": true, "content-transfer-encoding": true,
+	"resent-to": true, "resent-cc": true, "resent-from": true,
+	"resent-sender": true, "resent-message-id": true,
+	"in-reply-to": true, "references": true,
+	"list-id": true, "list-owner": true, "list-unsubscribe": true,
+	"list-subscribe": true, "list-post": true,
+	"openpgp": true, "autocrypt": true,
+}
+
 func validHeaderName(s string) bool {
 	for _, c := range []byte(s) {
 		if c < 33 || c > 126 || c == ':' {

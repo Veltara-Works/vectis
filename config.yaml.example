@@ -101,6 +101,9 @@ postfix:
   # and deliberately opt-in: unlike Received/X-Originating-IP these are written
   # by the sender's own software, and some senders brand with them. Useful if
   # your application leaks its stack, e.g. "X-Mailer: Magento/2.4.8".
+  # Headers covered by the DKIM signature (From, Subject, Date, Message-ID,
+  # To, Cc, MIME headers, List-*, ...) are rejected: removing one after
+  # signing would break DKIM on every outgoing message.
   # strip_submission_extra_headers:
   #   - X-Mailer
   #   - User-Agent

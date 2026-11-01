@@ -251,6 +251,10 @@ func TestValidateConfig_StripSubmissionExtraHeaders(t *testing.T) {
 		{"over length", []string{strings.Repeat("X", 79)}, true},
 		{"duplicate of built-in Received", []string{"Received"}, true},
 		{"duplicate of built-in, case-insensitive", []string{"x-originating-ip"}, true},
+		{"duplicate of built-in Authentication-Results", []string{"Authentication-Results"}, true},
+		{"DKIM-signed Subject", []string{"Subject"}, true},
+		{"DKIM-signed, case-insensitive", []string{"list-unsubscribe"}, true},
+		{"DKIM-signed among valid", []string{"X-Mailer", "Message-ID"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
