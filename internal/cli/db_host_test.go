@@ -79,8 +79,14 @@ func TestDockerContainerImage_MissingContainer(t *testing.T) {
 		}
 	}
 
-	stubDockerInspect(t, "", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\n", "1")
-	if _, err := dockerContainerImage("vectis-clamav"); err == nil {
-		t.Error("a daemon failure must stay an error (unverifiable), not read as missing")
+	for _, msg := range []string{
+		"Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\n",
+		"error during connect: lookup docker.example: no such host\n",
+		"could not read CA certificate \"/root/ca.pem\": open /root/ca.pem: no such file or directory\n",
+	} {
+		stubDockerInspect(t, "", msg, "1")
+		if _, err := dockerContainerImage("vectis-clamav"); err == nil {
+			t.Errorf("%q: an endpoint failure must stay an error (unverifiable), not read as missing", msg)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -295,11 +296,15 @@ func cliDBHost(configured string) string {
 	if configured != composePostgresHost {
 		return configured
 	}
-	out, err := dockerInspect("vectis-postgres", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}")
+	// Bounded: callers' database timeouts only start after this returns.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format",
+		"{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", "vectis-postgres").Output()
 	if err != nil {
 		return configured
 	}
-	if ips := strings.Fields(out); len(ips) > 0 {
+	if ips := strings.Fields(string(out)); len(ips) > 0 {
 		return ips[0]
 	}
 	return configured
