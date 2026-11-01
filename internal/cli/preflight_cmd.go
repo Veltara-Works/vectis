@@ -116,14 +116,23 @@ func checkRAM() checkResult {
 		return checkResult{Name: "RAM", Status: "warn", Value: "unknown"}
 	}
 	kb, _ := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
-	gb := kb / 1024 / 1024
-	if gb >= 4 {
-		return checkResult{Name: "RAM", Status: "pass", Value: fmt.Sprintf("%d GB", gb)}
+	return ramResult(kb)
+}
+
+// ramResult grades MemTotal (kB). A VPS sold as 4 GB shows the kernel about
+// 3.8 GiB (firmware and kernel reservations), and a 2 GB one about 1.9 GiB, so
+// whole-GiB integer division read them as "3 GB" (warn) and "1 GB" (fail). The
+// thresholds allow for that reservation, and the value is shown to one decimal.
+func ramResult(kb int64) checkResult {
+	mib := kb / 1024
+	val := fmt.Sprintf("%.1f GB", float64(kb)/1024/1024)
+	switch {
+	case mib >= 3584: // a 4 GB plan
+		return checkResult{Name: "RAM", Status: "pass", Value: val}
+	case mib >= 1792: // a 2 GB plan
+		return checkResult{Name: "RAM", Status: "warn", Value: val, Message: "4 GB recommended (2 GB minimum without ClamAV)"}
 	}
-	if gb >= 2 {
-		return checkResult{Name: "RAM", Status: "warn", Value: fmt.Sprintf("%d GB", gb), Message: "4 GB recommended (2 GB minimum without ClamAV)"}
-	}
-	return checkResult{Name: "RAM", Status: "fail", Value: fmt.Sprintf("%d GB", gb), Message: "Minimum 2 GB required"}
+	return checkResult{Name: "RAM", Status: "fail", Value: val, Message: "Minimum 2 GB required"}
 }
 
 func checkDisk() checkResult {
