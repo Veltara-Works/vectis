@@ -159,6 +159,14 @@ func (req *updateDomainRequest) touchesAdvancedSpamFields() bool {
 	return req.SpamThreshold.Set || req.RejectThreshold.Set || req.GreylistEnabled.Set
 }
 
+// touchesRspamdConfig reports whether a PATCH changes anything the rspamd
+// files render: a per-domain spam knob, the strip list, or `active`, because
+// strip_headers.map lists only active domains (reactivating one must restore
+// its line).
+func (req *updateDomainRequest) touchesRspamdConfig() bool {
+	return req.touchesAdvancedSpamFields() || req.StripSubmissionHeaders.Set || req.Active != nil
+}
+
 func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
 	// Restricted principals return only their in-scope domains. This covers
 	// domain_admin AND any scoped API key regardless of the owner's role —
@@ -467,7 +475,7 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "domain.update", "domain", &domainID, req, &ip)
 
-	if (req.touchesAdvancedSpamFields() || req.StripSubmissionHeaders.Set) && s.cfg != nil && s.secrets != nil && s.genDir != "" {
+	if req.touchesRspamdConfig() && s.cfg != nil && s.secrets != nil && s.genDir != "" {
 		s.regenerateRspamdSpamConfig()
 	}
 

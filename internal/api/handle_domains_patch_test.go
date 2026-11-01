@@ -97,6 +97,28 @@ func TestNormalizeStripHeaders(t *testing.T) {
 	}
 }
 
+// TestTouchesRspamdConfig: an active-only PATCH must regenerate the rspamd
+// files, because strip_headers.map lists only active domains (Copilot review
+// on #328); an unrelated field must not.
+func TestTouchesRspamdConfig(t *testing.T) {
+	for body, want := range map[string]bool{
+		`{"active":true}`:                           true,
+		`{"active":false}`:                          true,
+		`{"strip_submission_headers":["X-Mailer"]}`: true,
+		`{"strip_submission_headers":null}`:         true,
+		`{"greylist_enabled":null}`:                 true,
+		`{"max_mailboxes":10}`:                      false,
+	} {
+		var req updateDomainRequest
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Fatalf("decode %s: %v", body, err)
+		}
+		if got := req.touchesRspamdConfig(); got != want {
+			t.Errorf("%s: touchesRspamdConfig() = %v, want %v", body, got, want)
+		}
+	}
+}
+
 // TestNormalizeThreshold: values are rounded to the one decimal place the
 // DECIMAL(4,1) column stores BEFORE the 0.1–999.9 range check, so what passes
 // validation is exactly what gets stored (Copilot review on #246).
