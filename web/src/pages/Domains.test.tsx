@@ -207,9 +207,10 @@ describe('DomainsPage', () => {
     })
 
     it('shows a domain\'s strip headers, or none', async () => {
+      // DKIM configured on both, so the DKIM column doesn't also read "none".
       mockApi.listDomains.mockResolvedValue([
-        domain({ strip_submission_headers: ['X-Mailer', 'User-Agent'] }),
-        domain({ id: '2', name: 'other.com' }),
+        domain({ dkim_key_path: '/k', strip_submission_headers: ['X-Mailer', 'User-Agent'] }),
+        domain({ id: '2', name: 'other.com', dkim_key_path: '/k' }),
       ] as never)
       renderPro()
       expect(await screen.findByText('X-Mailer, User-Agent')).toBeInTheDocument()
