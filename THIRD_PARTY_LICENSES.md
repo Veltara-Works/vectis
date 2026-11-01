@@ -118,8 +118,8 @@ fork) and are listed separately to reflect that.
 | `github.com/emersion/go-imap` | v1.2.1 | MIT |
 | `github.com/emersion/go-sasl` | b788ff22d5a6 | MIT |
 | `github.com/go-chi/chi/v5` | v5.5.0 | MIT |
-| `github.com/go-jose/go-jose/v4` | v4.1.4 | Apache-2.0 |
-| `github.com/go-jose/go-jose/v4/json` | v4.1.4 | BSD-3-Clause |
+| `github.com/go-jose/go-jose/v4` | v4.1.7 | Apache-2.0 |
+| `github.com/go-jose/go-jose/v4/json` | v4.1.7 | BSD-3-Clause |
 | `github.com/golang-jwt/jwt/v4` | v4.5.2 | MIT |
 | `github.com/golang-migrate/migrate/v4` | v4.20.1 | MIT |
 | `github.com/google/uuid` | v1.6.0 | BSD-3-Clause |
