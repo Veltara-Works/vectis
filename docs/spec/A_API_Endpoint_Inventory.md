@@ -121,6 +121,8 @@ Auth column legend used throughout: `none` = public; `session` = signed admin se
 
 Spam-list field-level extensions to `PATCH /domains/{domainID}` (`spam_threshold`, `reject_threshold`, `greylist_enabled`) are gated inside the handler; the core domain CRUD route stays open to Free for its ungated fields (`active`, `dkim_*`, `max_mailboxes`). Setting one of the three needs Pro; sending `null` clears the override back to the config.yaml default and is allowed on any tier. `spam_threshold` was ungated, and never applied, before v0.1.50. See [`internal/api/handle_domains.go`].
 
+`strip_submission_headers` (array of header names, #231) is gated the same way (`advanced_spam`): it sets the extra headers stripped from mail this domain sends, on top of the host-wide config.yaml list. A bad or DKIM-signed name is `400 INVALID_STRIP_HEADERS`; `null` or `[]` clears the list on any tier. PATCH only, not on create. See B (domains — strip_submission_headers).
+
 ### Domain creation flow
 
 1. `POST /domains` with `{ name: "example.com" }`

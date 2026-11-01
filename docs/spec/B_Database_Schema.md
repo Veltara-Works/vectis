@@ -836,6 +836,16 @@ Expand/contract: the migration only adds this column. The legacy `spam_threshold
 
 An RBL lookup has three outcomes, not two. `unknown` covers a list refusing the query (Spamhaus answers `127.255.255.x` to shared or public resolvers), a lookup error, and a list that failed its own RFC 5782 test address during that run. Unknown must never read as clean. `listed` is still written (true only for `listed`) so the previous release's API reads new rows correctly during an update; `response` holds the DNS answer when listed, or the reason when unknown. Additive only (#283).
 
+### domains — strip_submission_headers (Migration 000027)
+
+| Column | Type | Notes |
+|--------|------|-------|
+| strip_submission_headers | TEXT[] | NULL = no per-domain additions |
+
+Extra headers removed from mail this domain sends (#231), Pro (`advanced_spam`). The list is **added to** the host-wide `postfix.strip_submission_extra_headers` (config.yaml), which Postfix's submission cleanup still applies to every sender. Rendered into `rspamd/maps/strip_headers.map` (one line per active domain with a list) and applied by the `VECTIS_STRIP_SUBMISSION_HEADERS` rspamd rule to outbound mail only (authenticated user or local address, the same test rspamd's DKIM signing uses), keyed on the envelope sender domain. Postfix can't do this per domain because `header_checks` bind to a cleanup service shared by every sender.
+
+Names are validated before they are stored, by the same rules as the host-wide list (`config.ValidateStripHeaders`): letters, digits, `-` and `_` only, and never a header covered by the DKIM signature, because removal happens after signing. The API de-duplicates case-insensitively, caps the list at 20, and stores `[]` as NULL. Expand only: the previous release's API never selects the column.
+
 ---
 
 ## B.23 Schema Conventions Summary

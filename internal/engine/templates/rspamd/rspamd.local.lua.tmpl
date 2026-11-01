@@ -509,3 +509,89 @@ if dmarc_reject_redis then
 else
   rspamd_logger.warnx(rspamd_config, 'vectis: no Redis configured; DMARC rejections will not be recorded')
 end
+
+-- VECTIS_STRIP_SUBMISSION_HEADERS (#231)
+--
+-- Per-domain extra headers to strip from mail a domain SENDS (e.g. X-Mailer,
+-- User-Agent: app-stack disclosure the tenant never chose to publish). This is
+-- added to the host-wide postfix.strip_submission_extra_headers list, which
+-- Postfix's submission cleanup still applies to every sender.
+--
+-- WHY HERE AND NOT IN POSTFIX: header_checks bind to a cleanup service, not to
+-- a sender, and the submission listener is shared by every tenant, so Postfix
+-- cannot pick rules per sending domain. rspamd sees each message with its
+-- envelope sender and removes headers through the milter reply.
+--
+-- Outbound only, using the same test rspamd's DKIM signing applies by default
+-- (sign_authenticated / sign_local): an authenticated user (submission/smtps),
+-- or a local address (the send API on the internal 10587 listener). Inbound
+-- mail on :25 is never touched.
+--
+-- Keyed on the ENVELOPE sender domain (task:get_from('smtp')), the identity
+-- DKIM signs for. Removing a header only ever strips the sender's own mail.
+--
+-- DKIM-safe: names covered by the DKIM signature are refused before they are
+-- stored (config.ValidateStripHeaders), so nothing removed here was signed.
+-- The parser below re-checks the charset so a hand-edited map can't inject.
+--
+-- Map lines: "<sender-domain> <header>,<header>...".
+
+local lua_mime = require "lua_mime"
+
+local strip_headers = {}
+
+local function parse_strip_headers(data)
+  local t = {}
+  for line in string.gmatch(tostring(data or ''), '[^\r\n]+') do
+    line = string.gsub(line, '#.*$', '')
+    local dom, list = string.match(line, '^%s*(%S+)%s+(%S+)%s*$')
+    if dom and list then
+      local names = {}
+      for h in string.gmatch(list, '[^,]+') do
+        if string.match(h, '^[%w][%w_-]*$') then
+          table.insert(names, h)
+        else
+          rspamd_logger.warnx(rspamd_config, 'vectis: ignoring malformed strip header %s for %s', h, dom)
+        end
+      end
+      if #names > 0 then
+        t[string.lower(dom)] = names
+      end
+    end
+  end
+  strip_headers = t
+end
+
+rspamd_config:add_map{
+  url = '/etc/rspamd/local.d/maps/strip_headers.map',
+  type = 'callback',
+  description = 'Vectis per-domain submission header strip (#231)',
+  callback = parse_strip_headers,
+}
+
+rspamd_config:register_symbol{
+  name = 'VECTIS_STRIP_SUBMISSION_HEADERS',
+  type = 'postfilter',
+  callback = function(task)
+    local ip = task:get_from_ip()
+    if not task:get_user() and not (ip and ip:is_valid() and ip:is_local()) then
+      return
+    end
+    local _, dom = smtp_from(task)
+    local names = dom and strip_headers[dom]
+    if not names then
+      return
+    end
+    local remove, removed = {}, {}
+    for _, h in ipairs(names) do
+      if task:get_header(h) then
+        remove[h] = 0 -- 0 = every instance
+        table.insert(removed, h)
+      end
+    end
+    if #removed > 0 then
+      lua_mime.modify_headers(task, { remove = remove })
+      rspamd_logger.infox(task, 'vectis: stripped %s from mail sent by %s', table.concat(removed, ','), dom)
+    end
+  end,
+}

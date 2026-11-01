@@ -8,6 +8,8 @@ interface Domain {
   dkim_selector: string; dkim_key_path?: string;
   // Per-domain spam overrides (Pro). Absent/null = the system-wide config.yaml value.
   spam_threshold?: number | null; reject_threshold?: number | null; greylist_enabled?: boolean | null;
+  // Extra headers stripped from mail this domain sends, on top of the host-wide list (Pro, #231).
+  strip_submission_headers?: string[] | null;
   verification_status?: string; verification_token?: string; created_at: string;
 }
 
@@ -19,6 +21,9 @@ const greylistValue = (g: Greylist): boolean | null => (g === 'on' ? true : g ==
 // An empty threshold input means "no override": sent as null, which clears it.
 const thresholdValue = (v: string): number | null => (v === '' ? null : parseFloat(v))
 const thresholdText = (v?: number | null): string => (v !== undefined && v !== null ? String(v) : '')
+// Strip headers are edited as a comma-separated list; an empty input sends [], which clears the list.
+const headersValue = (v: string): string[] => v.split(',').map(h => h.trim()).filter(h => h !== '')
+const headersText = (v?: string[] | null): string => (v ? v.join(', ') : '')
 
 interface DomainsPageProps {
   features?: string[]
@@ -42,6 +47,7 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
   const [editSpamThreshold, setEditSpamThreshold] = useState('')
   const [editRejectThreshold, setEditRejectThreshold] = useState('')
   const [editGreylist, setEditGreylist] = useState<Greylist>('')
+  const [editStripHeaders, setEditStripHeaders] = useState('')
   const [savingEdit, setSavingEdit] = useState(false)
 
   const load = () => api.listDomains().then(d => setDomains(d || [])).catch(() => setError('Failed to load domains'))
@@ -104,6 +110,7 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
     setEditSpamThreshold(thresholdText(d.spam_threshold))
     setEditRejectThreshold(thresholdText(d.reject_threshold))
     setEditGreylist(greylistOf(d.greylist_enabled))
+    setEditStripHeaders(headersText(d.strip_submission_headers))
   }
 
   const cancelEditAdvanced = () => {
@@ -111,16 +118,21 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
     setEditSpamThreshold('')
     setEditRejectThreshold('')
     setEditGreylist('')
+    setEditStripHeaders('')
   }
 
   const saveEditAdvanced = async (id: string) => {
     setSavingEdit(true)
     setError(''); setSuccess('')
     try {
+      // Strip headers are sent only when edited, so saving thresholds never
+      // rewrites (or clears) the list.
+      const stored = headersText(domains.find(d => d.id === id)?.strip_submission_headers)
       await api.updateDomain(id, {
         spam_threshold: thresholdValue(editSpamThreshold),
         reject_threshold: thresholdValue(editRejectThreshold),
         greylist_enabled: greylistValue(editGreylist),
+        ...(editStripHeaders !== stored ? { strip_submission_headers: headersValue(editStripHeaders) } : {}),
       })
       setSuccess('Spam settings updated')
       cancelEditAdvanced()
@@ -238,6 +250,7 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
               {hasAdvancedSpam && <th>Spam</th>}
               {hasAdvancedSpam && <th>Reject</th>}
               {hasAdvancedSpam && <th>Greylist</th>}
+              {hasAdvancedSpam && <th title="Extra headers removed from mail this domain sends, on top of the server-wide list">Strip headers</th>}
               <th>Created</th><th></th>
             </tr>
           </thead>
@@ -317,6 +330,23 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
                     )}
                   </td>
                 )}
+                {hasAdvancedSpam && (
+                  <td className="mono">
+                    {editingId === d.id ? (
+                      <input
+                        aria-label={`Strip headers for ${d.name}`}
+                        value={editStripHeaders}
+                        onChange={e => setEditStripHeaders(e.target.value)}
+                        placeholder="e.g. X-Mailer, User-Agent"
+                        style={{ width: '12rem' }}
+                      />
+                    ) : d.strip_submission_headers && d.strip_submission_headers.length > 0 ? (
+                      d.strip_submission_headers.join(', ')
+                    ) : (
+                      <span className="text-muted">none</span>
+                    )}
+                  </td>
+                )}
                 <td className="text-muted">{new Date(d.created_at).toLocaleDateString()}</td>
                 <td>
                   {hasAdvancedSpam && editingId === d.id ? (
@@ -345,7 +375,7 @@ export default function DomainsPage({ features = [] }: DomainsPageProps) {
               </tr>
             ))}
             {domains.length === 0 && (
-              <tr><td colSpan={hasAdvancedSpam ? 10 : 7} className="text-muted">No domains yet</td></tr>
+              <tr><td colSpan={hasAdvancedSpam ? 11 : 7} className="text-muted">No domains yet</td></tr>
             )}
           </tbody>
         </table>

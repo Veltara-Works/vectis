@@ -68,6 +68,35 @@ func TestUpdateDomainRequest_AbsentVsNull(t *testing.T) {
 	}
 }
 
+// TestNormalizeStripHeaders (#231): the per-domain list reuses the host-wide
+// validation, is de-duplicated case-insensitively, and an empty list clears.
+func TestNormalizeStripHeaders(t *testing.T) {
+	got, msg := normalizeStripHeaders([]string{"X-Mailer", "x-mailer", "User-Agent"})
+	if msg != "" || len(got) != 2 || got[0] != "X-Mailer" || got[1] != "User-Agent" {
+		t.Errorf("de-dup: got %v %q", got, msg)
+	}
+	if got, msg := normalizeStripHeaders([]string{}); msg != "" || got != nil {
+		t.Errorf("empty list must clear (nil), got %v %q", got, msg)
+	}
+	for _, bad := range [][]string{{"Subject"}, {"Subject+"}, {"X Mailer"}, {""}, {"Received"}} {
+		if _, msg := normalizeStripHeaders(bad); !strings.HasPrefix(msg, "strip_submission_headers[0]: ") {
+			t.Errorf("%q must be refused with a field-named message, got %q", bad, msg)
+		}
+	}
+	tooMany := make([]string, maxStripHeaders+1)
+	for i := range tooMany {
+		tooMany[i] = "X-H" + strings.Repeat("a", i+1)
+	}
+	if _, msg := normalizeStripHeaders(tooMany); msg == "" {
+		t.Error("more than maxStripHeaders must be refused")
+	}
+
+	var req updateDomainRequest
+	if err := json.Unmarshal([]byte(`{"strip_submission_headers":null}`), &req); err != nil || !req.StripSubmissionHeaders.clears() {
+		t.Errorf("explicit null must clear: %+v %v", req.StripSubmissionHeaders, err)
+	}
+}
+
 // TestNormalizeThreshold: values are rounded to the one decimal place the
 // DECIMAL(4,1) column stores BEFORE the 0.1–999.9 range check, so what passes
 // validation is exactly what gets stored (Copilot review on #246).

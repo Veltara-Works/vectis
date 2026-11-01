@@ -1,0 +1,4 @@
+# Vectis per-domain submission header strip (#231) — generated, do not edit
+# <sender-domain> <header>,<header>...   (added to the host-wide config.yaml list)
+{{ range .Domains }}{{ if and .Active .StripSubmissionHeaders }}{{ .Name }} {{ join .StripSubmissionHeaders "," }}
+{{ end }}{{ end }}

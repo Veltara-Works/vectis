@@ -206,6 +206,44 @@ describe('DomainsPage', () => {
       }))
     })
 
+    it('shows a domain\'s strip headers, or none', async () => {
+      mockApi.listDomains.mockResolvedValue([
+        domain({ strip_submission_headers: ['X-Mailer', 'User-Agent'] }),
+        domain({ id: '2', name: 'other.com' }),
+      ] as never)
+      renderPro()
+      expect(await screen.findByText('X-Mailer, User-Agent')).toBeInTheDocument()
+      expect(screen.getByText('none')).toBeInTheDocument()
+    })
+
+    it('saves strip headers as a list', async () => {
+      mockApi.listDomains.mockResolvedValue([domain({})] as never)
+      mockApi.updateDomain.mockResolvedValue({ id: '1', name: 'test.com' } as never)
+      renderPro()
+      const user = userEvent.setup()
+      await user.click(await screen.findByText('Edit spam'))
+      await user.type(screen.getByLabelText('Strip headers for test.com'), 'X-Mailer, User-Agent')
+      await user.click(screen.getByText('Save'))
+      await waitFor(() => expect(mockApi.updateDomain).toHaveBeenCalledWith('1', {
+        spam_threshold: null, reject_threshold: null, greylist_enabled: null,
+        strip_submission_headers: ['X-Mailer', 'User-Agent'],
+      }))
+    })
+
+    it('clears strip headers with an empty field', async () => {
+      mockApi.listDomains.mockResolvedValue([domain({ strip_submission_headers: ['X-Mailer'] })] as never)
+      mockApi.updateDomain.mockResolvedValue({ id: '1', name: 'test.com' } as never)
+      renderPro()
+      const user = userEvent.setup()
+      await user.click(await screen.findByText('Edit spam'))
+      await user.clear(screen.getByLabelText('Strip headers for test.com'))
+      await user.click(screen.getByText('Save'))
+      await waitFor(() => expect(mockApi.updateDomain).toHaveBeenCalledWith('1', {
+        spam_threshold: null, reject_threshold: null, greylist_enabled: null,
+        strip_submission_headers: [],
+      }))
+    })
+
     it('hides the spam columns without the Pro feature', async () => {
       mockApi.listDomains.mockResolvedValue([domain({ spam_threshold: 4 })] as never)
       render(<MemoryRouter><DomainsPage /></MemoryRouter>)
