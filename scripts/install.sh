@@ -70,6 +70,7 @@ if [ "$EXPECTED" != "$ACTUAL" ]; then
     error "  got:      $ACTUAL"
     exit 1
 fi
+info "SHA256 checksum verified"
 
 # --- cosign signature verification (Sigstore keyless) ----------------------
 # Defence beyond the same-origin SHA256: the binary is signed in CI using
@@ -109,8 +110,9 @@ elif [ "${VECTIS_REQUIRE_COSIGN:-0}" = "1" ]; then
     error "Install cosign: https://docs.sigstore.dev/system_config/installation/"
     exit 1
 else
-    warn "cosign not found — skipping signature verification (SHA256 checksum still enforced)."
-    warn "For full supply-chain verification see docs/notes/verifying-downloads.md"
+    # Optional extra check, so INFO not WARN: the checksum above is enforced.
+    info "Sigstore signature check skipped (cosign not installed; optional). How to verify:"
+    info "  https://github.com/Veltara-Works/vectis/blob/main/docs/notes/verifying-downloads.md"
 fi
 
 install -m 0755 "$TMP_DIR/vectis" "$VECTIS_BIN_DEST"
@@ -119,11 +121,18 @@ info "Installed $($VECTIS_BIN_DEST version) → $VECTIS_BIN_DEST"
 # --- Docker -----------------------------------------------------------------
 
 if ! command -v docker &>/dev/null; then
-    info "Installing Docker Engine..."
-    curl -fsSL https://get.docker.com | bash
-    systemctl enable docker
+    # get.docker.com prints ~60 lines; keep them in a log and show the tail
+    # only if it fails.
+    DOCKER_LOG=/var/log/vectis-docker-install.log
+    info "Installing Docker Engine (about a minute; log: $DOCKER_LOG)..."
+    if ! curl -fsSL https://get.docker.com | DEBIAN_FRONTEND=noninteractive bash >"$DOCKER_LOG" 2>&1; then
+        error "Docker installation failed. Last lines of $DOCKER_LOG:"
+        tail -20 "$DOCKER_LOG" >&2
+        exit 1
+    fi
+    systemctl enable --quiet docker
     systemctl start docker
-    info "Docker installed."
+    info "Docker installed: $(docker --version)"
 else
     info "Docker already installed: $(docker --version)"
 fi
@@ -210,7 +219,7 @@ done
 
 if [ -f "$VECTIS_DIR/config.yaml.example" ] && [ ! -f "$CONFIG_DIR/config.yaml" ]; then
     cp "$VECTIS_DIR/config.yaml.example" "$CONFIG_DIR/config.yaml"
-    info "Copied config.yaml.example → $CONFIG_DIR/config.yaml (edit hostname before 'vectis install')"
+    info "Created $CONFIG_DIR/config.yaml"
 fi
 
 if [ -f "$VECTIS_DIR/secrets.yaml.example" ] && [ ! -f "$CONFIG_DIR/secrets.yaml" ]; then
@@ -303,7 +312,7 @@ if [ "$current_hostname" = "mail.example.com" ] || [ -z "$current_hostname" ]; t
     if ! command -v dig &>/dev/null && ! command -v host &>/dev/null; then
         info "Installing dnsutils for PTR lookup..."
         apt-get update -qq 2>/dev/null || true
-        if apt-get install -y -qq dnsutils 2>&1 | tail -3; then
+        if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsutils 2>&1 | tail -3; then
             :
         else
             warn "apt-get install dnsutils failed — PTR detection may fall back to /etc/hosts"
@@ -479,16 +488,18 @@ echo "  The binary is in place but nothing is running yet. Next steps:"
 echo ""
 current_hostname=$(config_hostname_value)
 if [ "$current_hostname" = "mail.example.com" ] || [ -z "$current_hostname" ]; then
-    echo "    1. Edit $CONFIG_DIR/config.yaml"
-    echo "         - set 'hostname' to your mail server's FQDN"
-    echo "         - set 'tls.email' to your admin email"
-    echo ""
-    echo "    2. vectis preflight    # verify system + ports + DNS"
-    echo "    3. vectis install      # deploy containers, run migrations, create admin"
+    # Only reached without a terminal (cloud-init, CI) and no usable PTR.
+    echo "    1. Set the mail hostname and admin email: re-run this installer in a"
+    echo "       terminal (it asks for both), or set 'hostname' and 'tls.email' in"
+    echo "       $CONFIG_DIR/config.yaml and 'api.admin_email' in"
+    echo "       $CONFIG_DIR/secrets.yaml"
+    echo "    2. vectis preflight    # check OS, memory, ports and outbound port 25"
+    echo "    3. vectis install      # start the mail server (about a minute)"
 else
-    echo "    1. Review $CONFIG_DIR/config.yaml (hostname: $current_hostname)"
-    echo "    2. vectis preflight    # verify system + ports + DNS"
-    echo "    3. vectis install      # deploy containers, run migrations, create admin"
+    echo "    Mail hostname: $current_hostname"
+    echo ""
+    echo "    1. vectis preflight    # check OS, memory, ports and outbound port 25"
+    echo "    2. vectis install      # start the mail server (about a minute)"
 fi
 echo ""
 echo "  Config directory: $CONFIG_DIR"

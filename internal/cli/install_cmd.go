@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -29,15 +30,19 @@ Reads config.yaml and secrets.yaml from --config-dir (default /etc/vectis),
 renders the service templates, brings Postgres up, runs database migrations,
 seeds the initial admin account, then starts the rest of the stack.
 
-This command is non-interactive: edit the config files first, then run it.
-The bundled install.sh seeds both files with sensible defaults and random
-secrets — only 'hostname' and 'tls.email' in config.yaml typically need
-manual editing before running.`,
+This command is non-interactive. The bundled install.sh seeds both files
+with sensible defaults and random secrets, and asks for the hostname and
+admin email, so on a fresh server you run it straight after install.sh.
+
+Docker and apt output is shown only when a step fails; --verbose streams it.`,
 	RunE: runInstall,
 }
 
 func runInstall(cmd *cobra.Command, args []string) error {
 	configDir, _ := cmd.Flags().GetString("config-dir")
+
+	verbose, _ := cmd.Flags().GetBool("verbose")
+	run := func(c *exec.Cmd) error { return runStep(c, verbose, cmd.ErrOrStderr()) }
 
 	step := 0
 	totalSteps := 12
@@ -175,7 +180,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 
 	// Step 5: Fail2ban
 	printStep("Configuring Fail2ban")
-	configureFail2ban(cmd)
+	configureFail2ban(cmd, run)
 	done()
 
 	// Step 6: Move generated docker-compose.yml into place. Must happen before
@@ -202,10 +207,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	// Step 7: Pull container images. Doing this before `up` keeps timing
 	// failures separate from health-wait failures.
 	printStep("Pulling container images")
-	pullCmd := exec.Command("docker", "compose", "-f", composeDst, "pull")
-	pullCmd.Stdout = os.Stdout
-	pullCmd.Stderr = os.Stderr
-	if err := pullCmd.Run(); err != nil {
+	if err := run(exec.Command("docker", "compose", "-f", composeDst, "pull")); err != nil {
 		fmt.Fprintln(cmd.OutOrStdout())
 		fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: failed to pull images: %s\n", err)
 		fmt.Fprintln(cmd.ErrOrStderr(), "You can pull manually: docker compose -f "+composeDst+" pull")
@@ -216,10 +218,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	// must be reachable before migrations can run, and the bootstrap script
 	// (init-users.sh) creates the vectis_api role on the same first start.
 	printStep("Starting Postgres and waiting for it to become healthy")
-	pgUp := exec.Command("docker", "compose", "-f", composeDst, "up", "-d", "--wait", "postgres")
-	pgUp.Stdout = os.Stdout
-	pgUp.Stderr = os.Stderr
-	if err := pgUp.Run(); err != nil {
+	if err := run(exec.Command("docker", "compose", "-f", composeDst, "up", "-d", "--wait", "postgres")); err != nil {
 		fail("postgres did not become healthy: %s", err)
 	}
 	done()
@@ -237,10 +236,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fail("could not determine api image from %s: %s", composeDst, err)
 	}
 	migrateArgs := dockerRunAPI(apiImage, "vectis", "migrate", "up")
-	runMigrate := exec.Command(migrateArgs[0], migrateArgs[1:]...)
-	runMigrate.Stdout = os.Stdout
-	runMigrate.Stderr = os.Stderr
-	if err := runMigrate.Run(); err != nil {
+	if err := run(exec.Command(migrateArgs[0], migrateArgs[1:]...)); err != nil {
 		fail("migration failed: %s", err)
 	}
 	done()
@@ -254,10 +250,16 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	printStep("Creating initial admin account")
 	adminArgs := dockerRunAPI(apiImage, "vectis", "admin", "init")
 	runAdmin := exec.Command(adminArgs[0], adminArgs[1:]...)
-	var adminOut bytes.Buffer
+	// stdout carries the generated password, so it is always captured;
+	// stderr (the container's JSON logs) follows the same rule as run().
+	var adminOut, adminErr bytes.Buffer
 	runAdmin.Stdout = &adminOut
-	runAdmin.Stderr = os.Stderr
+	runAdmin.Stderr = &adminErr
+	if verbose {
+		runAdmin.Stderr = os.Stderr
+	}
 	if err := runAdmin.Run(); err != nil {
+		fmt.Fprint(cmd.ErrOrStderr(), "\n"+lastLines(adminErr.String(), stepOutputTail))
 		fail("admin init failed: %s", err)
 	}
 	generatedAdminPassword := parseAdminPassword(adminOut.String())
@@ -267,10 +269,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	// `up -d` against the same compose file is a no-op for it and starts
 	// everything else.
 	printStep("Starting remaining services")
-	upCmd := exec.Command("docker", "compose", "-f", composeDst, "up", "-d")
-	upCmd.Stdout = os.Stdout
-	upCmd.Stderr = os.Stderr
-	if err := upCmd.Run(); err != nil {
+	if err := run(exec.Command("docker", "compose", "-f", composeDst, "up", "-d")); err != nil {
 		fmt.Fprintln(cmd.OutOrStdout())
 		fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: failed to start services: %s\n", err)
 		fmt.Fprintln(cmd.ErrOrStderr(), "You can start manually: docker compose -f "+composeDst+" up -d")
@@ -359,9 +358,9 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "  Next steps:")
 	fmt.Fprintln(cmd.OutOrStdout(), "  1. Publish the records above at your DNS provider")
 	fmt.Fprintln(cmd.OutOrStdout(), "  2. Wait for DNS to propagate, then open the Admin URL")
-	fmt.Fprintln(cmd.OutOrStdout(), "  3. Add your first mail domain — 'vectis domain add'")
-	fmt.Fprintln(cmd.OutOrStdout(), "     will print the MX / SPF / DKIM / DMARC records you need")
-	fmt.Fprintln(cmd.OutOrStdout(), "     to publish for that sending domain.")
+	fmt.Fprintln(cmd.OutOrStdout(), "  3. Log in and follow the Setup Wizard: it adds your first mail")
+	fmt.Fprintln(cmd.OutOrStdout(), "     domain and shows the MX / SPF / DKIM / DMARC records to")
+	fmt.Fprintln(cmd.OutOrStdout(), "     publish for it. (From the CLI: 'vectis domain add'.)")
 	fmt.Fprintln(cmd.OutOrStdout())
 	// TLS footer varies based on what actually happened with cert issuance.
 	// Happy path (leCertOK): one-line confirmation, issuer name named.
@@ -689,14 +688,14 @@ func dockerRunAPI(image string, args ...string) []string {
 // configureFail2ban installs and configures Fail2ban with jails for SSH and
 // Postfix SASL brute-force protection. This is a host-level security measure
 // per Architecture v1.4 §4.
-func configureFail2ban(cmd *cobra.Command) {
+func configureFail2ban(cmd *cobra.Command, run func(*exec.Cmd) error) {
 	// Check if fail2ban is installed.
 	if _, err := exec.LookPath("fail2ban-client"); err != nil {
-		// Try to install it.
+		// Try to install it. Noninteractive: without a terminal debconf
+		// prints "unable to initialize frontend: Dialog" and falls back anyway.
 		installCmd := exec.Command("apt-get", "install", "-y", "-qq", "fail2ban")
-		installCmd.Stdout = os.Stdout
-		installCmd.Stderr = os.Stderr
-		if err := installCmd.Run(); err != nil {
+		installCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+		if err := run(installCmd); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: could not install fail2ban: %s\n", err)
 			return
 		}
@@ -885,7 +884,47 @@ func condenseLine(s string) string {
 	return s
 }
 
+// stepOutputTail is how many lines of a failed step's output are shown.
+const stepOutputTail = 20
+
+// runStep runs one docker/apt install step. On success its output (compose
+// progress lines, the migrate container's JSON logs, apt chatter) is noise
+// between the [n/12] lines, so it is buffered and dropped; on failure it is
+// the operator's only clue, so its last lines go to errOut. verbose streams
+// it live instead.
+func runStep(c *exec.Cmd, verbose bool, errOut io.Writer) error {
+	if verbose {
+		c.Stdout, c.Stderr = os.Stdout, os.Stderr
+		return c.Run()
+	}
+	var buf bytes.Buffer
+	c.Stdout, c.Stderr = &buf, &buf
+	err := c.Run()
+	if err != nil {
+		fmt.Fprint(errOut, "\n"+lastLines(buf.String(), stepOutputTail))
+	}
+	return err
+}
+
+// lastLines returns the last n non-empty lines of s, newline-terminated.
+func lastLines(s string, n int) string {
+	var lines []string
+	for _, l := range strings.Split(strings.ReplaceAll(s, "\r", "\n"), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
 func init() {
 	installCmd.Flags().StringP("output", "o", "/var/vectis/generated", "Output directory for generated configs")
+	installCmd.Flags().Bool("verbose", false, "Stream docker and apt output instead of showing it only when a step fails")
 	RootCmd.AddCommand(installCmd)
 }
