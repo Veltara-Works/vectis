@@ -255,6 +255,12 @@ func TestValidateConfig_StripSubmissionExtraHeaders(t *testing.T) {
 		{"DKIM-signed Subject", []string{"Subject"}, true},
 		{"DKIM-signed, case-insensitive", []string{"list-unsubscribe"}, true},
 		{"DKIM-signed among valid", []string{"X-Mailer", "Message-ID"}, true},
+		{"regexp metachar widens match to a signed header", []string{"Subject+"}, true},
+		{"regexp dot", []string{"X.Mailer"}, true},
+		{"map delimiter slash", []string{"X-Mailer/"}, true},
+		{"leading hyphen", []string{"-X-Mailer"}, true},
+		{"underscore and digits allowed", []string{"X_Custom_2"}, false},
+		{"long real header", []string{"X-PHP-Originating-Script"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
