@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -200,5 +202,50 @@ func TestDockerRunAPI(t *testing.T) {
 	// It must never shell out to `docker compose run` (the detach footgun).
 	if strings.Contains(strings.Join(got, " "), "compose run") {
 		t.Error("dockerRunAPI() must not use `docker compose run`")
+	}
+}
+
+func TestLastLines(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"", 3, ""},
+		{"\n\n", 3, ""},
+		{"a\nb\n", 3, "a\nb\n"},
+		{"a\n\nb\nc\nd", 2, "c\nd\n"},
+		// compose progress redraws use \r; each redraw counts as a line.
+		{"pull 10%\rpull 100%\nError: denied", 2, "pull 100%\nError: denied\n"},
+	}
+	for _, c := range cases {
+		if got := lastLines(c.in, c.n); got != c.want {
+			t.Errorf("lastLines(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}
+
+func TestRunStep_QuietOnSuccess(t *testing.T) {
+	var errOut bytes.Buffer
+	if err := runStep(exec.Command("sh", "-c", "echo progress; echo log >&2"), false, &errOut); err != nil {
+		t.Fatalf("runStep: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("successful step printed %q, want nothing", errOut.String())
+	}
+}
+
+func TestRunStep_ShowsTailOnFailure(t *testing.T) {
+	var errOut bytes.Buffer
+	script := "for i in $(seq 1 30); do echo line$i; done; echo 'pull access denied' >&2; exit 3"
+	if err := runStep(exec.Command("sh", "-c", script), false, &errOut); err == nil {
+		t.Fatal("runStep: want an error from exit 3")
+	}
+	got := errOut.String()
+	if !strings.Contains(got, "pull access denied") {
+		t.Errorf("failure output missing the error line: %q", got)
+	}
+	if strings.Contains(got, "line10\n") || !strings.Contains(got, "line30") {
+		t.Errorf("want only the last %d lines, got %q", stepOutputTail, got)
 	}
 }

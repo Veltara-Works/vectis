@@ -166,6 +166,9 @@ func checkPort(port int) checkResult {
 	return checkResult{Name: fmt.Sprintf("Port %d", port), Status: "pass", Value: "available"}
 }
 
+// port25GuideURL explains the outbound port 25 block per VPS provider.
+const port25GuideURL = "https://vectismail.com/guides/port-25-blocked/"
+
 func checkOutboundSMTP() checkResult {
 	// Test outbound port 25 by connecting to a well-known SMTP server.
 	conn, err := net.DialTimeout("tcp", "gmail-smtp-in.l.google.com:25", 10*time.Second)
@@ -174,7 +177,7 @@ func checkOutboundSMTP() checkResult {
 			Name:    "SMTP out",
 			Status:  "warn",
 			Value:   "port 25 blocked",
-			Message: "Contact your hosting provider to unblock outbound SMTP (port 25)",
+			Message: "Your provider blocks outbound mail. How to get it lifted: " + port25GuideURL,
 		}
 	}
 	conn.Close()
