@@ -329,6 +329,12 @@ func validateConfig(cfg *config.VectisConfig) []validateError {
 			Message: "must be greater than 0",
 		})
 	}
+	// Shared with config.ValidateConfig: the names land in a Postfix regexp map.
+	strip := &config.ValidationResult{}
+	config.ValidateStripHeaders("postfix.strip_submission_extra_headers", cfg.Postfix.StripSubmissionExtraHeaders, strip)
+	for _, e := range strip.Errors {
+		errs = append(errs, validateError{Field: e.Field, Message: e.Message})
+	}
 
 	// Dovecot
 	if cfg.Dovecot.MailLocation == "" {

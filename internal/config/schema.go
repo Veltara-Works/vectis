@@ -133,8 +133,10 @@ type PostfixConfig struct {
 	// stamps on the sender), these are authored by the sender's own software
 	// and some senders brand with them, so removing them silently would edit
 	// the customer's message. Ignored when StripSubmissionClientHeaders is
-	// false. Names are validated (RFC 5322 field-name charset) so a config
-	// value cannot inject a regexp rule into the generated map.
+	// false. Names are limited to letters, digits, '-' and '_' so a config
+	// value cannot widen or inject a rule in the generated regexp map, and
+	// headers covered by the DKIM signature are rejected (cleanup runs after
+	// signing). See config.ValidateStripHeaders.
 	StripSubmissionExtraHeaders []string `yaml:"strip_submission_extra_headers"`
 	// InboundNotifySkipSpam suppresses the inbound notification POST (and so
 	// any downstream webhook, ticket or alert) for messages rspamd flagged as

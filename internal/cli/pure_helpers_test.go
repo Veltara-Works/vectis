@@ -74,6 +74,12 @@ func TestValidateConfig_FieldRules(t *testing.T) {
 		{"zero spam threshold", func(c *config.VectisConfig) { c.Rspamd.SpamThreshold = 0 }, "rspamd.spam_threshold"},
 		{"zero reject threshold", func(c *config.VectisConfig) { c.Rspamd.RejectThreshold = 0 }, "rspamd.reject_threshold"},
 		{"zero message size", func(c *config.VectisConfig) { c.Postfix.MessageSizeLimit = 0 }, "postfix.message_size_limit"},
+		{"DKIM-signed strip header", func(c *config.VectisConfig) {
+			c.Postfix.StripSubmissionExtraHeaders = []string{"X-Mailer", "Subject"}
+		}, "postfix.strip_submission_extra_headers[1]"},
+		{"regexp metachar in strip header", func(c *config.VectisConfig) {
+			c.Postfix.StripSubmissionExtraHeaders = []string{"Subject+"}
+		}, "postfix.strip_submission_extra_headers[0]"},
 		{"empty mail location", func(c *config.VectisConfig) { c.Dovecot.MailLocation = "" }, "dovecot.mail_location"},
 		{"zero quota", func(c *config.VectisConfig) { c.Dovecot.QuotaDefaultMB = 0 }, "dovecot.quota_default_mb"},
 		{"backup enabled without schedule", func(c *config.VectisConfig) { c.Backup = config.BackupConfig{Enabled: true} }, "backup.schedule"},

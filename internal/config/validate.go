@@ -100,33 +100,8 @@ func ValidateConfig(cfg *VectisConfig) *ValidationResult {
 		r.AddError("postfix.message_size_limit", "must not exceed 104857600 (100 MB)")
 	}
 
-	// postfix.strip_submission_extra_headers — these names are interpolated
-	// into a generated Postfix regexp map, so an unvalidated value could inject
-	// an arbitrary rule (e.g. a bare "/" closing the pattern) and silently
-	// rewrite or drop unrelated headers. Restrict to the RFC 5322 field-name
-	// charset: printable US-ASCII excluding ":" and whitespace. Same posture as
-	// the DKIM selector and the send-API content_id validation.
-	for i, h := range cfg.Postfix.StripSubmissionExtraHeaders {
-		field := fmt.Sprintf("postfix.strip_submission_extra_headers[%d]", i)
-		if h == "" {
-			r.AddError(field, "must not be empty")
-			continue
-		}
-		if len(h) > 78 {
-			r.AddError(field, "must not exceed 78 characters")
-			continue
-		}
-		if !validHeaderName(h) {
-			r.AddError(field, "must be a valid header name (printable ASCII, no ':' or whitespace)")
-			continue
-		}
-		// Received and X-Originating-IP are always handled by the built-in
-		// rules; listing them again would emit a duplicate, unreachable rule.
-		switch strings.ToLower(h) {
-		case "received", "x-originating-ip":
-			r.AddError(field, "is already stripped by strip_submission_client_headers; remove it from this list")
-		}
-	}
+	// postfix.strip_submission_extra_headers
+	ValidateStripHeaders("postfix.strip_submission_extra_headers", cfg.Postfix.StripSubmissionExtraHeaders, r)
 
 	// dovecot.quota_default_mb
 	if cfg.Dovecot.QuotaDefaultMB <= 0 {
@@ -222,13 +197,70 @@ func ValidateSecrets(secrets *VectisSecrets) *ValidationResult {
 	return r
 }
 
-// validHeaderName reports whether s is a legal RFC 5322 header field name:
-// printable US-ASCII (33-126) excluding ":". Whitespace and control characters
-// are rejected, which also makes s safe to interpolate into a Postfix regexp
-// map rule.
+// ValidateStripHeaders checks a list of header names to strip from submitted
+// mail, recording errors under field[i]. It is shared by ValidateConfig and the
+// CLI's `config validate`/`apply`, which keeps its own validator.
+//
+// The names are interpolated into a generated Postfix regexp map, so only
+// letters, digits, '-' and '_' are accepted: none is a regexp metacharacter or
+// the '/' map delimiter, so a name can neither widen its own match ("Subject+"
+// would also match Subject) nor inject or break a rule. Every real header name
+// fits this set.
+func ValidateStripHeaders(field string, names []string, r *ValidationResult) {
+	for i, h := range names {
+		f := fmt.Sprintf("%s[%d]", field, i)
+		if h == "" {
+			r.AddError(f, "must not be empty")
+			continue
+		}
+		if len(h) > 78 {
+			r.AddError(f, "must not exceed 78 characters")
+			continue
+		}
+		if !validHeaderName(h) {
+			r.AddError(f, "must be a header name of letters, digits, '-' and '_' only")
+			continue
+		}
+		// Received, X-Originating-IP and Authentication-Results are always
+		// handled by the built-in rules; listing them again would emit a
+		// duplicate, unreachable rule.
+		switch strings.ToLower(h) {
+		case "received", "x-originating-ip", "authentication-results":
+			r.AddError(f, "is already stripped by strip_submission_client_headers; remove it from this list")
+			continue
+		}
+		// The submission cleanup service runs after the rspamd milter has
+		// DKIM-signed the message, so removing a signed header breaks the
+		// signature on every message sent from this host.
+		if dkimSignedHeaders[strings.ToLower(h)] {
+			r.AddError(f, "is covered by the DKIM signature; removing it would break DKIM on every outgoing message")
+		}
+	}
+}
+
+// dkimSignedHeaders is rspamd's default DKIM signing header list
+// (default_dkim_headers in lualib/lua_ffi/dkim.lua, rspamd 4.0.1), which
+// dkim_signing.conf does not override. Lower-case for case-insensitive lookup.
+var dkimSignedHeaders = map[string]bool{
+	"from": true, "sender": true, "reply-to": true, "subject": true,
+	"date": true, "message-id": true, "to": true, "cc": true,
+	"mime-version": true, "content-type": true, "content-transfer-encoding": true,
+	"resent-to": true, "resent-cc": true, "resent-from": true,
+	"resent-sender": true, "resent-message-id": true,
+	"in-reply-to": true, "references": true,
+	"list-id": true, "list-owner": true, "list-unsubscribe": true,
+	"list-subscribe": true, "list-post": true,
+	"openpgp": true, "autocrypt": true,
+}
+
+// validHeaderName reports whether s starts with a letter or digit and holds
+// only letters, digits, '-' and '_'.
 func validHeaderName(s string) bool {
-	for _, c := range []byte(s) {
-		if c < 33 || c > 126 || c == ':' {
+	for i, c := range []byte(s) {
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case (c == '-' || c == '_') && i > 0:
+		default:
 			return false
 		}
 	}
