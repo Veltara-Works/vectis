@@ -648,14 +648,19 @@ func TestReloadMailServices_StartsAgainAfterHUP(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("STUB_LOG", log)
 	old := hupSettle
-	hupSettle = time.Millisecond
+	hupSettle = 200 * time.Millisecond
 	t.Cleanup(func() { hupSettle = old })
 
+	began := time.Now()
 	reloadMailServices(context.Background(), ExtractOptions{
 		ReloadPostfix: "vectis-postfix",
 		ReloadDovecot: "vectis-dovecot",
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	// An immediate second start would be a no-op: the container hasn't exited yet.
+	if elapsed := time.Since(began); elapsed < hupSettle {
+		t.Errorf("second start ran after %v, before the %v settle", elapsed, hupSettle)
+	}
 
 	got, err := os.ReadFile(log)
 	if err != nil {
