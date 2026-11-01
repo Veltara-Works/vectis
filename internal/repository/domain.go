@@ -14,20 +14,23 @@ import (
 
 // Domain represents a mail domain.
 type Domain struct {
-	ID                 string    `json:"id"`
-	Name               string    `json:"name"`
-	Active             bool      `json:"active"`
-	DKIMEnabled        bool      `json:"dkim_enabled"`
-	DKIMSelector       string    `json:"dkim_selector"`
-	DKIMKeyPath        *string   `json:"dkim_key_path,omitempty"`
-	SpamThreshold      *float64  `json:"spam_threshold,omitempty"` // column spam_threshold_override (000024); nil = config.yaml
-	RejectThreshold    *float64  `json:"reject_threshold,omitempty"`
-	GreylistEnabled    *bool     `json:"greylist_enabled,omitempty"`
-	MaxMailboxes       *int      `json:"max_mailboxes,omitempty"`
-	VerificationStatus string    `json:"verification_status"`
-	VerificationToken  *string   `json:"verification_token,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Active          bool     `json:"active"`
+	DKIMEnabled     bool     `json:"dkim_enabled"`
+	DKIMSelector    string   `json:"dkim_selector"`
+	DKIMKeyPath     *string  `json:"dkim_key_path,omitempty"`
+	SpamThreshold   *float64 `json:"spam_threshold,omitempty"` // column spam_threshold_override (000024); nil = config.yaml
+	RejectThreshold *float64 `json:"reject_threshold,omitempty"`
+	GreylistEnabled *bool    `json:"greylist_enabled,omitempty"`
+	MaxMailboxes    *int     `json:"max_mailboxes,omitempty"`
+	// StripSubmissionHeaders lists extra headers removed from mail this domain
+	// sends, on top of the host-wide config.yaml list (#231). nil = none.
+	StripSubmissionHeaders []string  `json:"strip_submission_headers,omitempty"`
+	VerificationStatus     string    `json:"verification_status"`
+	VerificationToken      *string   `json:"verification_token,omitempty"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 // DomainCreate holds fields for creating a domain.
@@ -52,10 +55,15 @@ type DomainUpdate struct {
 	GreylistEnabled    *bool
 	MaxMailboxes       *int
 	VerificationStatus *string
+	// StripSubmissionHeaders replaces the per-domain list when non-nil.
+	StripSubmissionHeaders []string
 
 	ClearSpamThreshold   bool
 	ClearRejectThreshold bool
 	ClearGreylistEnabled bool
+	// ClearStripSubmissionHeaders sets the list back to NULL (no per-domain
+	// additions) and wins over StripSubmissionHeaders.
+	ClearStripSubmissionHeaders bool
 }
 
 // DomainRepo handles domain CRUD operations.
@@ -111,13 +119,13 @@ func (r *DomainRepo) Create(ctx context.Context, input DomainCreate) (*Domain, e
 // applied, and only pre-v0.1.50 binaries still read it (dropped in a later
 // release). New rows get its 15.0 default for those readers.
 const domainCols = `id, name, active, dkim_enabled, dkim_selector, dkim_key_path,
-	spam_threshold_override, reject_threshold, greylist_enabled, max_mailboxes, verification_status, verification_token, created_at, updated_at`
+	spam_threshold_override, reject_threshold, greylist_enabled, max_mailboxes, strip_submission_headers, verification_status, verification_token, created_at, updated_at`
 
 // scanDomain scans a row into a Domain struct matching domainCols order.
 func scanDomain(scan func(dest ...any) error) (*Domain, error) {
 	d := &Domain{}
 	err := scan(&d.ID, &d.Name, &d.Active, &d.DKIMEnabled, &d.DKIMSelector, &d.DKIMKeyPath,
-		&d.SpamThreshold, &d.RejectThreshold, &d.GreylistEnabled, &d.MaxMailboxes, &d.VerificationStatus, &d.VerificationToken, &d.CreatedAt, &d.UpdatedAt)
+		&d.SpamThreshold, &d.RejectThreshold, &d.GreylistEnabled, &d.MaxMailboxes, &d.StripSubmissionHeaders, &d.VerificationStatus, &d.VerificationToken, &d.CreatedAt, &d.UpdatedAt)
 	return d, err
 }
 
@@ -330,6 +338,14 @@ func (r *DomainRepo) Update(ctx context.Context, id string, input DomainUpdate) 
 	if input.MaxMailboxes != nil {
 		setClauses = append(setClauses, fmt.Sprintf("max_mailboxes = $%d", argIdx))
 		args = append(args, *input.MaxMailboxes)
+		argIdx++
+	}
+	switch {
+	case input.ClearStripSubmissionHeaders:
+		setClauses = append(setClauses, "strip_submission_headers = NULL")
+	case input.StripSubmissionHeaders != nil:
+		setClauses = append(setClauses, fmt.Sprintf("strip_submission_headers = $%d", argIdx))
+		args = append(args, input.StripSubmissionHeaders)
 		argIdx++
 	}
 	if input.VerificationStatus != nil {

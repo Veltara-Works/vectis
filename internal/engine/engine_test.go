@@ -2457,3 +2457,61 @@ func TestRspamdRBLSpamhausDQS(t *testing.T) {
 		}
 	}
 }
+
+// Per-domain submission header strip (#231): only active domains with a list
+// render a line, and the Lua rule loads the map and acts on outbound mail only.
+func TestStripHeadersMap(t *testing.T) {
+	data := testData()
+	data.Domains = []repository.Domain{
+		{Name: "a.example", Active: true, StripSubmissionHeaders: []string{"X-Mailer", "User-Agent"}},
+		{Name: "b.example", Active: true},
+		{Name: "c.example", Active: false, StripSubmissionHeaders: []string{"X-Mailer"}},
+	}
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	get := func(path string) string {
+		for _, f := range files {
+			if f.RelPath == path {
+				return string(f.Content)
+			}
+		}
+		t.Fatalf("%s not generated", path)
+		return ""
+	}
+	m := get("rspamd/maps/strip_headers.map")
+	if !strings.Contains(m, "a.example X-Mailer,User-Agent\n") {
+		t.Errorf("strip_headers.map missing a.example's list:\n%s", m)
+	}
+	for _, absent := range []string{"b.example", "c.example"} {
+		if strings.Contains(m, absent) {
+			t.Errorf("strip_headers.map must not list %s (no list / inactive):\n%s", absent, m)
+		}
+	}
+	lua := get("rspamd/rspamd.local.lua")
+	for _, want := range []string{"VECTIS_STRIP_SUBMISSION_HEADERS", "maps/strip_headers.map",
+		"task:get_user()", "ip:is_local()", "lua_mime.modify_headers(task, { remove = remove })"} {
+		if !strings.Contains(lua, want) {
+			t.Errorf("rspamd.local.lua missing %q", want)
+		}
+	}
+}
+
+func TestStripHeadersMapEmptyWithoutLists(t *testing.T) {
+	m := ""
+	files, _ := Generate(testData())
+	for _, f := range files {
+		if f.RelPath == "rspamd/maps/strip_headers.map" {
+			m = string(f.Content)
+		}
+	}
+	if m == "" {
+		t.Fatal("strip_headers.map not generated (the file must always exist for the add_map)")
+	}
+	for _, l := range strings.Split(m, "\n") {
+		if l != "" && !strings.HasPrefix(l, "#") {
+			t.Errorf("unexpected entry with no lists: %q", l)
+		}
+	}
+}

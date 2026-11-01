@@ -580,6 +580,7 @@ func splitMailLocation(loc string) (driver, path string) {
 var funcMap = template.FuncMap{
 	"upper":    strings.ToUpper,
 	"lower":    strings.ToLower,
+	"join":     func(s []string, sep string) string { return strings.Join(s, sep) },
 	"hasFloat": func(p *float64) bool { return p != nil },
 	"hasBool":  func(p *bool) bool { return p != nil },
 	// Dovecot 2.4 mail_location → mail_driver/mail_path/mail_home conversion.

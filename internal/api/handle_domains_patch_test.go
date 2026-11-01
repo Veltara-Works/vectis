@@ -68,6 +68,57 @@ func TestUpdateDomainRequest_AbsentVsNull(t *testing.T) {
 	}
 }
 
+// TestNormalizeStripHeaders (#231): the per-domain list reuses the host-wide
+// validation, is de-duplicated case-insensitively, and an empty list clears.
+func TestNormalizeStripHeaders(t *testing.T) {
+	got, msg := normalizeStripHeaders([]string{"X-Mailer", "x-mailer", "User-Agent"})
+	if msg != "" || len(got) != 2 || got[0] != "X-Mailer" || got[1] != "User-Agent" {
+		t.Errorf("de-dup: got %v %q", got, msg)
+	}
+	if got, msg := normalizeStripHeaders([]string{}); msg != "" || got != nil {
+		t.Errorf("empty list must clear (nil), got %v %q", got, msg)
+	}
+	for _, bad := range [][]string{{"Subject"}, {"Subject+"}, {"X Mailer"}, {""}, {"Received"}} {
+		if _, msg := normalizeStripHeaders(bad); !strings.HasPrefix(msg, "strip_submission_headers[0]: ") {
+			t.Errorf("%q must be refused with a field-named message, got %q", bad, msg)
+		}
+	}
+	tooMany := make([]string, maxStripHeaders+1)
+	for i := range tooMany {
+		tooMany[i] = "X-H" + strings.Repeat("a", i+1)
+	}
+	if _, msg := normalizeStripHeaders(tooMany); msg == "" {
+		t.Error("more than maxStripHeaders must be refused")
+	}
+
+	var req updateDomainRequest
+	if err := json.Unmarshal([]byte(`{"strip_submission_headers":null}`), &req); err != nil || !req.StripSubmissionHeaders.clears() {
+		t.Errorf("explicit null must clear: %+v %v", req.StripSubmissionHeaders, err)
+	}
+}
+
+// TestTouchesRspamdConfig: an active-only PATCH must regenerate the rspamd
+// files, because strip_headers.map lists only active domains (Copilot review
+// on #328); an unrelated field must not.
+func TestTouchesRspamdConfig(t *testing.T) {
+	for body, want := range map[string]bool{
+		`{"active":true}`:                           true,
+		`{"active":false}`:                          true,
+		`{"strip_submission_headers":["X-Mailer"]}`: true,
+		`{"strip_submission_headers":null}`:         true,
+		`{"greylist_enabled":null}`:                 true,
+		`{"max_mailboxes":10}`:                      false,
+	} {
+		var req updateDomainRequest
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Fatalf("decode %s: %v", body, err)
+		}
+		if got := req.touchesRspamdConfig(); got != want {
+			t.Errorf("%s: touchesRspamdConfig() = %v, want %v", body, got, want)
+		}
+	}
+}
+
 // TestNormalizeThreshold: values are rounded to the one decimal place the
 // DECIMAL(4,1) column stores BEFORE the 0.1–999.9 range check, so what passes
 // validation is exactly what gets stored (Copilot review on #246).

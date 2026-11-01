@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Veltara-Works/vectis/internal/config"
 	"github.com/Veltara-Works/vectis/internal/dkim"
 	"github.com/Veltara-Works/vectis/internal/engine"
 	"github.com/Veltara-Works/vectis/internal/repository"
@@ -45,6 +47,9 @@ type updateDomainRequest struct {
 	RejectThreshold optional[float64] `json:"reject_threshold,omitzero"`
 	GreylistEnabled optional[bool]    `json:"greylist_enabled,omitzero"`
 	MaxMailboxes    *int              `json:"max_mailboxes,omitempty"`
+	// StripSubmissionHeaders replaces the per-domain strip list (#231); null or
+	// [] clears it.
+	StripSubmissionHeaders optional[[]string] `json:"strip_submission_headers,omitzero"`
 }
 
 // optional is a PATCH field that tells an absent key (Set=false: leave the
@@ -92,6 +97,37 @@ func normalizeThreshold(v *float64) (*float64, bool) {
 
 const invalidThresholdMsg = "spam_threshold and reject_threshold must be between 0.1 and 999.9 (one decimal place)"
 
+// maxStripHeaders caps a domain's strip list; real lists hold a handful.
+const maxStripHeaders = 20
+
+// normalizeStripHeaders de-duplicates a per-domain strip list case-insensitively
+// (header names are case-insensitive) and validates it with the same rules as
+// the host-wide config.yaml list: the names are rendered into an rspamd map and
+// removed after DKIM signing. An empty list returns nil (= clear). The error
+// message names the first offending entry.
+func normalizeStripHeaders(names []string) ([]string, string) {
+	if len(names) > maxStripHeaders {
+		return nil, fmt.Sprintf("strip_submission_headers must not list more than %d headers", maxStripHeaders)
+	}
+	r := &config.ValidationResult{}
+	config.ValidateStripHeaders("strip_submission_headers", names, r)
+	if len(r.Errors) > 0 {
+		return nil, r.Errors[0].Field + ": " + r.Errors[0].Message
+	}
+	seen := make(map[string]bool, len(names))
+	out := make([]string, 0, len(names))
+	for _, h := range names {
+		if k := strings.ToLower(h); !seen[k] {
+			seen[k] = true
+			out = append(out, h)
+		}
+	}
+	if len(out) == 0 {
+		return nil, ""
+	}
+	return out, ""
+}
+
 // advancedSpamDenied reports whether the caller's licence lacks advanced_spam.
 // It checks that specific entitlement, as the spam-lists route gate does, not
 // the derived tier: any Pro feature (e.g. custom_branding) maps to TierPro.
@@ -121,6 +157,14 @@ func (req *updateDomainRequest) setsAdvancedSpamFields() bool {
 // per-domain spam knob, i.e. whether Rspamd's settings.conf must be rewritten.
 func (req *updateDomainRequest) touchesAdvancedSpamFields() bool {
 	return req.SpamThreshold.Set || req.RejectThreshold.Set || req.GreylistEnabled.Set
+}
+
+// touchesRspamdConfig reports whether a PATCH changes anything the rspamd
+// files render: a per-domain spam knob, the strip list, or `active`, because
+// strip_headers.map lists only active domains (reactivating one must restore
+// its line).
+func (req *updateDomainRequest) touchesRspamdConfig() bool {
+	return req.touchesAdvancedSpamFields() || req.StripSubmissionHeaders.Set || req.Active != nil
 }
 
 func (s *Server) handleListDomains(w http.ResponseWriter, r *http.Request) {
@@ -366,6 +410,18 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.StripSubmissionHeaders.Set && req.StripSubmissionHeaders.Value != nil {
+		list, msg := normalizeStripHeaders(*req.StripSubmissionHeaders.Value)
+		if msg != "" {
+			respondError(w, r, http.StatusBadRequest, "INVALID_STRIP_HEADERS", msg)
+			return
+		}
+		req.StripSubmissionHeaders.Value = nil // [] clears, like null
+		if list != nil {
+			req.StripSubmissionHeaders.Value = &list
+		}
+	}
+
 	// Field-level gate: reject the whole PATCH if a caller without the
 	// advanced_spam entitlement tries to set spam_threshold, reject_threshold
 	// or greylist_enabled. Decision D1+D2 in plan
@@ -378,7 +434,18 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Per-domain header stripping (#231) is Pro, gated on the same per-domain
+	// mail-processing entitlement. Clearing stays allowed on any tier.
+	if req.StripSubmissionHeaders.Value != nil && s.advancedSpamDenied(r) {
+		respondError(w, r, http.StatusForbidden, "FEATURE_NOT_AVAILABLE",
+			"strip_submission_headers requires a Pro license (advanced_spam)")
+		return
+	}
 
+	var stripHeaders []string
+	if req.StripSubmissionHeaders.Value != nil {
+		stripHeaders = *req.StripSubmissionHeaders.Value
+	}
 	domain, err := s.domains.Update(r.Context(), domainID, repository.DomainUpdate{
 		Active:               req.Active,
 		DKIMEnabled:          req.DKIMEnabled,
@@ -390,6 +457,9 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		ClearSpamThreshold:   req.SpamThreshold.clears(),
 		ClearRejectThreshold: req.RejectThreshold.clears(),
 		ClearGreylistEnabled: req.GreylistEnabled.clears(),
+
+		StripSubmissionHeaders:      stripHeaders,
+		ClearStripSubmissionHeaders: req.StripSubmissionHeaders.clears(),
 	})
 	if err != nil {
 		s.logger.Error("update domain failed", "error", err)
@@ -405,7 +475,7 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "domain.update", "domain", &domainID, req, &ip)
 
-	if req.touchesAdvancedSpamFields() && s.cfg != nil && s.secrets != nil && s.genDir != "" {
+	if req.touchesRspamdConfig() && s.cfg != nil && s.secrets != nil && s.genDir != "" {
 		s.regenerateRspamdSpamConfig()
 	}
 
@@ -600,6 +670,7 @@ func (s *Server) regenerateRspamdSpamConfig() {
 		"rspamd/maps/block_email.map":      true,
 		"rspamd/maps/block_domain.map":     true,
 		"rspamd/maps/dmarc_exceptions.map": true,
+		"rspamd/maps/strip_headers.map":    true,
 	}
 	subset := make([]engine.GeneratedFile, 0, len(wanted))
 	for _, f := range files {

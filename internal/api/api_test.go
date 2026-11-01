@@ -1211,6 +1211,71 @@ func TestDomainUpdate_SpamThreshold_FreeGated(t *testing.T) {
 	env.doRequest(t, "DELETE", "/api/v1/domains/"+domainID, "")
 }
 
+// TestDomainUpdate_StripSubmissionHeaders (#231): setting a per-domain strip
+// list needs advanced_spam, a bad or DKIM-signed name is a 400, the stored list
+// is de-duplicated, and clearing (null or []) is allowed on any tier.
+func TestDomainUpdate_StripSubmissionHeaders(t *testing.T) {
+	env := setupTestEnv(t)
+	deactivateLicense(t, env)
+	domainID := createDomainForTest(t, env, "strip-headers")
+	path := "/api/v1/domains/" + domainID
+
+	free := activateLicenseWithFeatures(t, env, "basic_mail")
+	resp := env.doRequest(t, "PATCH", path, `{"strip_submission_headers":["X-Mailer"]}`)
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("Free-tier strip_submission_headers PATCH must be 403; got %d", resp.StatusCode)
+	}
+	resp = env.doRequest(t, "PATCH", path, `{"strip_submission_headers":null}`)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("clearing strip_submission_headers must be allowed on Free; got %d", resp.StatusCode)
+	}
+	free.Close()
+	deactivateLicense(t, env)
+
+	pro := activateLicenseWithFeatures(t, env, "basic_mail", "advanced_spam")
+	defer pro.Close()
+	defer deactivateLicense(t, env)
+
+	for _, body := range []string{
+		`{"strip_submission_headers":["Subject"]}`,  // DKIM-signed
+		`{"strip_submission_headers":["Subject+"]}`, // regexp metacharacter
+		`{"strip_submission_headers":["X Mailer"]}`,
+	} {
+		resp := env.doRequest(t, "PATCH", path, body)
+		parsed := parseBody(t, resp)
+		if resp.StatusCode != 400 {
+			t.Errorf("%s: expected 400, got %d", body, resp.StatusCode)
+		} else if errObj, _ := parsed["error"].(map[string]any); errObj == nil || errObj["code"] != "INVALID_STRIP_HEADERS" {
+			t.Errorf("%s: expected INVALID_STRIP_HEADERS, got %v", body, parsed["error"])
+		}
+	}
+
+	resp = env.doRequest(t, "PATCH", path, `{"strip_submission_headers":["X-Mailer","x-mailer","User-Agent"]}`)
+	parsed := parseBody(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("Pro strip_submission_headers PATCH: expected 200, got %d (%v)", resp.StatusCode, parsed)
+	}
+	got, _ := parsed["data"].(map[string]any)["strip_submission_headers"].([]any)
+	if len(got) != 2 || got[0] != "X-Mailer" || got[1] != "User-Agent" {
+		t.Errorf("stored list = %v, want [X-Mailer User-Agent] (case-insensitive de-dup)", got)
+	}
+
+	resp = env.doRequest(t, "PATCH", path, `{"strip_submission_headers":[]}`)
+	parsed = parseBody(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("[] must clear: expected 200, got %d", resp.StatusCode)
+	}
+	if v, present := parsed["data"].(map[string]any)["strip_submission_headers"]; present {
+		t.Errorf("[] must clear the list, got %v", v)
+	}
+
+	// Cleanup.
+	deactivateLicense(t, env)
+	env.doRequest(t, "DELETE", path, "")
+}
+
 // TestDomainUpdate_AdvancedSpamFields_ProWithoutEntitlement403: the per-domain
 // spam knobs check the advanced_spam entitlement itself, not the derived tier.
 // A licence with another Pro feature resolves to TierPro but must still be
