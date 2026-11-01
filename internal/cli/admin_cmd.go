@@ -78,7 +78,7 @@ func runAdminInit(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	dbCfg := database.ConfigFromSecrets(
-		secrets.Database.Host, secrets.Database.Port, secrets.Database.Name,
+		cliDBHost(secrets.Database.Host), secrets.Database.Port, secrets.Database.Name,
 		secrets.Database.APIUser, secrets.Database.APIPassword,
 	)
 	pool, err := database.NewPool(ctx, dbCfg, logger)
@@ -149,7 +149,7 @@ func runAdminResetPassword(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	dbCfg := database.ConfigFromSecrets(
-		secrets.Database.Host, secrets.Database.Port, secrets.Database.Name,
+		cliDBHost(secrets.Database.Host), secrets.Database.Port, secrets.Database.Name,
 		secrets.Database.APIUser, secrets.Database.APIPassword,
 	)
 	pool, err := database.NewPool(ctx, dbCfg, logger)

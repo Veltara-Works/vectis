@@ -37,7 +37,7 @@ func runMigrateUp(cmd *cobra.Command, args []string) error {
 
 	logger := logging.NewLogger("info")
 	dbCfg := database.ConfigFromSecrets(
-		secrets.Database.Host,
+		cliDBHost(secrets.Database.Host),
 		secrets.Database.Port,
 		secrets.Database.Name,
 		secrets.Database.APIUser,
@@ -71,7 +71,7 @@ func runMigrateStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	dbCfg := database.ConfigFromSecrets(
-		secrets.Database.Host,
+		cliDBHost(secrets.Database.Host),
 		secrets.Database.Port,
 		secrets.Database.Name,
 		secrets.Database.APIUser,

@@ -361,7 +361,10 @@ func dockerContainerImage(container string) (containerImage, error) {
 	out, err := exec.Command("docker", "inspect", "--format", "{{.Image}}|{{.Config.Image}}", container).Output()
 	if err != nil {
 		var ee *exec.ExitError
-		if errors.As(err, &ee) && strings.Contains(string(ee.Stderr), "No such") {
+		// Docker 29's `docker inspect` says "no such object", older ones "No such
+		// object". Not bare "no such": "no such host" and "no such file" are
+		// endpoint failures, which must stay unverifiable.
+		if errors.As(err, &ee) && strings.Contains(strings.ToLower(string(ee.Stderr)), "no such object") {
 			return containerImage{}, nil
 		}
 		return containerImage{}, err
