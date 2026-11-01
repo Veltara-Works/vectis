@@ -1162,6 +1162,36 @@ func TestWebmailUsesVectisImageNotUpstream(t *testing.T) {
 // that isn't in the upstream roundcubemail:fpm-alpine image. Containers
 // stayed marked unhealthy on every fresh install. v0.1.6 replaces it with
 // a busybox-ps probe of the FPM master process.
+// On a fresh install dovecot crash-loops until the first TLS cert lands, after
+// `up -d` returns. If webmail waits for it to be healthy, compose aborts the whole
+// `up` and webmail is left Created, never started.
+func TestWebmailDoesNotWaitForDovecotHealth(t *testing.T) {
+	data := testData()
+	data.Webmail.Enabled = true
+	files, err := Generate(data)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	for _, f := range files {
+		if f.RelPath != "docker-compose.yml" {
+			continue
+		}
+		compose := string(f.Content)
+		start := strings.Index(compose, "container_name: vectis-webmail")
+		if start < 0 {
+			t.Fatal("webmail service not rendered")
+		}
+		block := compose[start:]
+		block = block[:strings.Index(block, "healthcheck:")]
+		if strings.Contains(block, "condition: service_healthy") {
+			t.Errorf("webmail must not wait for a healthy dependency:\n%s", block)
+		}
+		if strings.Count(block, "condition: service_started") != 2 {
+			t.Errorf("webmail should still start after dovecot and postfix:\n%s", block)
+		}
+	}
+}
+
 func TestWebmailHealthcheckIsNotPhpFpmHealthcheck(t *testing.T) {
 	data := testData()
 	data.Webmail.Enabled = true

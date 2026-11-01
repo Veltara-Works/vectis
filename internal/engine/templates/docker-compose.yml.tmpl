@@ -424,11 +424,15 @@ services:
       ROUNDCUBEMAIL_UPLOAD_MAX_FILESIZE: "{{ if .Webmail.UploadMaxMB }}{{ .Webmail.UploadMaxMB }}{{ else }}25{{ end }}M"
       ROUNDCUBEMAIL_SKIN: "vectis"
       ROUNDCUBEMAIL_PLUGINS: "archive,managesieve,zipdownload"
+    # service_started, not service_healthy: on a fresh install dovecot crash-loops
+    # until the first TLS cert lands, which is after `up -d` returns. Waiting for
+    # healthy made compose abort and left webmail Created, never started. Roundcube
+    # only talks to IMAP/SMTP when someone logs in.
     depends_on:
       dovecot:
-        condition: service_healthy
+        condition: service_started
       postfix:
-        condition: service_healthy
+        condition: service_started
     # roundcubemail:apache (debian base) ships curl but NOT wget — caught
     # on prod 2026-05-04 rc5 walkthrough: wget healthcheck fired 9 times
     # in a row "wget: not found" and marked the container unhealthy.

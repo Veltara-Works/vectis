@@ -281,6 +281,41 @@ func reloadMailServices(ctx context.Context, opts ExtractOptions) {
 		}
 		opts.Logger.Info("sent SIGHUP", "container", name)
 	}
+	startAgainAfterHUP(ctx, opts)
+}
+
+// hupSettle is how long a mid-start container gets to fail before the second start.
+var hupSettle = 3 * time.Second
+
+// startAgainAfterHUP covers a container that was mid-start when the cert landed.
+// It read the config before the cert existed, so it exits fatally just after the
+// HUP. `docker kill` also cancels the restart policy for the container's next
+// exit, so without this it stays Exited and IMAPS/POP3S never come up. A start on
+// a running container is a no-op.
+func startAgainAfterHUP(ctx context.Context, opts ExtractOptions) {
+	if opts.ReloadPostfix == "" && opts.ReloadDovecot == "" {
+		return
+	}
+	select {
+	case <-time.After(hupSettle):
+	case <-ctx.Done():
+		return
+	}
+	for _, name := range []string{opts.ReloadPostfix, opts.ReloadDovecot} {
+		if name == "" {
+			continue
+		}
+		startCtx, cancel := context.WithTimeout(ctx, dockerCmdTimeout)
+		out, err := exec.CommandContext(startCtx, "docker", "container", "start", name).CombinedOutput()
+		cancel()
+		if err != nil {
+			opts.Logger.Warn("docker container start after reload failed",
+				"container", name,
+				"error", err,
+				"output", strings.TrimSpace(string(out)),
+			)
+		}
+	}
 }
 
 // Watch runs the extraction loop until ctx is cancelled. PollInterval
