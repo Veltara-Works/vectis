@@ -180,7 +180,7 @@ func Extract(opts ExtractOptions) (ExtractResult, error) {
 	// atomic renames — a POSIX filesystem offers no way to swap three files as
 	// one atomic set (TLS-3). Each writeAtomic is itself atomic + fsync-durable,
 	// and consistency across the triple is guaranteed two other ways: (1) the
-	// The reload fires only after all three writes succeed (reloadMailServices
+	// reload fires only after all three writes succeed (reloadMailServices
 	// runs post-write on Changed=true), so no consumer is signalled to read a
 	// half-written pair; (2) a crash mid-triple self-heals on the next poll —
 	// hashExistingFiles(fullchain, privkey) won't match newHash, so the triple is
