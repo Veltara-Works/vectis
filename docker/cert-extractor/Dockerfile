@@ -13,7 +13,7 @@ RUN CGO_ENABLED=0 go build -tags netgo,osusergo \
 
 FROM alpine:3.24
 
-# docker-cli is required at runtime so the extractor can SIGHUP
+# docker-cli is required at runtime so the extractor can reload
 # vectis-postfix / vectis-dovecot when the cert rotates. The container
 # must be given /var/run/docker.sock by the compose template.
 RUN apk add --no-cache ca-certificates tzdata docker-cli

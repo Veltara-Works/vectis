@@ -43,7 +43,7 @@ func GenerateSelfSigned(certDir, hostname string) error {
 // Traefik issues, which can take minutes on a fresh DNS record and
 // forever if LE fails. The placeholder lets dovecot start cleanly; when
 // the real cert arrives, the extractor's content-hash check detects the
-// change and SIGHUPs dovecot/postfix so they reload the real cert.
+// change and reloads dovecot/postfix so they pick up the real cert.
 func GenerateSelfSignedPlaceholder(certDir, hostname string) error {
 	return generateSelfSigned(selfSignedOptions{
 		CertDir:      certDir,

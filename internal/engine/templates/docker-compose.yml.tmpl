@@ -589,7 +589,7 @@ services:
 {{ if eq .TLS.Provider "letsencrypt" }}
   # Mail-cert extractor: mirrors the Let's Encrypt cert Traefik already
   # holds for {{ .Hostname }} from traefik-acme/acme.json into the
-  # mail-certs volume, then SIGHUPs postfix + dovecot so they reload.
+  # mail-certs volume, then reloads postfix + dovecot.
   #
   # Replaces the old acme.sh sidecar (broken on non-Cloudflare installs
   # since it landed — see deferred-items.md §10 GA Blocker #6). Traefik
@@ -610,8 +610,8 @@ services:
     volumes:
       - traefik-acme:/var/traefik/acme:ro
       - mail-certs:/etc/ssl/mail
-      # Docker socket gives the extractor the ability to `docker kill
-      # --signal=HUP` postfix/dovecot when the cert rotates. Scope is
+      # Docker socket lets the extractor `docker exec` a reload in
+      # postfix/dovecot when the cert rotates. Scope is
       # intentionally read-write (socket mounts don't honour :ro for
       # write operations) — blast radius comparable to the old acme.sh
       # sidecar which also had the socket for its deploy hook.

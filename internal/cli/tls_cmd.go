@@ -60,8 +60,8 @@ var tlsExtractTraefikCmd = &cobra.Command{
 With --watch the command runs indefinitely, polling acme.json every
 --poll-interval (default 30s) and re-extracting on change. When the cert
 content changes, --reload-postfix and/or --reload-dovecot container names
-are signalled with SIGHUP via 'docker kill' so Postfix/Dovecot pick up
-the renewed cert without a full restart.
+are reloaded via 'docker exec' so Postfix/Dovecot pick up the renewed cert
+without a full restart.
 
 This is the replacement for the old acme.sh sidecar — Traefik already
 issues and renews the mail cert as a side-effect of serving the admin UI,
@@ -214,8 +214,8 @@ func init() {
 	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractACMEJSON, "acme-json", "/var/traefik/acme/acme.json", "Path to Traefik's acme.json")
 	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractOutDir, "out-dir", "/etc/ssl/mail", "Directory to write fullchain.pem + privkey.pem")
 	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractHostname, "hostname", "", "Hostname (cert's main domain or SAN) to extract")
-	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractReloadPost, "reload-postfix", "", "Postfix container name to SIGHUP on cert change (empty = skip)")
-	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractReloadDove, "reload-dovecot", "", "Dovecot container name to SIGHUP on cert change (empty = skip)")
+	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractReloadPost, "reload-postfix", "", "Postfix container name to reload on cert change (empty = skip)")
+	tlsExtractTraefikCmd.Flags().StringVar(&tlsExtractReloadDove, "reload-dovecot", "", "Dovecot container name to reload on cert change (empty = skip)")
 	tlsExtractTraefikCmd.Flags().BoolVar(&tlsExtractWatch, "watch", false, "Run indefinitely, polling acme.json on an interval")
 	tlsExtractTraefikCmd.Flags().DurationVar(&tlsExtractPollInterval, "poll-interval", 30*time.Second, "Interval between acme.json polls in watch mode")
 

@@ -132,11 +132,17 @@ These 25 decisions were made across six review rounds; ADR-026 was added on 2026
 - **Decision:** Three containers mount the Docker socket, each with the minimum capability needed for a specific operational requirement:
   - **`vectis-orchestrator`** — `:ro` mount; manages full compose stack lifecycle (Plan/Apply, image pulls, container recreate). Primary socket-holder.
   - **`vectis-promtail`** — `:ro` mount; required for `docker_sd_configs` log-label discovery so per-container labels appear in Loki.
-  - **`vectis-cert-extractor`** — RW mount; required for `docker kill --signal=HUP` on mail-stack containers when Traefik writes new certs.
+  - **`vectis-cert-extractor`** — RW mount; required to reload the mail stack with `docker exec` (`postfix reload`, `doveadm reload`) when Traefik writes new certs. Changed from `docker kill --signal=HUP` by Amendment A.
 
   No other container has socket access; API talks to the orchestrator over authenticated internal HTTP for any container-control operation.
 - **Consequence:** Compromised API container cannot control other containers directly. Compromised promtail or cert-extractor has tightly-scoped blast radius (read-only socket plus, for cert-extractor, the ability to send HUP signals to known mail containers). Original "orchestrator-only" rule from 2026-03 was relaxed to accept these two minimal-blast-radius helpers; revisit if a cAdvisor-style or file-watch alternative removes the need for socket access.
 - **History:** Drift first acknowledged in 2026-05-17 audit (P6-M1) — code was at 3 sockets, ADR still said 1. Updated to reflect reality.
+- **Amendment A (ratified 2026-11-02, #334): reloads run inside the container, not through `docker kill`.**
+  - **Context:** On Docker 29.9.2, `docker kill --signal=HUP` cancels a container's restart policy for its next exit, so a crash after a cert rotation isn't restarted and the container doesn't return after a dockerd restart. Likely root cause of #311. Setting a stop signal doesn't help.
+  - **Decision:** cert-extractor reloads with `docker exec` (`postfix reload`, `doveadm reload`), and the engine reloads rspamd with `docker exec vectis-rspamd kill -HUP 1`. Nothing in Vectis sends `docker kill` to a service.
+  - **Consequence:** No new mount or container; the three socket holders are unchanged, and the extractor's socket was already read-write, so its actual capability is the same. The stated reason for it changes.
+  - **Alternatives considered:** shipping the host watchdog to customer installs (covers any cause of a stopped container, but adds a moving part and leaves the restart policy broken); `docker update --restart` after each HUP (untested, and works around the cause instead of removing it).
+  - **Status:** Ratified 2026-11-02 (Ian).
 
 ### ADR-018: Four named container networks
 - **Context:** Need network isolation between service groups

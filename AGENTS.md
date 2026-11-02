@@ -27,7 +27,7 @@
 - **Docker socket access is minimised per ADR-017.** Three containers mount the
   socket, each with the least capability for one need: `orchestrator` (`:ro`,
   the primary socket-holder; full stack lifecycle), `promtail` (`:ro`, log-label
-  discovery), and `cert-extractor` (RW, to `docker kill --signal=HUP` the mail
+  discovery), and `cert-extractor` (RW, to `docker exec` a reload in the mail
   stack on cert rotation). No other container gets the socket; any new code that
   needs to manage containers belongs in the orchestrator.
 - **Migrations are forward-only.** Rollback is via `pg_dump` snapshot restore,

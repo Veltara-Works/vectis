@@ -40,8 +40,8 @@ type ExtractOptions struct {
 	ACMEJSONPath  string        // e.g. /var/traefik/acme/acme.json
 	Hostname      string        // cert whose domain.main or sans matches this
 	OutDir        string        // e.g. /etc/ssl/mail
-	ReloadPostfix string        // container name to SIGHUP on change, "" to skip
-	ReloadDovecot string        // container name to SIGHUP on change, "" to skip
+	ReloadPostfix string        // container name to reload on change, "" to skip
+	ReloadDovecot string        // container name to reload on change, "" to skip
 	PollInterval  time.Duration // only used by Watch; defaults to 30s
 	Logger        *slog.Logger
 }
@@ -180,7 +180,7 @@ func Extract(opts ExtractOptions) (ExtractResult, error) {
 	// atomic renames — a POSIX filesystem offers no way to swap three files as
 	// one atomic set (TLS-3). Each writeAtomic is itself atomic + fsync-durable,
 	// and consistency across the triple is guaranteed two other ways: (1) the
-	// SIGHUP reload fires only after all three writes succeed (reloadMailServices
+	// reload fires only after all three writes succeed (reloadMailServices
 	// runs post-write on Changed=true), so no consumer is signalled to read a
 	// half-written pair; (2) a crash mid-triple self-heals on the next poll —
 	// hashExistingFiles(fullchain, privkey) won't match newHash, so the triple is
@@ -233,20 +233,27 @@ func hashExistingFiles(paths ...string) (string, error) {
 // better than crashing the extractor and losing the watch loop entirely.
 //
 // Order matters: `docker container start` first (idempotent — silent no-op
-// on a running container, restart on an Exited one), THEN SIGHUP. Why:
-// during a fresh `vectis install` on a `letsencrypt` provider, dovecot
-// crashloops 5-7× before Traefik issues + cert-extractor populates the
-// fullchain. Docker's restart-policy backoff can leave it in state=Exited
-// at the moment we write the cert, and `docker kill --signal=HUP` against
-// an Exited container fails silently — the operator is left with a stack
-// where IMAPS/POP3S never come up. The start guarantees the container is
-// running; the SIGHUP then triggers a config reload for the *already*
-// running case (where startup happened before the cert rotated).
-// (Found by 2026-05-10 fresh-VPS §10 walkthrough — see
+// on a running container, restart on an Exited one), THEN reload. During a
+// fresh `vectis install` on a `letsencrypt` provider, dovecot crashloops 5-7×
+// before Traefik issues + cert-extractor populates the fullchain, and it can
+// be Exited at the moment we write the cert. The start guarantees it runs;
+// the reload covers the *already* running case (startup before the cert
+// rotated). (Found by 2026-05-10 fresh-VPS §10 walkthrough — see
 // docs/notes/2026-05-10-fresh-vps-walkthrough-v0.1.10.md FINDING #1.)
+//
+// Reload runs inside the container, never `docker kill --signal=HUP`: that
+// cancels the restart policy for the container's next exit, so a later crash
+// isn't restarted (#334). A container still crash-looping can't exec; that's
+// fine, because it reads the new cert when it next starts.
 func reloadMailServices(ctx context.Context, opts ExtractOptions) {
-	for _, name := range []string{opts.ReloadPostfix, opts.ReloadDovecot} {
-		if name == "" {
+	for _, svc := range []struct {
+		name   string
+		reload []string
+	}{
+		{opts.ReloadPostfix, []string{"postfix", "reload"}},
+		{opts.ReloadDovecot, []string{"doveadm", "reload"}},
+	} {
+		if svc.name == "" {
 			continue
 		}
 		// Bound each docker invocation with its own timeout (TLS-2). Without it
@@ -255,66 +262,31 @@ func reloadMailServices(ctx context.Context, opts ExtractOptions) {
 		// cert-rotation watch loop. A per-command deadline lets a hung reload
 		// fail loudly and the loop keep polling.
 		startCtx, cancelStart := context.WithTimeout(ctx, dockerCmdTimeout)
-		startCmd := exec.CommandContext(startCtx, "docker", "container", "start", name)
+		startCmd := exec.CommandContext(startCtx, "docker", "container", "start", svc.name)
 		if out, err := startCmd.CombinedOutput(); err != nil {
 			opts.Logger.Warn("docker container start failed",
-				"container", name,
+				"container", svc.name,
 				"error", err,
 				"output", strings.TrimSpace(string(out)),
 			)
-			// Do not skip the SIGHUP — `start` may have failed because the
-			// container is already running, in which case the HUP is the
-			// reload path we actually want.
+			// Do not skip the reload — `start` may have failed because the
+			// container is already running, in which case the reload is the
+			// path we actually want.
 		}
 		cancelStart()
-		killCtx, cancelKill := context.WithTimeout(ctx, dockerCmdTimeout)
-		killCmd := exec.CommandContext(killCtx, "docker", "kill", "--signal=HUP", name)
-		out, err := killCmd.CombinedOutput()
-		cancelKill()
+		execCtx, cancelExec := context.WithTimeout(ctx, dockerCmdTimeout)
+		args := append([]string{"exec", svc.name}, svc.reload...)
+		out, err := exec.CommandContext(execCtx, "docker", args...).CombinedOutput()
+		cancelExec()
 		if err != nil {
-			opts.Logger.Warn("reload signal failed",
-				"container", name,
+			opts.Logger.Warn("reload failed",
+				"container", svc.name,
 				"error", err,
 				"output", strings.TrimSpace(string(out)),
 			)
 			continue
 		}
-		opts.Logger.Info("sent SIGHUP", "container", name)
-	}
-	startAgainAfterHUP(ctx, opts)
-}
-
-// hupSettle is how long a mid-start container gets to fail before the second start.
-var hupSettle = 3 * time.Second
-
-// startAgainAfterHUP covers a container that was mid-start when the cert landed.
-// It read the config before the cert existed, so it exits fatally just after the
-// HUP. `docker kill` also cancels the restart policy for the container's next
-// exit, so without this it stays Exited and IMAPS/POP3S never come up. A start on
-// a running container is a no-op.
-func startAgainAfterHUP(ctx context.Context, opts ExtractOptions) {
-	if opts.ReloadPostfix == "" && opts.ReloadDovecot == "" {
-		return
-	}
-	select {
-	case <-time.After(hupSettle):
-	case <-ctx.Done():
-		return
-	}
-	for _, name := range []string{opts.ReloadPostfix, opts.ReloadDovecot} {
-		if name == "" {
-			continue
-		}
-		startCtx, cancel := context.WithTimeout(ctx, dockerCmdTimeout)
-		out, err := exec.CommandContext(startCtx, "docker", "container", "start", name).CombinedOutput()
-		cancel()
-		if err != nil {
-			opts.Logger.Warn("docker container start after reload failed",
-				"container", name,
-				"error", err,
-				"output", strings.TrimSpace(string(out)),
-			)
-		}
+		opts.Logger.Info("reloaded", "container", svc.name)
 	}
 }
 
@@ -420,7 +392,7 @@ const (
 	// so operators tailing logs can tell the extractor is still alive even
 	// during long-silent waits (e.g. while rate-limited).
 	heartbeatEveryPolls = 60
-	// Per-command deadline for the `docker start`/`docker kill` reload calls
+	// Per-command deadline for the `docker start`/`docker exec` reload calls
 	// (TLS-2). Generous enough for a healthy daemon (these are near-instant),
 	// tight enough that a wedged daemon can't hang the watch loop for long.
 	dockerCmdTimeout = 30 * time.Second
@@ -442,7 +414,7 @@ func runOnce(ctx context.Context, opts ExtractOptions, log *slog.Logger, state *
 		// fullchain.pem") every 30s under Docker's restart policy. Write
 		// a short-lived self-signed placeholder so dovecot can at least
 		// start. When the real cert arrives, the content-hash check in
-		// Extract() detects the difference and SIGHUPs dovecot+postfix
+		// Extract() detects the difference and reloads dovecot+postfix
 		// to reload.
 		if !state.placeholderAttempted {
 			state.placeholderAttempted = true

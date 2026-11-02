@@ -316,7 +316,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 // callers that lack docker access — notably the api container, which has no
 // docker socket of its own (only the orchestrator mounts /var/run/docker.sock).
 // Reload is independent of the apply state machine: it is a lightweight signal
-// (e.g. SIGHUP to rspamd) and is safe to run in any state.
+// (e.g. rspamd re-reading its config) and is safe to run in any state.
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Actions []engine.ServiceAction `json:"actions"`
