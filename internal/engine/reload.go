@@ -151,7 +151,9 @@ func ExecuteActions(actions []ServiceAction) []ReloadResult {
 			}
 		case "rspamd":
 			if a.Action == "reload" {
-				cmd = exec.Command("docker", "kill", "--signal=HUP", container)
+				// Signalled from inside: `docker kill --signal=HUP` would cancel
+				// the restart policy for the container's next exit (#334).
+				cmd = exec.Command("docker", "exec", container, "kill", "-HUP", "1")
 			} else {
 				cmd = exec.Command("docker", "restart", container)
 			}
