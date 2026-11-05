@@ -14,6 +14,13 @@
 # clears when Roundcube republishes. Re-check on the next roundcube base bump.
 CVE-2026-43494
 
+# CVE-2026-99083 — linux-libc-dev again, same package and same base image as
+# above (kernel: ksmbd heap out-of-bounds write). Header files only: the package
+# ships no kernel code or modules, so the flaw is not reachable from the
+# container. Upgrading it would change the webmail image for no runtime benefit.
+# Clears with the same Roundcube base bump; re-check then.
+CVE-2026-99083
+
 # NOTE: the former luajit suppressions (CVE-2024-25176/25177/25178) were removed
 # 2026-06-30 — they are FIXED in the current rspamd image. The base moved to
 # alpine:3.24, which ships luajit 2.1_p20251030-r0, well past the 2.1_p20240815-r1
