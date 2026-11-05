@@ -95,6 +95,10 @@ section for the analysis.
 > `web/package-lock.json`: only that version changes (`@remix-run/route-pattern`
 > stays v0.22.1), 6 packages, all MIT. Category 1 unchanged (no Go change).
 
+> **2026-11-05** (#336): `react-router` → v8.5.1. Category 2 recomputed from
+> `web/package-lock.json`: only that version changes (`@remix-run/route-pattern`
+> stays v0.22.1), 6 packages, all MIT. Category 1 unchanged (no Go change).
+
 ---
 
 ## 1. Go modules (compiled into the binaries)
@@ -169,7 +173,7 @@ distributed and are out of scope.
 | `react` | 19.3.1 | MIT |
 | `react-dom` | 19.3.1 | MIT |
 | `scheduler` | 0.28.0 | MIT |
-| `react-router` | 8.5.0 | MIT |
+| `react-router` | 8.5.1 | MIT |
 | `@remix-run/route-pattern` | 0.22.1 | MIT |
 | `cookie-es` | 3.1.1 | MIT |
 
