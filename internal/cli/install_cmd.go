@@ -207,12 +207,15 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	// Step 7: Pull container images. Doing this before `up` keeps timing
 	// failures separate from health-wait failures.
 	printStep("Pulling container images")
+	// A failed pull isn't fatal: the `up` steps below pull any image that is
+	// still missing. Say so instead of printing "done".
 	if err := run(exec.Command("docker", "compose", "-f", composeDst, "pull")); err != nil {
-		fmt.Fprintln(cmd.OutOrStdout())
+		fmt.Fprintln(cmd.OutOrStdout(), " failed, continuing")
 		fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: failed to pull images: %s\n", err)
-		fmt.Fprintln(cmd.ErrOrStderr(), "You can pull manually: docker compose -f "+composeDst+" pull")
+		fmt.Fprintln(cmd.ErrOrStderr(), "The next steps pull any image that is still missing. To retry by hand: docker compose -f "+composeDst+" pull")
+	} else {
+		done()
 	}
-	done()
 
 	// Step 8: Bring up Postgres alone and block until it's healthy. Postgres
 	// must be reachable before migrations can run, and the bootstrap script

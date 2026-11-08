@@ -421,8 +421,14 @@ func (dm *DockerManager) guardPostfixQueue(ctx context.Context, wait time.Durati
 	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format",
 		`{{range .Mounts}}{{if eq .Destination "`+postfixSpoolMount+`"}}mounted{{end}}{{end}}`, containerName("postfix")).CombinedOutput()
 	if err != nil {
-		if strings.Contains(strings.ToLower(string(out)), "no such") {
-			return nil // no container, no queue
+		// Docker 29 says "no such object", older ones "No such object" or "No
+		// such container": no container, no queue. Not a bare "no such": a
+		// missing socket ("no such file or directory") or a bad DOCKER_HOST
+		// ("no such host") means Docker is unreachable, and treating that as
+		// "no container" would skip the drain and risk queued mail.
+		low := strings.ToLower(string(out))
+		if strings.Contains(low, "no such object") || strings.Contains(low, "no such container") {
+			return nil
 		}
 		return fmt.Errorf("inspect postfix mounts: %w: %s", err, strings.TrimSpace(string(out)))
 	}
