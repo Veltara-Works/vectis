@@ -23,6 +23,8 @@ on:
       - 'web/package-lock.json'
       - 'web/.npm-audit-allow.json'
       - 'scripts/npm-audit-gate.sh'
+      - 'scripts/govulncheck-gate.sh'
+      - '.govulncheck-allow.json'
       - '.github/workflows/dependency-security.yml'
   schedule:
     # Mondays 15:23 UTC — surface advisories disclosed since the last commit.
@@ -55,8 +57,10 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
 
+      # Fails on any called vulnerability not accepted, with a reason and an
+      # expiry, in .govulncheck-allow.json (same rules as the npm audit gate).
       - name: Run govulncheck
-        run: govulncheck ./...
+        run: ./scripts/govulncheck-gate.sh
 
   web-audit:
     name: npm audit (admin UI)
