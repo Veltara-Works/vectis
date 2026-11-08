@@ -102,6 +102,27 @@ func TestGuardPostfixQueue(t *testing.T) {
 		}
 	})
 
+	t.Run("no postfix container, Docker 29 wording: allowed", func(t *testing.T) {
+		stubDocker(t, "error: no such object: vectis-postfix", 1, "", 0)
+		if err := dm.guardPostfixQueue(ctx, 0); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// A bare "no such" also appears when Docker itself is unreachable; that
+	// must not read as "no container" and skip the drain.
+	for name, msg := range map[string]string{
+		"docker socket missing: refused": "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. dial unix /var/run/docker.sock: connect: no such file or directory",
+		"docker host unknown: refused":   "error during connect: dial tcp: lookup dockerhost on 127.0.0.53:53: no such host",
+	} {
+		t.Run(name, func(t *testing.T) {
+			stubDocker(t, msg, 1, "", 0)
+			if err := dm.guardPostfixQueue(ctx, 0); err == nil || !strings.Contains(err.Error(), "inspect postfix mounts") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+
 	t.Run("inspect fails otherwise: refused", func(t *testing.T) {
 		stubDocker(t, "permission denied while trying to connect to the Docker daemon socket", 1, "", 0)
 		if err := dm.guardPostfixQueue(ctx, 0); err == nil || !strings.Contains(err.Error(), "inspect postfix mounts") {
