@@ -1,0 +1,20 @@
+{
+  "$comment": [
+    "Temporary, justified acceptances for govulncheck findings whose vulnerable",
+    "code we call. Enforced by scripts/govulncheck-gate.sh — see that script for",
+    "the rules.",
+    "",
+    "An entry is only legitimate when no fixed version exists yet AND the advisory",
+    "is provably not exploitable here (or is mitigated in our code). Always prefer",
+    "upgrading. Every entry MUST carry a reason and a near-term `expires` date; the",
+    "gate fails once that date passes, and once the finding goes away (stale)."
+  ],
+  "advisories": [
+    {
+      "id": "GO-2026-6909",
+      "module": "github.com/crewjam/saml@v0.5.1",
+      "reason": "No fixed version (all releases through v0.5.1). Both bugs need an assertion signed by the provider's own IdP. (1) Nil-pointer panic on an omitted element (the advisory names Issuer; in v0.5.1 validateAssertion it is Subject): caught by recoverAssertionPanic in internal/auth/saml.go, so it is a failed login. (2) Foreign-namespace NameID: accounts are keyed by (provider, NameID), and a provider's IdP can already sign any NameID for that provider, so it gains no access it did not have; an outside attacker cannot sign. SAML SSO is Enterprise-only and not configured on our servers. Remove this entry and the recover guard when crewjam ships a fix.",
+      "expires": "2027-02-08"
+    }
+  ]
+}

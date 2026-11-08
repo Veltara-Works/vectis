@@ -204,7 +204,9 @@ func (m *SAMLManager) ParseAndVerifyAssertion(ctx context.Context, provider *SAM
 	// crewjam validates signature, audience (== sp.EntityID), NotBefore/
 	// NotOnOrAfter (with MaxClockSkew), recipient (== sp.AcsURL), and the
 	// InResponseTo against our issued request ID. It also defends against XSW.
-	assertion, err := provider.SP.ParseResponse(r, []string{requestID})
+	assertion, err := recoverAssertionPanic(func() (*saml.Assertion, error) {
+		return provider.SP.ParseResponse(r, []string{requestID})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("assertion validation: %w", err)
 	}
@@ -231,6 +233,22 @@ func (m *SAMLManager) ParseAndVerifyAssertion(ctx context.Context, provider *SAM
 		Subject:  subject,
 		Email:    email,
 	}, nil
+}
+
+// recoverAssertionPanic runs a crewjam parse and turns a panic into an error.
+// crewjam/saml through v0.5.1 dereferences optional assertion elements without
+// nil checks after signature verification (GO-2026-6909 names Issuer; in
+// v0.5.1's validateAssertion it is assertion.Subject), so a signed assertion
+// that omits one panics. net/http would recover it per request; this makes it
+// an ordinary failed login instead of a logged stack trace and dropped
+// connection. Remove once crewjam ships a fix (see .govulncheck-allow.json).
+func recoverAssertionPanic(parse func() (*saml.Assertion, error)) (a *saml.Assertion, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			a, err = nil, fmt.Errorf("malformed assertion: %v", p)
+		}
+	}()
+	return parse()
 }
 
 // MetadataXML returns the SP metadata XML for this provider, to hand to the IdP.

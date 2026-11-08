@@ -8,7 +8,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -214,4 +216,38 @@ func TestNewSAMLManager_BadKeypair(t *testing.T) {
 	if _, err := NewSAMLManager(context.Background(), nil, secrets, "https://mail.example.com"); err == nil {
 		t.Fatal("expected error on invalid SP keypair")
 	}
+}
+
+// GO-2026-6909: crewjam dereferences optional assertion elements without nil
+// checks after signature verification. The guard must turn that panic into an
+// ordinary error and leave normal results and errors untouched.
+func TestRecoverAssertionPanic(t *testing.T) {
+	t.Run("nil Subject panic becomes an error", func(t *testing.T) {
+		a, err := recoverAssertionPanic(func() (*saml.Assertion, error) {
+			var parsed saml.Assertion // <saml:Subject> omitted
+			// What v0.5.1's validateAssertion does with it:
+			for range parsed.Subject.SubjectConfirmations {
+			}
+			return &parsed, nil
+		})
+		if a != nil || err == nil || !strings.Contains(err.Error(), "malformed assertion") {
+			t.Fatalf("got (%v, %v), want (nil, malformed assertion error)", a, err)
+		}
+	})
+
+	t.Run("success passes through", func(t *testing.T) {
+		want := &saml.Assertion{ID: "id-1"}
+		a, err := recoverAssertionPanic(func() (*saml.Assertion, error) { return want, nil })
+		if err != nil || a != want {
+			t.Fatalf("got (%v, %v)", a, err)
+		}
+	})
+
+	t.Run("error passes through", func(t *testing.T) {
+		sentinel := errors.New("bad signature")
+		a, err := recoverAssertionPanic(func() (*saml.Assertion, error) { return nil, sentinel })
+		if a != nil || !errors.Is(err, sentinel) {
+			t.Fatalf("got (%v, %v)", a, err)
+		}
+	})
 }
