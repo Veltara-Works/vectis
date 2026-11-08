@@ -13,7 +13,7 @@
     {
       "id": "GO-2026-6909",
       "module": "github.com/crewjam/saml@v0.5.1",
-      "reason": "No fixed version (all releases through v0.5.1). Both bugs need an assertion signed by the provider's own IdP. (1) Nil Issuer panic: caught by recoverAssertionPanic in internal/auth/saml.go, so it is a failed login. (2) Foreign-namespace NameID: accounts are keyed by (provider, NameID), and a provider's IdP can already sign any NameID for that provider, so it gains no access it did not have; an outside attacker cannot sign. SAML SSO is Enterprise-only and not configured on our servers. Remove this entry and the recover guard when crewjam ships a fix.",
+      "reason": "No fixed version (all releases through v0.5.1). Both bugs need an assertion signed by the provider's own IdP. (1) Nil-pointer panic on an omitted element (the advisory names Issuer; in v0.5.1 validateAssertion it is Subject): caught by recoverAssertionPanic in internal/auth/saml.go, so it is a failed login. (2) Foreign-namespace NameID: accounts are keyed by (provider, NameID), and a provider's IdP can already sign any NameID for that provider, so it gains no access it did not have; an outside attacker cannot sign. SAML SSO is Enterprise-only and not configured on our servers. Remove this entry and the recover guard when crewjam ships a fix.",
       "expires": "2027-02-08"
     }
   ]
