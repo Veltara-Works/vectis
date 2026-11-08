@@ -34,13 +34,11 @@ command -v govulncheck >/dev/null || { fail "govulncheck is required but not ins
 
 TODAY="$(date -u +%Y-%m-%d)"
 
-# Human-readable report first, for the CI log. Its exit status is ignored: the
-# decision below is made from the JSON stream.
-(cd "$REPO_ROOT" && govulncheck ./...) || true
-
-# -format json exits 0 when it finds vulnerabilities and non-zero only when the
-# scan itself fails, so a failure here is a real error (stderr shows why).
-SCAN_JSON="$(cd "$REPO_ROOT" && govulncheck -format json ./...)" \
+# One scan, as JSON, into a temp file that every jq query below reads. -format
+# json exits 0 when it finds vulnerabilities and non-zero only when the scan
+# itself fails, so a failure here is a real error (stderr shows why).
+SCAN_JSON="$(mktemp)"; trap 'rm -f "$SCAN_JSON"' EXIT
+(cd "$REPO_ROOT" && govulncheck -format json ./...) >"$SCAN_JSON" \
   || { fail "govulncheck -format json failed — see its stderr above."; exit 1; }
 
 # OSV IDs of called findings: the first trace frame names a function in our
@@ -48,7 +46,13 @@ SCAN_JSON="$(cd "$REPO_ROOT" && govulncheck -format json ./...)" \
 FOUND="$(jq -rs '
   [ .[] | select(has("finding")) | .finding
     | select((.trace // [])[0].function // "" | length > 0)
-    | .osv ] | unique | .[]' <<<"$SCAN_JSON")"
+    | .osv ] | unique | .[]' "$SCAN_JSON")"
+
+# Short summary of what was called, for the CI log.
+while IFS= read -r id; do
+  [ -n "$id" ] || continue
+  info "Called: $id — $(jq -rs --arg id "$id" '[ .[] | select(has("osv")) | .osv | select(.id == $id) | .summary ] | first // ""' "$SCAN_JSON")"
+done <<<"$FOUND"
 
 if [ -f "$ALLOW_FILE" ]; then
   jq -e '.advisories | type == "array"' "$ALLOW_FILE" >/dev/null 2>&1 \
@@ -64,8 +68,7 @@ STATUS=0
 while IFS= read -r id; do
   [ -n "$id" ] || continue
   if ! grep -qxF "$id" <<<"$ALLOWED"; then
-    detail="$(jq -rs --arg id "$id" '[ .[] | select(has("osv")) | .osv | select(.id == $id) | .summary ] | first // ""' <<<"$SCAN_JSON")"
-    fail "Unaccepted $id — $detail"
+    fail "Unaccepted $id — see the summary above and https://pkg.go.dev/vuln/$id"
     STATUS=1
   fi
 done <<<"$FOUND"
@@ -92,6 +95,10 @@ done <<<"$ALLOWED"
 if [ "$STATUS" -eq 0 ]; then
   n="$(grep -c . <<<"$ALLOWED" || true)"
   pass "govulncheck: no unaccepted called vulnerabilities ($n accepted advisor$([ "$n" = 1 ] && echo y || echo ies))."
+else
+  # Only on failure: the full human-readable report, with call traces.
+  echo "--- govulncheck report ---"
+  (cd "$REPO_ROOT" && govulncheck ./...) || true
 fi
 
 exit "$STATUS"
