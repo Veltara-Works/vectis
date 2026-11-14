@@ -120,13 +120,13 @@ fork) and are listed separately to reflect that.
 | `github.com/boombuler/barcode` | 6c824513bacc | MIT |
 | `github.com/cespare/xxhash/v2` | v2.3.0 | MIT |
 | `github.com/coreos/go-oidc/v3/oidc` | v3.21.0 | Apache-2.0 |
-| `github.com/crewjam/saml` | v0.5.1 | BSD-2-Clause |
+| `github.com/crewjam/saml` | v0.5.2 | BSD-2-Clause |
 | `github.com/emersion/go-imap` | v1.2.1 | MIT |
 | `github.com/emersion/go-sasl` | b788ff22d5a6 | MIT |
 | `github.com/go-chi/chi/v5` | v5.5.0 | MIT |
 | `github.com/go-jose/go-jose/v4` | v4.1.7 | Apache-2.0 |
 | `github.com/go-jose/go-jose/v4/json` | v4.1.7 | BSD-3-Clause |
-| `github.com/golang-jwt/jwt/v4` | v4.5.2 | MIT |
+| `github.com/golang-jwt/jwt/v5` | v5.3.1 | MIT |
 | `github.com/golang-migrate/migrate/v4` | v4.20.1 | MIT |
 | `github.com/google/uuid` | v1.6.0 | BSD-3-Clause |
 | `github.com/jackc/pgerrcode` | 469b46aa5efa | MIT |
@@ -144,7 +144,7 @@ fork) and are listed separately to reflect that.
 | `github.com/prometheus/common` | v0.72.0 | Apache-2.0 |
 | `github.com/prometheus/procfs` | v0.22.0 | Apache-2.0 |
 | `github.com/robfig/cron/v3` | v3.0.1 | MIT |
-| `github.com/russellhaering/goxmldsig` | v1.6.0 | Apache-2.0 |
+| `github.com/russellhaering/goxmldsig` | v1.6.1 | Apache-2.0 |
 | `github.com/spf13/cobra` | v1.10.2 | Apache-2.0 |
 | `github.com/spf13/pflag` | v1.0.9 | BSD-3-Clause |
 | `github.com/valkey-io/valkey-go` | v1.0.79 | Apache-2.0 |
