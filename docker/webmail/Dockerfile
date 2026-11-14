@@ -7,6 +7,9 @@ FROM roundcube/roundcubemail:1.7.4-apache
 # CRITICAL CVEs that the Debian 13 archive has already fixed:
 #   - ImageMagick, CVE-2026-56367 → imagemagick 8:7.1.1.43+dfsg1-1+deb13u11
 #   - Brotli decoder (libbrotli1), CVE-2026-111497 → brotli 1.1.0-2+deb13u1
+#   - Apache httpd mod_http2, CVE-2026-119618 → apache2 2.4.71-1~deb13u1
+#     (mod_http2 is not enabled in this image, so it is not reachable; the
+#     package is patched anyway so the scan stays honest.)
 # Because the base tag is pinned deliberately, a rebuild alone won't pull the
 # fixes — so we upgrade the installed packages in-place. This FIXES rather than
 # suppresses (see .trivyignore policy); drop a package from this layer once the
@@ -14,7 +17,7 @@ FROM roundcube/roundcubemail:1.7.4-apache
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends --only-upgrade \
-      $(dpkg-query -W -f='${Package}\n' 'imagemagick*' 'libmagick*' 'libbrotli*' 2>/dev/null); \
+      $(dpkg-query -W -f='${Package}\n' 'imagemagick*' 'libmagick*' 'libbrotli*' 'apache2*' 2>/dev/null); \
     rm -rf /var/lib/apt/lists/*
 
 # Bake the Vectis skin into /usr/src/. Roundcube's image entrypoint copies
