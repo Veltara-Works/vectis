@@ -132,7 +132,7 @@ fork) and are listed separately to reflect that.
 | `github.com/jackc/pgerrcode` | 469b46aa5efa | MIT |
 | `github.com/jackc/pgpassfile` | v1.0.0 | MIT |
 | `github.com/jackc/pgservicefile` | 5a60cdf6a761 | MIT |
-| `github.com/jackc/pgx/v5` | v5.12.0 | MIT |
+| `github.com/jackc/pgx/v5` | v5.13.0 | MIT |
 | `github.com/jackc/puddle/v2` | v2.2.3 | MIT |
 | `github.com/jonboulle/clockwork` | v0.5.0 | Apache-2.0 |
 | `github.com/mattermost/xml-roundtrip-validator` | v0.1.0 | Apache-2.0 |
@@ -148,11 +148,11 @@ fork) and are listed separately to reflect that.
 | `github.com/spf13/cobra` | v1.10.2 | Apache-2.0 |
 | `github.com/spf13/pflag` | v1.0.9 | BSD-3-Clause |
 | `github.com/valkey-io/valkey-go` | v1.0.79 | Apache-2.0 |
-| `golang.org/x/crypto` | v0.58.0 | BSD-3-Clause |
-| `golang.org/x/oauth2` | v0.37.0 | BSD-3-Clause |
-| `golang.org/x/sync/semaphore` | v0.24.0 | BSD-3-Clause |
-| `golang.org/x/sys` | v0.49.0 | BSD-3-Clause |
-| `golang.org/x/text` | v0.43.0 | BSD-3-Clause |
+| `golang.org/x/crypto` | v0.59.0 | BSD-3-Clause |
+| `golang.org/x/oauth2` | v0.38.0 | BSD-3-Clause |
+| `golang.org/x/sync/semaphore` | v0.25.0 | BSD-3-Clause |
+| `golang.org/x/sys` | v0.50.0 | BSD-3-Clause |
+| `golang.org/x/text` | v0.44.0 | BSD-3-Clause |
 | `google.golang.org/protobuf` | v1.36.12 | BSD-3-Clause |
 | `gopkg.in/yaml.v3` | v3.0.1 | MIT |
 
