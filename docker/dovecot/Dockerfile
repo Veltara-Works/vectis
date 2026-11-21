@@ -1,6 +1,8 @@
 FROM alpine:3.24
 
-RUN apk add --no-cache \
+# Upgrade the base's packages too (OpenSSL, zlib, ...): alpine:3.24 is only
+# re-tagged now and then, so without this a rebuild ships stale libraries.
+RUN apk upgrade --no-cache && apk add --no-cache \
     dovecot \
     dovecot-lmtpd \
     dovecot-pop3d \
