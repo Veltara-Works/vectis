@@ -634,7 +634,7 @@ services:
 {{ end }}
 
   postgres:
-    image: postgres:17-alpine@sha256:c7526c0f6c3f30260a563d7bcf8ad778effac59a44f8ffa86678c35418338609
+    image: postgres:17-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
     container_name: vectis-postgres
     restart: unless-stopped
     networks:
@@ -711,7 +711,7 @@ services:
         max-file: "{{ .Logging.MaxFiles }}"
 {{ end }}
   valkey:
-    image: valkey/valkey:8-alpine@sha256:1cb6b20b70d927560cc4cc5397b5f045e74aa603ff7696274778880bb6fadc75
+    image: valkey/valkey:8-alpine@sha256:9971099af41c36e887aabdfe22b80c0fe45df949163dfc9cb434febc57cfc3fc
     container_name: vectis-valkey
     restart: unless-stopped
     networks:
