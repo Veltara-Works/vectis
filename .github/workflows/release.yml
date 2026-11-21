@@ -309,6 +309,7 @@ jobs:
             org.opencontainers.image.source=https://github.com/Veltara-Works/vectis
           build-args: |
             VERSION=${{ needs.build-binary.outputs.version }}
+            PKG_REFRESH=${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
 

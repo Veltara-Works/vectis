@@ -19,7 +19,12 @@ FROM roundcube/roundcubemail:1.7.5-apache
 # libc6 installed. A public-facing webmail shouldn't carry a compiler, and the
 # kernel headers alone were ~230 scanner findings for kernel code that can't
 # run in a container (one CRITICAL, which failed the Trivy gate).
+# PKG_REFRESH changes on every workflow run (release.yml / trivy.yml pass the
+# run id), so the GHA layer cache can never replay a stale package upgrade:
+# this layer and the ones after it rebuild; earlier build stages stay cached.
+ARG PKG_REFRESH=local
 RUN set -eux; \
+    echo "package refresh: ${PKG_REFRESH}"; \
     apt-get update; \
     apt-get upgrade -y --no-install-recommends; \
     apt-get purge -y \
