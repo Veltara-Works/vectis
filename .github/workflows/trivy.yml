@@ -71,6 +71,7 @@ jobs:
           tags: vectis-${{ matrix.service }}:scan
           build-args: |
             VERSION=scan-${{ github.sha }}
+            PKG_REFRESH=${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha,scope=${{ matrix.service }}
 
       - name: Trivy scan -> SARIF

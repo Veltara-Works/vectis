@@ -3,21 +3,35 @@
 # Bump deliberately after testing the new version's skin/config compatibility.
 FROM roundcube/roundcubemail:1.7.5-apache
 
-# Security patch layer (audit): the pinned upstream base ships packages with
-# CRITICAL CVEs that the Debian 13 archive has already fixed:
-#   - ImageMagick, CVE-2026-56367 → imagemagick 8:7.1.1.43+dfsg1-1+deb13u11
-#   - Brotli decoder (libbrotli1), CVE-2026-111497 → brotli 1.1.0-2+deb13u1
-#   - Apache httpd mod_http2, CVE-2026-119618 → apache2 2.4.71-1~deb13u1
-#     (mod_http2 is not enabled in this image, so it is not reachable; the
-#     package is patched anyway so the scan stays honest.)
-# Because the base tag is pinned deliberately, a rebuild alone won't pull the
-# fixes — so we upgrade the installed packages in-place. This FIXES rather than
-# suppresses (see .trivyignore policy); drop a package from this layer once the
-# base republishes with its patched version.
+# Security patch layer. The pinned upstream base lags the Debian 13 security
+# archive (e.g. ImageMagick CVE-2026-56367, Brotli CVE-2026-111497, Apache
+# mod_http2 CVE-2026-119618, glibc, libpq5, rsync, freetype, nghttp2), and a
+# rebuild alone won't pull the fixes because the base tag is pinned
+# deliberately. So every rebuild upgrades ALL installed packages in place
+# (`apt-get upgrade` never adds or removes packages). This FIXES rather than
+# suppresses (see .trivyignore policy). Before v0.1.65 this layer upgraded a
+# hand-picked list, which let everything else go stale between base bumps.
+#
+# It also removes the C/C++ toolchain the base keeps from building its PHP
+# extensions (gcc, g++, cpp, make, dpkg-dev and the -dev headers, including
+# linux-libc-dev). Nothing uses it at runtime: PHP, Apache and Roundcube need
+# none of it, and the purge was checked to leave libgcc-s1, libstdc++6 and
+# libc6 installed. A public-facing webmail shouldn't carry a compiler, and the
+# kernel headers alone were ~230 scanner findings for kernel code that can't
+# run in a container (one CRITICAL, which failed the Trivy gate).
+# PKG_REFRESH changes on every workflow run (release.yml / trivy.yml pass the
+# run id), so the GHA layer cache can never replay a stale package upgrade:
+# this layer and the ones after it rebuild; earlier build stages stay cached.
+ARG PKG_REFRESH=local
 RUN set -eux; \
+    echo "package refresh: ${PKG_REFRESH}"; \
     apt-get update; \
-    apt-get install -y --no-install-recommends --only-upgrade \
-      $(dpkg-query -W -f='${Package}\n' 'imagemagick*' 'libmagick*' 'libbrotli*' 'apache2*' 2>/dev/null); \
+    apt-get upgrade -y --no-install-recommends; \
+    apt-get purge -y \
+      gcc g++ cpp make dpkg-dev gcc-14 cpp-14 g++-14 libgcc-14-dev \
+      gcc-14-x86-64-linux-gnu cpp-14-x86-64-linux-gnu \
+      linux-libc-dev libc6-dev libc-dev-bin; \
+    php -m >/dev/null; apache2ctl -t; \
     rm -rf /var/lib/apt/lists/*
 
 # Bake the Vectis skin into /usr/src/. Roundcube's image entrypoint copies
