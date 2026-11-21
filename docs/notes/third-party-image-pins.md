@@ -33,18 +33,30 @@ hand when moving to a new base-image version:
 3. Update the `image:` line to `image: <image>:<tag>@<digest>`.
 4. Bump both the tag and the digest together; never leave a tag/digest mismatch.
 5. Check the upstream release notes for post-upgrade steps (e.g. PostgreSQL
-   minor releases sometimes ask for a `REINDEX` of certain index types).
+   minor releases sometimes ask for a `REINDEX` of certain index types). The next
+   `vectis update apply` on every install recreates the service on the new pin
+   (see below), so any such step has to be handled before the release ships.
 
-## Existing installs do NOT pick up a new third-party pin by themselves
+## How a pin bump reaches existing installs
 
-`vectis update apply` renders the new compose (so the new pin lands in the
-file), but Phase 4.3 only recreates the `vectis-*` image services
-(`VectisImageServicesExcludingSelf()`). Postgres, Valkey, pgbouncer, Traefik and
-the observability stack keep running the old image until something recreates
-them. Until the update pipeline handles this (planned for v0.1.66), a pin bump
-reaches existing installs only through a manual
-`docker compose -f /etc/vectis/docker-compose.yml up -d --no-deps <service>`
-after the update, plus any post-upgrade step the release notes require.
+Automatically, through `vectis update apply`:
+
+- Phase 3.5 renders the target release's compose, so the new pin lands in the file.
+- Phase 4.3 recreates only the `vectis-*` image services.
+- **Phase 5** (`StartServices(ServiceStartOrder)`) runs
+  `docker compose up -d --no-deps <svc>` for postgres, valkey and the rest in
+  dependency order. Compose recreates any service whose image changed, so
+  Postgres and Valkey move to the new pin here, after the Phase 1 snapshot. If
+  the health check fails, rollback restores the snapshot and the old compose.
+
+So a third-party bump IS a production change on every install's next update.
+Treat it like one: read the upstream release notes for post-upgrade steps
+(e.g. a `REINDEX`), check whether they apply to our schema, and canary on mx1.
+
+(PostgreSQL 17.12's "REINDEX btree indexes on `bpchar`" note applies only to
+columns declared as bare `bpchar`, without a length. Our only fixed-length text
+column is `scim_tokens.token_hash char(64)`, which the note says is not at risk,
+so 17.9 → 17.12 needs no extra step.)
 
 Nothing tracks these pins automatically: Dependabot can't parse the template and
 Trivy only scans the 8 images we build. Check them against upstream at least
