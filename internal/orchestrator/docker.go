@@ -410,7 +410,7 @@ const (
 	// Digest-pinned (REL-3): a moved/replaced upstream alpine:3.24 tag cannot swap
 	// the bytes of this one-shot migration container. alpine:3.24 is already a
 	// stack dependency (rspamd/clamav base); bump tag + digest together.
-	dkimMigrationImage = "alpine:3.24@sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4"
+	dkimMigrationImage = "alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf"
 )
 
 // MigrateLegacyDKIMVolume copies DKIM keys from the legacy named volume into

@@ -32,6 +32,36 @@ hand when moving to a new base-image version:
 
 3. Update the `image:` line to `image: <image>:<tag>@<digest>`.
 4. Bump both the tag and the digest together; never leave a tag/digest mismatch.
+5. Check the upstream release notes for post-upgrade steps (e.g. PostgreSQL
+   minor releases sometimes ask for a `REINDEX` of certain index types). The next
+   `vectis update apply` on every install recreates the service on the new pin
+   (see below), so any such step has to be handled before the release ships.
+
+## How a pin bump reaches existing installs
+
+Automatically, through `vectis update apply`:
+
+- Phase 3.5 renders the target release's compose, so the new pin lands in the file.
+- Phase 4.3 recreates only the `vectis-*` image services.
+- **Phase 5** (`StartServices(ServiceStartOrder)`) runs
+  `docker compose up -d --no-deps <svc>` for postgres, valkey and the rest in
+  dependency order. Compose recreates any service whose image changed, so
+  Postgres and Valkey move to the new pin here, after the Phase 1 snapshot. If
+  the health check fails, rollback restores the snapshot and the old compose.
+
+So a third-party bump IS a production change on every install's next update.
+Treat it like one: read the upstream release notes for post-upgrade steps
+(e.g. a `REINDEX`), check whether they apply to our schema, and canary on mx1.
+
+(PostgreSQL 17.12's "REINDEX btree indexes on `bpchar`" note applies only to
+columns declared as bare `bpchar`, without a length. Our only fixed-length text
+column is `scim_tokens.token_hash char(64)`, which the note says is not at risk,
+so 17.9 → 17.12 needs no extra step.)
+
+Nothing tracks these pins automatically: Dependabot can't parse the template and
+Trivy only scans the 8 images we build. Check them against upstream at least
+monthly, and whenever upstream announces a security release, until that is
+automated.
 
 ## Pinning policy
 
@@ -40,14 +70,14 @@ hand when moving to a new base-image version:
 - Optional images not deployed in prod (grafana/loki/promtail, pgbouncer) are
   pinned to the current registry digest at pin time.
 
-## Current pins (2026-07-06)
+## Current pins (2026-07-06; postgres, valkey and alpine refreshed 2026-11-22)
 
 | Image | Tag | Digest | Source |
 |-------|-----|--------|--------|
 | traefik | v3.3 | `sha256:2cd5cc75…43d09f` | prod-running |
-| postgres | 17-alpine | `sha256:c7526c0f…338609` | prod-running |
-| valkey/valkey | 8-alpine | `sha256:1cb6b20b…fadc75` | prod-running |
-| alpine (dkim) | 3.24 | `sha256:a2d49ea6…c829f4` | prod-running |
+| postgres | 17-alpine | `sha256:f9cf3e1f…d07d73` | registry, 2026-11-22: PostgreSQL 17.12 (was 17.9) |
+| valkey/valkey | 8-alpine | `sha256:9971099a…cfc3fc` | registry, 2026-11-22: Valkey 8.1.12 (was 8.1.6) |
+| alpine (dkim) | 3.24 | `sha256:f59abe65…48c71bf` | registry, 2026-11-22 |
 | grafana/loki | 3.4 | `sha256:5fe9fa99…b5aac2` | registry |
 | grafana/promtail | 3.4 | `sha256:168eb785…c5ff050` | registry |
 | grafana/grafana | 11.5 | `sha256:4d1b2146…8fd3259` | registry |
