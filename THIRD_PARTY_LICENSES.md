@@ -147,7 +147,7 @@ fork) and are listed separately to reflect that.
 | `github.com/russellhaering/goxmldsig` | v1.6.1 | Apache-2.0 |
 | `github.com/spf13/cobra` | v1.10.2 | Apache-2.0 |
 | `github.com/spf13/pflag` | v1.0.9 | BSD-3-Clause |
-| `github.com/valkey-io/valkey-go` | v1.0.79 | Apache-2.0 |
+| `github.com/valkey-io/valkey-go` | v1.0.80 | Apache-2.0 |
 | `golang.org/x/crypto` | v0.59.0 | BSD-3-Clause |
 | `golang.org/x/oauth2` | v0.38.0 | BSD-3-Clause |
 | `golang.org/x/sync/semaphore` | v0.25.0 | BSD-3-Clause |
