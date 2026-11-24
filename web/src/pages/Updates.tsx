@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { api } from '../api/client.ts'
+import { api, type UpdateStatus } from '../api/client.ts'
 import { extractError } from '../lib/errors.ts'
 
 interface OrchestratorStatus {
@@ -63,6 +63,7 @@ export default function UpdatesPage() {
   const [applying, setApplying] = useState(false)
   const [rollingBack, setRollingBack] = useState(false)
   const [applyTracking, setApplyTracking] = useState<ApplyTracking>('idle')
+  const [releaseCheck, setReleaseCheck] = useState<UpdateStatus | null>(null)
 
   const loadStatus = () => api.orchestratorStatus().then(setStatus).catch(() => {})
   const loadHistory = () => api.orchestratorHistory().then(d => setHistory(d || [])).catch(() => {})
@@ -70,6 +71,7 @@ export default function UpdatesPage() {
   useEffect(() => {
     loadStatus()
     loadHistory()
+    api.updateStatus().then(setReleaseCheck).catch(() => {})
   }, [])
 
   // Poll status + history every 2s whenever the orchestrator is actively
@@ -210,6 +212,8 @@ export default function UpdatesPage() {
       {selfUpgradeActive && (
         <SelfUpgradeBanner untilMs={selfUpgradeUntilMs} />
       )}
+
+      {releaseCheck && <ReleaseCheckCard rc={releaseCheck} />}
 
       <div className="card">
         <h3 className="mb-1">Orchestrator Status</h3>
@@ -441,6 +445,54 @@ function SelfUpgradeBanner({ untilMs }: { untilMs: number }) {
       The orchestrator is <strong>finalising the update</strong>.
       The orchestrator container will restart automatically in ~{remaining}s.
       No action is needed. This page will refresh itself when update is completed. Please wait.
+    </div>
+  )
+}
+
+// ReleaseCheckCard shows the last daily "is there a newer release?" check.
+// Read-only: it never triggers a fetch; Plan Update does the real check.
+function ReleaseCheckCard({ rc }: { rc: UpdateStatus }) {
+  const last = rc.last
+  const when = (iso?: string) => (iso ? new Date(iso).toLocaleString() : '')
+  return (
+    <div className="card">
+      <h3 className="mb-1">Release Check</h3>
+      {!rc.enabled ? (
+        <p className="text-muted">
+          The daily update check is off (<code>updates.check: false</code> in config.yaml).
+          Use Plan Update to check by hand.
+        </p>
+      ) : !last.checked_at ? (
+        <p className="text-muted">
+          This server runs {rc.running}. The first daily check runs 5–30 minutes after the API starts.
+        </p>
+      ) : (
+        <div>
+          <p>
+            This server runs <strong>{rc.running}</strong>.{' '}
+            {last.update_available && last.latest ? (
+              <>
+                <span className="badge badge-warning">{last.latest} available</span>
+                {last.release_notes_url && (
+                  <>
+                    {' '}
+                    <a href={last.release_notes_url} target="_blank" rel="noopener noreferrer">
+                      What's new<span className="sr-only"> (opens in a new tab)</span>
+                    </a>
+                  </>
+                )}
+              </>
+            ) : last.latest ? (
+              <span className="badge badge-success">Up to date ({last.latest} is the latest)</span>
+            ) : null}
+          </p>
+          <p className="text-muted" style={{ fontSize: '0.85rem' }}>
+            Last checked {when(last.checked_at)}.
+            {last.last_error && <> The last check failed: {last.last_error}</>}
+            {rc.email_enabled ? ' New releases are emailed to the admin address once.' : ' Email notices are off.'}
+          </p>
+        </div>
+      )}
     </div>
   )
 }

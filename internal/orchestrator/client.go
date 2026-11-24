@@ -210,6 +210,18 @@ func (c *Client) Reload(ctx context.Context, actions []engine.ServiceAction) ([]
 }
 
 // Status returns the current orchestrator state machine status.
+// LatestRelease asks the orchestrator whether the release channel names a newer
+// release than the running one. Read-only. An orchestrator older than this
+// endpoint answers 404, which surfaces as an error the caller treats as "check
+// unavailable".
+func (c *Client) LatestRelease(ctx context.Context) (*LatestRelease, error) {
+	var lr LatestRelease
+	if err := c.doJSON(ctx, http.MethodGet, "/internal/release/latest", &lr); err != nil {
+		return nil, fmt.Errorf("latest release: %w", err)
+	}
+	return &lr, nil
+}
+
 func (c *Client) Status(ctx context.Context) (*StatusResult, error) {
 	var env statusEnvelope
 	if err := c.doJSON(ctx, http.MethodGet, "/internal/status", &env); err != nil {

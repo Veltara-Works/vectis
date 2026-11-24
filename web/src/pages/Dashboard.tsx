@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router'
-import { api, ApiError, type VerifyStatus } from '../api/client.ts'
+import { api, ApiError, type UpdateStatus, type VerifyStatus } from '../api/client.ts'
 import VerifyStatusCard from '../components/VerifyStatusCard.tsx'
 import { extractError } from '../lib/errors.ts'
 
@@ -17,6 +17,7 @@ export default function DashboardPage() {
   const [error, setError] = useState('')
   const [verify, setVerify] = useState<VerifyStatus | null>(null)
   const [verifyLoadFailed, setVerifyLoadFailed] = useState(false)
+  const [updates, setUpdates] = useState<UpdateStatus | null>(null)
   const [configApplying, setConfigApplying] = useState(false)
   const [configMessage, setConfigMessage] = useState('')
   const [setup, setSetup] = useState<SetupProgress>({ hasDomain: false, domainVerified: false, hasMailbox: false, loading: true })
@@ -45,6 +46,8 @@ export default function DashboardPage() {
       if (err instanceof ApiError && err.status === 403) return
       setVerifyLoadFailed(true)
     })
+    // super_admin only, like verify: a 403 or any failure just hides the banner.
+    api.updateStatus().then(setUpdates).catch(() => {})
     api.listDomains().then(async (d) => {
       const allDomains = d || []
       setDomains(allDomains)
@@ -88,6 +91,21 @@ export default function DashboardPage() {
           The orchestrator container will restart automatically in ~
           {Math.max(0, Math.ceil((selfUpgradeUntilMs - Date.now()) / 1000))}s.
           No action is needed. This page will refresh itself when update is completed. Please wait.
+        </div>
+      )}
+
+      {updates?.last.update_available && updates.last.latest && (
+        <div className="alert alert-info" role="status" style={{ marginBottom: '0.75rem' }}>
+          <strong>Vectis {updates.last.latest} is available</strong> (this server runs {updates.running}).{' '}
+          <Link to="/admin/updates">Review and apply the update</Link>
+          {updates.last.release_notes_url && (
+            <>
+              {' · '}
+              <a href={updates.last.release_notes_url} target="_blank" rel="noopener noreferrer">
+                What's new<span className="sr-only"> (opens in a new tab)</span>
+              </a>
+            </>
+          )}
         </div>
       )}
 

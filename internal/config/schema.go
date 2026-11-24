@@ -25,6 +25,7 @@ type VectisConfig struct {
 	Alerts        AlertsConfig        `yaml:"alerts"`
 	Audit         AuditConfig         `yaml:"audit"`
 	Retention     RetentionConfig     `yaml:"retention"`
+	Updates       UpdatesConfig       `yaml:"updates"`
 	Webmail       WebmailConfig       `yaml:"webmail"`
 	Observability ObservabilityConfig `yaml:"observability"`
 	RateLimits    RateLimitConfig     `yaml:"rate_limits"`
@@ -268,6 +269,25 @@ type RetentionConfig struct {
 	MessageMetadataDays int `yaml:"message_metadata_days"` // purge messages metadata older than this; 0 = keep
 	RunIntervalHours    int `yaml:"run_interval_hours"`    // how often the sweep runs; default 24
 }
+
+// UpdatesConfig controls the daily update check (internal/updatecheck). Once a
+// day the server fetches the public, signed release manifest from
+// dl.vectismail.com to see whether a newer Vectis release exists; the request
+// carries no install identifier, licence key or usage data. A newer release is
+// shown on the admin dashboard and emailed once to the admin address. Both
+// default to on; set check: false for servers that must not contact the
+// internet (it also stops the email).
+type UpdatesConfig struct {
+	Check *bool `yaml:"check,omitempty"` // daily check for a newer release; default true
+	Email *bool `yaml:"email,omitempty"` // email the admin once per new release; default true
+}
+
+// CheckEnabled reports whether the daily update check runs (default true).
+func (u UpdatesConfig) CheckEnabled() bool { return u.Check == nil || *u.Check }
+
+// EmailEnabled reports whether a new release is emailed to the admin (default
+// true; always false when the check itself is off).
+func (u UpdatesConfig) EmailEnabled() bool { return u.CheckEnabled() && (u.Email == nil || *u.Email) }
 
 // ObservabilityConfig controls optional Loki + Promtail log aggregation and Grafana.
 type ObservabilityConfig struct {
