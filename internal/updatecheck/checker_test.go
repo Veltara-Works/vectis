@@ -29,13 +29,17 @@ func (m *memStore) Save(_ context.Context, s State) error {
 }
 
 type fakeNotifier struct {
-	sent []string // newVersion per send
-	err  error
-	to   string
-	url  string
+	sent  []string // newVersion per send
+	err   error
+	to    string
+	url   string
+	block chan struct{} // when set, the send hangs until it is closed (a stalled SMTP server)
 }
 
 func (f *fakeNotifier) SendUpdateAvailable(to, _, newVersion, url string) error {
+	if f.block != nil {
+		<-f.block
+	}
 	if f.err != nil {
 		return f.err
 	}
@@ -143,4 +147,29 @@ func TestNew_Defaults(t *testing.T) {
 	}
 	c.Stop()
 	c.Stop() // idempotent
+}
+
+func TestRunOnce_StalledEmailDoesNotBlockTheCheck(t *testing.T) {
+	src := &fakeSource{lr: avail("v0.1.65", "v0.1.66")}
+	st := &memStore{}
+	n := &fakeNotifier{block: make(chan struct{})}
+	defer close(n.block)
+	c := newTestChecker(src, st, n, "admin@example.com")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan State, 1)
+	go func() { done <- c.RunOnce(ctx) }()
+	select {
+	case got := <-done:
+		if got.NotifiedVersion != "" {
+			t.Fatalf("stalled send recorded as notified: %+v", got)
+		}
+		// The check result was saved before the send was attempted.
+		if !st.st.UpdateAvailable || st.st.Latest != "v0.1.66" {
+			t.Fatalf("result not saved before the send: %+v", st.st)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunOnce blocked on a stalled email send")
+	}
 }

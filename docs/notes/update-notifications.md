@@ -43,8 +43,15 @@ updates:
   email: false   # keep the dashboard banner, but don't email the admin
 ```
 
-Then `sudo vectis config apply`. With the check off, Updates → Plan Update still
-checks by hand.
+The API reads these settings when it starts, and `vectis config apply` doesn't
+restart it, so restart the API afterwards:
+
+```sh
+sudo docker restart vectis-api
+```
+
+With the check off, a previously stored "update available" is no longer shown,
+and Updates → Plan Update still checks by hand.
 
 ## Implementation
 

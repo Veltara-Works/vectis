@@ -45,6 +45,11 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	resp.Last = reconcileWithRunning(resp.Last, resp.Running)
+	// With the check turned off, a result stored before that is not offered:
+	// it can't be refreshed, so it would go stale.
+	if !resp.Enabled {
+		resp.Last.UpdateAvailable = false
+	}
 	respond(w, r, http.StatusOK, resp)
 }
 

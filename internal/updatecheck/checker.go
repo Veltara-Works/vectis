@@ -162,20 +162,42 @@ func (c *Checker) RunOnce(ctx context.Context) State {
 		st.ReleaseNotesURL = ReleaseNotesURL(lr.Latest)
 	}
 
+	// Record the result before any email, so the dashboard is current even if
+	// the send stalls.
+	c.save(ctx, st)
+
 	if st.UpdateAvailable {
 		c.logger.Info("update available", "current", st.Current, "latest", st.Latest)
 		if st.NotifiedVersion != st.Latest && c.notify != nil && c.cfg.AdminEmail != "" {
-			if err := c.notify.SendUpdateAvailable(c.cfg.AdminEmail, st.Current, st.Latest, st.ReleaseNotesURL); err != nil {
+			if err := c.sendBounded(ctx, st); err != nil {
 				// Not recorded as notified, so the next check retries.
 				c.logger.Error("update check: could not email the admin", "error", err)
 			} else {
 				st.NotifiedVersion = st.Latest
 				c.logger.Info("update check: admin emailed", "latest", st.Latest)
+				c.save(ctx, st)
 			}
 		}
 	}
-	c.save(ctx, st)
 	return st
+}
+
+// sendBounded sends the email but gives up when ctx ends. The SMTP sender has
+// no deadlines of its own, so a server that stalls mid-conversation would
+// otherwise block this check, and with it every later daily check. On timeout
+// the send goroutine is abandoned (at most one per day) and the version is not
+// marked as notified, so the next check tries again.
+func (c *Checker) sendBounded(ctx context.Context, st State) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- c.notify.SendUpdateAvailable(c.cfg.AdminEmail, st.Current, st.Latest, st.ReleaseNotesURL)
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("email send did not finish: %w", ctx.Err())
+	}
 }
 
 func (c *Checker) save(ctx context.Context, st State) {

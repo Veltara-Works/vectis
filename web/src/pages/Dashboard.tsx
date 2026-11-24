@@ -94,7 +94,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {updates?.last.update_available && updates.last.latest && (
+      {updates?.enabled && updates.last.update_available && updates.last.latest && (
         <div className="alert alert-info" role="status" style={{ marginBottom: '0.75rem' }}>
           <strong>Vectis {updates.last.latest} is available</strong> (this server runs {updates.running}).{' '}
           <Link to="/admin/updates">Review and apply the update</Link>
