@@ -173,3 +173,38 @@ func TestRunOnce_StalledEmailDoesNotBlockTheCheck(t *testing.T) {
 		t.Fatal("RunOnce blocked on a stalled email send")
 	}
 }
+
+func TestRunOnce_SwitchedOffFetchesNothing(t *testing.T) {
+	src := &fakeSource{err: errors.New("must not be called")}
+	prev := State{Latest: "v0.1.66", UpdateAvailable: true, CheckedAt: time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)}
+	st := &memStore{st: prev}
+	n := &fakeNotifier{}
+	c := newTestChecker(src, st, n, "admin@example.com")
+	c.cfg.Settings = func(context.Context) Settings { return Settings{CheckEnabled: false} }
+
+	got := c.RunOnce(context.Background())
+	if got != prev || st.st != prev || len(n.sent) != 0 {
+		t.Fatalf("switched-off run changed state or sent: got=%+v stored=%+v sent=%v", got, st.st, n.sent)
+	}
+}
+
+func TestRunOnce_EmailSwitchedOffIsDashboardOnly(t *testing.T) {
+	src := &fakeSource{lr: avail("v0.1.65", "v0.1.66")}
+	n := &fakeNotifier{}
+	c := newTestChecker(src, &memStore{}, n, "admin@example.com")
+	c.cfg.Settings = func(context.Context) Settings { return Settings{CheckEnabled: true, EmailEnabled: false} }
+
+	got := c.RunOnce(context.Background())
+	if !got.UpdateAvailable || len(n.sent) != 0 || got.NotifiedVersion != "" {
+		t.Fatalf("email off: state=%+v sent=%v", got, n.sent)
+	}
+}
+
+func TestKick_NonBlocking(t *testing.T) {
+	c := newTestChecker(&fakeSource{}, &memStore{}, nil, "")
+	c.Kick()
+	c.Kick() // a second kick before the loop drains must not block
+	if len(c.kickCh) != 1 {
+		t.Fatalf("kicks queued = %d, want 1", len(c.kickCh))
+	}
+}

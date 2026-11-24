@@ -18,6 +18,7 @@ func TestLatestFromManifest(t *testing.T) {
 		{"stable after the rc we run", "v0.1.66-rc1", "v0.1.66", true},
 		{"newer minor", "v0.1.66", "v0.2.0", true},
 		{"dev build never claims an update", "dev", "v0.1.66", false},
+		{"canary rc ahead of stable: no update, not an error", "v0.1.66-rc1", "v0.1.65", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

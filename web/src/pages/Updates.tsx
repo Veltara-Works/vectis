@@ -213,7 +213,7 @@ export default function UpdatesPage() {
         <SelfUpgradeBanner untilMs={selfUpgradeUntilMs} />
       )}
 
-      {releaseCheck && <ReleaseCheckCard rc={releaseCheck} />}
+      {releaseCheck && <ReleaseCheckCard rc={releaseCheck} onChange={setReleaseCheck} />}
 
       <div className="card">
         <h3 className="mb-1">Orchestrator Status</h3>
@@ -449,22 +449,73 @@ function SelfUpgradeBanner({ untilMs }: { untilMs: number }) {
   )
 }
 
-// ReleaseCheckCard shows the last daily "is there a newer release?" check.
-// Read-only: it never triggers a fetch; Plan Update does the real check.
-function ReleaseCheckCard({ rc }: { rc: UpdateStatus }) {
+// ReleaseCheckCard shows the last daily "is there a newer release?" check and
+// the two on/off switches. Read-only apart from the switches: it never
+// triggers a fetch itself; Plan Update does the real check.
+function ReleaseCheckCard({ rc, onChange }: { rc: UpdateStatus; onChange: (s: UpdateStatus) => void }) {
   const last = rc.last
+  const set = rc.settings
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState('')
   const when = (iso?: string) => (iso ? new Date(iso).toLocaleString() : '')
+
+  const save = async (body: { check_enabled?: boolean; email_enabled?: boolean }) => {
+    setSaving(true)
+    setErr('')
+    try {
+      onChange(await api.updateCheckSettings(body))
+    } catch (e: unknown) {
+      setErr(extractError(e, 'Could not save the setting'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="card">
       <h3 className="mb-1">Release Check</h3>
+      {err && <div className="alert alert-error">{err}</div>}
+
+      {set?.switchable && (
+        <div style={{ marginBottom: '0.75rem' }}>
+          <div className="switch-row">
+            <button
+              type="button" role="switch" className="switch" id="sw-update-check"
+              aria-checked={set.check_enabled} aria-describedby={set.check_locked ? 'sw-update-check-lock' : undefined}
+              disabled={saving || set.check_locked}
+              onClick={() => save({ check_enabled: !set.check_enabled })}
+            />
+            <label htmlFor="sw-update-check">Check daily for new releases</label>
+          </div>
+          {set.check_locked && (
+            <p id="sw-update-check-lock" className="text-muted" style={{ fontSize: '0.85rem', margin: '0 0 0.5rem 3.5rem' }}>
+              Locked off in /etc/vectis/config.yaml (<code>updates.check: false</code>).
+            </p>
+          )}
+          <div className="switch-row">
+            <button
+              type="button" role="switch" className="switch" id="sw-update-email"
+              aria-checked={set.email_enabled} aria-describedby={set.email_locked && !set.check_locked ? 'sw-update-email-lock' : undefined}
+              disabled={saving || set.email_locked || !set.check_enabled}
+              onClick={() => save({ email_enabled: !set.email_enabled })}
+            />
+            <label htmlFor="sw-update-email">Email me about new releases</label>
+          </div>
+          {set.email_locked && !set.check_locked && (
+            <p id="sw-update-email-lock" className="text-muted" style={{ fontSize: '0.85rem', margin: '0 0 0.5rem 3.5rem' }}>
+              Locked off in /etc/vectis/config.yaml (<code>updates.email: false</code>).
+            </p>
+          )}
+        </div>
+      )}
+
       {!rc.enabled ? (
         <p className="text-muted">
-          The daily update check is off (<code>updates.check: false</code> in config.yaml).
-          Use Plan Update to check by hand.
+          The daily update check is off. Plan Update still checks by hand.
         </p>
       ) : !last.checked_at ? (
         <p className="text-muted">
-          This server runs {rc.running}. The first daily check runs 5–30 minutes after the API starts.
+          This server runs {rc.running}. A check runs 5–30 minutes after the API starts, then daily.
         </p>
       ) : (
         <div>
@@ -483,13 +534,12 @@ function ReleaseCheckCard({ rc }: { rc: UpdateStatus }) {
                 )}
               </>
             ) : last.latest ? (
-              <span className="badge badge-success">Up to date ({last.latest} is the latest)</span>
+              <span className="badge badge-success">Up to date</span>
             ) : null}
           </p>
           <p className="text-muted" style={{ fontSize: '0.85rem' }}>
             Last checked {when(last.checked_at)}.
             {last.last_error && <> The last check failed: {last.last_error}</>}
-            {rc.email_enabled ? ' New releases are emailed to the admin address once.' : ' Email notices are off.'}
           </p>
         </div>
       )}

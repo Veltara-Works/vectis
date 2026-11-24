@@ -32,9 +32,15 @@ type LatestRelease struct {
 // LatestRelease fetches the configured release channel and reports whether it
 // names a newer release than the running one. It goes through the same
 // fetchReleaseManifest path as Plan, so the answer is only ever taken from a
-// manifest that passed the signature, channel-binding and anti-rollback checks:
-// a forged, replayed-older or wrong-channel manifest is an error, never a
-// "you're up to date" or a bogus "update available".
+// manifest that passed the signature and channel-binding checks: a forged or
+// wrong-channel manifest is an error, never a bogus "update available".
+//
+// Unlike Plan it skips the anti-rollback floor. That floor stops a replayed
+// older manifest from driving a downgrade PULL; this check pulls nothing. A
+// server running an rc ahead of stable (a canary) legitimately sees an older
+// stable manifest, which simply means "no newer release", not a failed check.
+// The worst a replayed older manifest can do here is suppress a notice, which
+// an attacker on the path could do anyway by blocking the request.
 //
 // The request is a plain GET of the public manifest and its signature: it
 // carries no install identifier, licence key or usage data.
@@ -44,7 +50,7 @@ func (o *Orchestrator) LatestRelease(ctx context.Context) (*LatestRelease, error
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	m, err := fetchReleaseManifest(fetchCtx, &http.Client{}, o.cfg.ReleaseChannelURL, version.Version)
+	m, err := fetchReleaseManifest(fetchCtx, &http.Client{}, o.cfg.ReleaseChannelURL, "")
 	if err != nil {
 		return nil, err
 	}

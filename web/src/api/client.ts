@@ -61,9 +61,20 @@ export interface VerifyStatus {
 
 // Daily update check (super_admin only): the last answer to "is there a
 // newer Vectis release?". Read-only; loading it never triggers a fetch.
+export interface UpdateCheckSettings {
+  check_enabled: boolean
+  email_enabled: boolean
+  // config.yaml explicitly turns this off, so the switch can't turn it on
+  check_locked: boolean
+  email_locked: boolean
+  // false until migration 000028 has run (switches hidden, config.yaml applies)
+  switchable: boolean
+}
+
 export interface UpdateStatus {
   enabled: boolean
   email_enabled: boolean
+  settings?: UpdateCheckSettings
   running: string
   last: {
     checked_at?: string
@@ -341,6 +352,8 @@ export const api = {
   // Last daily update check (super_admin only).
   updateStatus: () =>
     request<UpdateStatus>('GET', '/system/updates'),
+  updateCheckSettings: (body: { check_enabled?: boolean; email_enabled?: boolean }) =>
+    request<UpdateStatus>('PUT', '/system/updates/settings', body),
 
   // Orchestrator
   orchestratorStatus: () =>
