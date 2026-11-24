@@ -241,7 +241,9 @@ func (m *SAMLManager) ParseAndVerifyAssertion(ctx context.Context, provider *SAM
 // v0.5.1's validateAssertion it is assertion.Subject), so a signed assertion
 // that omits one panics. net/http would recover it per request; this makes it
 // an ordinary failed login instead of a logged stack trace and dropped
-// connection. Remove once crewjam ships a fix (see .govulncheck-allow.json).
+// connection. crewjam fixed GO-2026-6909 in v0.5.2 (the Go vuln DB records the
+// fix since 2026-11-23), so the govulncheck acceptance is gone; the guard stays
+// as defence in depth until the v0.6 upgrade (#357) is tested, then goes.
 func recoverAssertionPanic(parse func() (*saml.Assertion, error)) (a *saml.Assertion, err error) {
 	defer func() {
 		if p := recover(); p != nil {
