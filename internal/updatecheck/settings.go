@@ -25,7 +25,15 @@ type Settings struct {
 	// (an install updated by an orchestrator that predates migration 000028).
 	// The dashboard then hides the switches and config.yaml alone applies.
 	Switchable bool `json:"switchable"`
+	// ReadFailed: the saved choice couldn't be read (database outage), so the
+	// check is treated as off until it can be.
+	ReadFailed bool `json:"read_failed,omitempty"`
 }
+
+// FailClosed is what to use when the saved choice can't be read (database
+// outage, permissions): nothing runs and nothing is emailed, so an outage can
+// never override an opt-out. (A missing table is different: see LoadStored.)
+var FailClosed = Settings{ReadFailed: true}
 
 // Stored is the dashboard's saved choice (one row in update_check_config).
 type Stored struct {
@@ -80,34 +88,39 @@ func LoadStored(ctx context.Context, db *pgxpool.Pool) (stored *Stored, switchab
 // ErrNotSwitchable is returned by SaveStored while the table doesn't exist.
 var ErrNotSwitchable = errors.New("update-check switches need migration 000028, which runs at the next update")
 
-// SaveStored upserts the dashboard's choice. configuredByAdminID is kept for
-// the audit trail ("" for a system write).
-func SaveStored(ctx context.Context, db *pgxpool.Pool, s Stored, configuredByAdminID string) error {
+// SaveStored changes only the switches given (nil = leave as is) in a single
+// atomic upsert, so two quick changes (say, check off and email off at once)
+// can't undo each other, and nothing is read and written back. A field that
+// has never been saved starts from the default (on). Returns the saved row.
+// configuredByAdminID is kept for the audit trail ("" for a system write).
+func SaveStored(ctx context.Context, db *pgxpool.Pool, check, email *bool, configuredByAdminID string) (Stored, error) {
+	var out Stored
 	if db == nil {
-		return errors.New("save update-check settings: db pool is nil")
+		return out, errors.New("save update-check settings: db pool is nil")
 	}
 	var adminID any
 	if configuredByAdminID != "" {
 		adminID = configuredByAdminID
 	}
-	_, err := db.Exec(ctx,
+	err := db.QueryRow(ctx,
 		`INSERT INTO update_check_config
 		    (singleton, check_enabled, email_enabled, configured_at, configured_by_admin_id)
-		 VALUES (TRUE, $1, $2, NOW(), $3)
+		 VALUES (TRUE, COALESCE($1::boolean, TRUE), COALESCE($2::boolean, TRUE), NOW(), $3)
 		 ON CONFLICT (singleton) DO UPDATE SET
-		    check_enabled          = EXCLUDED.check_enabled,
-		    email_enabled          = EXCLUDED.email_enabled,
+		    check_enabled          = COALESCE($1::boolean, update_check_config.check_enabled),
+		    email_enabled          = COALESCE($2::boolean, update_check_config.email_enabled),
 		    configured_at          = NOW(),
-		    configured_by_admin_id = EXCLUDED.configured_by_admin_id`,
-		s.CheckEnabled, s.EmailEnabled, adminID,
-	)
+		    configured_by_admin_id = EXCLUDED.configured_by_admin_id
+		 RETURNING check_enabled, email_enabled`,
+		check, email, adminID,
+	).Scan(&out.CheckEnabled, &out.EmailEnabled)
 	if isUndefinedTable(err) {
-		return ErrNotSwitchable
+		return out, ErrNotSwitchable
 	}
 	if err != nil {
-		return fmt.Errorf("upsert update_check_config: %w", err)
+		return out, fmt.Errorf("upsert update_check_config: %w", err)
 	}
-	return nil
+	return out, nil
 }
 
 func isUndefinedTable(err error) bool {

@@ -69,6 +69,8 @@ export interface UpdateCheckSettings {
   email_locked: boolean
   // false until migration 000028 has run (switches hidden, config.yaml applies)
   switchable: boolean
+  // the saved choice couldn't be read; the check is treated as off meanwhile
+  read_failed?: boolean
 }
 
 export interface UpdateStatus {

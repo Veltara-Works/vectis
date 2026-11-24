@@ -85,37 +85,34 @@ func (s *Server) handleUpdateCheckSettings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	cur := s.updateCheckSettings(r.Context())
+	if cur.ReadFailed {
+		respondError(w, r, http.StatusServiceUnavailable, "SETTINGS_UNREADABLE",
+			"The update-check settings couldn't be read from the database. Try again shortly.")
+		return
+	}
 	if !cur.Switchable {
 		respondError(w, r, http.StatusConflict, "SETTING_UNAVAILABLE",
 			"These switches become available after the next update. Until then, use updates: in config.yaml.")
 		return
 	}
-	// Start from the saved choice (not the effective values), so a partial
-	// request keeps the other switch, and a config.yaml lock doesn't overwrite
-	// what the admin chose underneath it.
-	next := updatecheck.Stored{CheckEnabled: true, EmailEnabled: true}
-	if stored, _, err := updatecheck.LoadStored(r.Context(), s.db); err == nil && stored != nil {
-		next = *stored
+	// Only the switches given are changed, in one atomic upsert: a partial
+	// request never touches the other switch, a config.yaml lock never
+	// overwrites the choice underneath it, and concurrent changes don't undo
+	// each other.
+	if req.CheckEnabled != nil && *req.CheckEnabled && cur.CheckLocked {
+		respondError(w, r, http.StatusConflict, "SETTING_LOCKED",
+			"The update check is turned off in /etc/vectis/config.yaml (updates.check: false), so it can't be turned on here.")
+		return
 	}
-	if req.CheckEnabled != nil {
-		if *req.CheckEnabled && cur.CheckLocked {
-			respondError(w, r, http.StatusConflict, "SETTING_LOCKED",
-				"The update check is turned off in /etc/vectis/config.yaml (updates.check: false), so it can't be turned on here.")
-			return
-		}
-		next.CheckEnabled = *req.CheckEnabled
-	}
-	if req.EmailEnabled != nil {
-		if *req.EmailEnabled && cur.EmailLocked {
-			respondError(w, r, http.StatusConflict, "SETTING_LOCKED",
-				"Update emails are turned off in /etc/vectis/config.yaml (updates.email or updates.check: false), so they can't be turned on here.")
-			return
-		}
-		next.EmailEnabled = *req.EmailEnabled
+	if req.EmailEnabled != nil && *req.EmailEnabled && cur.EmailLocked {
+		respondError(w, r, http.StatusConflict, "SETTING_LOCKED",
+			"Update emails are turned off in /etc/vectis/config.yaml (updates.email or updates.check: false), so they can't be turned on here.")
+		return
 	}
 
 	adminID := getAdminID(r.Context())
-	if err := updatecheck.SaveStored(r.Context(), s.db, next, adminID); err != nil {
+	saved, err := updatecheck.SaveStored(r.Context(), s.db, req.CheckEnabled, req.EmailEnabled, adminID)
+	if err != nil {
 		if errors.Is(err, updatecheck.ErrNotSwitchable) {
 			respondError(w, r, http.StatusConflict, "SETTING_UNAVAILABLE",
 				"These switches become available after the next update. Until then, use updates: in config.yaml.")
@@ -129,11 +126,11 @@ func (s *Server) handleUpdateCheckSettings(w http.ResponseWriter, r *http.Reques
 	ip := clientIP(r)
 	s.audit.Log(r.Context(), &adminID, "updates.settings.update", "updates", nil,
 		map[string]string{
-			"check_enabled": boolStr(next.CheckEnabled),
-			"email_enabled": boolStr(next.EmailEnabled),
+			"check_enabled": boolStr(saved.CheckEnabled),
+			"email_enabled": boolStr(saved.EmailEnabled),
 		}, &ip)
 
-	if next.CheckEnabled && !cur.CheckEnabled && s.updateChecker != nil {
+	if saved.CheckEnabled && !cur.CheckEnabled && !cur.CheckLocked && s.updateChecker != nil {
 		s.updateChecker.Kick()
 	}
 	respond(w, r, http.StatusOK, s.updateStatus(r.Context()))

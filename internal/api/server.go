@@ -621,7 +621,8 @@ func (s *Server) StartUpdateChecker() {
 
 // updateCheckSettings returns the effective update-check switches: the
 // dashboard's saved choice (update_check_config) under config.yaml, whose
-// explicit "false" wins. A database error falls back to config.yaml alone.
+// explicit "false" wins. A missing table (pre-000028) falls back to
+// config.yaml alone; any other read error fails closed (everything off).
 func (s *Server) updateCheckSettings(ctx context.Context) updatecheck.Settings {
 	var file config.UpdatesConfig
 	if s.cfg != nil {
@@ -634,8 +635,9 @@ func (s *Server) updateCheckSettings(ctx context.Context) updatecheck.Settings {
 	defer cancel()
 	stored, switchable, err := updatecheck.LoadStored(qctx, s.db)
 	if err != nil {
-		s.logger.Warn("update check: could not read the dashboard switches; using config.yaml", "error", err)
-		return updatecheck.Effective(file, nil, false)
+		// Fail closed: a read error must not turn a saved opt-out back on.
+		s.logger.Warn("update check: could not read the dashboard switches; treating the check as off until they can be read", "error", err)
+		return updatecheck.FailClosed
 	}
 	return updatecheck.Effective(file, stored, switchable)
 }

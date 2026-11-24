@@ -509,7 +509,11 @@ function ReleaseCheckCard({ rc, onChange }: { rc: UpdateStatus; onChange: (s: Up
         </div>
       )}
 
-      {!rc.enabled ? (
+      {set?.read_failed ? (
+        <p className="text-muted">
+          The update-check settings couldn't be read, so the check is paused until they can be. Plan Update still checks by hand.
+        </p>
+      ) : !rc.enabled ? (
         <p className="text-muted">
           The daily update check is off. Plan Update still checks by hand.
         </p>

@@ -41,3 +41,9 @@ func TestEffective(t *testing.T) {
 		t.Errorf("no table = %+v", got)
 	}
 }
+
+func TestFailClosed(t *testing.T) {
+	if FailClosed.CheckEnabled || FailClosed.EmailEnabled || FailClosed.Switchable || !FailClosed.ReadFailed {
+		t.Fatalf("FailClosed must turn everything off and flag the read failure: %+v", FailClosed)
+	}
+}
