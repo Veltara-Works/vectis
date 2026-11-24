@@ -35,32 +35,48 @@ host (Cloudflare) with the server's IP address.
 
 ## Turning it off
 
-In `/etc/vectis/config.yaml`:
+**On the dashboard (normal way):** Updates → Release Check has two switches,
+"Check daily for new releases" and "Email me about new releases". They're
+saved in the database (`update_check_config`, migration 000028), take effect at
+the next check without a restart, and turning the check back on runs a check
+straight away. Each change is audit-logged (`updates.settings.update`).
+
+**Locked off in `/etc/vectis/config.yaml` (air-gapped servers):**
 
 ```yaml
 updates:
-  check: false   # no daily check at all (also no banner or email), e.g. air-gapped servers
-  email: false   # keep the dashboard banner, but don't email the admin
+  check: false   # no daily check at all (also no banner or email); the dashboard switch shows as locked
+  email: false   # keep the banner, never email; the email switch shows as locked
 ```
 
-The API reads these settings when it starts, and `vectis config apply` doesn't
-restart it, so restart the API afterwards:
-
-```sh
-sudo docker restart vectis-api
-```
+An explicit `false` here always wins over the dashboard. (`true` is the same as
+leaving it out, so the dashboard can still turn it off.) The API reads
+config.yaml at start-up, so after editing it run `sudo vectis config apply` and
+`sudo docker restart vectis-api`.
 
 With the check off, a previously stored "update available" is no longer shown,
 and Updates → Plan Update still checks by hand.
+
+**Before migration 000028 has run** (a server updated from v0.1.65 by an
+orchestrator that predates it), the switches are hidden and config.yaml alone
+applies. The migration runs at the following update, or by hand (see
+`feedback_cross_version_migration_ordering`).
 
 ## Implementation
 
 - `internal/orchestrator/latest_release.go`: read-only `GET /internal/release/latest`;
   reuses `fetchReleaseManifest` (the same trust checks as Plan).
-- `internal/updatecheck`: the daily loop. State (last result and the
-  "already emailed" version) lives in Valkey under `vectis:update-check:state`,
-  not in Postgres, so the feature needs no migration. If that key is ever lost,
-  the worst case is one repeat email.
-- `GET /api/v1/system/updates` (super_admin): the last check, for the UI. It never
-  triggers a fetch.
-- Config: `updates.check` / `updates.email`, both default `true`.
+- `internal/updatecheck`: the daily loop; it reads the effective switches
+  (`Effective(config.yaml, update_check_config row)`) at the start of every run.
+  The check RESULT (last answer and the "already emailed" version) lives in
+  Valkey under `vectis:update-check:state`; if that key is ever lost, the worst
+  case is one repeat email.
+- The check skips the manifest's anti-rollback floor (nothing is pulled): a
+  canary running an rc ahead of stable sees an older stable manifest as "no
+  newer release", not as a failed check.
+- `GET /api/v1/system/updates` (super_admin): the switches + last check, for the UI.
+  It never triggers a fetch. `PUT /api/v1/system/updates/settings`
+  (`{"check_enabled":bool,"email_enabled":bool}`, either optional) saves the
+  switches; 409 `SETTING_LOCKED` if config.yaml locks it, 409
+  `SETTING_UNAVAILABLE` before migration 000028.
+- Config: `updates.check` / `updates.email` (explicit `false` locks off).

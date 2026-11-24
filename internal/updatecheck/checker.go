@@ -8,8 +8,9 @@
 // nothing about this install: no identifier, licence key or usage data.
 //
 // The result is kept in Valkey for the admin dashboard, and the admin is
-// emailed once per new version. Turn the whole thing off with
-// `updates: {check: false}` in config.yaml (e.g. for air-gapped servers).
+// emailed once per new version. Both can be switched off on the dashboard's
+// Updates page (stored in update_check_config) or locked off in config.yaml
+// with `updates: {check: false}` (e.g. for air-gapped servers).
 package updatecheck
 
 import (
@@ -71,6 +72,10 @@ type Config struct {
 	// 5–30 minutes.
 	StartDelayMin, StartDelayMax time.Duration
 	AdminEmail                   string // "" = no email, dashboard only
+	// Settings returns the effective switches (dashboard + config.yaml). It is
+	// read at the start of every run, so a change takes effect without a
+	// restart. nil = always on.
+	Settings func(ctx context.Context) Settings
 }
 
 // Checker runs the periodic check.
@@ -81,6 +86,7 @@ type Checker struct {
 	cfg    Config
 	logger *slog.Logger
 	stopCh chan struct{}
+	kickCh chan struct{}
 	now    func() time.Time
 }
 
@@ -96,7 +102,7 @@ func New(src Source, store Store, notify Notifier, cfg Config, logger *slog.Logg
 		cfg.StartDelayMin = cfg.StartDelayMax
 	}
 	return &Checker{src: src, store: store, notify: notify, cfg: cfg, logger: logger,
-		stopCh: make(chan struct{}), now: time.Now}
+		stopCh: make(chan struct{}), kickCh: make(chan struct{}, 1), now: time.Now}
 }
 
 // Start launches the check loop in a background goroutine.
@@ -106,8 +112,17 @@ func (c *Checker) Start() {
 		delay += rand.N(span)
 	}
 	c.logger.Info("starting update checker", "first_check_in", delay.Round(time.Second), "interval", c.cfg.Interval,
-		"email", c.cfg.AdminEmail != "" && c.notify != nil)
+		"admin_email_set", c.cfg.AdminEmail != "" && c.notify != nil)
 	go c.loop(delay)
+}
+
+// Kick asks for a check now instead of at the next daily tick: used when the
+// admin turns the check back on. Non-blocking; extra kicks collapse into one.
+func (c *Checker) Kick() {
+	select {
+	case c.kickCh <- struct{}{}:
+	default:
+	}
 }
 
 // Stop ends the loop. Safe to call more than once.
@@ -127,21 +142,47 @@ func (c *Checker) loop(first time.Duration) {
 		case <-c.stopCh:
 			return
 		case <-t.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			c.RunOnce(ctx)
-			cancel()
+			c.runWithTimeout()
+			t.Reset(c.cfg.Interval)
+		case <-c.kickCh:
+			c.runWithTimeout()
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
+			}
 			t.Reset(c.cfg.Interval)
 		}
 	}
 }
 
+func (c *Checker) runWithTimeout() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	c.RunOnce(ctx)
+}
+
+func (c *Checker) settings(ctx context.Context) Settings {
+	if c.cfg.Settings == nil {
+		return Settings{CheckEnabled: true, EmailEnabled: true}
+	}
+	return c.cfg.Settings(ctx)
+}
+
 // RunOnce performs one check, records it, and emails the admin the first time
 // a given newer release is seen. Returns the stored state. Exposed for tests.
+// With the check switched off it fetches nothing and leaves the state as is.
 func (c *Checker) RunOnce(ctx context.Context) State {
 	st, err := c.store.Load(ctx)
 	if err != nil {
 		c.logger.Warn("update check: could not load previous state; starting fresh", "error", err)
 		st = State{}
+	}
+	set := c.settings(ctx)
+	if !set.CheckEnabled {
+		c.logger.Debug("update check skipped: switched off")
+		return st
 	}
 	st.CheckedAt = c.now().UTC()
 
@@ -168,7 +209,7 @@ func (c *Checker) RunOnce(ctx context.Context) State {
 
 	if st.UpdateAvailable {
 		c.logger.Info("update available", "current", st.Current, "latest", st.Latest)
-		if st.NotifiedVersion != st.Latest && c.notify != nil && c.cfg.AdminEmail != "" {
+		if set.EmailEnabled && st.NotifiedVersion != st.Latest && c.notify != nil && c.cfg.AdminEmail != "" {
 			if err := c.sendBounded(ctx, st); err != nil {
 				// Not recorded as notified, so the next check retries.
 				c.logger.Error("update check: could not email the admin", "error", err)

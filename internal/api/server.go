@@ -601,23 +601,45 @@ func (s *Server) StopRetentionSweeper() {
 // (internal/updatecheck). Off when config.yaml sets updates.check: false, or
 // when there's no orchestrator client or Valkey to ask and record with.
 func (s *Server) StartUpdateChecker() {
-	if s.cfg != nil && !s.cfg.Updates.CheckEnabled() {
-		s.logger.Info("update checker disabled (updates.check: false)")
-		return
-	}
 	if s.orchClient == nil || s.vk == nil {
 		s.logger.Info("update checker not started (no orchestrator client or valkey)")
 		return
 	}
-	cfg := updatecheck.Config{}
+	// The loop always runs; each run reads the effective switches (dashboard +
+	// config.yaml), so turning the check off or on takes effect without a
+	// restart. Locked off in config.yaml = it never fetches.
+	cfg := updatecheck.Config{Settings: s.updateCheckSettings}
 	var notify updatecheck.Notifier
-	if (s.cfg == nil || s.cfg.Updates.EmailEnabled()) && s.notifications != nil && s.secrets != nil {
+	if s.notifications != nil && s.secrets != nil {
 		cfg.AdminEmail = s.secrets.API.AdminEmail
 		notify = s.notifications
 	}
 	s.updateChecker = updatecheck.New(s.orchClient, updatecheck.ValkeyStore{VK: s.vk}, notify, cfg,
 		s.logger.With("component", "update-checker"))
 	s.updateChecker.Start()
+}
+
+// updateCheckSettings returns the effective update-check switches: the
+// dashboard's saved choice (update_check_config) under config.yaml, whose
+// explicit "false" wins. A missing table (pre-000028) falls back to
+// config.yaml alone; any other read error fails closed (everything off).
+func (s *Server) updateCheckSettings(ctx context.Context) updatecheck.Settings {
+	var file config.UpdatesConfig
+	if s.cfg != nil {
+		file = s.cfg.Updates
+	}
+	if s.db == nil {
+		return updatecheck.Effective(file, nil, false)
+	}
+	qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	stored, switchable, err := updatecheck.LoadStored(qctx, s.db)
+	if err != nil {
+		// Fail closed: a read error must not turn a saved opt-out back on.
+		s.logger.Warn("update check: could not read the dashboard switches; treating the check as off until they can be read", "error", err)
+		return updatecheck.FailClosed
+	}
+	return updatecheck.Effective(file, stored, switchable)
 }
 
 // StopUpdateChecker stops the update checker if it is running.
@@ -1333,6 +1355,7 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Get("/orchestrator/status", s.handleOrchestratorStatus)
 			r.With(requireSuperAdmin()).Get("/orchestrator/history", s.handleOrchestratorHistory)
 			r.With(requireSuperAdmin()).Get("/system/updates", s.handleUpdateStatus)
+			r.With(requireSuperAdmin()).Put("/system/updates/settings", s.handleUpdateCheckSettings)
 
 			// System — super_admin only.
 			r.With(requireSuperAdmin()).Get("/health/{service}", s.handleServiceHealth)

@@ -261,9 +261,32 @@ func (c *Client) Health(ctx context.Context) error {
 
 // --- Internal helpers ---
 
-// apiErrorResponse represents an error envelope from the orchestrator.
-type apiErrorResponse struct {
-	Error string `json:"error"`
+// orchestratorErrorMessage extracts the human-readable message from an
+// orchestrator error body. The server writes {"error":{"code","message"}}
+// (respondError); older handlers wrote {"error":"…"}. Returns "" for anything
+// else, and the caller then shows the raw body.
+func orchestratorErrorMessage(body []byte) string {
+	var env struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(body, &env) != nil || len(env.Error) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(env.Error, &s) == nil {
+		return s
+	}
+	var obj struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(env.Error, &obj) == nil {
+		if obj.Message != "" {
+			return obj.Message
+		}
+		return obj.Code
+	}
+	return ""
 }
 
 // setAuth applies the appropriate authentication to the request.
@@ -305,9 +328,8 @@ func (c *Client) doJSONWithBody(ctx context.Context, method, path string, reqBod
 	}
 
 	if resp.StatusCode >= 400 {
-		var errResp apiErrorResponse
-		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
-			return fmt.Errorf("orchestrator error (%d): %s", resp.StatusCode, errResp.Error)
+		if msg := orchestratorErrorMessage(body); msg != "" {
+			return fmt.Errorf("orchestrator error (%d): %s", resp.StatusCode, msg)
 		}
 		return fmt.Errorf("orchestrator error (%d): %s", resp.StatusCode, string(body))
 	}

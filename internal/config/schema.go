@@ -275,19 +275,16 @@ type RetentionConfig struct {
 // dl.vectismail.com to see whether a newer Vectis release exists; the request
 // carries no install identifier, licence key or usage data. A newer release is
 // shown on the admin dashboard and emailed once to the admin address. Both
-// default to on; set check: false for servers that must not contact the
-// internet (it also stops the email).
+// default to on and are normally switched on the dashboard's Updates page
+// (update_check_config). An explicit false here LOCKS the matching switch off,
+// e.g. check: false for servers that must not contact the internet (it also
+// stops the email); true is the same as leaving it unset.
 type UpdatesConfig struct {
-	Check *bool `yaml:"check,omitempty"` // daily check for a newer release; default true
-	Email *bool `yaml:"email,omitempty"` // email the admin once per new release; default true
+	Check *bool `yaml:"check,omitempty"` // false = lock the daily check off; unset/true = dashboard decides (default on)
+	Email *bool `yaml:"email,omitempty"` // false = lock the email off; unset/true = dashboard decides (default on)
 }
 
-// CheckEnabled reports whether the daily update check runs (default true).
-func (u UpdatesConfig) CheckEnabled() bool { return u.Check == nil || *u.Check }
-
-// EmailEnabled reports whether a new release is emailed to the admin (default
-// true; always false when the check itself is off).
-func (u UpdatesConfig) EmailEnabled() bool { return u.CheckEnabled() && (u.Email == nil || *u.Email) }
+// The effective on/off state is computed by updatecheck.Effective.
 
 // ObservabilityConfig controls optional Loki + Promtail log aggregation and Grafana.
 type ObservabilityConfig struct {

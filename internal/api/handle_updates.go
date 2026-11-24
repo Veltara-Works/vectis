@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -12,10 +13,14 @@ import (
 
 // updateStatusResponse is what the dashboard and Updates page show.
 type updateStatusResponse struct {
-	// Enabled is false when config.yaml sets updates.check: false.
-	Enabled bool `json:"enabled"`
-	// EmailEnabled is whether a new release is emailed to the admin.
+	// Enabled / EmailEnabled are the effective switches (kept at the top level
+	// for the dashboard banner).
+	Enabled      bool `json:"enabled"`
 	EmailEnabled bool `json:"email_enabled"`
+	// Settings is the full switch state for the Updates page, including
+	// whether config.yaml locks a switch off and whether switches are
+	// available yet (migration 000028).
+	Settings updatecheck.Settings `json:"settings"`
 	// Running is the version this API build reports.
 	Running string `json:"running"`
 	// Last is the most recent check; zero CheckedAt means none has run yet
@@ -25,19 +30,25 @@ type updateStatusResponse struct {
 
 // --- GET /api/v1/system/updates ---
 //
-// Read-only: returns the last recorded update check. It never triggers a fetch
-// (the background checker does that once a day), so loading the dashboard
-// doesn't reach out to the internet.
+// Read-only: returns the switches and the last recorded update check. It never
+// triggers a fetch (the background checker does that once a day), so loading
+// the dashboard doesn't reach out to the internet.
 func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	respond(w, r, http.StatusOK, s.updateStatus(r.Context()))
+}
+
+func (s *Server) updateStatus(ctx context.Context) updateStatusResponse {
+	set := s.updateCheckSettings(ctx)
 	resp := updateStatusResponse{
-		Enabled:      s.cfg == nil || s.cfg.Updates.CheckEnabled(),
-		EmailEnabled: s.cfg == nil || s.cfg.Updates.EmailEnabled(),
+		Enabled:      set.CheckEnabled,
+		EmailEnabled: set.EmailEnabled,
+		Settings:     set,
 		Running:      version.Version,
 	}
 	if s.vk != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		vctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		st, err := updatecheck.ValkeyStore{VK: s.vk}.Load(ctx)
+		st, err := updatecheck.ValkeyStore{VK: s.vk}.Load(vctx)
 		if err != nil {
 			s.logger.Warn("update status: could not load last check", "error", err)
 		} else {
@@ -45,12 +56,84 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	resp.Last = reconcileWithRunning(resp.Last, resp.Running)
-	// With the check turned off, a result stored before that is not offered:
+	// With the check switched off, a result stored before that is not offered:
 	// it can't be refreshed, so it would go stale.
 	if !resp.Enabled {
 		resp.Last.UpdateAvailable = false
 	}
-	respond(w, r, http.StatusOK, resp)
+	return resp
+}
+
+type updateCheckSettingsRequest struct {
+	CheckEnabled *bool `json:"check_enabled"`
+	EmailEnabled *bool `json:"email_enabled"`
+}
+
+// --- PUT /api/v1/system/updates/settings ---
+//
+// Saves the dashboard switches. Takes effect at the next check, without a
+// restart; switching the check on runs one straight away. A switch that
+// config.yaml locks off can't be turned on here (409).
+func (s *Server) handleUpdateCheckSettings(w http.ResponseWriter, r *http.Request) {
+	var req updateCheckSettingsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON request body")
+		return
+	}
+	if req.CheckEnabled == nil && req.EmailEnabled == nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_SETTINGS", "Set check_enabled and/or email_enabled")
+		return
+	}
+	cur := s.updateCheckSettings(r.Context())
+	if cur.ReadFailed {
+		respondError(w, r, http.StatusServiceUnavailable, "SETTINGS_UNREADABLE",
+			"The update-check settings couldn't be read from the database. Try again shortly.")
+		return
+	}
+	if !cur.Switchable {
+		respondError(w, r, http.StatusConflict, "SETTING_UNAVAILABLE",
+			"These switches become available after the next update. Until then, use updates: in config.yaml.")
+		return
+	}
+	// Only the switches given are changed, in one atomic upsert: a partial
+	// request never touches the other switch, a config.yaml lock never
+	// overwrites the choice underneath it, and concurrent changes don't undo
+	// each other.
+	if req.CheckEnabled != nil && *req.CheckEnabled && cur.CheckLocked {
+		respondError(w, r, http.StatusConflict, "SETTING_LOCKED",
+			"The update check is turned off in /etc/vectis/config.yaml (updates.check: false), so it can't be turned on here.")
+		return
+	}
+	if req.EmailEnabled != nil && *req.EmailEnabled && cur.EmailLocked {
+		respondError(w, r, http.StatusConflict, "SETTING_LOCKED",
+			"Update emails are turned off in /etc/vectis/config.yaml (updates.email or updates.check: false), so they can't be turned on here.")
+		return
+	}
+
+	adminID := getAdminID(r.Context())
+	saved, err := updatecheck.SaveStored(r.Context(), s.db, req.CheckEnabled, req.EmailEnabled, adminID)
+	if err != nil {
+		if errors.Is(err, updatecheck.ErrNotSwitchable) {
+			respondError(w, r, http.StatusConflict, "SETTING_UNAVAILABLE",
+				"These switches become available after the next update. Until then, use updates: in config.yaml.")
+			return
+		}
+		s.logger.Error("save update-check settings", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to save the update-check settings")
+		return
+	}
+
+	ip := clientIP(r)
+	s.audit.Log(r.Context(), &adminID, "updates.settings.update", "updates", nil,
+		map[string]string{
+			"check_enabled": boolStr(saved.CheckEnabled),
+			"email_enabled": boolStr(saved.EmailEnabled),
+		}, &ip)
+
+	if saved.CheckEnabled && !cur.CheckEnabled && !cur.CheckLocked && s.updateChecker != nil {
+		s.updateChecker.Kick()
+	}
+	respond(w, r, http.StatusOK, s.updateStatus(r.Context()))
 }
 
 // reconcileWithRunning drops a stale "update available". The stored state is

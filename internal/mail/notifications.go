@@ -172,9 +172,8 @@ or on the server:
 The update takes a database snapshot first and rolls itself back if the
 health check fails.
 
-You'll get this email once per release. To stop it, set updates.email: false
-in /etc/vectis/config.yaml (updates.check: false also stops the daily check),
-then restart the API: sudo docker restart vectis-api
+You'll get this email once per release. To stop these emails, switch them off
+on the dashboard's Updates page.
 
 — Vectis Mail Server (%s)
 `, n.hostname, currentVersion, newVersion, notes, n.hostname, n.hostname),
