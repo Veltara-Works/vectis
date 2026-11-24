@@ -146,24 +146,38 @@ cert has not rotated, check:
 	return err
 }
 
-// SendUpdateAvailable notifies admin that a Vectis update is available.
-func (n *NotificationSender) SendUpdateAvailable(toEmail, currentVersion, newVersion, releaseNotes string) error {
+// SendUpdateAvailable tells the admin a newer Vectis release exists. Sent once
+// per release by internal/updatecheck.
+func (n *NotificationSender) SendUpdateAvailable(toEmail, currentVersion, newVersion, releaseNotesURL string) error {
+	notes := ""
+	if releaseNotesURL != "" {
+		notes = "What's in it:\n  " + releaseNotesURL + "\n\n"
+	}
 	msg := &Message{
 		From:    n.from(),
 		To:      []Address{{Email: toEmail}},
-		Subject: fmt.Sprintf("Update Available — Vectis %s", newVersion),
-		TextBody: fmt.Sprintf(`A new Vectis release is available.
+		Subject: fmt.Sprintf("Vectis %s is available (you're on %s)", newVersion, currentVersion),
+		TextBody: fmt.Sprintf(`A newer Vectis release is available for %s.
 
-Current : %s
-New     : %s
+  Running:   %s
+  Available: %s
 
-%s
+%sTo update, open the admin dashboard's Updates page:
+  https://%s/admin/updates
 
-Update via:
-  vectis update
+or on the server:
+  sudo vectis update plan
+  sudo vectis update apply
+
+The update takes a database snapshot first and rolls itself back if the
+health check fails.
+
+You'll get this email once per release. To stop it, set updates.email: false
+in /etc/vectis/config.yaml (updates.check: false also stops the daily check),
+then restart the API: sudo docker restart vectis-api
 
 — Vectis Mail Server (%s)
-`, currentVersion, newVersion, releaseNotes, n.hostname),
+`, n.hostname, currentVersion, newVersion, notes, n.hostname, n.hostname),
 	}
 
 	_, err := n.sender.Send(msg)

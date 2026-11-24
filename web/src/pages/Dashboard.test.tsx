@@ -13,6 +13,7 @@ vi.mock('../api/client', async () => ({
     applyConfig: vi.fn(),
     orchestratorStatus: vi.fn(),
     verifyStatus: vi.fn(),
+    updateStatus: vi.fn(),
   },
 }))
 
@@ -31,6 +32,8 @@ beforeEach(() => {
   mockApi.orchestratorStatus.mockResolvedValue({ state: 'idle' })
   // Non-super-admins get a 403 from /system/verify; that's the default here.
   mockApi.verifyStatus.mockRejectedValue(new ApiError('FORBIDDEN', 'forbidden', 403))
+  // Same for the update check (super_admin only).
+  mockApi.updateStatus.mockRejectedValue(new ApiError('FORBIDDEN', 'forbidden', 403))
 })
 
 describe('DashboardPage', () => {
@@ -78,6 +81,34 @@ describe('DashboardPage', () => {
     renderWithRouter(<DashboardPage />)
     await waitFor(() => expect(mockApi.verifyStatus).toHaveBeenCalled())
     expect(screen.queryByText('Release integrity')).not.toBeInTheDocument()
+  })
+
+  it('shows an update banner when a newer release is available', async () => {
+    mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
+    mockApi.listDomains.mockResolvedValue([])
+    mockApi.updateStatus.mockResolvedValue({
+      enabled: true, email_enabled: true, running: 'v0.1.65',
+      last: {
+        checked_at: new Date().toISOString(), current: 'v0.1.65', latest: 'v0.1.66', update_available: true,
+        release_notes_url: 'https://github.com/Veltara-Works/vectis/releases/tag/v0.1.66',
+      },
+    })
+    renderWithRouter(<DashboardPage />)
+    await waitFor(() => expect(screen.getByText(/Vectis v0\.1\.66 is available/)).toBeInTheDocument())
+    expect(screen.getByRole('link', { name: /Review and apply the update/ })).toHaveAttribute('href', '/admin/updates')
+    expect(screen.getByRole('link', { name: /What's new/ })).toHaveAttribute('href', 'https://github.com/Veltara-Works/vectis/releases/tag/v0.1.66')
+  })
+
+  it('shows no update banner when up to date', async () => {
+    mockApi.health.mockResolvedValue({ status: 'healthy', services: {} })
+    mockApi.listDomains.mockResolvedValue([])
+    mockApi.updateStatus.mockResolvedValue({
+      enabled: true, email_enabled: true, running: 'v0.1.66',
+      last: { checked_at: new Date().toISOString(), current: 'v0.1.66', latest: 'v0.1.66', update_available: false },
+    })
+    renderWithRouter(<DashboardPage />)
+    await waitFor(() => expect(mockApi.updateStatus).toHaveBeenCalled())
+    expect(screen.queryByText(/is available/)).not.toBeInTheDocument()
   })
 
   it('renders page title', () => {

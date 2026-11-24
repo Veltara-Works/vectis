@@ -39,6 +39,7 @@ import (
 	"github.com/Veltara-Works/vectis/internal/retention"
 	"github.com/Veltara-Works/vectis/internal/secretcrypto"
 	vectistls "github.com/Veltara-Works/vectis/internal/tls"
+	"github.com/Veltara-Works/vectis/internal/updatecheck"
 	"github.com/Veltara-Works/vectis/internal/validonx"
 )
 
@@ -139,6 +140,7 @@ type Server struct {
 	monitor          *monitor.Monitor
 	alerter          *monitor.Alerter // shared by the health monitor and the backup scheduler's failure alert
 	auditPruner      *audit.Pruner
+	updateChecker    *updatecheck.Checker
 	retentionSweeper *retention.Sweeper
 	sessionCleaner   *auth.SessionCleaner
 	importWorker     *mailimport.Worker
@@ -595,6 +597,36 @@ func (s *Server) StopRetentionSweeper() {
 	}
 }
 
+// StartUpdateChecker starts the daily "is there a newer release?" check
+// (internal/updatecheck). Off when config.yaml sets updates.check: false, or
+// when there's no orchestrator client or Valkey to ask and record with.
+func (s *Server) StartUpdateChecker() {
+	if s.cfg != nil && !s.cfg.Updates.CheckEnabled() {
+		s.logger.Info("update checker disabled (updates.check: false)")
+		return
+	}
+	if s.orchClient == nil || s.vk == nil {
+		s.logger.Info("update checker not started (no orchestrator client or valkey)")
+		return
+	}
+	cfg := updatecheck.Config{}
+	var notify updatecheck.Notifier
+	if (s.cfg == nil || s.cfg.Updates.EmailEnabled()) && s.notifications != nil && s.secrets != nil {
+		cfg.AdminEmail = s.secrets.API.AdminEmail
+		notify = s.notifications
+	}
+	s.updateChecker = updatecheck.New(s.orchClient, updatecheck.ValkeyStore{VK: s.vk}, notify, cfg,
+		s.logger.With("component", "update-checker"))
+	s.updateChecker.Start()
+}
+
+// StopUpdateChecker stops the update checker if it is running.
+func (s *Server) StopUpdateChecker() {
+	if s.updateChecker != nil {
+		s.updateChecker.Stop()
+	}
+}
+
 // effectiveBackupSettings returns the runtime backup settings: the
 // backup_config DB row when present, otherwise the file config (config.yaml
 // `backup:`). Mirrors how validonx_config / branding_config overlay their
@@ -936,6 +968,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.StopMonitor()
 	s.StopAuditPruner()
 	s.StopRetentionSweeper()
+	s.StopUpdateChecker()
 	s.StopSessionCleaner()
 	s.StopImportWorker()
 	s.StopBackupScheduler()
@@ -1299,6 +1332,7 @@ func (s *Server) buildRouter() chi.Router {
 			r.With(requireSuperAdmin()).Post("/orchestrator/rollback", s.handleOrchestratorRollback)
 			r.With(requireSuperAdmin()).Get("/orchestrator/status", s.handleOrchestratorStatus)
 			r.With(requireSuperAdmin()).Get("/orchestrator/history", s.handleOrchestratorHistory)
+			r.With(requireSuperAdmin()).Get("/system/updates", s.handleUpdateStatus)
 
 			// System — super_admin only.
 			r.With(requireSuperAdmin()).Get("/health/{service}", s.handleServiceHealth)

@@ -59,6 +59,24 @@ export interface VerifyStatus {
   stale: boolean
 }
 
+// Daily update check (super_admin only): the last answer to "is there a
+// newer Vectis release?". Read-only; loading it never triggers a fetch.
+export interface UpdateStatus {
+  enabled: boolean
+  email_enabled: boolean
+  running: string
+  last: {
+    checked_at?: string
+    current?: string
+    latest?: string
+    released_at?: string
+    update_available: boolean
+    release_notes_url?: string
+    last_error?: string
+    notified_version?: string
+  }
+}
+
 // Outbound RBL monitoring: the server's sending IPs checked against DNS
 // blocklists (super_admin only). "unknown" = the list refused the query, the
 // lookup failed, or the list failed its own test address; never "clean".
@@ -319,6 +337,10 @@ export const api = {
   // Last `vectis verify` result recorded by the host timer (super_admin only).
   verifyStatus: () =>
     request<VerifyStatus>('GET', '/system/verify'),
+
+  // Last daily update check (super_admin only).
+  updateStatus: () =>
+    request<UpdateStatus>('GET', '/system/updates'),
 
   // Orchestrator
   orchestratorStatus: () =>

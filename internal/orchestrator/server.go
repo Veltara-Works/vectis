@@ -121,6 +121,7 @@ func (s *Server) buildRouter() chi.Router {
 			r.Post("/recreate/cancel", s.handleRecreateCancel)
 			r.Post("/recreate", s.handleRecreate)
 			r.Get("/status", s.handleStatus)
+			r.Get("/release/latest", s.handleLatestRelease)
 		})
 	})
 
@@ -418,6 +419,20 @@ func (s *Server) handleRecreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleStatus returns the current state and last operation details.
+// handleLatestRelease reports whether the release channel names a newer
+// release. Read-only: no plan is computed or stored. A channel failure (network,
+// signature, wrong channel, rollback) is a 502 with the reason, so the caller
+// records "check failed" rather than "up to date".
+func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
+	lr, err := s.orch.LatestRelease(r.Context())
+	if err != nil {
+		s.logger.Warn("latest-release check failed", "error", err)
+		s.respondError(w, http.StatusBadGateway, "RELEASE_CHANNEL_UNAVAILABLE", fmt.Sprintf("release channel unavailable: %v", err))
+		return
+	}
+	s.respondJSON(w, http.StatusOK, lr)
+}
+
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	state := s.orch.State()
 	lastOp := s.orch.LastOperation()
