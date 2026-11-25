@@ -320,10 +320,15 @@ th { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; fon
   .sidebar {
     position: fixed; top: 0; left: 0; bottom: 0; z-index: 60;
     width: min(280px, 85vw); overflow-y: auto;
-    transform: translateX(-100%); transition: transform 0.2s ease;
-    box-shadow: none;
+    transform: translateX(-100%); box-shadow: none;
+    /* Closed = also hidden from keyboard focus and assistive tech; visibility
+       flips after the slide-out finishes. */
+    visibility: hidden; transition: transform 0.2s ease, visibility 0s linear 0.2s;
   }
-  .sidebar.open { transform: none; box-shadow: 0 0 24px rgba(0,0,0,0.5); }
+  .sidebar.open {
+    transform: none; box-shadow: 0 0 24px rgba(0,0,0,0.5);
+    visibility: visible; transition: transform 0.2s ease, visibility 0s linear 0s;
+  }
   .sidebar a, .sidebar a:visited { padding: 0.75rem 1.25rem; font-size: 1rem; }
   .nav-backdrop { display: block; position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.5); }
   .nav-toggle {
@@ -357,8 +362,10 @@ th { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; fon
   .page-title { font-size: 1.35rem; }
   .account-menu-email-text { max-width: 9rem; }
   .stats { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
-  /* 16px stops iOS Safari zooming the page when a field is focused. */
-  input, select, textarea { font-size: 16px; }
+  /* 16px stops iOS Safari zooming the page when a field is focused. It has to
+     beat .form-group rules and inline styles (e.g. the Sieve editor), hence
+     !important. */
+  input, select, textarea { font-size: 16px !important; }
   /* Button rows wrap rather than run off the screen. */
   .card div[style*="display: flex"], .card div[style*="display:flex"] { flex-wrap: wrap; }
 }

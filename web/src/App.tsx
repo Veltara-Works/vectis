@@ -131,13 +131,14 @@ export default function App() {
           </button>
         </h1>
         {nav.filter(n => n.show).map(n => (
-          <Link key={n.path} to={n.path}
+          <Link key={n.path} to={n.path} onClick={drawer.close}
+            aria-current={location.pathname === n.path ? 'page' : undefined}
             className={location.pathname === n.path ? 'active' : ''}>
             {n.label}
           </Link>
         ))}
       </nav>
-      <div className="main-wrap">
+      <div className="main-wrap" ref={drawer.backgroundRef}>
         <header className="topbar">
           <button
             type="button" className="nav-toggle" ref={drawer.toggleRef}
