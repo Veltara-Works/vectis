@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Routes, Route, Navigate, Link, useLocation } from 'react-router'
 import { api, type BrandingResponse } from './api/client.ts'
+import { useNavDrawer } from './lib/useNavDrawer.ts'
 import LoginPage from './pages/Login.tsx'
 import DashboardPage from './pages/Dashboard.tsx'
 import DomainsPage from './pages/Domains.tsx'
@@ -45,6 +46,8 @@ export default function App() {
   const [admin, setAdmin] = useState<AdminProfile | null>(null)
   const [branding, setBranding] = useState<BrandingResponse | null>(null)
   const location = useLocation()
+  // Hooks must run before the early returns below (loading / login).
+  const drawer = useNavDrawer(location.pathname)
 
   useEffect(() => {
     api.me()
@@ -116,12 +119,16 @@ export default function App() {
 
   return (
     <div className="app" style={{ ['--brand-primary' as string]: brand.primary_color } as React.CSSProperties}>
-      <nav className="sidebar">
+      {drawer.open && <div className="nav-backdrop" onClick={drawer.close} aria-hidden="true" />}
+      <nav id="main-nav" aria-label="Main" ref={drawer.navRef} className={`sidebar${drawer.open ? ' open' : ''}`}>
         <h1 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           {brand.logo_url
             ? <img src={brand.logo_url} alt="" style={{ height: '24px', width: 'auto' }} />
             : null}
           <span>{brand.product_name}</span>
+          <button type="button" className="nav-close" aria-label="Close menu" onClick={drawer.close}>
+            <span aria-hidden="true">{'\u2715'}</span>
+          </button>
         </h1>
         {nav.filter(n => n.show).map(n => (
           <Link key={n.path} to={n.path}
@@ -132,6 +139,15 @@ export default function App() {
       </nav>
       <div className="main-wrap">
         <header className="topbar">
+          <button
+            type="button" className="nav-toggle" ref={drawer.toggleRef}
+            aria-controls="main-nav" aria-expanded={drawer.open}
+            aria-label={drawer.open ? 'Close menu' : 'Open menu'}
+            onClick={drawer.toggle}
+          >
+            <span aria-hidden="true">{drawer.open ? '\u2715' : '\u2630'}</span>
+          </button>
+          <span className="topbar-brand">{brand.product_name}</span>
           <AccountMenu
             email={admin?.email ?? ''}
             role={admin?.role ?? ''}
