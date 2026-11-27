@@ -19,7 +19,9 @@ func (n *NotificationSender) from() Address {
 
 // SendPasswordReset sends a password reset email with the reset link.
 func (n *NotificationSender) SendPasswordReset(toEmail, resetToken string) error {
-	resetURL := fmt.Sprintf("https://%s/reset-password?token=%s", n.hostname, resetToken)
+	// The admin UI serves this page (web/src/pages/ResetPassword.tsx); it
+	// also accepts the old /reset-password path from emails sent before v0.1.68.
+	resetURL := fmt.Sprintf("https://%s/admin/reset-password?token=%s", n.hostname, resetToken)
 
 	msg := &Message{
 		From:    n.from(),

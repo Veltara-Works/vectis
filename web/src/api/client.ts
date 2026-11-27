@@ -179,6 +179,12 @@ export const api = {
       'POST', '/auth/login',
       totp_session ? { totp_session, totp_code } : { email, password }
     ),
+  // Self-service password reset. reset-request always answers the same way,
+  // whether or not the address belongs to an admin (no account enumeration).
+  requestPasswordReset: (email: string) =>
+    request<{ message: string }>('POST', '/auth/reset-request', { email }),
+  resetPassword: (token: string, new_password: string) =>
+    request<{ message: string }>('POST', '/auth/reset-password', { token, new_password }),
   me: () => request<{ id: string; email: string; role: string; totp_enabled: boolean; oidc_provider?: string; saml_provider?: string; tier: 'free' | 'pro' | 'enterprise'; features: string[] }>('GET', '/auth/me'),
   oidcProviders: () => request<{ providers: string[] }>('GET', '/auth/oidc/providers').then(r => r.providers),
   oidcDisconnect: () => request<{ message: string }>('DELETE', '/auth/oidc/disconnect'),

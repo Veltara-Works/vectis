@@ -17,6 +17,9 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
   const [loading, setLoading] = useState(false)
   const [oidcProviders, setOidcProviders] = useState<string[]>([])
   const [samlProviders, setSamlProviders] = useState<string[]>([])
+  // 'forgot' shows the "email me a reset link" form instead of the sign-in form.
+  const [mode, setMode] = useState<'login' | 'forgot'>('login')
+  const [resetSent, setResetSent] = useState(false)
 
   useEffect(() => {
     api.oidcProviders().then(p => setOidcProviders(p)).catch(() => {})
@@ -53,6 +56,59 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleForgot = async (e: FormEvent) => {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      await api.requestPasswordReset(email.trim())
+      setResetSent(true)
+    } catch (err: unknown) {
+      setError(extractError(err, 'Could not send the reset email'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const showLogin = () => { setMode('login'); setResetSent(false); setError('') }
+
+  if (mode === 'forgot') {
+    return (
+      <div className="login-page">
+        <div className="login-box">
+          <div className="card">
+            <h2 style={{ marginBottom: '1.5rem', textAlign: 'center' }}>Reset your password</h2>
+            {error && <div className="alert alert-error" role="alert">{error}</div>}
+            {resetSent ? (
+              <div className="alert alert-info" role="status">
+                If that address belongs to an admin account, a reset link is on its way. It works once and
+                expires in 1 hour. Check your spam folder if it hasn't arrived in a few minutes. No email at all?
+                Whoever runs this server can reset the password on it with <code>vectis admin reset-password</code>.
+              </div>
+            ) : (
+              <form onSubmit={handleForgot}>
+                <p className="text-muted" style={{ marginBottom: '1rem' }}>
+                  Enter your admin email address and we&rsquo;ll email you a link to choose a new password.
+                </p>
+                <div className="form-group">
+                  <label htmlFor="forgot-email">Email</label>
+                  <input id="forgot-email" type="email" value={email} onChange={e => setEmail(e.target.value)}
+                    placeholder="admin@example.com" autoComplete="username" required autoFocus />
+                </div>
+                <button className="btn" style={{ width: '100%' }} disabled={loading}>
+                  {loading ? 'Sending...' : 'Send reset link'}
+                </button>
+              </form>
+            )}
+            <p style={{ textAlign: 'center', marginTop: '1rem' }}>
+              <button type="button" className="link-btn" onClick={showLogin}>Back to sign in</button>
+            </p>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -96,6 +152,13 @@ export default function LoginPage({ onLogin }: { onLogin: () => void }) {
               </button>
             )}
           </form>
+          {!totpSession && (
+            <p style={{ textAlign: 'center', marginTop: '1rem' }}>
+              <button type="button" className="link-btn" onClick={() => { setMode('forgot'); setError('') }}>
+                Forgot password?
+              </button>
+            </p>
+          )}
           {(oidcProviders.length > 0 || samlProviders.length > 0) && !totpSession && (
             <>
               <div style={{ textAlign: 'center', margin: '1.25rem 0 1rem', color: '#64748b', fontSize: '0.85rem' }}>

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1468,6 +1469,105 @@ func TestPasswordReset_Flow(t *testing.T) {
 	// CleanExpired should be safe to call even when nothing is expired.
 	if _, err := repo.CleanExpired(ctx); err != nil {
 		t.Fatalf("clean expired: %v", err)
+	}
+}
+
+// Redeem consumes a token exactly once, saves the password in the same
+// transaction, and never accepts an expired or unknown token.
+func TestPasswordReset_Redeem(t *testing.T) {
+	ctx := context.Background()
+	adminRepo := repository.NewAdminRepo(testPool)
+	repo := repository.NewPasswordResetRepo(testPool)
+
+	suffix := uniqueSuffix()
+	const oldHash = "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQ$dGVzdGhhc2g"
+	admin, err := adminRepo.Create(ctx, repository.AdminCreate{
+		Email:        "pwredeem-" + suffix + "@repo-test.com",
+		PasswordHash: oldHash,
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	defer adminRepo.Delete(ctx, admin.ID)
+
+	hash := "redeem-" + suffix
+	other := "redeem-other-" + suffix
+	for _, h := range []string{hash, other} {
+		if _, err := repo.Create(ctx, admin.ID, h, 1*time.Hour); err != nil {
+			t.Fatalf("create token: %v", err)
+		}
+	}
+
+	// Many concurrent redemptions of the same token: exactly one wins.
+	const n = 8
+	type result struct {
+		tok *repository.PasswordResetToken
+		pw  string
+		err error
+	}
+	results := make(chan result, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			pw := fmt.Sprintf("new-hash-%d", i)
+			tok, err := repo.Redeem(ctx, hash, pw)
+			results <- result{tok, pw, err}
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+	var winner *result
+	for res := range results {
+		if res.err != nil {
+			t.Fatalf("redeem: %v", res.err)
+		}
+		if res.tok != nil {
+			if winner != nil {
+				t.Fatal("two concurrent redemptions of one token succeeded")
+			}
+			r := res
+			winner = &r
+		}
+	}
+	if winner == nil {
+		t.Fatal("no redemption succeeded")
+	}
+	if winner.tok.AdminID != admin.ID || winner.tok.UsedAt == nil {
+		t.Errorf("redeemed token = %+v, want admin %s with used_at set", winner.tok, admin.ID)
+	}
+
+	// The winner's password is the one saved.
+	got, err := adminRepo.GetByID(ctx, admin.ID)
+	if err != nil || got == nil {
+		t.Fatalf("get admin: %v", err)
+	}
+	if got.PasswordHash != winner.pw {
+		t.Errorf("password_hash = %q, want %q", got.PasswordHash, winner.pw)
+	}
+
+	// Used again, and the admin's other outstanding token: both refused.
+	for _, h := range []string{hash, other} {
+		if tok, err := repo.Redeem(ctx, h, "should-not-save"); err != nil || tok != nil {
+			t.Errorf("redeem %s after success = %v, %v; want nil, nil", h, tok, err)
+		}
+	}
+
+	// An expired token is refused and changes nothing.
+	expired := "redeem-exp-" + suffix
+	if _, err := repo.Create(ctx, admin.ID, expired, -1*time.Minute); err != nil {
+		t.Fatalf("create expired token: %v", err)
+	}
+	if tok, err := repo.Redeem(ctx, expired, "should-not-save"); err != nil || tok != nil {
+		t.Errorf("redeem of expired token = %v, %v; want nil, nil", tok, err)
+	}
+	if tok, err := repo.Redeem(ctx, "no-such-"+suffix, "should-not-save"); err != nil || tok != nil {
+		t.Errorf("redeem of unknown token = %v, %v; want nil, nil", tok, err)
+	}
+	got, _ = adminRepo.GetByID(ctx, admin.ID)
+	if got == nil || got.PasswordHash != winner.pw {
+		t.Error("a refused redemption changed the password")
 	}
 }
 
