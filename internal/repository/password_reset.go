@@ -73,12 +73,21 @@ func (r *PasswordResetRepo) FindByHash(ctx context.Context, tokenHash string) (*
 	return &t, nil
 }
 
-// Claim atomically consumes an unused, non-expired token and returns it, or
-// nil if no such token exists. Two concurrent requests with the same token
-// cannot both succeed: only one UPDATE matches "used_at IS NULL".
-func (r *PasswordResetRepo) Claim(ctx context.Context, tokenHash string) (*PasswordResetToken, error) {
+// Redeem uses a reset token and sets the admin's new password in ONE
+// transaction: the token is consumed only if the password is saved, and a
+// token works exactly once even when submitted concurrently (only one UPDATE
+// can match "used_at IS NULL"). The admin's other outstanding tokens are
+// invalidated in the same transaction. Returns nil, nil when the token is
+// unknown, expired or already used.
+func (r *PasswordResetRepo) Redeem(ctx context.Context, tokenHash, passwordHash string) (*PasswordResetToken, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	var t PasswordResetToken
-	err := r.db.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`UPDATE password_reset_tokens SET used_at = NOW()
 		 WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()
 		 RETURNING id, admin_id, token_hash, expires_at, used_at, created_at`,
@@ -89,6 +98,25 @@ func (r *PasswordResetRepo) Claim(ctx context.Context, tokenHash string) (*Passw
 	}
 	if err != nil {
 		return nil, fmt.Errorf("claim password reset token: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `UPDATE admins SET password_hash = $1 WHERE id = $2`, passwordHash, t.AdminID)
+	if err != nil {
+		return nil, fmt.Errorf("set admin password: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return nil, fmt.Errorf("set admin password: admin %s not found", t.AdminID)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE password_reset_tokens SET used_at = NOW() WHERE admin_id = $1 AND used_at IS NULL`,
+		t.AdminID,
+	); err != nil {
+		return nil, fmt.Errorf("invalidate other reset tokens: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit password reset: %w", err)
 	}
 	return &t, nil
 }

@@ -66,12 +66,12 @@ export default function ResetPasswordPage() {
               <div className="form-group">
                 <label htmlFor="reset-new">New password</label>
                 <input id="reset-new" type="password" value={password} onChange={e => setPassword(e.target.value)}
-                  autoComplete="new-password" minLength={8} maxLength={128} required autoFocus />
+                  autoComplete="new-password" required autoFocus />
               </div>
               <div className="form-group">
                 <label htmlFor="reset-confirm">Confirm new password</label>
                 <input id="reset-confirm" type="password" value={confirm} onChange={e => setConfirm(e.target.value)}
-                  autoComplete="new-password" minLength={8} maxLength={128} required />
+                  autoComplete="new-password" required />
               </div>
               <button className="btn" style={{ width: '100%' }} disabled={loading}>
                 {loading ? 'Saving...' : 'Set new password'}

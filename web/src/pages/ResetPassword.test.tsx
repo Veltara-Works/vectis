@@ -26,6 +26,13 @@ describe('passwordProblem', () => {
     expect(passwordProblem('longenough1', 'longenough2')).toMatch(/do not match/)
     expect(passwordProblem('longenough1', 'longenough1')).toBe('')
   })
+
+  it('counts UTF-8 bytes like the server', () => {
+    // 4 x "é" = 8 bytes: valid on the server, so valid here
+    expect(passwordProblem('éééé', 'éééé')).toBe('')
+    // 65 x "é" = 130 bytes: over the server's 128
+    expect(passwordProblem('é'.repeat(65), 'é'.repeat(65))).toMatch(/at most 128/)
+  })
 })
 
 describe('ResetPasswordPage', () => {

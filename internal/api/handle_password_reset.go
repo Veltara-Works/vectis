@@ -10,10 +10,11 @@ import (
 	"time"
 
 	"github.com/Veltara-Works/vectis/internal/auth"
-	"github.com/Veltara-Works/vectis/internal/repository"
 )
 
 const resetTokenTTL = 1 * time.Hour
+
+const invalidResetLinkMsg = "This reset link is invalid, expired or already used. Request a new one."
 
 // handleRequestPasswordReset creates a reset token and emails the link.
 // Always returns 200 even if the email doesn't exist (prevents enumeration).
@@ -96,13 +97,26 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Same rules as creating or editing an admin. Checked before the token is
-	// claimed, so a rejected password doesn't use up the link.
+	// used, so a rejected password doesn't use up the link.
 	if err := auth.ValidatePasswordStrength(req.NewPassword); err != nil {
 		respondError(w, r, http.StatusBadRequest, "WEAK_PASSWORD", err.Error())
 		return
 	}
 
-	// Hash the new password before claiming, for the same reason.
+	// Cheap, non-consuming check first, so an unknown or expired token never
+	// costs an Argon2id hash (64 MiB).
+	tokenHash := sha256sum(req.Token)
+	found, err := s.resetTokens.FindByHash(r.Context(), tokenHash)
+	if err != nil {
+		s.logger.Error("find reset token failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to validate token")
+		return
+	}
+	if found == nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_TOKEN", invalidResetLinkMsg)
+		return
+	}
+
 	passwordHash, err := auth.HashPassword(req.NewPassword)
 	if err != nil {
 		s.logger.Error("hash password failed", "error", err)
@@ -110,32 +124,18 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Claim the token atomically: a link works once, even if it is submitted
-	// twice at the same moment.
-	token, err := s.resetTokens.Claim(r.Context(), sha256sum(req.Token))
+	// Use the token and save the password in one transaction: the link is
+	// consumed only if the password is saved, and works exactly once even if
+	// submitted twice at the same moment.
+	token, err := s.resetTokens.Redeem(r.Context(), tokenHash, passwordHash)
 	if err != nil {
-		s.logger.Error("claim reset token failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to validate token")
-		return
-	}
-	if token == nil {
-		respondError(w, r, http.StatusBadRequest, "INVALID_TOKEN", "This reset link is invalid, expired or already used. Request a new one.")
-		return
-	}
-
-	// Update admin's password.
-	_, err = s.admins.Update(r.Context(), token.AdminID, repository.AdminUpdate{
-		PasswordHash: &passwordHash,
-	})
-	if err != nil {
-		s.logger.Error("update admin password failed", "error", err)
+		s.logger.Error("redeem reset token failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update password")
 		return
 	}
-
-	// The token is already used (Claim); invalidate any others for this admin.
-	if err := s.resetTokens.InvalidateForAdmin(r.Context(), token.AdminID); err != nil {
-		s.logger.Error("invalidate other reset tokens failed", "error", err, "admin_id", token.AdminID)
+	if token == nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_TOKEN", invalidResetLinkMsg)
+		return
 	}
 
 	// Invalidate all existing sessions (force re-login).
