@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1468,6 +1469,81 @@ func TestPasswordReset_Flow(t *testing.T) {
 	// CleanExpired should be safe to call even when nothing is expired.
 	if _, err := repo.CleanExpired(ctx); err != nil {
 		t.Fatalf("clean expired: %v", err)
+	}
+}
+
+// Claim consumes a token exactly once, and never an expired or unknown one.
+func TestPasswordReset_Claim(t *testing.T) {
+	ctx := context.Background()
+	adminRepo := repository.NewAdminRepo(testPool)
+	repo := repository.NewPasswordResetRepo(testPool)
+
+	suffix := uniqueSuffix()
+	admin, err := adminRepo.Create(ctx, repository.AdminCreate{
+		Email:        "pwclaim-" + suffix + "@repo-test.com",
+		PasswordHash: "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQ$dGVzdGhhc2g",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	defer adminRepo.Delete(ctx, admin.ID)
+
+	hash := "claim-" + suffix
+	if _, err := repo.Create(ctx, admin.ID, hash, 1*time.Hour); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	// Many concurrent claims of the same token: exactly one wins.
+	const n = 8
+	wins := make(chan *repository.PasswordResetToken, n)
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tok, err := repo.Claim(ctx, hash)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if tok != nil {
+				wins <- tok
+			}
+		}()
+	}
+	wg.Wait()
+	close(wins)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("claim: %v", err)
+	}
+	var won []*repository.PasswordResetToken
+	for tok := range wins {
+		won = append(won, tok)
+	}
+	if len(won) != 1 {
+		t.Fatalf("%d concurrent claims succeeded, want exactly 1", len(won))
+	}
+	if won[0].AdminID != admin.ID || won[0].UsedAt == nil {
+		t.Errorf("claimed token = %+v, want admin %s with used_at set", won[0], admin.ID)
+	}
+	if again, err := repo.Claim(ctx, hash); err != nil || again != nil {
+		t.Errorf("second claim = %v, %v; want nil, nil", again, err)
+	}
+
+	// An expired token can't be claimed.
+	expired := "claim-exp-" + suffix
+	if _, err := repo.Create(ctx, admin.ID, expired, -1*time.Minute); err != nil {
+		t.Fatalf("create expired token: %v", err)
+	}
+	if tok, err := repo.Claim(ctx, expired); err != nil || tok != nil {
+		t.Errorf("claim of expired token = %v, %v; want nil, nil", tok, err)
+	}
+
+	// An unknown token can't be claimed.
+	if tok, err := repo.Claim(ctx, "no-such-"+suffix); err != nil || tok != nil {
+		t.Errorf("claim of unknown token = %v, %v; want nil, nil", tok, err)
 	}
 }
 

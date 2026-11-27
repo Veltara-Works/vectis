@@ -73,6 +73,26 @@ func (r *PasswordResetRepo) FindByHash(ctx context.Context, tokenHash string) (*
 	return &t, nil
 }
 
+// Claim atomically consumes an unused, non-expired token and returns it, or
+// nil if no such token exists. Two concurrent requests with the same token
+// cannot both succeed: only one UPDATE matches "used_at IS NULL".
+func (r *PasswordResetRepo) Claim(ctx context.Context, tokenHash string) (*PasswordResetToken, error) {
+	var t PasswordResetToken
+	err := r.db.QueryRow(ctx,
+		`UPDATE password_reset_tokens SET used_at = NOW()
+		 WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()
+		 RETURNING id, admin_id, token_hash, expires_at, used_at, created_at`,
+		tokenHash,
+	).Scan(&t.ID, &t.AdminID, &t.TokenHash, &t.ExpiresAt, &t.UsedAt, &t.CreatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claim password reset token: %w", err)
+	}
+	return &t, nil
+}
+
 // MarkUsed marks a token as used so it cannot be reused.
 func (r *PasswordResetRepo) MarkUsed(ctx context.Context, id string) error {
 	_, err := r.db.Exec(ctx,

@@ -95,28 +95,31 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		respondError(w, r, http.StatusBadRequest, "INVALID_INPUT", "token and new_password are required")
 		return
 	}
-	if len(req.NewPassword) < 8 {
-		respondError(w, r, http.StatusBadRequest, "WEAK_PASSWORD", "Password must be at least 8 characters")
+	// Same rules as creating or editing an admin. Checked before the token is
+	// claimed, so a rejected password doesn't use up the link.
+	if err := auth.ValidatePasswordStrength(req.NewPassword); err != nil {
+		respondError(w, r, http.StatusBadRequest, "WEAK_PASSWORD", err.Error())
 		return
 	}
 
-	hash := sha256sum(req.Token)
-	token, err := s.resetTokens.FindByHash(r.Context(), hash)
-	if err != nil {
-		s.logger.Error("find reset token failed", "error", err)
-		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to validate token")
-		return
-	}
-	if token == nil {
-		respondError(w, r, http.StatusBadRequest, "INVALID_TOKEN", "Token is invalid or expired")
-		return
-	}
-
-	// Hash the new password.
+	// Hash the new password before claiming, for the same reason.
 	passwordHash, err := auth.HashPassword(req.NewPassword)
 	if err != nil {
 		s.logger.Error("hash password failed", "error", err)
 		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to process password")
+		return
+	}
+
+	// Claim the token atomically: a link works once, even if it is submitted
+	// twice at the same moment.
+	token, err := s.resetTokens.Claim(r.Context(), sha256sum(req.Token))
+	if err != nil {
+		s.logger.Error("claim reset token failed", "error", err)
+		respondError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to validate token")
+		return
+	}
+	if token == nil {
+		respondError(w, r, http.StatusBadRequest, "INVALID_TOKEN", "This reset link is invalid, expired or already used. Request a new one.")
 		return
 	}
 
@@ -130,9 +133,10 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mark token as used and invalidate any others for this admin.
-	s.resetTokens.MarkUsed(r.Context(), token.ID)
-	s.resetTokens.InvalidateForAdmin(r.Context(), token.AdminID)
+	// The token is already used (Claim); invalidate any others for this admin.
+	if err := s.resetTokens.InvalidateForAdmin(r.Context(), token.AdminID); err != nil {
+		s.logger.Error("invalidate other reset tokens failed", "error", err, "admin_id", token.AdminID)
+	}
 
 	// Invalidate all existing sessions (force re-login).
 	s.sessions.DeleteAllSessions(r.Context(), token.AdminID)

@@ -3,6 +3,8 @@ import { Routes, Route, Navigate, Link, useLocation } from 'react-router'
 import { api, type BrandingResponse } from './api/client.ts'
 import { useNavDrawer } from './lib/useNavDrawer.ts'
 import LoginPage from './pages/Login.tsx'
+import ResetPasswordPage from './pages/ResetPassword.tsx'
+import { RESET_PATH } from './lib/passwordReset.ts'
 import DashboardPage from './pages/Dashboard.tsx'
 import DomainsPage from './pages/Domains.tsx'
 import MailboxesPage from './pages/Mailboxes.tsx'
@@ -82,6 +84,9 @@ export default function App() {
       link.type = 'image/svg+xml'
     }
   }, [branding])
+
+  // The reset link from a password-reset email works signed in or out.
+  if (location.pathname === RESET_PATH || location.pathname === '/reset-password') return <ResetPasswordPage />
 
   if (loggedIn === null) return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#94a3b8' }}>Loading...</div>
 

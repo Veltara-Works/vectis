@@ -6,6 +6,7 @@ import LoginPage from './Login'
 vi.mock('../api/client', () => ({
   api: {
     login: vi.fn(),
+    requestPasswordReset: vi.fn(),
     oidcProviders: vi.fn().mockResolvedValue([]),
     samlProviders: vi.fn().mockResolvedValue([]),
   },
@@ -135,5 +136,50 @@ describe('LoginPage', () => {
     await user.click(screen.getByText('Back to login'))
 
     await waitFor(() => expect(screen.getByPlaceholderText('admin@example.com')).toBeInTheDocument())
+  })
+})
+
+describe('LoginPage: forgot password', () => {
+  it('sends a reset request and shows the same neutral answer', async () => {
+    mockApi.requestPasswordReset.mockResolvedValue({ message: 'ok' })
+    render(<LoginPage onLogin={() => {}} />)
+    const user = userEvent.setup()
+
+    await user.type(screen.getByPlaceholderText('admin@example.com'), 'a@b.com')
+    await user.click(screen.getByRole('button', { name: 'Forgot password?' }))
+    expect(screen.getByRole('heading', { name: 'Reset your password' })).toBeInTheDocument()
+    // the address typed on the sign-in form carries over
+    expect(screen.getByLabelText('Email')).toHaveValue('a@b.com')
+
+    await user.click(screen.getByRole('button', { name: 'Send reset link' }))
+    await waitFor(() => expect(mockApi.requestPasswordReset).toHaveBeenCalledWith('a@b.com'))
+    expect(await screen.findByRole('status')).toHaveTextContent('If that address belongs to an admin account')
+  })
+
+  it('shows an error when the request fails, and goes back to sign in', async () => {
+    mockApi.requestPasswordReset.mockRejectedValue(new Error('Too many requests'))
+    render(<LoginPage onLogin={() => {}} />)
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: 'Forgot password?' }))
+    await user.type(screen.getByLabelText('Email'), 'a@b.com')
+    await user.click(screen.getByRole('button', { name: 'Send reset link' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Too many requests')
+
+    await user.click(screen.getByRole('button', { name: 'Back to sign in' }))
+    expect(screen.getByRole('button', { name: 'Sign In' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('hides the link during the authenticator-code step', async () => {
+    mockApi.login.mockResolvedValue({ requires_totp: true, totp_session: 's1' })
+    render(<LoginPage onLogin={() => {}} />)
+    const user = userEvent.setup()
+
+    await user.type(screen.getByPlaceholderText('admin@example.com'), 'a@b.com')
+    await user.type(screen.getByPlaceholderText('Password'), 'secret')
+    await user.click(screen.getByRole('button', { name: 'Sign In' }))
+    await screen.findByPlaceholderText('6-digit code')
+    expect(screen.queryByRole('button', { name: 'Forgot password?' })).not.toBeInTheDocument()
   })
 })
